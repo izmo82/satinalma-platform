@@ -110,7 +110,13 @@ function hash(s: string) {
 export function ublInvoiceXml(o: {
   invoiceNo: string; ettn: string; sellerVkn: string | null; sellerName: string; buyerVkn: string; buyerName: string;
   iban?: string | null; amount?: string;
+  /** Satırlar ve beyan edilen toplamlar (yoksa yalnız ödenecek tutar). typeCode IADE ise billingRef özgün fatura no. */
+  typeCode?: string; billingRef?: string; issueDate?: string;
+  lines?: { name: string; qty: string; unitCode: string; price: string; net: string; rate: string; tax: string; oiv?: string }[];
+  taxTotal?: string; withholding?: string; oivTotal?: string;
 }): Buffer {
+  // Özel iletişim vergisi (ÖİV, 4080): KDV dışı vergi örneği; KDV matrahına girer.
+  const oiv = (amt: string) => `<cac:TaxSubtotal><cbc:TaxAmount currencyID="TRY">${amt}</cbc:TaxAmount><cbc:Percent>10</cbc:Percent><cac:TaxCategory><cac:TaxScheme><cbc:TaxTypeCode>4080</cbc:TaxTypeCode></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal>`;
   const sellerId = o.sellerVkn ? `<cac:PartyIdentification><cbc:ID schemeID="VKN">${o.sellerVkn}</cbc:ID></cac:PartyIdentification>` : '';
   return Buffer.from(`<?xml version="1.0" encoding="UTF-8"?>
 <Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"
@@ -120,7 +126,9 @@ export function ublInvoiceXml(o: {
   <cbc:CustomizationID>TR1.2</cbc:CustomizationID>
   <cbc:ID>${o.invoiceNo}</cbc:ID>
   <cbc:UUID>${o.ettn}</cbc:UUID>
-  <cbc:IssueDate>2026-10-20</cbc:IssueDate>
+  <cbc:IssueDate>${o.issueDate ?? '2026-10-20'}</cbc:IssueDate>
+  ${o.typeCode ? `<cbc:InvoiceTypeCode>${o.typeCode}</cbc:InvoiceTypeCode>` : ''}
+  ${o.billingRef ? `<cac:BillingReference><cac:InvoiceDocumentReference><cbc:ID>${o.billingRef}</cbc:ID></cac:InvoiceDocumentReference></cac:BillingReference>` : ''}
   <cbc:Note>SENTETİK TEST FATURASI — gerçek işlem değildir.</cbc:Note>
   <cac:AccountingSupplierParty><cac:Party>
     <cac:PartyIdentification><cbc:ID schemeID="MERSISNO">0000000000000001</cbc:ID></cac:PartyIdentification>
@@ -132,7 +140,10 @@ export function ublInvoiceXml(o: {
     <cac:PartyName><cbc:Name>${o.buyerName}</cbc:Name></cac:PartyName>
   </cac:Party></cac:AccountingCustomerParty>
   ${o.iban ? `<cac:PaymentMeans><cbc:PaymentMeansCode>42</cbc:PaymentMeansCode><cac:PayeeFinancialAccount><cbc:ID>${o.iban}</cbc:ID></cac:PayeeFinancialAccount></cac:PaymentMeans>` : ''}
+  ${o.taxTotal ? `<cac:TaxTotal><cbc:TaxAmount currencyID="TRY">${o.taxTotal}</cbc:TaxAmount><cac:TaxSubtotal><cbc:TaxAmount currencyID="TRY">${o.taxTotal}</cbc:TaxAmount><cac:TaxCategory><cac:TaxScheme><cbc:TaxTypeCode>0015</cbc:TaxTypeCode></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal>${o.oivTotal ? oiv(o.oivTotal) : ''}</cac:TaxTotal>` : ''}
+  ${o.withholding ? `<cac:WithholdingTaxTotal><cbc:TaxAmount currencyID="TRY">${o.withholding}</cbc:TaxAmount><cac:TaxSubtotal><cbc:TaxAmount currencyID="TRY">${o.withholding}</cbc:TaxAmount><cac:TaxCategory><cac:TaxScheme><cbc:TaxTypeCode>9015</cbc:TaxTypeCode></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal></cac:WithholdingTaxTotal>` : ''}
   <cac:LegalMonetaryTotal><cbc:PayableAmount currencyID="TRY">${o.amount ?? '12000.00'}</cbc:PayableAmount></cac:LegalMonetaryTotal>
+  ${(o.lines ?? []).map((l, i) => `<cac:InvoiceLine><cbc:ID>${i + 1}</cbc:ID><cbc:InvoicedQuantity unitCode="${l.unitCode}">${l.qty}</cbc:InvoicedQuantity><cbc:LineExtensionAmount currencyID="TRY">${l.net}</cbc:LineExtensionAmount><cac:TaxTotal><cbc:TaxAmount currencyID="TRY">${l.tax}</cbc:TaxAmount><cac:TaxSubtotal><cbc:TaxAmount currencyID="TRY">${l.tax}</cbc:TaxAmount><cbc:Percent>${l.rate}</cbc:Percent><cac:TaxCategory><cac:TaxScheme><cbc:TaxTypeCode>0015</cbc:TaxTypeCode></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal>${l.oiv ? oiv(l.oiv) : ''}</cac:TaxTotal><cac:Item><cbc:Name>${l.name}</cbc:Name></cac:Item><cac:Price><cbc:PriceAmount currencyID="TRY">${l.price}</cbc:PriceAmount></cac:Price></cac:InvoiceLine>`).join('\n  ')}
 </Invoice>`, 'utf8');
 }
 

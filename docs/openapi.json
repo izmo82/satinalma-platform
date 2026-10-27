@@ -1332,6 +1332,172 @@
         }
       }
     },
+    "/api/v1/purchase-orders/{id}/changes": {
+      "post": {
+        "tags": [
+          "po"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "baseChangeNo",
+                  "reason",
+                  "lines"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "baseChangeNo": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "reason": {
+                    "type": "string",
+                    "maxLength": 2000
+                  },
+                  "lines": {
+                    "type": "array",
+                    "maxItems": 500,
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "poLineId",
+                        "quantity",
+                        "unitPrice"
+                      ],
+                      "additionalProperties": false,
+                      "properties": {
+                        "poLineId": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "quantity": {
+                          "type": "string",
+                          "pattern": "^\\d{1,18}(\\.\\d{1,6})?$"
+                        },
+                        "unitPrice": {
+                          "type": "string",
+                          "pattern": "^\\d{1,18}(\\.\\d{1,6})?$"
+                        }
+                      }
+                    }
+                  },
+                  "add": {
+                    "type": "array",
+                    "maxItems": 100,
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "kind",
+                        "description",
+                        "unit",
+                        "quantity",
+                        "unitPrice"
+                      ],
+                      "additionalProperties": false,
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "GOODS",
+                            "SERVICE"
+                          ]
+                        },
+                        "description": {
+                          "type": "string",
+                          "minLength": 2,
+                          "maxLength": 300
+                        },
+                        "unit": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 30
+                        },
+                        "quantity": {
+                          "type": "string",
+                          "pattern": "^\\d{1,18}(\\.\\d{1,6})?$"
+                        },
+                        "unitPrice": {
+                          "type": "string",
+                          "pattern": "^\\d{1,18}(\\.\\d{1,6})?$"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/purchase-orders/{id}/close": {
+      "post": {
+        "tags": [
+          "po"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "baseChangeNo",
+                  "reason"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "baseChangeNo": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "reason": {
+                    "type": "string",
+                    "maxLength": 2000
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
     "/api/v1/po-lines/{id}/receipts": {
       "post": {
         "tags": [
@@ -1575,9 +1741,39 @@
                         "taxRate": {
                           "type": "string",
                           "pattern": "^\\d{1,18}(\\.\\d{1,6})?$"
+                        },
+                        "taxAmount": {
+                          "type": "string",
+                          "pattern": "^\\d{1,18}(\\.\\d{1,6})?$",
+                          "nullable": true
+                        },
+                        "otherTax": {
+                          "type": "string",
+                          "pattern": "^\\d{1,18}(\\.\\d{1,6})?$",
+                          "nullable": true
                         }
                       }
                     }
+                  },
+                  "declaredOtherTaxTotal": {
+                    "type": "string",
+                    "pattern": "^\\d{1,18}(\\.\\d{1,6})?$",
+                    "nullable": true
+                  },
+                  "declaredTaxTotal": {
+                    "type": "string",
+                    "pattern": "^\\d{1,18}(\\.\\d{1,6})?$",
+                    "nullable": true
+                  },
+                  "declaredWithholding": {
+                    "type": "string",
+                    "pattern": "^\\d{1,18}(\\.\\d{1,6})?$",
+                    "nullable": true
+                  },
+                  "declaredPayable": {
+                    "type": "string",
+                    "pattern": "^\\d{1,18}(\\.\\d{1,6})?$",
+                    "nullable": true
                   }
                 }
               }
@@ -1852,6 +2048,39 @@
             }
           }
         },
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "invoices"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/tolerance-rules/{currency}": {
+      "delete": {
+        "tags": [
+          "invoices"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Z]{3}$"
+            },
+            "in": "path",
+            "name": "currency",
+            "required": true
+          }
+        ],
         "responses": {
           "200": {
             "description": "Default Response"

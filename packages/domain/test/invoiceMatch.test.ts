@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { allowedVariance, availableLimit, checkInvoice, netConsumption, openCommitment, type InvoiceCheckInput, type PoLineState } from '../src/invoiceMatch.ts';
+import { allowedVariance, availableLimit, checkInvoice, checkTax, netConsumption, openCommitment, type InvoiceCheckInput, type PoLineState } from '../src/invoiceMatch.ts';
 
 describe('T14 limit: tavan − net tüketim − tüketilmemiş açık taahhüt', () => {
   it('1M tavan, 400 bin tüketim, 300 bin kalan açık sipariş → 300 bin; faturalanan sipariş tekrar düşülmez', () => {
@@ -85,5 +85,44 @@ describe('limit ve T37', () => {
     const adv = checkInvoice(base({ poLines: [po({ receivedQty: '100' })], advanceOffset: '20000', advanceBalance: '20000' }));
     expect(adv.payable).toBe('80000.00');
     expect(checkInvoice(base({ poLines: [po({ receivedQty: '100' })], advanceOffset: '30000', advanceBalance: '20000' })).issues.map((x) => x.code)).toEqual(['ADVANCE_OFFSET_INVALID']);
+  });
+});
+
+describe('vergi aritmetiği: belgedeki değer doğru kabul edilmez', () => {
+  const lines = [
+    { lineNo: 1, description: 'Disk', quantity: '3', unit: 'adet', unitPrice: '333.33', netAmount: '999.99', taxRate: '20', taxAmount: '200.00' },
+    { lineNo: 2, description: 'Bakım', quantity: '1', unit: 'ay', unitPrice: '1000', netAmount: '1000.00', taxRate: '10', taxAmount: null },
+  ];
+  it('kuruş yuvarlaması geçer; toplam ve ödenecek tutar satırlardan hesaplanır', () => {
+    const r = checkTax(lines, { taxTotal: '300.00', withholding: null, payable: '2299.99' }, 'TRY');
+    expect(r.issues).toEqual([]);
+    expect(r.taxTotal).toBe('300.00');
+    expect(r.grossAmount).toBe('2299.99');
+  });
+  it('yanlış satır KDV\'si, tutmayan toplam ve ödenecek tutar engeller; sorumlu finans', () => {
+    const bad = [{ ...lines[0]!, taxAmount: '180.00' }, lines[1]!];
+    const r = checkTax(bad, { taxTotal: '300.00', withholding: null, payable: '2500.00' }, 'TRY');
+    expect(r.issues.map((x) => x.code)).toEqual(['TAX_LINE_MISMATCH', 'TAX_TOTAL_MISMATCH', 'PAYABLE_MISMATCH']);
+    expect(r.issues.every((x) => x.severity === 'BLOCK' && x.ownerRole === 'FINANCE')).toBe(true);
+    expect(r.issues[0]!.message).toContain('999.99 × %20 = 200.00');
+  });
+  it('tevkifat ödenecekten düşer, KDV\'yi aşamaz; belgede toplam yoksa yalnız satır kontrolü', () => {
+    expect(checkTax(lines, { taxTotal: '300.00', withholding: '100.00', payable: '2199.99' }, 'TRY').issues).toEqual([]);
+    expect(checkTax(lines, { taxTotal: null, withholding: '400.00', payable: null }, 'TRY').issues.map((x) => x.code)).toEqual(['WITHHOLDING_INVALID']);
+    expect(checkTax(lines, undefined, 'TRY').issues).toEqual([]);
+  });
+  it('vergi hatası faturanın onayını engeller', () => {
+    const c = checkInvoice(base({ poLines: [po({ receivedQty: '100' })], declared: { taxTotal: '1.00', withholding: null, payable: null } }));
+    expect(c.canApprove).toBe(false);
+    expect(c.issues.map((x) => x.code)).toContain('TAX_TOTAL_MISMATCH');
+  });
+});
+
+describe('KDV dışı vergiler (ÖTV/ÖİV)', () => {
+  it('KDV matrahı net + diğer vergiler; ödenecek tutara eklenir; toplam tutmazsa engeller', () => {
+    const l = [{ lineNo: 1, description: 'Hat', quantity: '1', unit: 'ay', unitPrice: '1000', netAmount: '1000.00', taxRate: '20', taxAmount: '220.00', otherTax: '100.00' }];
+    const ok = checkTax(l, { taxTotal: '220.00', otherTaxTotal: '100.00', withholding: null, payable: '1320.00' }, 'TRY');
+    expect(ok).toMatchObject({ issues: [], taxTotal: '220.00', otherTaxTotal: '100.00', grossAmount: '1320.00' });
+    expect(checkTax(l, { taxTotal: '220.00', otherTaxTotal: '90.00', withholding: null, payable: '1320.00' }, 'TRY').issues.map((x) => x.code)).toEqual(['OTHER_TAX_MISMATCH']);
   });
 });

@@ -438,12 +438,22 @@ export async function buildApp(deps: AppDeps) {
   const money2 = { type: 'string', pattern: '^\\d{1,18}(\\.\\d{1,6})?$' } as const;
   app.get('/api/v1/purchase-orders', { schema: { tags: ['po'] } }, async (req) => scoped(req, 'po.read', async (tx) => ({ items: await invoices.listPos(tx) })));
   app.get('/api/v1/purchase-orders/:id', { schema: { tags: ['po'], params: idParams } }, async (req) => scoped(req, 'po.read', async (tx, ctx) =>
-    ({ ...(await invoices.getPo(tx, (req.params as any).id)), can: { receive: can(ctx.roles, 'receipt.record') } })));
+    ({ ...(await invoices.getPo(tx, (req.params as any).id)), can: { receive: can(ctx.roles, 'receipt.record'), change: can(ctx.roles, 'po.manage') } })));
   app.post('/api/v1/purchase-orders', { schema: { tags: ['po'], body: { type: 'object', required: ['companyId', 'supplierId', 'currency', 'lines'], additionalProperties: false,
     properties: { companyId: uuid, supplierId: uuid, contractVersionId: { anyOf: [uuid, { type: 'null' }] }, projectId: { anyOf: [uuid, { type: 'null' }] }, currency: { type: 'string', pattern: '^[A-Z]{3}$' },
       lines: { type: 'array', minItems: 1, maxItems: 500, items: { type: 'object', required: ['kind', 'description', 'unit', 'quantity', 'unitPrice'], additionalProperties: false,
         properties: { kind: { type: 'string', enum: ['GOODS', 'SERVICE'] }, description: { type: 'string', minLength: 2, maxLength: 300 }, unit: { type: 'string', minLength: 1, maxLength: 30 }, quantity: money2, unitPrice: money2 } } } } } } }, async (req, reply) =>
     reply.status(201).send(await scoped(req, 'po.manage', (tx, ctx) => invoices.createPo(tx, ctx, req.body as any))));
+  const poLine = { type: 'object', required: ['kind', 'description', 'unit', 'quantity', 'unitPrice'], additionalProperties: false,
+    properties: { kind: { type: 'string', enum: ['GOODS', 'SERVICE'] }, description: { type: 'string', minLength: 2, maxLength: 300 }, unit: { type: 'string', minLength: 1, maxLength: 30 }, quantity: money2, unitPrice: money2 } } as const;
+  app.post('/api/v1/purchase-orders/:id/changes', { schema: { tags: ['po'], params: idParams, body: { type: 'object', required: ['baseChangeNo', 'reason', 'lines'], additionalProperties: false,
+    properties: { baseChangeNo: { type: 'integer', minimum: 0 }, reason: { type: 'string', maxLength: 2000 },
+      lines: { type: 'array', maxItems: 500, items: { type: 'object', required: ['poLineId', 'quantity', 'unitPrice'], additionalProperties: false, properties: { poLineId: uuid, quantity: money2, unitPrice: money2 } } },
+      add: { type: 'array', maxItems: 100, items: poLine } } } } }, async (req, reply) =>
+    reply.status(201).send(await scoped(req, 'po.manage', (tx, ctx) => invoices.changePo(tx, ctx, (req.params as any).id, req.body as any))));
+  app.post('/api/v1/purchase-orders/:id/close', { schema: { tags: ['po'], params: idParams, body: { type: 'object', required: ['baseChangeNo', 'reason'], additionalProperties: false,
+    properties: { baseChangeNo: { type: 'integer', minimum: 0 }, reason: { type: 'string', maxLength: 2000 } } } } }, async (req) =>
+    scoped(req, 'po.manage', (tx, ctx) => invoices.closePo(tx, ctx, (req.params as any).id, req.body as any)));
   app.post('/api/v1/po-lines/:id/receipts', { schema: { tags: ['po'], params: idParams, body: { type: 'object', required: ['quantity', 'note'],
     properties: { quantity: money2, periodFrom: { anyOf: [{ type: 'string', format: 'date' }, { type: 'null' }] }, periodTo: { anyOf: [{ type: 'string', format: 'date' }, { type: 'null' }] }, note: { type: 'string', maxLength: 1000 } } } } }, async (req, reply) =>
     reply.status(201).send(await scoped(req, 'receipt.record', (tx, ctx) => invoices.recordReceipt(tx, ctx, (req.params as any).id, req.body as any))));
@@ -462,7 +472,9 @@ export async function buildApp(deps: AppDeps) {
     properties: { companyId: uuid, supplierId: uuid, kind: { type: 'string', enum: ['INVOICE', 'CREDIT_NOTE', 'ADVANCE'] }, invoiceNo: { type: 'string', minLength: 1, maxLength: 40 },
       ettn: { anyOf: [uuid, { type: 'null' }] }, issueDate: { type: 'string', format: 'date' }, currency: { type: 'string', pattern: '^[A-Z]{3}$' }, documentVersionId: { anyOf: [uuid, { type: 'null' }] },
       originalInvoiceId: { anyOf: [uuid, { type: 'null' }] }, lines: { type: 'array', minItems: 1, maxItems: 500, items: { type: 'object', required: ['description', 'quantity', 'unit', 'unitPrice', 'netAmount'], additionalProperties: false,
-        properties: { description: { type: 'string', minLength: 1, maxLength: 300 }, quantity: money2, unit: { type: 'string', minLength: 1, maxLength: 30 }, unitPrice: money2, netAmount: money2, taxRate: money2 } } } } } } }, async (req, reply) => {
+        properties: { description: { type: 'string', minLength: 1, maxLength: 300 }, quantity: money2, unit: { type: 'string', minLength: 1, maxLength: 30 }, unitPrice: money2, netAmount: money2, taxRate: money2, taxAmount: { anyOf: [money2, { type: 'null' }] }, otherTax: { anyOf: [money2, { type: 'null' }] } } } },
+      declaredOtherTaxTotal: { anyOf: [money2, { type: 'null' }] },
+      declaredTaxTotal: { anyOf: [money2, { type: 'null' }] }, declaredWithholding: { anyOf: [money2, { type: 'null' }] }, declaredPayable: { anyOf: [money2, { type: 'null' }] } } } } }, async (req, reply) => {
     const r = await scoped(req, 'invoice.manage', (tx, ctx) => invoices.createInvoice(tx, ctx, req.body as any));
     return reply.status(r.duplicate ? 200 : 201).send(r);
   });
@@ -479,6 +491,10 @@ export async function buildApp(deps: AppDeps) {
   app.put('/api/v1/tolerance-rules', { schema: { tags: ['invoices'], body: { type: 'object', required: ['currency', 'absAmount', 'percent', 'combine'],
     properties: { currency: { type: 'string', pattern: '^[A-Z]{3}$' }, absAmount: { anyOf: [money2, { type: 'null' }] }, percent: { anyOf: [money2, { type: 'null' }] }, combine: { type: 'string', enum: ['LOWER', 'HIGHER'] } } } } }, async (req) =>
     scoped(req, 'tolerance.manage', (tx, ctx) => invoices.setTolerance(tx, ctx, req.body as any)));
+  app.get('/api/v1/tolerance-rules', { schema: { tags: ['invoices'] } }, async (req) => scoped(req, 'invoice.read', async (tx, ctx) =>
+    ({ items: await invoices.listTolerance(tx), can: { manage: can(ctx.roles, 'tolerance.manage') } })));
+  app.delete('/api/v1/tolerance-rules/:currency', { schema: { tags: ['invoices'], params: { type: 'object', required: ['currency'], properties: { currency: { type: 'string', pattern: '^[A-Z]{3}$' } } } } }, async (req) =>
+    scoped(req, 'tolerance.manage', (tx, ctx) => invoices.deleteTolerance(tx, ctx, (req.params as any).currency)));
   app.post('/api/v1/integration/erp/status-events', { schema: { tags: ['integration'], body: { type: 'object', required: ['events'], properties: { events: { type: 'array', minItems: 1, maxItems: 500,
     items: { type: 'object', required: ['eventId', 'invoiceId', 'status', 'at'], properties: { eventId: { type: 'string', minLength: 3, maxLength: 120 }, invoiceId: uuid, status: { type: 'string', enum: ['POSTED', 'PAID'] }, at: { type: 'string', format: 'date-time' } } } } } } } }, async (req) =>
     scoped(req, 'integration.ingest', (tx, ctx) => invoices.ingestErpEvents(tx, ctx, (req.body as any).events)));

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import {
-  availableLimit, checkInvoice, isDecimal, openCommitment,
+  add, availableLimit, checkInvoice, cmp, dec, div, isDecimal, mul, openCommitment, str, type Dec,
   type AllocationInput, type ContractState, type InvoiceCheckInput, type PoLineState, type ToleranceRule,
 } from '@sp/domain';
 import type { TenantContext, Tx } from '../db.ts';
@@ -15,10 +15,25 @@ import { ErpTimeout, erpAdapter } from '../erp/adapter.ts';
  * Kontrol sonucu saklanmaz; her okumada güncel veriden hesaplanır. Onay, kontrolün parmak izine bağlanır (BR04).
  */
 
+/** Kalem tutarı (miktar × birim fiyat, kuruşa yuvarlı). Para float ile hesaplanmaz. */
+const amount = (q: string, p: string): Dec => dec(str(mul(dec(q), dec(p))));
+const absDec = (x: Dec) => (x < 0n ? -x : x);
+/** numeric(20,6) metnindeki gereksiz sıfırları atar (decimal string 6 basamağı aşmaz). */
+const trimNum = (s: string) => (s.includes('.') ? s.replace(/0+$/, '').replace(/\.$/, '') : s);
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');
 const APPROVED = `EXISTS (SELECT 1 FROM invoice_decisions d WHERE d.invoice_id = i.id AND d.kind = 'APPROVAL') AND i.legal_status = 'RECEIVED'`;
 
 /** Sözleşme sürümleri için limit kilidi: sıralı alınır (kilitlenme yok); aynı limiti tüketen işlemler seri işlenir (T15). */
+/**
+ * Sipariş kilidi: kabul, ters kabul, değişiklik, kapatma ve (siparişe bağlı) fatura onayı aynı siparişte seri işlenir.
+ * Sıra her yerde aynıdır: önce sipariş kilitleri (sıralı), sonra limit kilitleri — kilitlenme olmaz.
+ */
+async function lockPosOfLines(tx: Tx, poLineIds: string[]) {
+  if (!poLineIds.length) return;
+  const ids = (await tx.query<{ po_id: string }>(`SELECT DISTINCT po_id FROM po_lines WHERE id = ANY($1::uuid[])`, [poLineIds])).rows.map((r) => r.po_id).sort();
+  for (const id of ids) await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`po:${id}`]);
+}
+
 async function lockContracts(tx: Tx, ids: string[]) {
   for (const id of [...new Set(ids)].sort()) await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`limit:${id}`]);
 }
@@ -37,7 +52,7 @@ async function contractState(tx: Tx, cvId: string, excludeInvoiceId: string | nu
   const lines = (await tx.query<{ ordered: string; invoiced: string }>(`SELECT round(pl.quantity * pl.unit_price, 2)::text AS ordered,
       coalesce((SELECT sum(CASE i.kind WHEN 'CREDIT_NOTE' THEN -a.amount ELSE a.amount END) FROM invoice_allocations a JOIN invoices i ON i.id = a.invoice_id
         WHERE a.po_line_id = pl.id AND ${APPROVED} AND ($2::uuid IS NULL OR i.id <> $2)), 0)::numeric(20,2)::text AS invoiced
-    FROM po_lines pl JOIN purchase_orders po ON po.id = pl.po_id WHERE po.contract_version_id = $1 AND po.status = 'OPEN'`, [cvId, excludeInvoiceId])).rows;
+    FROM po_lines_current pl JOIN purchase_orders po ON po.id = pl.po_id WHERE po.contract_version_id = $1 AND po.status <> 'CANCELLED'`, [cvId, excludeInvoiceId])).rows;
   return {
     contractVersionId: cvId, title: cv.title, currency: t?.currency ?? 'TRY', ceiling, netConsumption: cons,
     openCommitment: openCommitment(lines.map((l) => ({ orderedAmount: l.ordered, invoicedAmount: l.invoiced }))),
@@ -56,7 +71,7 @@ export async function createPo(tx: Tx, ctx: TenantContext, b: PoInput) {
   if (!s) throw notFound();
   if (s.status !== 'ACTIVE') throw unprocessable('supplier_not_active', `${s.legal_name} aktif tedarikçi değil; sipariş verilemez (BR02).`);
   for (const l of b.lines) if (!isDecimal(l.quantity) || !isDecimal(l.unitPrice) || Number(l.quantity) <= 0) throw unprocessable('invalid_number', 'Miktar ve birim fiyat ondalık sayı olmalı.');
-  const total = b.lines.reduce((t, l) => t + Math.round(Number(l.quantity) * Number(l.unitPrice) * 100), 0) / 100;
+  const total = add(...b.lines.map((l) => amount(l.quantity, l.unitPrice)));
   if (b.contractVersionId) {
     await lockContracts(tx, [b.contractVersionId]);
     const c = await contractState(tx, b.contractVersionId, null);
@@ -64,7 +79,7 @@ export async function createPo(tx: Tx, ctx: TenantContext, b: PoInput) {
     // Sipariş açık taahhüttür: tavanı aşan sipariş verilemez (BR07).
     if (c.ceiling !== null) {
       const avail = availableLimit(c.ceiling, c.netConsumption, c.openCommitment);
-      if (total > Number(avail)) throw unprocessable('limit_exceeded', `${c.title}: kullanılabilir limit ${avail} ${c.currency}, sipariş ${total.toFixed(2)}.`, { available: avail });
+      if (cmp(total, dec(avail)) > 0) throw unprocessable('limit_exceeded', `${c.title}: kullanılabilir limit ${avail} ${c.currency}, sipariş ${str(total)}.`, { available: avail });
     }
   }
   const code = await nextCode(tx, ctx, 'po', 'PO');
@@ -75,28 +90,29 @@ export async function createPo(tx: Tx, ctx: TenantContext, b: PoInput) {
     await tx.query(`INSERT INTO po_lines (tenant_id, company_id, po_id, line_no, kind, description, unit, quantity, unit_price) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
       [ctx.tenantId, b.companyId, po.id, ++n, l.kind, l.description.trim(), l.unit.trim(), l.quantity, l.unitPrice]);
   }
-  await audit(tx, ctx, 'po.issued', 'purchase_order', po.id, { code, total: total.toFixed(2), contractVersionId: b.contractVersionId ?? null });
+  await audit(tx, ctx, 'po.issued', 'purchase_order', po.id, { code, total: str(total), contractVersionId: b.contractVersionId ?? null });
   return { id: po.id, code };
 }
 
 async function poLineStates(tx: Tx, poLineIds: string[], excludeInvoiceId: string | null): Promise<PoLineState[]> {
   if (!poLineIds.length) return [];
-  return (await tx.query<PoLineState>(`SELECT pl.id AS "poLineId", pl.description, pl.unit, po.currency, pl.kind, trim_scale(pl.quantity)::text AS "orderedQty",
+  return (await tx.query<PoLineState>(`SELECT pl.id AS "poLineId", pl.description, pl.unit, po.currency, pl.kind, po.status AS "poStatus", trim_scale(pl.quantity)::text AS "orderedQty",
       trim_scale(pl.unit_price)::text AS "unitPrice", po.contract_version_id AS "contractVersionId",
       coalesce((SELECT trim_scale(sum(r.quantity)) FROM receipts r WHERE r.po_line_id = pl.id), 0)::text AS "receivedQty",
       coalesce((SELECT trim_scale(sum(CASE i.kind WHEN 'CREDIT_NOTE' THEN -a.quantity ELSE a.quantity END)) FROM invoice_allocations a JOIN invoices i ON i.id = a.invoice_id
         WHERE a.po_line_id = pl.id AND i.kind <> 'ADVANCE' AND ${APPROVED} AND ($2::uuid IS NULL OR i.id <> $2)), 0)::text AS "invoicedQty",
       coalesce((SELECT sum(CASE i.kind WHEN 'CREDIT_NOTE' THEN -a.amount ELSE a.amount END) FROM invoice_allocations a JOIN invoices i ON i.id = a.invoice_id
         WHERE a.po_line_id = pl.id AND i.kind <> 'ADVANCE' AND ${APPROVED} AND ($2::uuid IS NULL OR i.id <> $2)), 0)::numeric(20,2)::text AS "invoicedAmount"
-    FROM po_lines pl JOIN purchase_orders po ON po.id = pl.po_id WHERE pl.id = ANY($1::uuid[])`, [poLineIds, excludeInvoiceId])).rows;
+    FROM po_lines_current pl JOIN purchase_orders po ON po.id = pl.po_id WHERE pl.id = ANY($1::uuid[])`, [poLineIds, excludeInvoiceId])).rows;
 }
 
 export async function recordReceipt(tx: Tx, ctx: TenantContext, poLineId: string, b: { quantity: string; periodFrom?: string | null; periodTo?: string | null; note: string }) {
   if (!isDecimal(b.quantity) || Number(b.quantity) <= 0) throw unprocessable('invalid_number', 'Kabul miktarı pozitif olmalı.');
-  await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`receipt:${poLineId}`]);
+  await lockPosOfLines(tx, [poLineId]);
   const [pl] = await poLineStates(tx, [poLineId], null);
   if (!pl) throw notFound();
-  if (Number(pl.receivedQty) + Number(b.quantity) > Number(pl.orderedQty)) throw unprocessable('over_receipt', `Toplam kabul sipariş miktarını (${pl.orderedQty} ${pl.unit}) aşamaz; şu an ${pl.receivedQty}.`);
+  if (pl.poStatus !== 'OPEN') throw conflict('po_not_open', 'Sipariş kapatıldı veya iptal edildi; yeni kabul kaydedilemez.');
+  if (cmp(dec(pl.receivedQty) + dec(b.quantity), dec(pl.orderedQty)) > 0) throw unprocessable('over_receipt', `Toplam kabul sipariş miktarını (${pl.orderedQty} ${pl.unit}) aşamaz; şu an ${pl.receivedQty}.`);
   if (pl.kind === 'SERVICE' && (!b.periodFrom || !b.periodTo)) throw unprocessable('period_required', 'Hizmet kabulü dönem (başlangıç–bitiş) ile kaydedilir.');
   const company = (await tx.query<{ company_id: string }>(`SELECT company_id FROM po_lines WHERE id = $1`, [poLineId])).rows[0]!.company_id;
   const r = (await tx.query<{ id: string }>(`INSERT INTO receipts (tenant_id, company_id, po_line_id, quantity, period_from, period_to, note, recorded_by)
@@ -111,11 +127,11 @@ export async function reverseReceipt(tx: Tx, ctx: TenantContext, receiptId: stri
   const orig = (await tx.query<{ po_line_id: string; quantity: string; company_id: string }>(`SELECT po_line_id, quantity::text, company_id FROM receipts WHERE id = $1 AND quantity > 0`, [receiptId])).rows[0];
   if (!orig) throw notFound();
   if (!isDecimal(b.quantity) || Number(b.quantity) <= 0) throw unprocessable('invalid_number', 'Ters kabul miktarı pozitif yazılır.');
-  await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`receipt:${orig.po_line_id}`]);
-  const already = Number((await tx.query<{ v: string }>(`SELECT coalesce(-sum(quantity), 0)::text AS v FROM receipts WHERE reverses_id = $1`, [receiptId])).rows[0]!.v);
-  if (already + Number(b.quantity) > Number(orig.quantity)) throw unprocessable('over_reversal', 'Ters kabul özgün kabul miktarını aşamaz.');
+  await lockPosOfLines(tx, [orig.po_line_id]);
+  const already = dec((await tx.query<{ v: string }>(`SELECT trim_scale(coalesce(-sum(quantity), 0))::text AS v FROM receipts WHERE reverses_id = $1`, [receiptId])).rows[0]!.v);
+  if (cmp(already + dec(b.quantity), dec(trimNum(orig.quantity))) > 0) throw unprocessable('over_reversal', 'Ters kabul özgün kabul miktarını aşamaz.');
   const [pl] = await poLineStates(tx, [orig.po_line_id], null);
-  if (Number(pl!.receivedQty) - Number(b.quantity) < Number(pl!.invoicedQty)) {
+  if (cmp(dec(pl!.receivedQty) - dec(b.quantity), dec(pl!.invoicedQty)) < 0) {
     throw unprocessable('receipt_already_invoiced', `Bu miktar faturalanmış (${pl!.invoicedQty} ${pl!.unit}); önce iade/alacak belgesi gerekir.`);
   }
   const r = (await tx.query<{ id: string }>(`INSERT INTO receipts (tenant_id, company_id, po_line_id, quantity, reverses_id, note, recorded_by)
@@ -124,15 +140,119 @@ export async function reverseReceipt(tx: Tx, ctx: TenantContext, receiptId: stri
   return { id: r.id };
 }
 
+export interface PoChangeInput {
+  /** İstemcinin gördüğü son değişiklik no; arada başka değişiklik olduysa 409 (kayıp güncelleme yok). */
+  baseChangeNo: number; reason: string;
+  lines: { poLineId: string; quantity: string; unitPrice: string }[];
+  add?: PoInput['lines'];
+}
+
+async function lockPo(tx: Tx, poId: string) {
+  await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`po:${poId}`]);
+  const po = (await tx.query<{ id: string; company_id: string; status: string; contract_version_id: string | null; currency: string; code: string }>(
+    `SELECT id, company_id, status, contract_version_id, currency, code FROM purchase_orders WHERE id = $1`, [poId])).rows[0];
+  if (!po) throw notFound();
+  if (po.contract_version_id) await lockContracts(tx, [po.contract_version_id]);
+  const changeNo = Number((await tx.query<{ n: number | null }>(`SELECT max(change_no) AS n FROM po_changes WHERE po_id = $1`, [poId])).rows[0]!.n ?? 0);
+  const ids = (await tx.query<{ id: string }>(`SELECT id FROM po_lines WHERE po_id = $1 ORDER BY line_no`, [poId])).rows.map((r) => r.id);
+  return { po, changeNo, lines: await poLineStates(tx, ids, null) };
+}
+
+
+/**
+ * Sipariş değişikliği: kalem miktarı/fiyatı ve yeni kalem; özgün kalem değişmez, revizyon eklenir (BR11).
+ * Miktar kabul edilen veya faturalanan miktarın altına inemez; faturalanmış kalemin fiyatı değişmez.
+ * Sözleşmeli siparişte artış limit kilidi altında kontrol edilir (BR07).
+ */
+export async function changePo(tx: Tx, ctx: TenantContext, poId: string, b: PoChangeInput) {
+  if (b.reason.trim().length < 10) throw unprocessable('reason_required', 'Değişiklik gerekçesi gerekli (en az 10 karakter).');
+  const { po, changeNo, lines } = await lockPo(tx, poId);
+  if (po.status !== 'OPEN') throw conflict('po_not_open', 'Kapatılmış veya iptal edilmiş sipariş değiştirilemez.');
+  if (b.baseChangeNo !== changeNo) throw conflict('stale_po', 'Sipariş siz düzenlerken değişti; güncel hali yükleyip tekrar deneyin.');
+  const added = b.add ?? [];
+  for (const x of [...b.lines, ...added]) if (!isDecimal(x.quantity) || !isDecimal(x.unitPrice) || Number(x.quantity) <= 0 || Number(x.unitPrice) < 0) throw unprocessable('invalid_number', 'Miktar pozitif, birim fiyat sıfır veya pozitif ondalık olmalı.');
+  const changed: { lineNo: number; poLineId: string; description: string; before: { quantity: string; unitPrice: string }; after: { quantity: string; unitPrice: string } }[] = [];
+  let delta = 0n;
+  for (const x of b.lines) {
+    const l = lines.find((y) => y.poLineId === x.poLineId);
+    if (!l) throw unprocessable('line_not_in_po', 'Kalem bu siparişe ait değil.');
+    const priceChanged = cmp(dec(x.unitPrice), dec(l.unitPrice)) !== 0;
+    if (cmp(dec(x.quantity), dec(l.orderedQty)) === 0 && !priceChanged) continue;
+    const floor = dec(l.receivedQty) > dec(l.invoicedQty) ? l.receivedQty : l.invoicedQty;
+    if (cmp(dec(x.quantity), dec(floor)) < 0) throw unprocessable('below_consumed', `"${l.description}": miktar kabul edilen/faturalanan miktarın (${floor} ${l.unit}) altına inemez.`);
+    if (priceChanged && dec(l.invoicedQty) !== 0n) throw unprocessable('price_locked', `"${l.description}" faturalandı; fiyatı değişmez. Yeni fiyat için yeni kalem ekleyin.`);
+    delta += amount(x.quantity, x.unitPrice) - amount(l.orderedQty, l.unitPrice);
+    changed.push({ lineNo: 0, poLineId: l.poLineId, description: l.description, before: { quantity: l.orderedQty, unitPrice: l.unitPrice }, after: { quantity: x.quantity, unitPrice: x.unitPrice } });
+  }
+  for (const x of added) delta += amount(x.quantity, x.unitPrice);
+  if (!changed.length && !added.length) throw unprocessable('no_change', 'Değişiklik yok.');
+  if (po.contract_version_id && delta > 0n) {
+    const c = await contractState(tx, po.contract_version_id, null);
+    if (c?.ceiling != null) {
+      const avail = availableLimit(c.ceiling, c.netConsumption, c.openCommitment);
+      if (cmp(delta, dec(avail)) > 0) throw unprocessable('limit_exceeded', `${c.title}: kullanılabilir limit ${avail} ${c.currency}, değişiklik +${str(delta)}.`, { available: avail });
+    }
+  }
+  const no = changeNo + 1;
+  const lineNos = (await tx.query<{ id: string; line_no: number }>(`SELECT id, line_no FROM po_lines WHERE po_id = $1`, [poId])).rows;
+  for (const c of changed) c.lineNo = lineNos.find((r) => r.id === c.poLineId)!.line_no;
+  const details = { changed, added: added.map((x) => ({ description: x.description, quantity: x.quantity, unit: x.unit, unitPrice: x.unitPrice })), delta: str(delta) };
+  const ch = (await tx.query<{ id: string }>(`INSERT INTO po_changes (tenant_id, company_id, po_id, change_no, kind, reason, details, changed_by) VALUES ($1,$2,$3,$4,'CHANGE',$5,$6,$7) RETURNING id`,
+    [ctx.tenantId, po.company_id, poId, no, b.reason.trim(), details, ctx.userId])).rows[0]!;
+  for (const c of changed) {
+    await tx.query(`INSERT INTO po_line_revisions (tenant_id, company_id, po_line_id, change_id, change_no, quantity, unit_price) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+      [ctx.tenantId, po.company_id, c.poLineId, ch.id, no, c.after.quantity, c.after.unitPrice]);
+  }
+  let n = Math.max(0, ...lineNos.map((r) => r.line_no));
+  for (const l of added) {
+    await tx.query(`INSERT INTO po_lines (tenant_id, company_id, po_id, line_no, kind, description, unit, quantity, unit_price, added_by_change_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [ctx.tenantId, po.company_id, poId, ++n, l.kind, l.description.trim(), l.unit.trim(), l.quantity, l.unitPrice, ch.id]);
+  }
+  await audit(tx, ctx, 'po.changed', 'purchase_order', poId, { changeNo: no, ...details }, b.reason);
+  return { changeNo: no, delta: str(delta) };
+}
+
+/**
+ * Kapatma/iptal: hiç kabul ve onaylı fatura yoksa sipariş iptal edilir (açık taahhüt sıfır). Tüketim varsa sipariş kapatılır:
+ * her kalem kabul edilen/faturalanan miktara iner, kalan taahhüt serbest kalır. Kayıtlar silinmez.
+ */
+export async function closePo(tx: Tx, ctx: TenantContext, poId: string, b: { baseChangeNo: number; reason: string }) {
+  if (b.reason.trim().length < 10) throw unprocessable('reason_required', 'Kapatma/iptal gerekçesi gerekli (en az 10 karakter).');
+  const { po, changeNo, lines } = await lockPo(tx, poId);
+  if (po.status !== 'OPEN') throw conflict('po_not_open', 'Sipariş zaten kapatıldı veya iptal edildi.');
+  if (b.baseChangeNo !== changeNo) throw conflict('stale_po', 'Sipariş siz düzenlerken değişti; güncel hali yükleyip tekrar deneyin.');
+  const consumed = lines.map((l) => ({ l, q: dec(l.receivedQty) > dec(l.invoicedQty) ? dec(l.receivedQty) : dec(l.invoicedQty) }));
+  const pending = Number((await tx.query<{ n: number }>(`SELECT count(DISTINCT a.invoice_id)::int AS n FROM invoice_allocations a JOIN invoices i ON i.id = a.invoice_id
+    WHERE a.po_line_id = ANY($1::uuid[]) AND NOT EXISTS (SELECT 1 FROM invoice_decisions d WHERE d.invoice_id = i.id AND d.kind IN ('APPROVAL','REJECTION'))`, [lines.map((l) => l.poLineId)])).rows[0]!.n);
+  // Karar bekleyen fatura bu kalemlere bağlıysa taahhüt serbest bırakılmaz: önce fatura karara bağlanır veya tahsisi değişir.
+  if (pending > 0) throw conflict('pending_invoices', `Bu siparişe bağlı ${pending} karar bekleyen fatura var; önce onaylanmalı, reddedilmeli veya tahsisi değiştirilmeli.`, { pendingInvoices: pending });
+  const kind = consumed.every((x) => x.q <= 0n) ? 'CANCEL' : 'CLOSE';
+  const released = add(...consumed.map((x) => amount(str(dec(x.l.orderedQty) - x.q, 6), x.l.unitPrice)));
+  const no = changeNo + 1;
+  const details = { released: str(released), pendingInvoices: pending,
+    lines: consumed.map((x) => ({ description: x.l.description, before: x.l.orderedQty, after: kind === 'CANCEL' ? '0' : str(x.q, 6) })) };
+  const ch = (await tx.query<{ id: string }>(`INSERT INTO po_changes (tenant_id, company_id, po_id, change_no, kind, reason, details, changed_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+    [ctx.tenantId, po.company_id, poId, no, kind, b.reason.trim(), details, ctx.userId])).rows[0]!;
+  if (kind === 'CLOSE') {
+    for (const x of consumed) if (x.q < dec(x.l.orderedQty)) {
+      await tx.query(`INSERT INTO po_line_revisions (tenant_id, company_id, po_line_id, change_id, change_no, quantity, unit_price) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [ctx.tenantId, po.company_id, x.l.poLineId, ch.id, no, str(x.q, 6), x.l.unitPrice]);
+    }
+  }
+  await tx.query(`UPDATE purchase_orders SET status = $2, cancel_reason = $3 WHERE id = $1`, [poId, kind === 'CANCEL' ? 'CANCELLED' : 'CLOSED', b.reason.trim()]);
+  await audit(tx, ctx, kind === 'CANCEL' ? 'po.cancelled' : 'po.closed', 'purchase_order', poId, { changeNo: no, ...details }, b.reason);
+  return { status: kind === 'CANCEL' ? 'CANCELLED' : 'CLOSED', released: str(released), pendingInvoices: pending };
+}
+
 export async function listPos(tx: Tx) {
   return (await tx.query(`SELECT po.id, po.code, po.currency, po.status, po.issued_at AS "issuedAt", s.legal_name AS "supplierName", f.title AS "contractTitle",
-      (SELECT round(sum(quantity * unit_price), 2)::text FROM po_lines WHERE po_id = po.id) AS total
+      (SELECT round(sum(quantity * unit_price), 2)::text FROM po_lines_current WHERE po_id = po.id) AS total
     FROM purchase_orders po JOIN suppliers s ON s.id = po.supplier_id LEFT JOIN contract_versions cv ON cv.id = po.contract_version_id
     LEFT JOIN contract_families f ON f.id = cv.family_id ORDER BY po.issued_at DESC LIMIT 200`)).rows;
 }
 
 export async function getPo(tx: Tx, id: string) {
-  const po = (await tx.query(`SELECT po.id, po.code, po.currency, po.status, po.issued_at AS "issuedAt", po.supplier_id AS "supplierId", s.legal_name AS "supplierName",
+  const po = (await tx.query(`SELECT po.id, po.code, po.currency, po.status, po.cancel_reason AS "closeReason", po.issued_at AS "issuedAt", po.supplier_id AS "supplierId", s.legal_name AS "supplierName",
       po.contract_version_id AS "contractVersionId", f.title AS "contractTitle", u.display_name AS "issuedBy"
     FROM purchase_orders po JOIN suppliers s ON s.id = po.supplier_id JOIN users u ON u.id = po.issued_by
     LEFT JOIN contract_versions cv ON cv.id = po.contract_version_id LEFT JOIN contract_families f ON f.id = cv.family_id WHERE po.id = $1`, [id])).rows[0];
@@ -142,7 +262,15 @@ export async function getPo(tx: Tx, id: string) {
   const receipts = (await tx.query(`SELECT r.id, r.po_line_id AS "poLineId", trim_scale(r.quantity)::text AS quantity, r.period_from::text AS "periodFrom", r.period_to::text AS "periodTo",
       r.reverses_id AS "reversesId", r.note, r.recorded_at AS "recordedAt", u.display_name AS "recordedBy"
     FROM receipts r JOIN users u ON u.id = r.recorded_by WHERE r.po_line_id = ANY($1::uuid[]) ORDER BY r.recorded_at`, [ids])).rows;
-  return { po, lines: ids.map((i) => states.find((s) => s.poLineId === i)!), receipts };
+  const rev = (await tx.query<{ id: string; originalQty: string; originalUnitPrice: string; revision: number; addedByChange: boolean }>(`SELECT c.id, trim_scale(c.original_quantity)::text AS "originalQty",
+      trim_scale(c.original_unit_price)::text AS "originalUnitPrice", c.revision, pl.added_by_change_id IS NOT NULL AS "addedByChange"
+    FROM po_lines_current c JOIN po_lines pl ON pl.id = c.id WHERE c.po_id = $1`, [id])).rows;
+  const changes = (await tx.query(`SELECT c.change_no AS "changeNo", c.kind, c.reason, c.details, c.changed_at AS "changedAt", u.display_name AS "changedBy"
+    FROM po_changes c JOIN users u ON u.id = c.changed_by WHERE c.po_id = $1 ORDER BY c.change_no`, [id])).rows;
+  return {
+    po, receipts, changes, changeNo: changes.length ? changes[changes.length - 1].changeNo : 0,
+    lines: ids.map((i) => ({ ...states.find((s) => s.poLineId === i)!, ...(({ id: _, ...r }) => r)(rev.find((r) => r.id === i)!) })),
+  };
 }
 
 // --- Fatura -----------------------------------------------------------------------------------
@@ -150,7 +278,9 @@ export async function getPo(tx: Tx, id: string) {
 export interface InvoiceInput {
   companyId: string; supplierId: string; kind: 'INVOICE' | 'CREDIT_NOTE' | 'ADVANCE'; invoiceNo: string; ettn?: string | null; issueDate: string; currency: string;
   documentVersionId?: string | null; originalInvoiceId?: string | null;
-  lines: { description: string; quantity: string; unit: string; unitPrice: string; netAmount: string; taxRate?: string }[];
+  lines: { description: string; quantity: string; unit: string; unitPrice: string; netAmount: string; taxRate?: string; taxAmount?: string | null; otherTax?: string | null }[];
+  /** Belgede yazan toplamlar; kontrol satırlardan hesaplananla karşılaştırır. */
+  declaredTaxTotal?: string | null; declaredWithholding?: string | null; declaredPayable?: string | null; declaredOtherTaxTotal?: string | null;
 }
 
 /** Fatura girişi: aynı tedarikçi için aynı ETTN veya fatura no ikinci mali kayıt açmaz; tekrar izi tutulur (T17). */
@@ -170,16 +300,18 @@ export async function createInvoice(tx: Tx, ctx: TenantContext, b: InvoiceInput,
     if (!o || o.supplier_id !== b.supplierId || o.kind !== 'INVOICE') throw unprocessable('original_required', 'İade/alacak belgesi aynı tedarikçinin özgün faturasına bağlanır.');
   }
   for (const l of b.lines) {
-    if (![l.quantity, l.unitPrice, l.netAmount].every(isDecimal)) throw unprocessable('invalid_number', 'Satır tutarları ondalık sayı olmalı.');
-    if (Math.abs(Number(l.quantity) * Number(l.unitPrice) - Number(l.netAmount)) > 0.01) throw unprocessable('line_total_mismatch', `"${l.description}": miktar × birim fiyat satır tutarına eşit değil.`);
+    if (![l.quantity, l.unitPrice, l.netAmount, l.taxRate ?? '0', ...(l.taxAmount ? [l.taxAmount] : []), ...(l.otherTax ? [l.otherTax] : [])].every(isDecimal) || [l.taxAmount, l.otherTax].some((x) => x && dec(x) < 0n)) throw unprocessable('invalid_number', 'Satır tutarları ondalık sayı olmalı.');
+    if (source !== 'einvoice' && cmp(absDec(mul(dec(l.quantity), dec(l.unitPrice)) - dec(l.netAmount)), dec('0.01')) > 0) throw unprocessable('line_total_mismatch', `"${l.description}": miktar × birim fiyat satır tutarına eşit değil.`);
   }
-  const inv = (await tx.query<{ id: string }>(`INSERT INTO invoices (tenant_id, company_id, supplier_id, kind, invoice_no, ettn, issue_date, currency, document_version_id, original_invoice_id, created_by)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`, [ctx.tenantId, b.companyId, b.supplierId, b.kind, b.invoiceNo.trim(), b.ettn ?? null, b.issueDate,
-    b.currency, b.documentVersionId ?? null, b.originalInvoiceId ?? null, ctx.userId])).rows[0]!;
+  for (const v of [b.declaredTaxTotal, b.declaredWithholding, b.declaredPayable, b.declaredOtherTaxTotal]) if (v != null && (!isDecimal(v) || dec(v) < 0n)) throw unprocessable('invalid_number', 'Belge toplamları sıfır veya pozitif ondalık olmalı.');
+  const inv = (await tx.query<{ id: string }>(`INSERT INTO invoices (tenant_id, company_id, supplier_id, kind, invoice_no, ettn, issue_date, currency, document_version_id, original_invoice_id, created_by,
+      declared_tax_total, declared_withholding, declared_payable, declared_other_tax_total)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`, [ctx.tenantId, b.companyId, b.supplierId, b.kind, b.invoiceNo.trim(), b.ettn ?? null, b.issueDate,
+    b.currency, b.documentVersionId ?? null, b.originalInvoiceId ?? null, ctx.userId, b.declaredTaxTotal ?? null, b.declaredWithholding ?? null, b.declaredPayable ?? null, b.declaredOtherTaxTotal ?? null])).rows[0]!;
   let n = 0;
   for (const l of b.lines) {
-    await tx.query(`INSERT INTO invoice_lines (tenant_id, company_id, invoice_id, line_no, description, quantity, unit, unit_price, net_amount, tax_rate) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-      [ctx.tenantId, b.companyId, inv.id, ++n, l.description.trim(), l.quantity, l.unit.trim(), l.unitPrice, l.netAmount, l.taxRate ?? '20']);
+    await tx.query(`INSERT INTO invoice_lines (tenant_id, company_id, invoice_id, line_no, description, quantity, unit, unit_price, net_amount, tax_rate, tax_amount, other_tax_amount) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+      [ctx.tenantId, b.companyId, inv.id, ++n, l.description.trim(), l.quantity, l.unit.trim(), l.unitPrice, l.netAmount, l.taxRate ?? '20', l.taxAmount || null, l.otherTax || null]);
   }
   await tx.query(`INSERT INTO invoice_intake_events (tenant_id, company_id, invoice_id, source, duplicate, received_by) VALUES ($1,$2,$3,$4,false,$5)`, [ctx.tenantId, b.companyId, inv.id, source, ctx.userId]);
   await audit(tx, ctx, 'invoice.received', 'invoice', inv.id, { kind: b.kind, invoiceNo: b.invoiceNo, lines: b.lines.length });
@@ -211,11 +343,13 @@ export async function setAllocations(tx: Tx, ctx: TenantContext, invoiceId: stri
 
 /** Kontrol girdisini güncel veriden kurar ve domain kontrolünü çalıştırır. */
 async function evaluate(tx: Tx, invoiceId: string) {
-  const inv = (await tx.query<{ id: string; kind: InvoiceCheckInput['kind']; currency: string; supplier_id: string; advance_offset: string; advance_invoice_id: string | null; supplier_status: string }>(
-    `SELECT i.id, i.kind, i.currency, i.supplier_id, i.advance_offset::text, i.advance_invoice_id, s.status AS supplier_status FROM invoices i JOIN suppliers s ON s.id = i.supplier_id WHERE i.id = $1`, [invoiceId])).rows[0];
+  const inv = (await tx.query<{ id: string; kind: InvoiceCheckInput['kind']; currency: string; supplier_id: string; advance_offset: string; advance_invoice_id: string | null; supplier_status: string;
+      tax_total: string | null; withholding: string | null; payable: string | null; other_tax: string | null }>(
+    `SELECT i.id, i.kind, i.currency, i.supplier_id, i.advance_offset::text, i.advance_invoice_id, s.status AS supplier_status,
+      i.declared_tax_total::text AS tax_total, i.declared_withholding::text AS withholding, i.declared_payable::text AS payable, i.declared_other_tax_total::text AS other_tax FROM invoices i JOIN suppliers s ON s.id = i.supplier_id WHERE i.id = $1`, [invoiceId])).rows[0];
   if (!inv) throw notFound();
-  const lines = (await tx.query(`SELECT line_no AS "lineNo", description, trim_scale(quantity)::text AS quantity, unit, trim_scale(unit_price)::text AS "unitPrice", net_amount::text AS "netAmount"
-    FROM invoice_lines WHERE invoice_id = $1 ORDER BY line_no`, [invoiceId])).rows;
+  const lines = (await tx.query(`SELECT line_no AS "lineNo", description, trim_scale(quantity)::text AS quantity, unit, trim_scale(unit_price)::text AS "unitPrice", net_amount::text AS "netAmount",
+      trim_scale(tax_rate)::text AS "taxRate", tax_amount::text AS "taxAmount", other_tax_amount::text AS "otherTax" FROM invoice_lines WHERE invoice_id = $1 ORDER BY line_no`, [invoiceId])).rows;
   const allocations: AllocationInput[] = (await tx.query(`SELECT line_no AS "lineNo", po_line_id AS "poLineId", contract_version_id AS "contractVersionId",
     trim_scale(quantity)::text AS quantity, amount::text FROM invoice_allocations WHERE invoice_id = $1 ORDER BY line_no`, [invoiceId])).rows;
   const poLines = await poLineStates(tx, allocations.map((a) => a.poLineId).filter((x): x is string => !!x), invoiceId);
@@ -227,9 +361,11 @@ async function evaluate(tx: Tx, invoiceId: string) {
       WHERE i.advance_invoice_id = $1 AND i.id <> $2 AND ${APPROVED}), 0))::text AS v
     FROM (SELECT sum(net_amount) AS total FROM invoice_lines WHERE invoice_id = $1) a`, [inv.advance_invoice_id, invoiceId])).rows[0]!.v : '0';
   const input: InvoiceCheckInput = { kind: inv.kind, currency: inv.currency, supplierActive: inv.supplier_status === 'ACTIVE', lines, allocations, poLines, contracts,
-    tolerance, advanceOffset: inv.advance_offset, advanceBalance };
+    tolerance, advanceOffset: inv.advance_offset, advanceBalance, declared: { taxTotal: inv.tax_total, withholding: inv.withholding, payable: inv.payable, otherTaxTotal: inv.other_tax } };
   const check = checkInvoice(input);
-  const fingerprint = sha(JSON.stringify({ a: allocations, o: inv.advance_offset, i: check.issues.map((x) => [x.code, x.lineNo ?? null]) }));
+  // Parmak izi, istisnanın dayandığı sipariş kalemi durumunu da kapsar: sipariş fiyatı/miktarı veya kabul değişirse istisna eskir.
+  const fingerprint = sha(JSON.stringify({ a: allocations, o: inv.advance_offset, i: check.issues.map((x) => [x.code, x.lineNo ?? null]),
+    p: [...poLines].sort((x, y) => x.poLineId.localeCompare(y.poLineId)).map((x) => [x.poLineId, x.orderedQty, x.unitPrice, x.receivedQty, x.invoicedQty, x.poStatus]) }));
   return { check, fingerprint, contracts, poLines };
 }
 
@@ -256,6 +392,8 @@ export async function approveInvoice(tx: Tx, ctx: TenantContext, invoiceId: stri
   if (inv.legal_status !== 'RECEIVED') throw conflict('legally_cancelled', 'Hukuki olarak iptal/ret edilmiş e-belge onaylanamaz.');
   if (inv.created_by === ctx.userId) throw new ApiError(403, 'segregation_of_duties', 'Faturayı giren kişi tek başına onaylayamaz (görev ayrılığı).');
   const pre = await evaluate(tx, invoiceId);
+  const allocated = (await tx.query<{ po_line_id: string }>(`SELECT po_line_id FROM invoice_allocations WHERE invoice_id = $1 AND po_line_id IS NOT NULL`, [invoiceId])).rows.map((r) => r.po_line_id);
+  await lockPosOfLines(tx, allocated);
   await lockContracts(tx, Object.keys(pre.check.contractImpact));
   if (await finalDecision(tx, invoiceId)) throw conflict('invoice_decided', 'Bu fatura için karar verildi.');
   const { check, fingerprint } = await evaluate(tx, invoiceId);
@@ -307,11 +445,12 @@ export async function getInvoice(tx: Tx, ctx: TenantContext, id: string) {
   const inv = (await tx.query(`SELECT i.id, i.kind, i.invoice_no AS "invoiceNo", i.ettn, i.issue_date::text AS "issueDate", i.currency, i.company_id AS "companyId",
       i.supplier_id AS "supplierId", s.legal_name AS "supplierName", s.status AS "supplierStatus", i.legal_status AS "legalStatus", i.payment_status AS "paymentStatus",
       i.original_invoice_id AS "originalInvoiceId", i.advance_invoice_id AS "advanceInvoiceId", i.advance_offset::text AS "advanceOffset", i.document_version_id AS "documentVersionId",
+      i.declared_tax_total::text AS "declaredTaxTotal", i.declared_withholding::text AS "declaredWithholding", i.declared_payable::text AS "declaredPayable", i.declared_other_tax_total::text AS "declaredOtherTaxTotal",
       i.created_by = $2 AS "createdByMe", u.display_name AS "createdBy", i.created_at AS "createdAt"
     FROM invoices i JOIN suppliers s ON s.id = i.supplier_id JOIN users u ON u.id = i.created_by WHERE i.id = $1`, [id, ctx.userId])).rows[0];
   if (!inv) throw notFound();
-  const lines = (await tx.query(`SELECT line_no AS "lineNo", description, trim_scale(quantity)::text AS quantity, unit, trim_scale(unit_price)::text AS "unitPrice", net_amount::text AS "netAmount", trim_scale(tax_rate)::text AS "taxRate"
-    FROM invoice_lines WHERE invoice_id = $1 ORDER BY line_no`, [id])).rows;
+  const lines = (await tx.query(`SELECT line_no AS "lineNo", description, trim_scale(quantity)::text AS quantity, unit, trim_scale(unit_price)::text AS "unitPrice", net_amount::text AS "netAmount", trim_scale(tax_rate)::text AS "taxRate",
+      tax_amount::text AS "taxAmount", other_tax_amount::text AS "otherTax" FROM invoice_lines WHERE invoice_id = $1 ORDER BY line_no`, [id])).rows;
   const allocations = (await tx.query(`SELECT a.line_no AS "lineNo", a.po_line_id AS "poLineId", a.contract_version_id AS "contractVersionId", trim_scale(a.quantity)::text AS quantity,
       a.amount::text, po.id AS "poId", po.code AS "poCode", pl.description AS "poLineDescription", f.title AS "contractTitle"
     FROM invoice_allocations a LEFT JOIN po_lines pl ON pl.id = a.po_line_id LEFT JOIN purchase_orders po ON po.id = pl.po_id
@@ -341,8 +480,23 @@ export async function listInvoices(tx: Tx) {
     FROM invoices i JOIN suppliers s ON s.id = i.supplier_id ORDER BY i.created_at DESC LIMIT 300`)).rows;
 }
 
+export async function listTolerance(tx: Tx) {
+  return (await tx.query(`SELECT t.currency, t.abs_amount::text AS "absAmount", trim_scale(t.percent)::text AS percent, t.combine, t.created_at AS "updatedAt", u.display_name AS "updatedBy"
+    FROM tolerance_rules t LEFT JOIN users u ON u.id = t.created_by ORDER BY t.currency`)).rows;
+}
+
+/** Kural kaldırılınca o para biriminde tolerans sıfırdır (varsayılan evrensel tolerans yok). */
+export async function deleteTolerance(tx: Tx, ctx: TenantContext, currency: string) {
+  const r = await tx.query(`DELETE FROM tolerance_rules WHERE currency = $1 RETURNING currency`, [currency]);
+  if (!r.rowCount) throw notFound();
+  await audit(tx, ctx, 'tolerance.deleted', 'tenant', ctx.tenantId, { currency });
+  return { ok: true };
+}
+
 export async function setTolerance(tx: Tx, ctx: TenantContext, b: { currency: string; absAmount: string | null; percent: string | null; combine: 'LOWER' | 'HIGHER' }) {
   if (b.absAmount === null && b.percent === null) throw unprocessable('invalid_rule', 'Tutar veya yüzde eşiği girilmeli.');
+  if (b.absAmount !== null && !/^\d{1,18}(\.\d{1,2})?$/.test(b.absAmount)) throw unprocessable('invalid_rule', 'Tutar eşiği en fazla 2 ondalık olmalı.');
+  if (b.percent !== null && (!isDecimal(b.percent) || cmp(dec(b.percent), dec('100')) > 0)) throw unprocessable('invalid_rule', 'Yüzde eşiği 0–100 arasında olmalı.');
   await tx.query(`INSERT INTO tolerance_rules (tenant_id, currency, abs_amount, percent, combine, created_by) VALUES ($1,$2,$3,$4,$5,$6)
     ON CONFLICT (tenant_id, currency) DO UPDATE SET abs_amount = EXCLUDED.abs_amount, percent = EXCLUDED.percent, combine = EXCLUDED.combine, created_by = EXCLUDED.created_by, created_at = now()`,
     [ctx.tenantId, b.currency, b.absAmount, b.percent, b.combine, ctx.userId]);
@@ -415,4 +569,74 @@ export async function contractLimit(tx: Tx, cvId: string) {
   const c = await contractState(tx, cvId, null);
   if (!c) throw notFound();
   return { ...c, available: c.ceiling === null ? null : availableLimit(c.ceiling, c.netConsumption, c.openCommitment) };
+}
+
+// --- e-Fatura XML → fatura ---------------------------------------------------------------------
+
+/** UN/ECE Rec 20 birim kodları → sipariş biriminde kullanılan Türkçe adlar (eşleşme birim karşılaştırmasıyla yapılır). */
+const validDate = (d: string | null): d is string => {
+  if (!d || !/^\d{4}-\d{2}-\d{2}$/.test(d)) return false;
+  const t = new Date(`${d}T00:00:00Z`);
+  return !Number.isNaN(t.getTime()) && t.toISOString().slice(0, 10) === d;
+};
+const UNIT_CODES: Record<string, string> = { C62: 'adet', NIU: 'adet', H87: 'adet', KGM: 'kg', GRM: 'g', LTR: 'lt', MTR: 'm', MTK: 'm2', MTQ: 'm3',
+  HUR: 'saat', DAY: 'gün', MON: 'ay', ANN: 'yıl', SET: 'set', PA: 'paket', BX: 'kutu', KWH: 'kWh' };
+
+export interface EInvoiceIntake { created: boolean; invoiceId: string | null; duplicate: boolean; reason: string | null }
+
+/**
+ * Yapılandırılmış e-Fatura'dan fatura kaydı (deterministik; AI yok). Belgedeki toplamlar "beyan" olarak saklanır ve kontrol
+ * satırlardan hesaplananla karşılaştırır. Kayıt açılamazsa sebep görev olarak finansa düşer; boş alan uydurulmaz.
+ */
+export async function invoiceFromEInvoice(tx: Tx, ctx: TenantContext, o: {
+  companyId: string; documentVersionId: string; supplierId: string;
+  ubl: { invoiceNumber: string | null; ettn: string | null; issueDate: string | null; currency: string | null; typeCode: string | null; billingReference: string | null;
+    buyer: { taxId: string | null }; lines: { description: string; quantity: string | null; unitCode: string | null; unitPrice: string | null; netAmount: string | null; taxRate: string | null; taxAmount: string | null; otherTax: string | null }[];
+    totals: { taxTotal: string | null; otherTaxTotal: string | null; withholding: string | null; payable: string | null } };
+}): Promise<EInvoiceIntake> {
+  const u = o.ubl;
+  const skip = async (reason: string): Promise<EInvoiceIntake> => {
+    await openTask(tx, ctx, { companyId: o.companyId, kind: 'invoice_intake', entityType: 'document_version', entityId: o.documentVersionId,
+      title: 'e-Fatura faturaya dönüştürülemedi', reason, nextAction: 'Belgeyi açıp faturayı elle girin veya satıcıdan düzeltilmiş belge isteyin.',
+      assigneeRole: 'FINANCE', dedupeKey: `doc:${o.documentVersionId}:invoice-intake` });
+    return { created: false, invoiceId: null, duplicate: false, reason };
+  };
+  const company = (await tx.query<{ tax_id: string }>(`SELECT tax_id FROM legal_entities WHERE id = $1`, [o.companyId])).rows[0];
+  if (!u.buyer.taxId || !company || u.buyer.taxId !== company.tax_id) return skip('Belgedeki alıcı vergi kimliği seçilen şirketle eşleşmiyor.');
+  if (!u.invoiceNumber || u.invoiceNumber.length > 40 || !validDate(u.issueDate) || !u.currency || !/^[A-Z]{3}$/.test(u.currency)) return skip('Fatura no, tarih veya para birimi belgede yok ya da geçersiz.');
+  if (u.ettn && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(u.ettn)) return skip('ETTN geçerli bir UUID değil.');
+  const nonNeg = (x: string | null) => x === null || (isDecimal(x) && dec(x) >= 0n);
+  if (![u.totals.taxTotal, u.totals.otherTaxTotal, u.totals.withholding, u.totals.payable].every(nonNeg)) return skip('Belge toplamlarından biri okunamadı veya negatif.');
+  if (!u.lines.length) return skip('Belgede fatura satırı yok.');
+  const lines: InvoiceInput['lines'] = [];
+  for (const [i, l] of u.lines.entries()) {
+    if (!l.quantity || !l.netAmount || !isDecimal(l.quantity) || !isDecimal(l.netAmount) || dec(l.quantity) <= 0n || dec(l.netAmount) < 0n) return skip(`Satır ${i + 1}: miktar veya tutar okunamadı.`);
+    if (!nonNeg(l.taxAmount) || !nonNeg(l.otherTax) || (l.taxRate !== null && !nonNeg(l.taxRate))) return skip(`Satır ${i + 1}: vergi oranı veya tutarı okunamadı.`);
+    // Satır indirimi varsa birim fiyat net/miktar olarak alınır (sipariş fiyatıyla karşılaştırılan değer budur).
+    const listed = l.unitPrice && isDecimal(l.unitPrice) ? l.unitPrice : null;
+    const effective = listed && cmp(absDec(amount(l.quantity, listed) - dec(l.netAmount)), dec('0.01')) <= 0 ? listed : str(div(dec(l.netAmount), dec(l.quantity)), 6);
+    lines.push({ description: l.description || `Satır ${i + 1}`, quantity: str(dec(l.quantity), 6), unit: UNIT_CODES[l.unitCode ?? ''] ?? l.unitCode ?? 'adet',
+      unitPrice: effective, netAmount: str(dec(l.netAmount)), taxRate: l.taxRate && isDecimal(l.taxRate) ? l.taxRate : '0', taxAmount: l.taxAmount ? str(dec(l.taxAmount)) : null, otherTax: l.otherTax ? str(dec(l.otherTax)) : null });
+  }
+  let kind: InvoiceInput['kind'] = 'INVOICE';
+  let originalInvoiceId: string | null = null;
+  if (u.typeCode === 'IADE') {
+    kind = 'CREDIT_NOTE';
+    originalInvoiceId = (await tx.query<{ id: string }>(`SELECT id FROM invoices WHERE supplier_id = $1 AND invoice_no = $2 AND kind = 'INVOICE'`, [o.supplierId, u.billingReference ?? ''])).rows[0]?.id ?? null;
+    if (!originalInvoiceId) return skip(`İade faturasının bağlı olduğu özgün fatura (${u.billingReference ?? 'belirtilmemiş'}) sistemde yok.`);
+  }
+  const dec2 = (x: string | null) => (x && isDecimal(x) ? str(dec(x)) : null);
+  // Beklenmeyen bir kayıt hatası belgenin kendisini düşürmez: belge saklanır, fatura girişi göreve döner.
+  await tx.query('SAVEPOINT einvoice_intake');
+  let r: { id: string; duplicate: boolean };
+  try {
+    r = await createInvoice(tx, ctx, { companyId: o.companyId, supplierId: o.supplierId, kind, invoiceNo: u.invoiceNumber, ettn: u.ettn, issueDate: u.issueDate,
+    currency: u.currency, documentVersionId: o.documentVersionId, originalInvoiceId, lines,
+    declaredTaxTotal: dec2(u.totals.taxTotal), declaredWithholding: dec2(u.totals.withholding), declaredPayable: dec2(u.totals.payable), declaredOtherTaxTotal: dec2(u.totals.otherTaxTotal) }, 'einvoice');
+    await tx.query('RELEASE SAVEPOINT einvoice_intake');
+  } catch (e) {
+    await tx.query('ROLLBACK TO SAVEPOINT einvoice_intake');
+    return skip(e instanceof ApiError ? e.message : 'Fatura kaydı açılamadı.');
+  }
+  return { created: !r.duplicate, invoiceId: r.id, duplicate: r.duplicate, reason: null };
 }

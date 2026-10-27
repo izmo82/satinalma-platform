@@ -6,6 +6,7 @@ import { audit } from '../audit.ts';
 import { openTask } from '../tasks.ts';
 import { ApiError, notFound } from '../errors.ts';
 import { parseUblInvoice } from './einvoice.ts';
+import { invoiceFromEInvoice, type EInvoiceIntake } from './invoices.ts';
 import { resolveSeller, type ResolveResult } from './suppliers.ts';
 import { nextCode } from '../codes.ts';
 
@@ -30,6 +31,8 @@ export interface UploadResult {
   avScanStatus: 'NOT_AVAILABLE';
   processing: { stage: string; message: string };
   supplier: ResolveResult | null;
+  /** e-Fatura XML'den açılan fatura kaydı (yalnız yapılandırılmış fatura belgesinde). */
+  invoice?: EInvoiceIntake | null;
 }
 
 /**
@@ -108,7 +111,11 @@ export async function uploadDocument(tx: Tx, ctx: TenantContext, store: ObjectSt
         seller: { country: 'TR', taxIdType: ubl.seller.taxIdType, taxId: ubl.seller.taxId, name: ubl.seller.name,
           confidence: ubl.seller.taxId ? 'HIGH' : 'MISSING', source: ubl.seller.source },
       });
-      return { ...base, processing: { stage: 'STRUCTURED_PARSED', message: 'e-Fatura XML okundu; alanlar kural ile çıkarıldı.' }, supplier };
+      // Satıcı kesin kimlikle bulunduysa (aday dahil) fatura kaydı açılır; aday satıcıya onay kontrolde engellenir (BR02).
+      const invoice = supplier.supplierId && !['IDENTITY_REVIEW_REQUIRED', 'SELLER_IS_OWN_COMPANY'].includes(supplier.outcome)
+        ? await invoiceFromEInvoice(tx, ctx, { companyId: input.companyId, documentVersionId: dvId, supplierId: supplier.supplierId, ubl })
+        : null;
+      return { ...base, processing: { stage: 'STRUCTURED_PARSED', message: 'e-Fatura XML okundu; alanlar kural ile çıkarıldı.' }, supplier, invoice };
     }
   }
 

@@ -1,4 +1,4 @@
-import { add, cmp, dec, div, mul, str, type Dec } from './money.ts';
+import { add, cmp, dec, div, isDecimal as isDec, mul, str, type Dec } from './money.ts';
 
 /**
  * Fatura–sipariş–kabul eşleştirmesi ve sözleşme limiti (FR10, 02 §12–13, T13–T16, T37). Saf ve deterministik.
@@ -35,6 +35,8 @@ export interface MatchIssue { code: string; severity: IssueSeverity; message: st
 
 export interface PoLineState {
   poLineId: string; description: string; unit: string; currency: string; kind: 'GOODS' | 'SERVICE';
+  /** Kapatılmış siparişte miktar tüketilen kadardır; iptal edilmiş siparişe yeni fatura bağlanmaz. */
+  poStatus?: 'OPEN' | 'CLOSED' | 'CANCELLED';
   orderedQty: string; unitPrice: string;
   /** Net kabul (ters kabuller düşülmüş). */
   receivedQty: string;
@@ -44,7 +46,15 @@ export interface PoLineState {
   invoicedAmount: string;
   contractVersionId: string | null;
 }
-export interface InvoiceLineInput { lineNo: number; description: string; quantity: string; unit: string; unitPrice: string; netAmount: string }
+export interface InvoiceLineInput {
+  lineNo: number; description: string; quantity: string; unit: string; unitPrice: string; netAmount: string;
+  /** KDV oranı (%) ve belgede beyan edilen satır KDV'si (yoksa hesaplanır, karşılaştırılmaz). */
+  taxRate?: string; taxAmount?: string | null;
+  /** KDV dışı satır vergileri (ÖTV, ÖİV…) toplamı: KDV matrahına girer, ödenecek tutara eklenir. */
+  otherTax?: string | null;
+}
+/** Belgede beyan edilen toplamlar (e-Fatura XML veya elle giriş). null = belgede yok. */
+export interface DeclaredTotals { taxTotal: string | null; withholding: string | null; payable: string | null; otherTaxTotal?: string | null }
 export interface AllocationInput { lineNo: number; poLineId: string | null; contractVersionId: string | null; quantity: string; amount: string }
 export interface ContractState {
   contractVersionId: string; title: string; currency: string;
@@ -65,6 +75,7 @@ export interface InvoiceCheckInput {
   tolerance: ToleranceRule | null;
   /** Bu faturaya uygulanan avans mahsubu ve mahsup edilebilir avans bakiyesi. */
   advanceOffset: string; advanceBalance: string;
+  declared?: DeclaredTotals;
 }
 export interface InvoiceCheck {
   issues: MatchIssue[];
@@ -75,6 +86,56 @@ export interface InvoiceCheck {
   /** Kullanılabilir limite etkisi: sipariş satırının kalan açık taahhüdünü aşan kısım + doğrudan sözleşme tahsisi. */
   limitImpact: Record<string, string>;
   netAmount: string; payable: string;
+  /** KDV toplamı (beyan edilen satır KDV'si veya oran × net) ve vergi dahil tutar − tevkifat. */
+  taxTotal: string; otherTaxTotal: string; grossAmount: string;
+}
+
+/** Yuvarlama payı: satır başına 1 kuruş; toplamlarda satır sayısı kadar kuruş (satır bazında yuvarlanmış vergiler). */
+const KURUS = dec('0.01');
+const absd = (x: Dec) => (x < 0n ? -x : x);
+
+/**
+ * Vergi aritmetiği (02 §AI dışı kurallar): satır KDV'si = net × oran, belge KDV toplamı = satırların toplamı,
+ * ödenecek = net + KDV − tevkifat. Belgedeki değer doğru kabul edilmez; tutmazsa düzeltme belgesi istenir.
+ */
+export function checkTax(lines: InvoiceLineInput[], declared: DeclaredTotals | undefined, currency: string) {
+  const issues: MatchIssue[] = [];
+  let tax = 0n;
+  let otherSum = 0n;
+  for (const l of lines) {
+    const rate = l.taxRate ?? '0';
+    if (!isDec(rate) || dec(rate) < 0n || dec(rate) > dec('100')) {
+      issues.push({ code: 'TAX_RATE_INVALID', severity: 'BLOCK', ownerRole: 'FINANCE', lineNo: l.lineNo, message: `Satır ${l.lineNo}: KDV oranı geçersiz (${rate}).` });
+      continue;
+    }
+    const other = l.otherTax ? dec(l.otherTax) : 0n;
+    otherSum += other;
+    // KDV matrahı = net + KDV dışı vergiler (ÖTV/ÖİV dahil, KDVK 24).
+    const base = dec(l.netAmount) + other;
+    const expected = dec(str(div(mul(base, dec(rate)), dec('100'))));
+    if (l.taxAmount != null && l.taxAmount !== '') {
+      const d = dec(l.taxAmount);
+      if (cmp(absd(d - expected), KURUS) > 0) issues.push({ code: 'TAX_LINE_MISMATCH', severity: 'BLOCK', ownerRole: 'FINANCE', lineNo: l.lineNo,
+        message: `Satır ${l.lineNo}: KDV ${l.taxAmount} ${currency} yazıyor; ${str(base)} × %${str(dec(rate)).replace(/\.00$/, '')} = ${str(expected)}. Satıcıdan düzeltme istenir.` });
+      tax += d;
+    } else tax += expected;
+  }
+  const net = add(...lines.map((l) => dec(l.netAmount)));
+  const slack = KURUS * BigInt(Math.max(lines.length, 1));
+  if (declared?.taxTotal != null && cmp(absd(dec(declared.taxTotal) - tax), slack) > 0) {
+    issues.push({ code: 'TAX_TOTAL_MISMATCH', severity: 'BLOCK', ownerRole: 'FINANCE', message: `Belgedeki KDV toplamı ${declared.taxTotal} ${currency}, satırların toplamı ${str(tax)}.` });
+  }
+  const withholding = declared?.withholding != null ? dec(declared.withholding) : 0n;
+  if (withholding < 0n || cmp(withholding, tax) > 0) issues.push({ code: 'WITHHOLDING_INVALID', severity: 'BLOCK', ownerRole: 'FINANCE', message: `Tevkifat ${declared!.withholding} ${currency}, KDV toplamını (${str(tax)}) aşamaz.` });
+  if (declared?.otherTaxTotal != null && cmp(absd(dec(declared.otherTaxTotal) - otherSum), slack) > 0) {
+    issues.push({ code: 'OTHER_TAX_MISMATCH', severity: 'BLOCK', ownerRole: 'FINANCE', message: `Belgedeki KDV dışı vergi toplamı (ÖTV/ÖİV vb.) ${declared.otherTaxTotal} ${currency}, satırların toplamı ${str(otherSum)}.` });
+  }
+  const gross = net + otherSum + tax - withholding;
+  if (declared?.payable != null && cmp(absd(dec(declared.payable) - gross), slack) > 0) {
+    issues.push({ code: 'PAYABLE_MISMATCH', severity: 'BLOCK', ownerRole: 'FINANCE',
+      message: `Belgedeki ödenecek tutar ${declared.payable} ${currency}; net ${str(net)}${otherSum ? ` + diğer vergiler ${str(otherSum)}` : ''} + KDV ${str(tax)}${withholding ? ` − tevkifat ${str(withholding)}` : ''} = ${str(gross)}.` });
+  }
+  return { issues, taxTotal: str(tax), otherTaxTotal: str(otherSum), grossAmount: str(gross) };
 }
 
 const sign = (kind: InvoiceCheckInput['kind']) => (kind === 'CREDIT_NOTE' ? -1n : 1n);
@@ -84,6 +145,8 @@ export function checkInvoice(i: InvoiceCheckInput): InvoiceCheck {
   const push = (x: MatchIssue) => issues.push(x);
   if (!i.supplierActive) push({ code: 'SUPPLIER_NOT_ACTIVE', severity: 'BLOCK', ownerRole: 'MASTER_DATA', message: 'Satıcı aktif tedarikçi değil; aday firmaya ödeme onayı verilemez (BR02).' });
   const net = add(...i.lines.map((l) => dec(l.netAmount)));
+  const tax = checkTax(i.lines, i.declared, i.currency);
+  issues.push(...tax.issues);
   const impact: Record<string, Dec> = {};
   const limitImpact: Record<string, Dec> = {};
 
@@ -112,6 +175,7 @@ export function checkInvoice(i: InvoiceCheckInput): InvoiceCheck {
         limitImpact[cvId] = (limitImpact[cvId] ?? 0n) + li;
       }
       if (!po) continue;
+      if (po.poStatus === 'CANCELLED' && i.kind !== 'CREDIT_NOTE') { push({ code: 'PO_CANCELLED', severity: 'BLOCK', ownerRole: 'BUYER', lineNo: l.lineNo, message: `Satır ${l.lineNo}: "${po.description}" siparişi iptal edildi; iptal edilmiş siparişe fatura bağlanamaz.` }); continue; }
       if (po.currency !== i.currency) { push({ code: 'CURRENCY_MISMATCH', severity: 'BLOCK', ownerRole: 'FINANCE', lineNo: l.lineNo, message: `Satır ${l.lineNo}: fatura ${i.currency}, sipariş ${po.currency}; para birimi farkı toleransla geçmez.` }); continue; }
       if (l.unit.trim().toLocaleLowerCase('tr-TR') !== po.unit.trim().toLocaleLowerCase('tr-TR')) push({ code: 'UNIT_MISMATCH', severity: 'BLOCK', ownerRole: 'BUYER', lineNo: l.lineNo, message: `Satır ${l.lineNo}: birim "${l.unit}", sipariş birimi "${po.unit}".` });
       if (i.kind === 'INVOICE') {
@@ -154,7 +218,7 @@ export function checkInvoice(i: InvoiceCheckInput): InvoiceCheck {
     needsException: issues.some((x) => x.severity === 'EXCEPTION' || x.severity === 'REVIEW'),
     contractImpact: Object.fromEntries(Object.entries(impact).map(([k, v]) => [k, str(v)])),
     limitImpact: Object.fromEntries(Object.entries(limitImpact).map(([k, v]) => [k, str(v)])),
-    netAmount: str(net), payable: str(net - offset),
+    netAmount: str(net), payable: str(net - offset), taxTotal: tax.taxTotal, otherTaxTotal: tax.otherTaxTotal, grossAmount: tax.grossAmount,
   };
 }
 
