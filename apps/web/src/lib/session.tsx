@@ -42,7 +42,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   useEffect(() => { void refresh(); }, [refresh]);
   const switchTenant = useCallback(async (id: string) => { session.tenant = id; await refresh(); }, [refresh]);
   // Çıkışta adres köke döner: sonraki kullanıcı önceki kullanıcının (belki yetkisiz olduğu) sayfasına düşmez.
-  const logout = useCallback(() => { session.token = null; session.tenant = null; setMe(null); window.history.replaceState(null, '', '/'); void endSession(); }, []);
+  const logout = useCallback(() => { session.token = null; session.tenant = null; setMe(null); window.history.replaceState(null, '', '/');
+    // Yönlendirici replaceState'i duymaz; popstate olmadan sonraki kullanıcı önceki kullanıcının son sayfasında açılır.
+    window.dispatchEvent(new PopStateEvent('popstate')); void endSession(); }, []);
   return <Ctx.Provider value={{ me, loading, authError, refresh, switchTenant, logout }}>{children}</Ctx.Provider>;
 }
 

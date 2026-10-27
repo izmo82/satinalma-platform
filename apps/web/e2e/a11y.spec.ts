@@ -60,3 +60,20 @@ test('hukuk: sözleşme imza çalışma alanı', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Nakliye Hizmet Sözleşmesi' })).toBeVisible();
   await audit(page, 'İmza çalışma alanı');
 });
+
+test('veri yönetimi ve ERP mutabakatı (Faz 7)', async ({ page }) => {
+  await login(page, 'leyla.hukuk@example.test');
+  await nav(page, 'Veri yönetimi');
+  await expect(page.getByRole('heading', { name: 'Saklama politikası' })).toBeVisible();
+  await audit(page, 'Veri yönetimi · saklama');
+  await page.getByRole('tab', { name: 'Hukuki saklama' }).click();
+  await audit(page, 'Veri yönetimi · hukuki saklama');
+  await page.getByRole('tab', { name: 'Dışa aktarım' }).click();
+  await expect(page.getByRole('heading', { name: 'Talepler' })).toBeVisible();
+  await audit(page, 'Veri yönetimi · dışa aktarım');
+  await page.getByRole('button', { name: 'Çıkış' }).first().click();
+  await login(page, 'ferda.finans@example.test');
+  await page.goto('/faturalar/erp-mutabakati');
+  await expect(page.getByRole('heading', { name: 'Durum ve toplamlar' })).toBeVisible();
+  await audit(page, 'ERP mutabakatı');
+});

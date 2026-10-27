@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { api, ApiError } from '../lib/api.ts';
 import { useResource } from '../lib/useApi.ts';
 import { fmtDate, fmtDateTime } from '../lib/format.ts';
+import { todayLocal } from '../lib/format.ts';
 import type { Label } from '../lib/labels.ts';
 import { Banner, Empty, ErrorState, Field, Loading, Tag } from '../ui/kit.tsx';
 import { Icon } from '../ui/icons.tsx';
@@ -29,7 +30,7 @@ export const CATEGORY: Record<string, string> = {
 export const FACTORS = [['dataSensitivity', 'Veri hassasiyeti'], ['accessLevel', 'Erişim seviyesi'], ['criticality', 'Hizmet kritikliği'],
   ['substitutability', 'İkame güçlüğü'], ['subcontractorDependence', 'Alt yüklenici bağımlılığı']] as const;
 const LMH = [['LOW', 'Düşük'], ['MEDIUM', 'Orta'], ['HIGH', 'Yüksek']] as const;
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => todayLocal();
 
 export function SupplierEvaluation({ tab, supplierId }: { tab: string; supplierId: string }) {
   if (tab === 'olaylar') return <IncidentsTab supplierId={supplierId} />;
@@ -253,7 +254,7 @@ function ScorecardTab({ supplierId }: { supplierId: string }) {
 
 const DIMS = [['quality', 'Kalite'], ['delivery', 'Zamanında ve tam teslimat'], ['sla', 'SLA'], ['communication', 'İletişim'], ['commercial', 'Ticari uyum']] as const;
 function PerformanceForm({ supplierId, year, onDone }: { supplierId: string; year: number; onDone: () => void }) {
-  const end = `${year}-12-31` > new Date().toISOString().slice(0, 10) ? new Date().toISOString().slice(0, 10) : `${year}-12-31`;
+  const end = `${year}-12-31` > todayLocal() ? todayLocal() : `${year}-12-31`;
   const [f, setF] = useState({ periodStart: `${year}-01-01`, periodEnd: end, category: '', basis: '' });
   const [scores, setScores] = useState<Record<string, string>>({});
   const [err, setErr] = useState<string | null>(null);
@@ -265,7 +266,7 @@ function PerformanceForm({ supplierId, year, onDone }: { supplierId: string; yea
       <div className="panel-body grid gap-3">
         <div className="grid grid-cols-3 items-start gap-x-3 max-[900px]:grid-cols-1">
           <Field label="Dönem başı">{(p) => <input className="input" type="date" required {...p} value={f.periodStart} onChange={(e) => setF({ ...f, periodStart: e.target.value })} />}</Field>
-          <Field label="Dönem sonu" hint="Bugünden sonra olamaz">{(p) => <input className="input" type="date" required max={new Date().toISOString().slice(0, 10)} {...p} value={f.periodEnd} onChange={(e) => setF({ ...f, periodEnd: e.target.value })} />}</Field>
+          <Field label="Dönem sonu" hint="Bugünden sonra olamaz">{(p) => <input className="input" type="date" required max={todayLocal()} {...p} value={f.periodEnd} onChange={(e) => setF({ ...f, periodEnd: e.target.value })} />}</Field>
           <Field label="Kategori">{(p) => <input className="input" required minLength={2} {...p} value={f.category} onChange={(e) => setF({ ...f, category: e.target.value })} />}</Field>
         </div>
         <div className="grid grid-cols-5 items-start gap-3 max-[1100px]:grid-cols-2">

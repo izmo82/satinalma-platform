@@ -36,6 +36,10 @@ const IncidentsPage = lazy(() => evaluation().then((m) => ({ default: m.Incident
 const TemplatesPage = lazy(() => evaluation().then((m) => ({ default: m.TemplatesPage })));
 const ReportsPage = lazy(() => evaluation().then((m) => ({ default: m.ReportsPage })));
 const AiPage = lazy(() => evaluation().then((m) => ({ default: m.AiPage })));
+const governance = () => import('./pages/GovernancePages.tsx');
+const DataGovernancePage = lazy(() => governance().then((m) => ({ default: m.DataGovernancePage })));
+const DisposalBatchPage = lazy(() => governance().then((m) => ({ default: m.DisposalBatchPage })));
+const ErpReconciliationPage = lazy(() => governance().then((m) => ({ default: m.ErpReconciliationPage })));
 
 export function App() {
   const { me, loading } = useSession();
@@ -68,6 +72,7 @@ function Shell() {
     { to: '/olaylar', label: 'Olaylar', icon: 'alert', count: load(['incident']) },
     ...(hasRole(me, 'BUYER', 'PROCUREMENT_MANAGER', 'FINANCE', 'AUDITOR') ? [{ to: '/raporlar', label: 'Raporlar', icon: 'chart' }] : []),
     ...(hasRole(me, 'TENANT_ADMIN', 'AUDITOR', 'PROCUREMENT_MANAGER') ? [{ to: '/yapay-zeka', label: 'Yapay zekâ', icon: 'sparkles', count: load(['tenant']) }] : []),
+    ...(hasRole(me, 'LEGAL', 'TENANT_ADMIN', 'AUDITOR') ? [{ to: '/veri-yonetimi', label: 'Veri yönetimi', icon: 'archive', count: load(['disposal_batch', 'tenant_export']) }] : []),
   ];
   const companies = me.supplierPortal ? 'Tedarikçi portalı' : me.companies.length ? me.companies.map((c) => c.name).join(' · ') : 'Şirket belgesi erişimi yok';
   return (
@@ -130,6 +135,7 @@ function Shell() {
           <Route path="/siparisler/:id" element={<PurchaseOrderPage />} />
           <Route path="/faturalar" element={<InvoicesPage />} />
           <Route path="/faturalar/tolerans" element={<ToleranceRulesPage />} />
+          <Route path="/faturalar/erp-mutabakati" element={<ErpReconciliationPage />} />
           <Route path="/faturalar/:id" element={<InvoicePage />} />
           <Route path="/raporlar" element={<ReportsPage />} />
           <Route path="/olaylar" element={<IncidentsPage />} />
@@ -137,6 +143,8 @@ function Shell() {
           <Route path="/degerlendirmeler/:id" element={<AssessmentPage />} />
           <Route path="/anketler" element={<TemplatesPage />} />
           <Route path="/yapay-zeka" element={<AiPage />} />
+          <Route path="/veri-yonetimi" element={<DataGovernancePage />} />
+          <Route path="/veri-yonetimi/imha/:id" element={<DisposalBatchPage />} />
           <Route path="*" element={<NotYetPage title="Sayfa bulunamadı" />} />
         </Routes>
         </Suspense>

@@ -285,6 +285,7 @@ export function InvoicesPage() {
     <div className="page">
       <PageHeader title="Faturalar" actions={<div className="flex flex-wrap gap-2">
         <Button variant="outline" asChild><Link to="/faturalar/tolerans">Tolerans kuralları</Link></Button>
+        {hasRole(me, 'FINANCE', 'AUDITOR') && <Button variant="outline" asChild><Link to="/faturalar/erp-mutabakati">ERP mutabakatı</Link></Button>}
         {hasRole(me, 'FINANCE') && <Button onClick={() => setCreating(true)}><Icon name="receipt" />Fatura gir</Button>}</div>}>
         Satır tahsisi, sipariş/kabul eşleştirmesi ve limit kontrolü. Hukuki e-belge durumu, kurum içi onay, ERP aktarımı ve ödeme ayrı durumlardır; ödeme bu sistemden yürütülmez.
       </PageHeader>

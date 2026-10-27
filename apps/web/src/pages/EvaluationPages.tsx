@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom';
 import { api, apiBlob, ApiError } from '../lib/api.ts';
 import { useResource } from '../lib/useApi.ts';
 import { fmtDate, fmtDateTime, fmtMoney } from '../lib/format.ts';
+import { todayLocal } from '../lib/format.ts';
 import { roleLabel } from '../lib/labels.ts';
 import { Banner, Empty, ErrorState, Field, Loading, PageHeader, Tag } from '../ui/kit.tsx';
 import { Icon } from '../ui/icons.tsx';
@@ -388,7 +389,7 @@ const AMOUNT_KEYS = ['contract_coverage', 'open_commitment'];
 
 export function ReportsPage() {
   const y = new Date().getFullYear();
-  const [p, setP] = useState({ from: `${y}-01-01`, to: new Date().toISOString().slice(0, 10) });
+  const [p, setP] = useState({ from: `${y}-01-01`, to: todayLocal() });
   const [q, setQ] = useState(p);
   const r = useResource<Summary>(`/api/v1/reports/summary?from=${q.from}&to=${q.to}`);
   const [err, setErr] = useState<string | null>(null);

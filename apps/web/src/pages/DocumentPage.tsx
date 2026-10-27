@@ -9,7 +9,7 @@ import { Banner, ErrorState, Field, Loading, Tag } from '../ui/kit.tsx';
 import { DocumentViewer } from '../ui/DocumentViewer.tsx';
 
 interface Doc {
-  id: string; title: string; kind: string; versionNo: number; sha256: string; mimeType: string; sizeBytes: string; filename: string; basicCheckStatus: string;
+  id: string; title: string; kind: string; versionNo: number; sha256: string; mimeType: string; sizeBytes: string; filename: string; basicCheckStatus: string; disposedAt: string | null;
   basicCheckReason: string | null; avScanStatus: string; pageCount: number | null; createdAt: string;
   fields: { id: string; field: string; value: string | null; origin: string; sourceRef: { kind?: string; path?: string; page?: number | null }; confidence: string; reviewState: string }[];
   suppliers: { supplierId: string; legalName: string; status: string; nameMismatch: boolean; extractedName: string | null }[];
@@ -35,7 +35,9 @@ export function DocumentPage() {
   return (
     <div className="workspace">
       <section aria-label="Kaynak belge" style={{ borderRight: '1px solid var(--border)' }}>
-        {d.basicCheckStatus === 'PASSED' ? <DocumentViewer versionId={d.id} mimeType={d.mimeType} targetPage={targetPage} />
+        {d.disposedAt ? <div className="page"><Banner tone="neutral" icon="archive" title={`Belge saklama süresi sonunda imha edildi (${fmtDateTime(d.disposedAt)})`}>
+            Baytlar silindi; görüntülenemez. Kayıt, SHA-256 değeri ({d.sha256.slice(0, 12)}…) ve denetim izi korunur.</Banner></div>
+          : d.basicCheckStatus === 'PASSED' ? <DocumentViewer versionId={d.id} mimeType={d.mimeType} targetPage={targetPage} />
           : <div className="page"><Banner tone="danger" icon="shield" title="Belge karantinada">{d.basicCheckReason}</Banner></div>}
       </section>
       <aside style={{ background: 'var(--surface)' }}>

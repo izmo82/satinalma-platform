@@ -19,3 +19,6 @@ export function relative(v: string | Date) {
   if (h < 24) return `${h} sa önce`;
   return fmtDate(v);
 }
+
+/** Kullanıcının yerel takvim günü (YYYY-MM-DD). `toISOString()` UTC'dir; Türkiye'de gece yarısından sonra bir gün geride kalır. */
+export const todayLocal = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
