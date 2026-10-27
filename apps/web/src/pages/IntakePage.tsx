@@ -9,6 +9,7 @@ import { Icon } from '../ui/icons.tsx';
 interface Result {
   documentVersionId: string; duplicate: boolean; basicCheckStatus: string; basicCheckReason: string | null; avScanStatus: string;
   processing: { stage: string; message: string };
+  invoice?: null | { created: boolean; invoiceId: string | null; duplicate: boolean; reason: string | null };
   supplier: null | { outcome: string; supplierId: string | null; message: string; nameMismatch: boolean; bankChangeRequestId: string | null; suggestions: { id: string; legalName: string }[] };
 }
 
@@ -75,6 +76,12 @@ function ResultView({ r }: { r: Result }) {
           {r.supplier.suggestions.length > 0 && `Benzer isimli kayıtlar (yalnız öneri): ${r.supplier.suggestions.map((s) => s.legalName).join(', ')}.`}
         </Banner>
       )}
+      {r.invoice && (r.invoice.invoiceId ? (
+        <Banner tone="info" icon="receipt" title={r.invoice.duplicate ? 'Bu fatura daha önce alınmıştı; yeni kayıt açılmadı, tekrar izi eklendi.' : 'Fatura kaydı e-Fatura satırlarından açıldı.'}
+          action={<Link className="btn btn-sm" to={`/faturalar/${r.invoice.invoiceId}`}>Faturayı aç</Link>}>
+          Tutar ve KDV satırlardan yeniden hesaplanır; belgedeki toplam tutmazsa faturada bulgu olarak görünür.
+        </Banner>
+      ) : <Banner tone="warn" title="Fatura kaydı açılamadı">{r.invoice.reason} Finans görevine düştü.</Banner>)}
     </>
   );
 }

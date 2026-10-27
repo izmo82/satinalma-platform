@@ -28,6 +28,7 @@ const PurchaseOrdersPage = lazy(() => purchasing().then((m) => ({ default: m.Pur
 const PurchaseOrderPage = lazy(() => purchasing().then((m) => ({ default: m.PurchaseOrderPage })));
 const InvoicesPage = lazy(() => purchasing().then((m) => ({ default: m.InvoicesPage })));
 const InvoicePage = lazy(() => purchasing().then((m) => ({ default: m.InvoicePage })));
+const ToleranceRulesPage = lazy(() => purchasing().then((m) => ({ default: m.ToleranceRulesPage })));
 
 export function App() {
   const { me, loading } = useSession();
@@ -119,6 +120,7 @@ function Shell() {
           <Route path="/siparisler" element={<PurchaseOrdersPage />} />
           <Route path="/siparisler/:id" element={<PurchaseOrderPage />} />
           <Route path="/faturalar" element={<InvoicesPage />} />
+          <Route path="/faturalar/tolerans" element={<ToleranceRulesPage />} />
           <Route path="/faturalar/:id" element={<InvoicePage />} />
           <Route path="/raporlar" element={<NotYetPage title="Raporlar" phase="Faz 5" what="Kaynaklı raporlar ve dışa aktarma" />} />
           <Route path="*" element={<NotYetPage title="Sayfa bulunamadı" />} />

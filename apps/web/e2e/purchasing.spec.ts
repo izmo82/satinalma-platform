@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { syntheticVkn } from '../../../packages/domain/src/taxId.ts';
 
 // Faz 4 kritik tarayıcı görevleri: sipariş, kabul, fatura tahsisi, görev ayrılığıyla onay (UX10). Sentetik demo verisi: npm run db:seed.
 async function login(page: Page, email: string) {
@@ -97,5 +98,109 @@ test('sipariş ve fatura ekranları yatay taşmaz', async ({ page }) => {
   }
   await page.getByRole('link', { name: 'ANB2026000102' }).click();
   await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+});
+
+// Sentetik demo kimlikleri (createSyntheticWorld): satıcı Anadolu Bilişim, alıcı Örnek Holding Üretim.
+const efatura = (no: string, lineTax: string, payable: string) => Buffer.from(`<?xml version="1.0" encoding="UTF-8"?>
+<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2" xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2" xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">
+  <cbc:ID>${no}</cbc:ID><cbc:UUID>${crypto.randomUUID()}</cbc:UUID><cbc:IssueDate>2026-10-22</cbc:IssueDate><cbc:InvoiceTypeCode>SATIS</cbc:InvoiceTypeCode>
+  <cbc:Note>SENTETİK TEST FATURASI</cbc:Note>
+  <cac:AccountingSupplierParty><cac:Party><cac:PartyIdentification><cbc:ID schemeID="VKN">${syntheticVkn('930000001')}</cbc:ID></cac:PartyIdentification><cac:PartyName><cbc:Name>Anadolu Bilişim Hizmetleri A.Ş. (SENTETİK)</cbc:Name></cac:PartyName></cac:Party></cac:AccountingSupplierParty>
+  <cac:AccountingCustomerParty><cac:Party><cac:PartyIdentification><cbc:ID schemeID="VKN">${syntheticVkn('910000001')}</cbc:ID></cac:PartyIdentification><cac:PartyName><cbc:Name>Örnek Holding Üretim A.Ş.</cbc:Name></cac:PartyName></cac:Party></cac:AccountingCustomerParty>
+  <cac:TaxTotal><cbc:TaxAmount currencyID="TRY">${lineTax}</cbc:TaxAmount><cac:TaxSubtotal><cbc:TaxAmount currencyID="TRY">${lineTax}</cbc:TaxAmount><cac:TaxCategory><cac:TaxScheme><cbc:TaxTypeCode>0015</cbc:TaxTypeCode></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal></cac:TaxTotal>
+  <cac:LegalMonetaryTotal><cbc:PayableAmount currencyID="TRY">${payable}</cbc:PayableAmount></cac:LegalMonetaryTotal>
+  <cac:InvoiceLine><cbc:ID>1</cbc:ID><cbc:InvoicedQuantity unitCode="HUR">4</cbc:InvoicedQuantity><cbc:LineExtensionAmount currencyID="TRY">10000.00</cbc:LineExtensionAmount>
+    <cac:TaxTotal><cbc:TaxAmount currencyID="TRY">${lineTax}</cbc:TaxAmount><cac:TaxSubtotal><cbc:TaxAmount currencyID="TRY">${lineTax}</cbc:TaxAmount><cbc:Percent>20</cbc:Percent><cac:TaxCategory><cac:TaxScheme><cbc:TaxTypeCode>0015</cbc:TaxTypeCode></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal></cac:TaxTotal>
+    <cac:Item><cbc:Name>Saha danışmanlığı</cbc:Name></cac:Item><cac:Price><cbc:PriceAmount currencyID="TRY">2500</cbc:PriceAmount></cac:Price></cac:InvoiceLine>
+</Invoice>`, 'utf8');
+
+test('e-Fatura XML yüklenince fatura satırlardan açılır; KDV tutmazsa sorumlusuyla engellenir', async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop-1440', 'veri değiştirir; yalnız bir projede');
+  await login(page, 'ferda.finans@example.test');
+  const upload = async (no: string, tax: string, payable: string) => {
+    await page.goto('/belge-girisi');
+    await page.getByLabel('Belge türü').selectOption('INVOICE');
+    await page.locator('input[type=file]').setInputFiles({ name: `${no}.xml`, mimeType: 'application/xml', buffer: efatura(no, tax, payable) });
+    await page.getByRole('button', { name: 'Yükle' }).click();
+    await expect(page.getByText('Fatura kaydı e-Fatura satırlarından açıldı.')).toBeVisible();
+    await page.getByRole('link', { name: 'Faturayı aç' }).click();
+    await expect(page.getByRole('heading', { level: 1 })).toContainText(no);
+  };
+  const tag = Date.now().toString().slice(-7);
+  await upload(`XML${tag}A`, '2000.00', '12000.00');
+  await expect(page.getByText('4 saat ×')).toBeVisible();
+  await expect(page.getByText('KDV %20 · belgede')).toBeVisible();
+  await expect(page.getByText('KDV', { exact: true })).toBeVisible();
+  await expect(page.getByText(/KDV .* yazıyor/)).toHaveCount(0);
+  await expect(page.getByRole('link', { name: 'Kaynak e-Fatura' })).toBeVisible();
+  await upload(`XML${tag}B`, '1800.00', '11800.00');
+  await expect(page.getByText(/Satır 1: KDV 1800.00 TRY yazıyor; 10000.00 × %20 = 2000.00/)).toBeVisible();
+  await expect(page.getByText('Çözen: Finans').first()).toBeVisible();
+});
+
+test('sipariş değişikliği gerekçeyle kaydedilir; kısmi kabul sonrası kapatılır ve yeni kabul kapanır', async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop-1440', 'veri değiştirir; yalnız bir projede');
+  const tag = Date.now().toString().slice(-7);
+  await login(page, 'alper.satinalma@example.test');
+  await page.goto('/siparisler');
+  await page.getByRole('button', { name: 'Sipariş ver' }).click();
+  await page.getByLabel('Tedarikçi').selectOption({ label: 'Anadolu Bilişim Hizmetleri A.Ş. (SENTETİK)' });
+  await page.getByLabel('Kalem 1', { exact: true }).fill(`Toner ${tag}`);
+  await page.getByLabel('Miktar').fill('10');
+  await page.getByLabel('Birim', { exact: true }).fill('adet');
+  await page.getByLabel('Birim fiyat').fill('300');
+  await page.getByRole('button', { name: 'Siparişi kaydet' }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('PO-');
+  await page.getByRole('button', { name: 'Siparişi değiştir' }).click();
+  await page.getByLabel(`Toner ${tag} miktar`).fill('12');
+  await page.getByLabel('Değişiklik gerekçesi').fill('Talep sahibi iki adet ek istedi (e2e)');
+  await expect(page.getByText(/Tutar farkı \(yaklaşık\): \+/)).toBeVisible();
+  await page.getByRole('button', { name: 'Değişikliği kaydet' }).click();
+  await expect(page.getByText('özgün 10')).toBeVisible();
+  await expect(page.getByText(/Değişiklik 1 · tutar farkı \+₺600,00/)).toBeVisible();
+  await page.getByRole('button', { name: 'Kabul kaydet' }).click();
+  await page.getByLabel('Miktar').fill('5');
+  await page.getByLabel('Not').fill('Kısmi teslim (e2e)');
+  await page.getByRole('button', { name: 'Kaydet', exact: true }).click();
+  await expect(page.getByText('Kabul kaydedildi.')).toBeVisible();
+  await page.getByRole('button', { name: 'Kapat / iptal et' }).click();
+  await expect(page.getByRole('heading', { name: 'Siparişi kapat' })).toBeVisible();
+  await page.getByLabel('Gerekçe').fill('Kalan toner artık gerekmiyor (e2e)');
+  await page.getByRole('button', { name: 'Kapat', exact: true }).click();
+  await expect(page.getByText('Sipariş kapatıldı')).toBeVisible();
+  await expect(page.getByText(/serbest kalan ₺2\.100,00/)).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Kabul kaydet' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Siparişi değiştir' })).toHaveCount(0);
+});
+
+test('tolerans kuralı: finans ekler, geçerli eşik açıkça yazılır, kaldırınca sıfır', async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop-1440', 'veri değiştirir; yalnız bir projede');
+  await login(page, 'ferda.finans@example.test');
+  await page.goto('/faturalar');
+  await page.getByRole('link', { name: 'Tolerans kuralları' }).click();
+  await page.getByRole('button', { name: 'Kural ekle' }).click();
+  await page.getByLabel('Para birimi').fill('GBP');
+  await page.getByLabel('Tutar eşiği').fill('100');
+  await page.getByLabel('Yüzde eşiği').fill('1');
+  await expect(page.getByText(/Geçerli tolerans: %1 ve .*100,00 eşiklerinden düşük olanı/)).toBeVisible();
+  await page.getByRole('button', { name: 'Kaydet' }).click();
+  await expect(page.getByText('GBP kuralı kaydedildi.')).toBeVisible();
+  const row = page.getByRole('row', { name: /GBP/ });
+  await row.getByRole('button', { name: 'Kaldır' }).click();
+  await row.getByRole('button', { name: 'Kaldır' }).click();
+  await expect(page.getByText('GBP kuralı kaldırıldı; tolerans sıfır.')).toBeVisible();
+  await expect(page.getByRole('row', { name: /GBP/ })).toHaveCount(0);
+});
+
+test('satınalma tolerans kuralını görür ama değiştiremez; yeni ekranlar yatay taşmaz', async ({ page }) => {
+  await login(page, 'alper.satinalma@example.test');
+  await page.goto('/faturalar/tolerans');
+  await expect(page.getByRole('heading', { name: 'Tolerans kuralları' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Kural ekle' })).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+  await page.goto('/siparisler');
+  await page.getByRole('table').getByRole('link').first().click();
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('PO-');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
 });
