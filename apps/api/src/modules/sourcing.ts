@@ -4,6 +4,7 @@ import {
   type AwardAllocation, type Bid, type Comparison, type Criterion, type FxRate, type ProjectLine, type Score,
 } from '@sp/domain';
 import type { TenantContext, Tx } from '../db.ts';
+import { criticalBlocks } from './supplierEval.ts';
 import { audit } from '../audit.ts';
 import { nextCode } from '../codes.ts';
 import { closeTasks, openTask } from '../tasks.ts';
@@ -366,6 +367,12 @@ export async function getEvaluation(tx: Tx, evaluationId: string) {
 
 // --- Tahsis ----------------------------------------------------------------------------------
 
+/** T20: güncel değerlendirmesinde kritik engel olan tedarikçiye seçim yapılamaz; ağırlıklı/ticari puan bu engeli aşmaz. */
+async function assertNoCriticalBlock(tx: Tx, supplierIds: string[]) {
+  const blocks = await criticalBlocks(tx, [...new Set(supplierIds)]);
+  if (blocks.size) throw unprocessable('critical_blocker', [...blocks.values()][0]!, { suppliers: [...blocks.keys()] });
+}
+
 export async function proposeAward(tx: Tx, ctx: TenantContext, id: string, body: { evaluationId: string; rationale: string; allocations: AwardAllocation[] }) {
   const p = await loadProject(tx, id, true);
   if (p.status !== 'EVALUATION') throw conflict('invalid_state', 'Kazanan önerisi yalnız değerlendirme aşamasında yapılır.');
@@ -376,6 +383,7 @@ export async function proposeAward(tx: Tx, ctx: TenantContext, id: string, body:
   const comparison = ev.snapshot.comparison as Comparison;
   const v = validateAward({ lines: ev.snapshot.lines, comparison, allocations: body.allocations, forApproval: false });
   if (v.issues.length) throw unprocessable('invalid_allocation', v.issues[0]!.message, { issues: v.issues });
+  await assertNoCriticalBlock(tx, body.allocations.map((x) => x.supplierId));
   const versionNo = (await tx.query<{ n: number }>(`SELECT coalesce(max(version_no), 0) + 1 AS n FROM awards WHERE project_id = $1`, [id])).rows[0]!.n;
   const a = (await tx.query<{ id: string }>(`INSERT INTO awards (tenant_id, company_id, project_id, evaluation_id, version_no, rationale, total, proposed_by)
     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`, [ctx.tenantId, p.company_id, id, ev.id, versionNo, body.rationale.trim(), v.total, ctx.userId])).rows[0]!;
@@ -415,6 +423,7 @@ export async function decideAward(tx: Tx, ctx: TenantContext, awardId: string, b
     const live: Comparison = { ...comparison, bids: comparison.bids.map((b) => ({ ...b, supplierStatus: statuses.get(b.supplierId) ?? b.supplierStatus })) };
     const v = validateAward({ lines: ev.snapshot.lines, comparison: live, allocations, forApproval: true });
     if (v.issues.length) throw unprocessable('award_blocked', v.issues[0]!.message, { issues: v.issues });
+    await assertNoCriticalBlock(tx, allocations.map((x) => x.supplierId));
   }
   await tx.query(`UPDATE awards SET status = $2, decided_by = $3, decided_at = now(), decision_note = $4 WHERE id = $1`,
     [awardId, body.approve ? 'APPROVED' : 'REJECTED', ctx.userId, body.note?.trim() || null]);

@@ -4,6 +4,7 @@ import ExcelJS from 'exceljs';
 import { withTenant } from '../src/db.ts';
 import { makeHarness } from './harness.ts';
 import { syntheticPdf } from '../src/devdata.ts';
+import { reviewedAssessment, securityTemplate } from './evalHelpers.ts';
 
 // Faz 2 kabul testleri (09: T09–T12) gerçek PostgreSQL + RLS üzerinde. Tüm veri sentetik.
 let h: Awaited<ReturnType<typeof makeHarness>>;
@@ -230,6 +231,20 @@ describe('T10–T12 karşılaştırma, eskime ve bölünmüş tahsis', () => {
     }
   });
 
+  it('T20: kritik güvenlik engeli olan tedarikçiye seçim önerilemez; yüksek ağırlıklı puan engeli aşmaz', async () => {
+    const tpl = await securityTemplate(h);
+    await reviewedAssessment(h, h.world.suppliers.s1, tpl, { 'ERS-01': 'NO' });
+    const ev = await h.call('buyer', 'POST', `/api/v1/projects/${projectId}/evaluations`);
+    const all = [{ projectLineId: lineIds[0], supplierId: h.world.suppliers.s1, quantity: '12' }, { projectLineId: lineIds[1], supplierId: h.world.suppliers.s1, quantity: '480' },
+      { projectLineId: lineIds[2], supplierId: h.world.suppliers.s3, quantity: '250' }];
+    const r = await h.call('buyer', 'POST', `/api/v1/projects/${projectId}/awards`, { body: { evaluationId: ev.body.id, rationale: 'En yüksek ağırlıklı puan (sentetik).', allocations: all } });
+    expect(r.status).toBe(422);
+    expect(r.body.error.code).toBe('critical_blocker');
+    expect(r.body.error.message).toContain('ticari puan bu engeli aşmaz');
+    // Engel giderildiğinde (yeni değerlendirme önceki sonucu geçersiz kılar) seçim akışı devam eder.
+    await reviewedAssessment(h, h.world.suppliers.s1, tpl);
+  });
+
   it('T11 + T12: ağırlık değişince eski değerlendirme güncel sayılmaz; bölünmüş tahsis miktar ve aktif firma kontrolünden geçer', async () => {
     const ev1 = await h.call('buyer', 'POST', `/api/v1/projects/${projectId}/evaluations`);
     expect(ev1.status).toBe(201);
@@ -252,7 +267,7 @@ describe('T10–T12 karşılaştırma, eskime ve bölünmüş tahsis', () => {
     expect(stale.body.error.code).toBe('evaluation_stale');
 
     const ev2 = (await h.call('buyer', 'POST', `/api/v1/projects/${projectId}/evaluations`)).body;
-    expect(ev2.versionNo).toBe(2);
+    expect(ev2.versionNo).toBe(ev1.body.versionNo + 1);
     const over = await h.call('buyer', 'POST', `/api/v1/projects/${projectId}/awards`, { body: { evaluationId: ev2.id, rationale: 'Aşım denemesi (sentetik).', allocations: split('300', '200') } });
     expect(over.body.error.details.issues.map((i: any) => i.code)).toContain('over_allocated');
     const notComparable = await h.call('buyer', 'POST', `/api/v1/projects/${projectId}/awards`, { body: { evaluationId: ev2.id, rationale: 'Karşılaştırılamayan kalem (sentetik).',

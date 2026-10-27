@@ -9,6 +9,7 @@ import { nextCode } from '../codes.ts';
 import { closeTasks, openTask } from '../tasks.ts';
 import { ApiError, conflict, forbidden, notFound, unprocessable } from '../errors.ts';
 import { ErpTimeout, erpAdapter } from '../erp/adapter.ts';
+import { criticalBlocks } from './supplierEval.ts';
 
 /**
  * Faz 4: sipariş, kabul, fatura tahsisi, kontrol, istisna, finans onayı, ERP aktarımı ve gelen durum olayları.
@@ -70,6 +71,8 @@ export async function createPo(tx: Tx, ctx: TenantContext, b: PoInput) {
   const s = (await tx.query<{ status: string; legal_name: string }>(`SELECT status, legal_name FROM suppliers WHERE id = $1`, [b.supplierId])).rows[0];
   if (!s) throw notFound();
   if (s.status !== 'ACTIVE') throw unprocessable('supplier_not_active', `${s.legal_name} aktif tedarikçi değil; sipariş verilemez (BR02).`);
+  const block = (await criticalBlocks(tx, [b.supplierId])).get(b.supplierId);
+  if (block) throw unprocessable('critical_blocker', `${s.legal_name}: ${block}`);
   for (const l of b.lines) if (!isDecimal(l.quantity) || !isDecimal(l.unitPrice) || Number(l.quantity) <= 0) throw unprocessable('invalid_number', 'Miktar ve birim fiyat ondalık sayı olmalı.');
   const total = add(...b.lines.map((l) => amount(l.quantity, l.unitPrice)));
   if (b.contractVersionId) {
@@ -367,6 +370,12 @@ async function evaluate(tx: Tx, invoiceId: string) {
   const fingerprint = sha(JSON.stringify({ a: allocations, o: inv.advance_offset, i: check.issues.map((x) => [x.code, x.lineNo ?? null]),
     p: [...poLines].sort((x, y) => x.poLineId.localeCompare(y.poLineId)).map((x) => [x.poLineId, x.orderedQty, x.unitPrice, x.receivedQty, x.invoicedQty, x.poStatus]) }));
   return { check, fingerprint, contracts, poLines };
+}
+
+/** Rapor için yan etkisiz kontrol: bulgu var mı (görev açmaz, kaydetmez). */
+export async function invoiceHasIssue(tx: Tx, invoiceId: string) {
+  const { check } = await evaluate(tx, invoiceId);
+  return check.issues.length > 0;
 }
 
 export async function approveException(tx: Tx, ctx: TenantContext, invoiceId: string, reason: string) {
