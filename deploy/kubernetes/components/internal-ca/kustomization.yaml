@@ -1,0 +1,17 @@
+# Kurum içi CA ile imzalanmış IdP, PostgreSQL veya S3 sertifikalarına güvenmek için (Node: NODE_EXTRA_CA_CERTS).
+# Önce: kubectl -n satinalma create configmap satinalma-ca --from-file=ca.crt=kurum-kok-ca.pem
+# Overlay'de: components: [../../components/internal-ca]
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target: { kind: Deployment, name: "satinalma-(api|worker)" }
+    patch: |-
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value: { name: internal-ca, configMap: { name: satinalma-ca } }
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value: { name: internal-ca, mountPath: /etc/satinalma/ca, readOnly: true }
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value: { name: NODE_EXTRA_CA_CERTS, value: /etc/satinalma/ca/ca.crt }

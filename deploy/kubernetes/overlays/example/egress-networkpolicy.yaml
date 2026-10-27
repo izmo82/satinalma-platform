@@ -1,0 +1,32 @@
+# Giden trafik: yalnız DNS, PostgreSQL, S3 deposu ve IdP. CIDR ve portları kurum ağına göre düzenleyin.
+# İç CA veya vekil sunucu kullanılıyorsa vekilin adresini de ekleyin.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: satinalma-app-egress
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: app.kubernetes.io/name, operator: In, values: [satinalma-api, satinalma-worker, satinalma-migrate, satinalma-provision] }
+  policyTypes: [Egress]
+  egress:
+    - ports: [{ port: 53, protocol: UDP }, { port: 53, protocol: TCP }]
+    - to: [{ ipBlock: { cidr: 10.20.10.0/24 } }]   # PostgreSQL
+      ports: [{ port: 5432 }]
+    - to: [{ ipBlock: { cidr: 10.20.20.0/24 } }]   # S3 (Ceph RGW / MinIO / StorageGRID)
+      ports: [{ port: 443 }]
+    - to: [{ ipBlock: { cidr: 10.20.30.0/24 } }]   # IdP (ADFS / Keycloak)
+      ports: [{ port: 443 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: satinalma-web-egress
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: satinalma-web }
+  policyTypes: [Egress]
+  egress:
+    - ports: [{ port: 53, protocol: UDP }, { port: 53, protocol: TCP }]
+    - to: [{ podSelector: { matchLabels: { app.kubernetes.io/name: satinalma-api } } }]
+      ports: [{ port: 4100 }]

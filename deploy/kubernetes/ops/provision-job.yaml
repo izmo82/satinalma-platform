@@ -1,0 +1,42 @@
+# İlk kiracı ve kullanıcı daveti (owner bağlantısıyla; uygulama pod'larında bu yetki yok).
+# Kopyalayıp args'ı düzenleyin, sonra:
+#   kubectl -n satinalma apply -f provision-job.yaml
+#   kubectl -n satinalma wait --for=condition=complete job/satinalma-provision --timeout=120s
+#   kubectl -n satinalma logs job/satinalma-provision    # {"tenantId": ..., "companyId": ...}
+#   kubectl -n satinalma delete job satinalma-provision
+# İmaj: overlay'deki API imajıyla aynı olmalı.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: satinalma-provision
+  labels: { app.kubernetes.io/name: satinalma-provision, app.kubernetes.io/part-of: satinalma }
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: satinalma-provision }
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: provision
+          image: registry.example.test/satinalma/api:0.1.0
+          command: ["node", "apps/api/dist/provision.js"]
+          args: ["tenant:create", "--name", "Kurum A.Ş.", "--region", "TR", "--company", "Kurum A.Ş.", "--tax-type", "VKN", "--tax-id", "<VKN>"]
+          # Davet örneği:
+          # args: ["user:invite", "--tenant", "<tenantId>", "--email", "yonetici@kurum.com.tr", "--name", "Ad Soyad", "--roles", "TENANT_ADMIN", "--companies", "all"]
+          env:
+            - { name: DATABASE_OWNER_URL, valueFrom: { secretKeyRef: { name: satinalma-migrate-secrets, key: DATABASE_OWNER_URL } } }
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { memory: 256Mi }
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }

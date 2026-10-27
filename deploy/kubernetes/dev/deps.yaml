@@ -1,0 +1,125 @@
+# YALNIZ YEREL DOĞRULAMA: kurum içi kümede bu bağımlılıklar kurumun kendi PostgreSQL, S3 (Ceph/MinIO/StorageGRID)
+# ve IdP (ADFS/Keycloak/Entra) servisleridir. Sırlar dev/up.sh tarafından rastgele üretilir.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: satinalma-deps
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: { name: postgres, namespace: satinalma-deps }
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector: { matchLabels: { app: postgres } }
+  template:
+    metadata: { labels: { app: postgres } }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17-alpine
+          env:
+            - { name: POSTGRES_USER, value: sp_owner }
+            - { name: POSTGRES_DB, value: satinalma }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+            - { name: POSTGRES_PASSWORD, valueFrom: { secretKeyRef: { name: deps-secrets, key: OWNER_DB_PASSWORD } } }
+            - { name: APP_DB_PASSWORD, valueFrom: { secretKeyRef: { name: deps-secrets, key: APP_DB_PASSWORD } } }
+            - { name: KEYCLOAK_DB_PASSWORD, valueFrom: { secretKeyRef: { name: deps-secrets, key: KEYCLOAK_DB_PASSWORD } } }
+          ports: [{ containerPort: 5432 }]
+          readinessProbe: { exec: { command: [pg_isready, -U, sp_owner, -d, satinalma] }, periodSeconds: 3 }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+            - { name: init, mountPath: /docker-entrypoint-initdb.d }
+      volumes:
+        - { name: init, configMap: { name: db-init } }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec: { accessModes: [ReadWriteOnce], resources: { requests: { storage: 2Gi } } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: postgres, namespace: satinalma-deps }
+spec: { selector: { app: postgres }, ports: [{ port: 5432 }] }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: objectstore, namespace: satinalma-deps }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: objectstore } }
+  template:
+    metadata: { labels: { app: objectstore } }
+    spec:
+      containers:
+        - name: seaweedfs
+          image: chrislusf/seaweedfs:4.51
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              printf '{"identities":[{"name":"sp-app","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Admin","Read","Write","List","Tagging"]}]}' "$S3_ACCESS_KEY" "$S3_SECRET_KEY" > /tmp/s3.json
+              exec weed server -dir=/data -s3 -s3.port=8333 -s3.config=/tmp/s3.json -master.volumeSizeLimitMB=256 -volume.max=0
+          env:
+            - { name: S3_ACCESS_KEY, valueFrom: { secretKeyRef: { name: deps-secrets, key: OBJECT_STORE_ACCESS_KEY } } }
+            - { name: S3_SECRET_KEY, valueFrom: { secretKeyRef: { name: deps-secrets, key: OBJECT_STORE_SECRET_KEY } } }
+          ports: [{ containerPort: 8333 }]
+          readinessProbe: { tcpSocket: { port: 8333 }, periodSeconds: 3 }
+          volumeMounts: [{ name: data, mountPath: /data }]
+      volumes: [{ name: data, emptyDir: {} }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: objectstore, namespace: satinalma-deps }
+spec: { selector: { app: objectstore }, ports: [{ port: 8333 }] }
+---
+apiVersion: batch/v1
+kind: Job
+metadata: { name: bucket-init, namespace: satinalma-deps }
+spec:
+  backoffLimit: 10
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: init
+          image: amazon/aws-cli:2.38.6
+          command: ["/bin/sh", "-c"]
+          args:
+            - aws --endpoint-url http://objectstore:8333 s3api head-bucket --bucket sp-documents 2>/dev/null || aws --endpoint-url http://objectstore:8333 s3api create-bucket --bucket sp-documents
+          env:
+            - { name: AWS_DEFAULT_REGION, value: us-east-1 }
+            - { name: AWS_ACCESS_KEY_ID, valueFrom: { secretKeyRef: { name: deps-secrets, key: OBJECT_STORE_ACCESS_KEY } } }
+            - { name: AWS_SECRET_ACCESS_KEY, valueFrom: { secretKeyRef: { name: deps-secrets, key: OBJECT_STORE_SECRET_KEY } } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: keycloak, namespace: satinalma-deps }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: keycloak } }
+  template:
+    metadata: { labels: { app: keycloak } }
+    spec:
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak:26.8.1
+          args: ["start", "--import-realm"]
+          env:
+            - { name: KC_DB, value: postgres }
+            - { name: KC_DB_URL, value: "jdbc:postgresql://postgres:5432/keycloak" }
+            - { name: KC_DB_USERNAME, value: keycloak }
+            - { name: KC_DB_PASSWORD, valueFrom: { secretKeyRef: { name: deps-secrets, key: KEYCLOAK_DB_PASSWORD } } }
+            - { name: KC_HOSTNAME, value: "http://localhost:8180" }
+            - { name: KC_HTTP_ENABLED, value: "true" }
+            - { name: KC_HEALTH_ENABLED, value: "true" }
+            - { name: KC_BOOTSTRAP_ADMIN_USERNAME, value: kc-admin }
+            - { name: KC_BOOTSTRAP_ADMIN_PASSWORD, valueFrom: { secretKeyRef: { name: deps-secrets, key: KEYCLOAK_ADMIN_PASSWORD } } }
+            - { name: SP_PUBLIC_URL, value: "http://localhost:8080" }
+          ports: [{ containerPort: 8080 }]
+          readinessProbe: { httpGet: { path: /health/ready, port: 9000 }, periodSeconds: 5, failureThreshold: 60 }
+          volumeMounts: [{ name: realm, mountPath: /opt/keycloak/data/import }]
+      volumes: [{ name: realm, configMap: { name: kc-realm } }]
+---
+apiVersion: v1
+kind: Service
+metadata: { name: keycloak, namespace: satinalma-deps }
+spec: { selector: { app: keycloak }, ports: [{ port: 8080 }] }

@@ -1,0 +1,14 @@
+# Statik web + /api ters vekil. IdP ve API adresi çalışma anında ortamdan gelir; aynı imaj her ortamda kullanılır.
+FROM node:24-alpine AS build
+WORKDIR /app
+COPY package.json package-lock.json tsconfig.base.json ./
+COPY apps/web/package.json apps/web/
+RUN npm ci --workspace @sp/web --include-workspace-root=false
+COPY apps/web ./apps/web
+RUN npm run build -w @sp/web
+
+FROM nginxinc/nginx-unprivileged:1.27-alpine
+# API_UPSTREAM: API servis adresi. CSP_IDP_ORIGIN: tarayıcının token aldığı IdP kökeni (ör. https://sso.kurum.com.tr).
+ENV API_UPSTREAM=http://api:4100 CSP_IDP_ORIGIN=""
+COPY --from=build /app/apps/web/dist /usr/share/nginx/html
+COPY infra/web/default.conf.template /etc/nginx/templates/default.conf.template

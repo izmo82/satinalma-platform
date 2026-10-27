@@ -1,0 +1,21 @@
+# Sağlayıcıdan bağımsız Kubernetes temeli (kubectl -k ile; Helm gerekmez).
+# Vanilla Kubernetes, OpenShift, Rancher/RKE2, k3s, Tanzu ve yönetilen EKS/AKS/GKE üzerinde aynı manifestler.
+# PostgreSQL, S3 uyumlu depo ve OIDC IdP kümenin dışında veya ayrı operatörlerle (CloudNativePG, Rook-Ceph, Keycloak) sağlanır.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+labels:
+  - pairs: { app.kubernetes.io/part-of: satinalma }
+    includeSelectors: false
+resources:
+  - serviceaccount.yaml
+  - config.yaml
+  - api.yaml
+  - worker.yaml
+  - web.yaml
+  - ingress.yaml
+  - networkpolicy.yaml
+images:
+  - name: satinalma/api
+    newTag: local
+  - name: satinalma/web
+    newTag: local

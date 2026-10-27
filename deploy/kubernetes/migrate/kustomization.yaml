@@ -1,0 +1,9 @@
+# Dağıtım hattında rollout'tan ÖNCE çalışır. Owner bağlantısı yalnız bu Job'a verilir, uygulama pod'larına verilmez.
+#   kubectl -n satinalma delete job satinalma-migrate --ignore-not-found
+#   kubectl -n satinalma apply -k deploy/kubernetes/migrate && kubectl -n satinalma wait --for=condition=complete job/satinalma-migrate --timeout=300s
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources: [job.yaml]
+images:
+  - name: satinalma/api
+    newTag: local

@@ -1,0 +1,30 @@
+# API ve worker için tek imaj (komutla ayrılır). Herhangi bir OCI çalışma ortamında koşar:
+# Kubernetes/OpenShift, Docker/Podman, bulut konteyner servisleri. Sırlar imaja girmez; ortamdan gelir.
+FROM node:24-alpine AS build
+WORKDIR /app
+COPY package.json package-lock.json tsconfig.base.json ./
+COPY packages/domain ./packages/domain
+COPY apps/api ./apps/api
+RUN npm ci --workspace @sp/api --workspace @sp/domain --include-workspace-root=false \
+ && npm run build -w @sp/api
+
+FROM node:24-alpine AS deps
+WORKDIR /app
+COPY package.json package-lock.json ./
+COPY packages/domain/package.json packages/domain/
+COPY apps/api/package.json apps/api/
+RUN npm ci --omit=dev --workspace @sp/api --include-workspace-root=false && npm cache clean --force
+
+FROM node:24-alpine
+ENV NODE_ENV=production
+WORKDIR /app
+COPY --from=deps --chown=root:root /app/node_modules ./node_modules
+COPY --from=build --chown=root:root /app/apps/api/dist ./apps/api/dist
+COPY --chown=root:root apps/api/migrations ./apps/api/migrations
+COPY --chown=root:root apps/api/package.json ./apps/api/package.json
+# Kod root'a ait ve salt okunur; süreç ayrıcalıksız kullanıcıyla çalışır (readOnlyRootFilesystem uyumlu).
+USER node
+EXPOSE 4100
+HEALTHCHECK CMD wget -qO- http://127.0.0.1:${API_PORT:-4100}/health || exit 1
+# worker: node apps/api/dist/worker.js · migration: node apps/api/dist/migrate.js · kurulum: node apps/api/dist/provision.js
+CMD ["node", "--enable-source-maps", "apps/api/dist/index.js"]

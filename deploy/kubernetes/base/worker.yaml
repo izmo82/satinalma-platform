@@ -1,0 +1,44 @@
+# Kuyruk PostgreSQL'de (SKIP LOCKED); kopya sayısı artırılabilir, işler çift işlenmez.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: satinalma-worker
+  labels: { app.kubernetes.io/name: satinalma-worker, app.kubernetes.io/component: worker }
+spec:
+  replicas: 1
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels: { app.kubernetes.io/name: satinalma-worker }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: satinalma-worker, app.kubernetes.io/component: worker }
+    spec:
+      serviceAccountName: satinalma
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: worker
+          image: satinalma/api
+          command: ["node", "--enable-source-maps", "apps/api/dist/worker.js"]
+          envFrom:
+            - configMapRef: { name: satinalma-config }
+          env:
+            - { name: DATABASE_URL, valueFrom: { secretKeyRef: { name: satinalma-secrets, key: DATABASE_URL } } }
+            - { name: AWS_ACCESS_KEY_ID, valueFrom: { secretKeyRef: { name: satinalma-secrets, key: OBJECT_STORE_ACCESS_KEY } } }
+            - { name: AWS_SECRET_ACCESS_KEY, valueFrom: { secretKeyRef: { name: satinalma-secrets, key: OBJECT_STORE_SECRET_KEY } } }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 512Mi }
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - { name: tmp, emptyDir: { sizeLimit: 64Mi } }

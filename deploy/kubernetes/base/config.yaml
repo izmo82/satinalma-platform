@@ -1,0 +1,37 @@
+# Sır olmayan ayarlar. Sırlar ayrı Secret'ta (satinalma-secrets); kurumsal sır yöneticisinden
+# (Vault, External Secrets, Sealed Secrets) üretilmesi önerilir. Örnek: deploy/kubernetes/README.md
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: satinalma-config
+data:
+  NODE_ENV: production
+  AUTH_MODE: oidc
+  DATA_REGION: TR
+  OIDC_ISSUER: https://sso.example.test/realms/satinalma
+  OIDC_JWKS_URL: https://sso.example.test/realms/satinalma/protocol/openid-connect/certs
+  OIDC_AUDIENCE: sp-api
+  OIDC_CLIENT_ID: sp-web
+  # Kurumsal dizin farkları (deploy/IDP.md): boş = standart OIDC varsayılanı
+  OIDC_SCOPE: ""
+  OIDC_RESOURCE: ""
+  OIDC_TOKEN_ISSUER: ""
+  OIDC_SUBJECT_CLAIM: ""
+  OIDC_EMAIL_CLAIM: ""
+  OIDC_TRUSTED_EMAIL_DOMAINS: ""
+  # Kurum vekil sunucusu varsa (Node 24): NODE_USE_ENV_PROXY=1 ve HTTPS_PROXY/NO_PROXY
+  WEB_ORIGIN: https://satinalma.example.test
+  OBJECT_STORE_ENDPOINT: https://s3.example.test
+  OBJECT_STORE_REGION: us-east-1
+  OBJECT_STORE_BUCKET: sp-documents
+  OBJECT_STORE_FORCE_PATH_STYLE: "true"
+  SIGNATURE_DETECTOR_PROVIDER: ""
+  ESIGN_VALIDATOR_PROVIDER: ""
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: satinalma-web-config
+data:
+  API_UPSTREAM: http://satinalma-api:4100
+  CSP_IDP_ORIGIN: https://sso.example.test

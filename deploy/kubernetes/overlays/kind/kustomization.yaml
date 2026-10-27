@@ -1,0 +1,20 @@
+# Yerel doğrulama katmanı (kind + dev/deps.yaml). Bağımlılıklar satinalma-deps ad alanında; tarayıcı port-forward ile
+# localhost:8080 (web) ve localhost:8180 (Keycloak). Giden trafik yalnız bu bağımlılıklara açık.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: satinalma
+resources:
+  - namespace.yaml
+  - ../../base
+  - egress-networkpolicy.yaml
+patches:
+  - target: { kind: ConfigMap, name: satinalma-config }
+    patch: |-
+      - { op: replace, path: /data/OIDC_ISSUER, value: "http://localhost:8180/realms/satinalma" }
+      - { op: replace, path: /data/OIDC_JWKS_URL, value: "http://keycloak.satinalma-deps.svc:8080/realms/satinalma/protocol/openid-connect/certs" }
+      - { op: add, path: /data/OIDC_DISCOVERY_URL, value: "http://keycloak.satinalma-deps.svc:8080/realms/satinalma/.well-known/openid-configuration" }
+      - { op: replace, path: /data/WEB_ORIGIN, value: "http://localhost:8080" }
+      - { op: replace, path: /data/OBJECT_STORE_ENDPOINT, value: "http://objectstore.satinalma-deps.svc:8333" }
+  - target: { kind: ConfigMap, name: satinalma-web-config }
+    patch: |-
+      - { op: replace, path: /data/CSP_IDP_ORIGIN, value: "http://localhost:8180" }

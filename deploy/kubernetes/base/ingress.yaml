@@ -1,0 +1,20 @@
+# Standart Ingress; ingressClassName boşsa kümenin varsayılanı (ingress-nginx, Traefik, HAProxy, OpenShift Router...).
+# /api istekleri web pod'undaki nginx üzerinden API servisine gider; tarayıcı için tek köken.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: satinalma
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: 26m
+spec:
+  tls:
+    - hosts: [satinalma.example.test]
+      secretName: satinalma-tls
+  rules:
+    - host: satinalma.example.test
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: satinalma-web, port: { name: http } }
