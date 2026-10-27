@@ -491,6 +491,8 @@ export interface BidInput {
 export async function submitBid(tx: Tx, ctx: TenantContext, roundId: string, idempotencyKey: string | undefined, body: BidInput) {
   const sid = supplierOnly(ctx);
   if (!idempotencyKey || !/^[\w-]{8,80}$/.test(idempotencyKey)) throw unprocessable('idempotency_key_required', 'Idempotency-Key başlığı gerekli.');
+  // Aynı tedarikçinin aynı turdaki gönderimleri sıraya girer: eşzamanlı iki gönderim aynı sürüm numarasını alamaz.
+  await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`bid:${roundId}:${sid}`]);
   const prior = (await tx.query<{ id: string; version_no: number; submitted_at: Date }>(
     `SELECT id, version_no, submitted_at FROM bids WHERE supplier_id = $1 AND idempotency_key = $2`, [sid, idempotencyKey])).rows[0];
   if (prior) return { bidId: prior.id, versionNo: prior.version_no, submittedAt: prior.submitted_at, replay: true };
@@ -567,6 +569,8 @@ export async function uploadBidFile(tx: Tx, ctx: TenantContext, store: ObjectSto
   if (!r.open) throw conflict('round_closed', 'Tur kapandı; ek yüklenemez.');
   const ins = inspectUpload(f.filename, f.mimeType, f.body);
   if ('rejected' in ins) throw unprocessable('file_rejected', ins.rejected);
+  // Aynı dosyanın eşzamanlı ikinci yüklemesi çakışma hatası değil, mevcut kayda dönüş olmalı.
+  await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`bidfile:${roundId}:${sid}`]);
   const existing = (await tx.query(`SELECT id FROM bid_files WHERE round_id = $1 AND supplier_id = $2 AND sha256 = $3`, [roundId, sid, ins.sha256])).rows[0];
   if (existing) return { id: existing.id as string, duplicate: true, status: ins.status, reason: ins.reason };
   const key = objectKey(ctx.tenantId, ins.sha256);

@@ -89,8 +89,12 @@ export function PortalRound() {
   const keyRef = useRef(newKey());
   const summaryRef = useRef<HTMLDivElement>(null);
 
+  // Form yalnız ilk yüklemede ve teklif sürümü değişince sunucudan doldurulur; ara yeniden yüklemeler yazılanı ezmez.
+  const initKey = d ? `${d.round.id}:${d.current?.id ?? 'yok'}` : null;
+  const initedRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!d) return;
+    if (!d || initedRef.current === initKey) return;
+    initedRef.current = initKey;
     const init: Record<string, Row> = {};
     for (const l of d.lines) {
       const c = d.current?.lines.find((x) => x.projectLineId === l.id);
@@ -102,7 +106,7 @@ export function PortalRound() {
     setNote(d.current?.note ?? '');
     setCosts(d.current?.costs.map((c) => ({ kind: c.kind, amount: c.amount })) ?? []);
     setAttach(d.current?.attachmentIds ?? []);
-  }, [d]);
+  }, [d, initKey]);
 
   async function uploadFile(file: File) {
     setUploading(true); setFileMsg(null);
@@ -134,6 +138,7 @@ export function PortalRound() {
       if (!row.unit.trim()) e[`${l.id}-unit`] = 'Birim girin.';
     }
     costs.forEach((c, i) => { if (!DEC.test(c.amount)) e[`cost-${i}`] = 'Tutar girin.'; });
+    if (attach.length > 20) e.attachments = `Bir teklif sürümüne en fazla 20 ek bağlanabilir (şu an ${attach.length}). Gerekmeyenlerin işaretini kaldırın.`;
     return e;
   }
   async function submit(ev: React.FormEvent) {
@@ -175,7 +180,7 @@ export function PortalRound() {
       )}
       {error && <Banner tone={error.status === 409 ? 'warn' : 'danger'} title={error.status === 0 ? 'Bağlantı koptu; teklif gönderilmiş sayılmaz' : error.message}>
         {error.status === 0 ? 'Bağlantı gelince "Teklifi gönder" ile tekrar deneyin. Aynı gönderim ikinci kez kaydedilmez.' : null}</Banner>}
-      {Object.keys(errors).length > 0 && <div ref={summaryRef} tabIndex={-1}><Banner tone="danger" title="Teklif formunda eksik alanlar var">{Object.keys(errors).length} alan düzeltilmeli; her satırın yanında açıklama var.</Banner></div>}
+      {Object.keys(errors).length > 0 && <div ref={summaryRef} tabIndex={-1}><Banner tone="danger" title="Teklif formunda eksik alanlar var">{errors.attachments ?? `${Object.keys(errors).length} alan düzeltilmeli; her satırın yanında açıklama var.`}</Banner></div>}
 
       <div className="grid grid-cols-[minmax(0,1fr)_340px] gap-6 max-[1100px]:grid-cols-1">
         <form onSubmit={(e) => void submit(e)} className="grid gap-4">
@@ -225,7 +230,7 @@ export function PortalRound() {
               <div className="flex flex-wrap items-center gap-3">
                 <input id="bid-file" className="peer sr-only" type="file" accept=".pdf,.png,.jpg,.jpeg,.xml" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void uploadFile(f); }} />
                 <label htmlFor="bid-file" className="btn cursor-pointer peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-focus"><Icon name="upload" />{uploading ? 'Yükleniyor…' : 'Ek yükle'}</label>
-                <span className="text-sm text-ink-subtle">{attach.length} ek bu teklife bağlanacak</span>
+                <span className={cn('text-sm', attach.length > 20 ? 'font-semibold text-danger' : 'text-ink-subtle')}>{attach.length} ek bu teklife bağlanacak{attach.length > 20 ? ' (en fazla 20)' : ''}</span>
               </div>
               {fileMsg && <p role="status" className={cn('mt-2 text-sm', fileMsg.tone === 'danger' ? 'text-danger' : fileMsg.tone === 'warn' ? 'text-warn' : 'text-verified')}>{fileMsg.text}</p>}
             </div>

@@ -162,6 +162,14 @@ describe('T09 tedarikçi portalı: yalnız kendi teklifi, kapanış sunucu saati
     fileId = up.body.id;
   });
 
+  it('aynı tedarikçinin eşzamanlı gönderimleri çakışmaz: her biri ayrı sürüm, tek geçerli', async () => {
+    const rs = await Promise.all(Array.from({ length: 5 }, () => submit('supplier2', roundId, bidBody(lineIds, ['40000', '400', '1100']))));
+    expect(rs.map((r) => r.status)).toEqual([201, 201, 201, 201, 201]);
+    expect(new Set(rs.map((r) => r.body.versionNo)).size).toBe(5);
+    const mine = (await h.call('supplier2', 'GET', `/api/v1/portal/rounds/${roundId}`)).body;
+    expect(mine.myBids.filter((b: any) => b.status === 'SUBMITTED')).toHaveLength(1);
+  });
+
   it('kapanış sunucu saatine göre: süre dolunca API ve veritabanı reddeder', async () => {
     await h.owner.query(`UPDATE rfq_rounds SET closes_at = now() - interval '1 second' WHERE id = $1`, [roundId]);
     const late = await submit('supplier2', roundId, bidBody(lineIds, ['1', '1', '1']));
