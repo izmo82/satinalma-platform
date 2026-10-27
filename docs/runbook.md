@@ -9,6 +9,7 @@ npm run db:migrate
 npm run db:seed        # SENTETİK demo verisi (tekrar çalıştırılırsa atlar)
 npm run dev:api        # http://localhost:4100  (OpenAPI: /api/openapi.json)
 npm run dev:web        # http://localhost:5174
+npm run worker -w @sp/api   # kuyruk işçisi: imza algılama, ihbar/yükümlülük hatırlatma, ERP aktarımı, imha sonrası silme, kiracı dışa aktarımı
 ```
 Sentetik kullanıcılar giriş ekranında listelenir (`*@example.test`). Dev oturumu üretimde kapalıdır.
 
@@ -17,7 +18,7 @@ Sentetik kullanıcılar giriş ekranında listelenir (`*@example.test`). Dev otu
 npm test -w @sp/domain                 # saf iş kuralları
 npm test -w @sp/api                    # gerçek PostgreSQL + RLS + S3 emülatörü (satinalma_test DB'sini sıfırlar)
 npm run typecheck
-npm run e2e -w @sp/web                 # önce API + web çalışıyor ve seed yapılmış olmalı
+npm run e2e -w @sp/web                 # önce API + web + worker çalışıyor ve seed yapılmış olmalı (dışa aktarım testi worker ister)
 npx playwright install chromium        # ilk kez
 ```
 iOS (Xcode 27, simülatör):
@@ -37,9 +38,18 @@ docker compose down                         # durdurma (veri volume'larda kalır
 ## Yedekleme (sağlayıcıdan bağımsız)
 | Veri | Yöntem | Not |
 |---|---|---|
-| PostgreSQL | `pg_dump -Fc` günlük + WAL arşivi (pgBackRest / Barman / CloudNativePG yedekleri) ile PITR | Restore tatbikatı Faz 7'de; NOT_RUN |
+| PostgreSQL | `pg_dump -Fc` günlük + WAL arşivi (pgBackRest / Barman / CloudNativePG yedekleri) ile PITR | Yerel tatbikat: `deploy/scripts/db-drill.sh` (aşağıda). PITR/WAL ile tatbikat kurum ortamında NOT_RUN |
 | Nesne deposu | Sürümleme + ikinci konuma çoğaltma (Ceph RGW multisite, `rclone sync`, bulut çoğaltma) | Anahtarlar içerik hash'i olduğu için çoğaltma idempotent |
 | IdP | IdP'nin kendi yedeği (Keycloak: veritabanı yedeği) | Kullanıcı rolleri uygulamada, kimlik IdP'de |
+
+**Geri yükleme doğrulaması** (her tatbikatta):
+```bash
+deploy/scripts/db-drill.sh                                  # yedek → izole kopyaya geri yükleme → satır sayısı + RLS kontrolü → 018→019 yükseltme → yedekten geri dönüş
+npx tsx --env-file=.env apps/api/src/verifyStore.ts         # her canlı belge sürümünün nesnesi var mı, SHA-256 tutuyor mu (yalnız sayı ve kimlik yazar)
+```
+Betik kaynak veritabanına yalnız `pg_dump` ile dokunur; `sp_drill_*` veritabanlarını oluşturup siler (`KEEP=1` ile tutar).
+**Yedeklerin zamanla silinmesi** (02 §17): imha edilen belgenin baytları yedeklerde saklama döngüsü bitene kadar kalır. Yedek saklama süresi (ör. 35 gün) kurumca belirlenir ve imha kaydıyla birlikte müşteriye bildirilir; süre dolunca yedek rotasyonu baytları da kaldırır. Kiracı geri yüklemesinde imha kaydı (`document_disposals`) korunduğu için geri gelen bayt kullanıcıya açılmaz; nesne tekrar silinmelidir (`retention.purge` işini yeniden kuyruğa almak).
+**Kiracı bazlı geri yükleme:** izole kopyaya geri yükle (`db-drill.sh` adım 2) → etkilenen kayıtları kiracı bağlamında seçerek yeniden içe al. Seçici içe alma aracı yok; adım elle ve owner bağlantısıyla yapılır (NOT_RUN).
 
 ## Sır gereksinimleri
 | Değişken | Nereden | Not |
@@ -56,10 +66,46 @@ docker compose down                         # durdurma (veri volume'larda kalır
 - Uygulama sürümü bir önceki şemayla uyumlu kalacak şekilde genişlet→taşı→daralt sırası izlenir.
 - Kiracı bazlı geri yükleme: izole anlık görüntüye restore + seçili kiracı verisinin yeniden içe alınması; tüm DB geri alınmaz (Faz 7'de prosedür testi).
 
+## Veri yönetimi (saklama, hukuki saklama, imha, dışa aktarım)
+- Saklama süresi belge türü bazında ve dayanağıyla hukuk tarafından tanımlanır (Web: Veri yönetimi). Tanımsız tür **süresiz** saklanır.
+- İmha: hukuk önerir → **başka** bir hukuk yetkilisi (partideki bütün şirketlere erişimi olan) onaylar. Onay anında her belge yeniden kontrol edilir (yeni hukuki saklama veya yeni sürüm gelen atlanır). Belge kaydı, hash ve denetim izi kalır; `retention.purge` işi kiracıda başka canlı kayıt kullanmıyorsa nesneyi siler. Silme işi onaylayanın üyeliğine bağlı değildir; sonucu imha partisinde görünür ("Baytlar silindi"). Kuyrukta kalırsa `jobs` içinde `retention.purge` durumuna bakın.
+- Kiracı dışa aktarımı: kiracı yöneticisi ister → hukuk onaylar → worker paketi üretir (`exports/<kiracı>/<id>.zip`, en çok 512 MB; paket bellekte üretilir, worker belleği en az paket boyutunun 2,5 katı olmalı) → yalnız talep eden 7 gün içinde kısa ömürlü bağlantıyla indirir. Paket: `manifest.json` (tablo satır sayıları, her dosyanın SHA-256), `data/*.jsonl`, `files/<sha256>`. Süresi dolan paketlerin nesneleri için bucket yaşam döngüsü kuralı tanımlayın (`exports/` öneki, 8 gün); uygulama süresi dolan paketi indirtmez ama nesneyi kendisi silmez.
+
+## ERP mutabakatı ve CSV aktarımı
+ERP bağdaştırıcısı yoksa onaylı faturalar "Yapılandırılmadı" görünür (başarı sayılmaz). Finans (Web: Faturalar → ERP mutabakatı):
+1. **Aktarım dosyası (CSV)** indirilir: `aktarim_anahtari;fatura_no;…;odenecek;…` — anahtar değişmez, ERP içe aktarımında dış referans olarak kullanılmalı.
+2. ERP'nin sonuç dosyası `aktarim_anahtari;erp_kimligi;durum;odenecek;mesaj` (durum `OK`/`ERROR`) yüklenir, önce **deneme** yapılır: eşleşen, tutar farkı, bilinmeyen anahtar, mükerrer satır, ERP reddi ve dosyada olmayan bekleyenler toplamlarıyla görünür.
+3. Uygulanınca yalnız tutarı tutan `OK` satırları ERP'de kayıtlı sayılır; `ERROR` satırları "Hata" olur. Aynı dosyayı tekrar uygulamak değişiklik yapmaz. Dosya özeti (SHA-256) ve sayılar denetim kaydına yazılır.
+Bağdaştırıcı varsa başarısız/belirsiz aktarım ekrandan gerekçeyle **tekrar gönderilir**; belirsiz kayıt önce ERP'de aynı anahtarla sorgulanır.
+
+## Performans ölçümü
+```bash
+# 1) ölçüm kopyası (geliştirme veritabanına dokunmaz) ve hacim büyütme
+docker exec satinalma-db pg_dump -U sp_owner -Fc -d satinalma -f /tmp/perf.dump
+docker exec satinalma-db createdb -U sp_owner sp_perf && docker exec satinalma-db pg_restore -U sp_owner -d sp_perf /tmp/perf.dump
+docker exec -i satinalma-db psql -U sp_owner -d sp_perf < deploy/scripts/perf-prepare.sql
+# 2) üretim derlemesi ölçüm kopyasına bağlı (4200) ve yük
+npm run build -w @sp/api && (set -a; . ./.env; set +a; DATABASE_URL=${DATABASE_URL%/*}/sp_perf API_PORT=4200 node apps/api/dist/index.js &)
+PERF_BASE=http://localhost:4200 PERF_SECONDS=15 PERF_CONCURRENCY=10 npx tsx apps/api/src/perf.ts
+# 3) temizlik
+docker exec satinalma-db dropdb -U sp_owner sp_perf
+```
+Ölçüm tek makinedir; SLA iddiası değildir. Son sonuçlar `docs/implementation-status.md`.
+
+## Güvenlik taramaları
+```bash
+npm audit
+docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.21.2 git /repo --no-banner --redact
+docker run --rm -v "$PWD:/src" semgrep/semgrep:1.101.0 semgrep scan --metrics=off --config p/typescript --config p/nodejs --config p/react --config p/secrets --config p/sql-injection --config p/owasp-top-ten --exclude node_modules --exclude dist /src/apps /src/packages
+```
+DAST (ZAP) yalnız izole kopyaya karşı çalıştırılır (aktif tarama veri yazar/siler). Kontrol matrisi: `docs/security-controls.md`.
+
 ## Kuyruk ve tekrar oynatma
 - İş durumları: `QUEUED → RUNNING → SUCCEEDED | BLOCKED | QUEUED (geri çekilme) → DEAD`.
 - `BLOCKED` işler dış bağımlılık (ör. `NO_PROVIDER_CONFIGURED`) içindir; sağlayıcı bağlanınca yetkili kişi aynı uçtan yeni iş ister (idempotency anahtarı sağlayıcı/model içerdiği için yeni iş açılır).
 - `DEAD` işler için yetkili replay: `UPDATE jobs SET status='QUEUED', attempts=0 WHERE id=…` (owner bağlantısı, gerekçe denetim kaydına).
+- ERP aktarımı için veritabanına dokunmadan: Web → ERP mutabakatı → "Tekrar gönder" (finans, gerekçeli, denetimli).
+- İş türleri: `signature.detect`, `contract.notice_reminder`, `contract.obligation_due`, `erp.export` (yalnız `ERP_ADAPTER` tanımlıysa), `ai.run` (yalnız AI sağlayıcısı varsa), `retention.purge`, `tenant.export`.
 
 ## Sık hatalar
 | Belirti | Neden | Çözüm |

@@ -12,3 +12,4 @@ FROM nginxinc/nginx-unprivileged:1.27-alpine
 ENV API_UPSTREAM=http://api:4100 CSP_IDP_ORIGIN=""
 COPY --from=build /app/apps/web/dist /usr/share/nginx/html
 COPY infra/web/default.conf.template /etc/nginx/templates/default.conf.template
+COPY infra/web/security-headers.conf /etc/nginx/security-headers.conf
