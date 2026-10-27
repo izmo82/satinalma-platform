@@ -1,0 +1,43 @@
+{
+  "name": "@sp/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --env-file=../../.env src/index.ts",
+    "start": "node --enable-source-maps dist/index.js",
+    "worker": "tsx --env-file-if-exists=../../.env src/worker.ts",
+    "migrate": "tsx --env-file-if-exists=../../.env src/migrate.ts",
+    "seed": "tsx --env-file-if-exists=../../.env src/seed.ts",
+    "openapi": "tsx --env-file-if-exists=../../.env src/openapi.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "node build.mjs",
+    "provision": "tsx --env-file-if-exists=../../.env src/provision.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.10",
+    "@types/pdfkit": "^0.17.7",
+    "@types/pg": "^8.15.4",
+    "esbuild": "^0.25.12",
+    "tsx": "^4.20.3",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.5"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1157.0",
+    "@aws-sdk/s3-request-presigner": "^3.1157.0",
+    "@expo-google-fonts/source-sans-3": "^0.4.2",
+    "@fastify/cors": "^11.3.1",
+    "@fastify/multipart": "^9.4.0",
+    "@fastify/swagger": "^9.9.2",
+    "@sp/domain": "0.1.0",
+    "exceljs": "^4.4.0",
+    "fast-xml-parser": "^5.11.2",
+    "fastify": "^5.12.7",
+    "jose": "^6.2.13",
+    "pdfkit": "^0.17.2",
+    "pg": "^8.23.1",
+    "uuid": "^11.1.1"
+  }
+}
