@@ -14,6 +14,7 @@ const DEMO = [
   ['kerem.hukuk@example.test', 'Hukuk + satınalma yöneticisi'],
   ['ferda.finans@example.test', 'Finans (fatura girişi)'],
   ['nur.finansonay@example.test', 'Finans (fatura onayı)'],
+  ['selin.guvenlik@example.test', 'Bilgi güvenliği'],
   ['tamer.yonetici@example.test', 'Kiracı yöneticisi (belge erişimi yok)'],
   ['deniz.denetci@example.test', 'Denetçi'],
   ['bora.baskakiraci@example.test', 'Başka kiracı kullanıcısı'],

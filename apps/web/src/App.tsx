@@ -1,6 +1,6 @@
 import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { lazy, Suspense, useEffect, useRef } from 'react';
-import { useSession } from './lib/session.tsx';
+import { hasRole, useSession } from './lib/session.tsx';
 import { roleLabel } from './lib/labels.ts';
 import { Icon } from './ui/icons.tsx';
 import { Loading, useOnline } from './ui/kit.tsx';
@@ -29,6 +29,13 @@ const PurchaseOrderPage = lazy(() => purchasing().then((m) => ({ default: m.Purc
 const InvoicesPage = lazy(() => purchasing().then((m) => ({ default: m.InvoicesPage })));
 const InvoicePage = lazy(() => purchasing().then((m) => ({ default: m.InvoicePage })));
 const ToleranceRulesPage = lazy(() => purchasing().then((m) => ({ default: m.ToleranceRulesPage })));
+const evaluation = () => import('./pages/EvaluationPages.tsx');
+const AssessmentPage = lazy(() => evaluation().then((m) => ({ default: m.AssessmentPage })));
+const IncidentPage = lazy(() => evaluation().then((m) => ({ default: m.IncidentPage })));
+const IncidentsPage = lazy(() => evaluation().then((m) => ({ default: m.IncidentsPage })));
+const TemplatesPage = lazy(() => evaluation().then((m) => ({ default: m.TemplatesPage })));
+const ReportsPage = lazy(() => evaluation().then((m) => ({ default: m.ReportsPage })));
+const AiPage = lazy(() => evaluation().then((m) => ({ default: m.AiPage })));
 
 export function App() {
   const { me, loading } = useSession();
@@ -58,7 +65,9 @@ function Shell() {
     { to: '/belge-girisi', label: 'Belge girişi', icon: 'upload', count: load(['document_version']) },
     { to: '/siparisler', label: 'Siparişler', icon: 'package' },
     { to: '/faturalar', label: 'Faturalar', icon: 'receipt', count: load(['invoice']) },
-    { to: '/raporlar', label: 'Raporlar', icon: 'chart', later: 'Faz 5' },
+    { to: '/olaylar', label: 'Olaylar', icon: 'alert', count: load(['incident']) },
+    ...(hasRole(me, 'BUYER', 'PROCUREMENT_MANAGER', 'FINANCE', 'AUDITOR') ? [{ to: '/raporlar', label: 'Raporlar', icon: 'chart' }] : []),
+    ...(hasRole(me, 'TENANT_ADMIN', 'AUDITOR', 'PROCUREMENT_MANAGER') ? [{ to: '/yapay-zeka', label: 'Yapay zekâ', icon: 'sparkles', count: load(['tenant']) }] : []),
   ];
   const companies = me.supplierPortal ? 'Tedarikçi portalı' : me.companies.length ? me.companies.map((c) => c.name).join(' · ') : 'Şirket belgesi erişimi yok';
   return (
@@ -122,7 +131,12 @@ function Shell() {
           <Route path="/faturalar" element={<InvoicesPage />} />
           <Route path="/faturalar/tolerans" element={<ToleranceRulesPage />} />
           <Route path="/faturalar/:id" element={<InvoicePage />} />
-          <Route path="/raporlar" element={<NotYetPage title="Raporlar" phase="Faz 5" what="Kaynaklı raporlar ve dışa aktarma" />} />
+          <Route path="/raporlar" element={<ReportsPage />} />
+          <Route path="/olaylar" element={<IncidentsPage />} />
+          <Route path="/olaylar/:id" element={<IncidentPage />} />
+          <Route path="/degerlendirmeler/:id" element={<AssessmentPage />} />
+          <Route path="/anketler" element={<TemplatesPage />} />
+          <Route path="/yapay-zeka" element={<AiPage />} />
           <Route path="*" element={<NotYetPage title="Sayfa bulunamadı" />} />
         </Routes>
         </Suspense>

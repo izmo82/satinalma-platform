@@ -12,10 +12,11 @@ import { cn } from '@/lib/utils';
 interface Task { id: string; kind: string; entityType: string; entityId: string; title: string; reason: string; nextAction: string;
   assigneeRole: string; severity: string; dueAt: string | null; createdAt: string; refNo: string | null }
 
-export const entityHref = (t: { entityType: string; entityId: string }) =>
-  t.entityType === 'supplier' ? `/tedarikciler/${t.entityId}` : t.entityType === 'contract_version' ? `/sozlesmeler/${t.entityId}`
+export const entityHref = (t: { entityType: string; entityId: string; kind?: string }) =>
+  t.entityType === 'supplier' ? `/tedarikciler/${t.entityId}${['assessment_blocker', 'risk_rereview', 'new_business_hold'].includes(t.kind ?? '') ? '?sekme=degerlendirme' : ''}` : t.entityType === 'contract_version' ? `/sozlesmeler/${t.entityId}`
     : t.entityType === 'document_version' ? `/belgeler/${t.entityId}` : t.entityType === 'project' ? `/projeler/${t.entityId}`
-    : t.entityType === 'invoice' ? `/faturalar/${t.entityId}` : '/islerim';
+    : t.entityType === 'invoice' ? `/faturalar/${t.entityId}`
+    : t.entityType === 'incident' ? `/olaylar/${t.entityId}` : t.entityType === 'tenant' ? '/yapay-zeka' : '/islerim';
 
 const VIEWS = [['mine', 'Benden beklenen'], ['overdue', 'Geciken'], ['all', 'Rolümdeki tüm işler']] as const;
 

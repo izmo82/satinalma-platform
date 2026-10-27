@@ -16,6 +16,9 @@ import * as contracts from './modules/contracts.ts';
 import * as sourcing from './modules/sourcing.ts';
 import * as lifecycle from './modules/contractTerms.ts';
 import * as invoices from './modules/invoices.ts';
+import * as evals from './modules/supplierEval.ts';
+import * as ai from './modules/ai.ts';
+import * as kpi from './modules/kpi.ts';
 import { decisionSummaryPdf, evaluationWorkbook } from './reports.ts';
 
 export interface AppDeps {
@@ -160,6 +163,7 @@ export async function buildApp(deps: AppDeps) {
                 WHEN 'document_version' THEN (SELECT d.code FROM document_versions dv JOIN documents d ON d.id = dv.document_id WHERE dv.id = t.entity_id)
                 WHEN 'supplier' THEN (SELECT s.tax_id_type || ' ' || s.tax_id FROM suppliers s WHERE s.id = t.entity_id)
                 WHEN 'invoice' THEN (SELECT i.invoice_no FROM invoices i WHERE i.id = t.entity_id)
+                WHEN 'incident' THEN (SELECT x.code FROM supplier_incidents x WHERE x.id = t.entity_id)
               END AS "refNo"
        FROM tasks t WHERE t.status = 'OPEN' AND t.assignee_role = ANY($1::text[])
          AND ($2 <> 'overdue' OR (t.due_at IS NOT NULL AND t.due_at < now()))
@@ -616,6 +620,98 @@ export async function buildApp(deps: AppDeps) {
     properties: { approve: { type: 'boolean' }, note: { type: 'string', maxLength: 2000 } } } } }, async (req) =>
     scoped(req, 'award.decide', (tx, ctx) => sourcing.decideAward(tx, ctx, (req.params as any).id, req.body as any)));
   // Davet listesi için tedarikçi arama (alıcı)
+  // --- Faz 5: tedarikçi değerlendirmesi, olay, performans (02 §8–9, UX12, T19–T20) ---
+  const lvl = { type: 'string', enum: ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'] } as const;
+  const lmh = { type: 'string', enum: ['LOW', 'MEDIUM', 'HIGH'] } as const;
+  const dateStr = { type: 'string', format: 'date' } as const;
+  const optDate = { anyOf: [dateStr, { type: 'null' }] } as const;
+  const optText = (max: number) => ({ anyOf: [{ type: 'string', maxLength: max }, { type: 'null' }] }) as const;
+  const qParams = { type: 'object', required: ['id', 'questionId'], properties: { id: uuid, questionId: uuid } } as const;
+  app.get('/api/v1/questionnaire-templates', { schema: { tags: ['evaluation'] } }, async (req) => scoped(req, 'assessment.read', async (tx, ctx) =>
+    ({ items: await evals.listTemplates(tx), can: { manage: can(ctx.roles, 'questionnaire.manage') } })));
+  app.get('/api/v1/questionnaire-templates/:id', { schema: { tags: ['evaluation'], params: idParams } }, async (req) => scoped(req, 'assessment.read', (tx) => evals.getTemplate(tx, (req.params as any).id)));
+  app.post('/api/v1/questionnaire-templates', { schema: { tags: ['evaluation'], body: { type: 'object', required: ['code', 'name', 'category', 'questions'], additionalProperties: false,
+    properties: { code: { type: 'string', pattern: '^[A-Za-z0-9_-]{2,40}$' }, name: { type: 'string', minLength: 3, maxLength: 200 }, category: { type: 'string', minLength: 2, maxLength: 100 },
+      questions: { type: 'array', minItems: 1, maxItems: 200, items: { type: 'object', required: ['controlId', 'reference', 'text', 'critical', 'evidenceRequired'], additionalProperties: false,
+        properties: { controlId: { type: 'string', minLength: 1, maxLength: 40 }, reference: { type: 'string', minLength: 2, maxLength: 300 }, text: { type: 'string', minLength: 5, maxLength: 2000 },
+          critical: { type: 'boolean' }, evidenceRequired: { type: 'boolean' } } } } } } } }, async (req, reply) =>
+    reply.status(201).send(await scoped(req, 'questionnaire.manage', (tx, ctx) => evals.createTemplate(tx, ctx, req.body as any))));
+  app.post('/api/v1/questionnaire-templates/:id/publish', { schema: { tags: ['evaluation'], params: idParams } }, async (req) =>
+    scoped(req, 'questionnaire.manage', (tx, ctx) => evals.publishTemplate(tx, ctx, (req.params as any).id)));
+  app.get('/api/v1/suppliers/:id/assessments', { schema: { tags: ['evaluation'], params: idParams } }, async (req) => scoped(req, 'assessment.read', async (tx, ctx) =>
+    ({ items: await evals.supplierAssessments(tx, ctx, (req.params as any).id), can: { manage: can(ctx.roles, 'assessment.manage') } })));
+  app.post('/api/v1/assessments', { schema: { tags: ['evaluation'], body: { type: 'object', required: ['supplierId', 'templateId', 'scope', 'inherentFactors'], additionalProperties: false,
+    properties: { supplierId: uuid, templateId: uuid, scope: { type: 'string', minLength: 3, maxLength: 300 }, reviewDue: optDate,
+      inherentFactors: { type: 'object', required: ['dataSensitivity', 'accessLevel', 'criticality', 'substitutability', 'subcontractorDependence'], additionalProperties: false,
+        properties: { dataSensitivity: lmh, accessLevel: lmh, criticality: lmh, substitutability: lmh, subcontractorDependence: lmh } } } } } }, async (req, reply) =>
+    reply.status(201).send(await scoped(req, 'assessment.manage', (tx, ctx) => evals.createAssessment(tx, ctx, req.body as any))));
+  app.get('/api/v1/assessments/:id', { schema: { tags: ['evaluation'], params: idParams } }, async (req) => scoped(req, 'assessment.read', async (tx, ctx) =>
+    ({ ...(await evals.getAssessment(tx, ctx, (req.params as any).id)), can: { answer: can(ctx.roles, 'assessment.manage'), review: can(ctx.roles, 'assessment.review'), acceptRisk: can(ctx.roles, 'risk.accept') } })));
+  app.put('/api/v1/assessments/:id/answers/:questionId', { schema: { tags: ['evaluation'], params: qParams, body: { type: 'object', required: ['response'], additionalProperties: false,
+    properties: { response: { type: 'string', enum: ['YES', 'PARTIAL', 'NO', 'NOT_APPLICABLE', 'UNKNOWN'] }, naReason: optText(1000), note: optText(2000),
+      evidenceDocumentVersionId: { anyOf: [uuid, { type: 'null' }] }, evidenceDate: optDate, evidenceExpires: optDate } } } }, async (req) =>
+    scoped(req, 'assessment.manage', (tx, ctx) => evals.saveAnswer(tx, ctx, (req.params as any).id, (req.params as any).questionId, req.body as any)));
+  app.post('/api/v1/assessments/:id/answers/:questionId/review', { schema: { tags: ['evaluation'], params: qParams, body: { type: 'object', required: ['review'], additionalProperties: false,
+    properties: { review: { type: 'string', enum: ['ACCEPTED', 'FINDING'] }, findingSeverity: { anyOf: [lvl, { type: 'null' }] }, findingNote: optText(2000) } } } }, async (req) =>
+    scoped(req, 'assessment.review', (tx, ctx) => evals.reviewAnswer(tx, ctx, (req.params as any).id, (req.params as any).questionId, req.body as any)));
+  app.post('/api/v1/assessments/:id/complete', { schema: { tags: ['evaluation'], params: idParams } }, async (req) =>
+    scoped(req, 'assessment.review', (tx, ctx) => evals.completeReview(tx, ctx, (req.params as any).id)));
+  app.post('/api/v1/assessments/:id/residual', { schema: { tags: ['evaluation'], params: idParams, body: { type: 'object', required: ['level', 'reason'], additionalProperties: false,
+    properties: { level: lvl, reason: { type: 'string', maxLength: 2000 } } } } }, async (req) =>
+    scoped(req, 'risk.accept', (tx, ctx) => evals.acceptResidual(tx, ctx, (req.params as any).id, req.body as any)));
+  app.get('/api/v1/incidents', { schema: { tags: ['evaluation'], querystring: { type: 'object', properties: { supplierId: uuid } } } }, async (req) => scoped(req, 'incident.read', async (tx, ctx) =>
+    ({ items: await evals.listIncidents(tx, req.query as any), can: { report: can(ctx.roles, 'incident.report') } })));
+  app.post('/api/v1/incidents', { schema: { tags: ['evaluation'], body: { type: 'object', required: ['supplierId', 'category', 'severity', 'title', 'description', 'occurredOn'], additionalProperties: false,
+    properties: { supplierId: uuid, contractVersionId: { anyOf: [uuid, { type: 'null' }] }, poId: { anyOf: [uuid, { type: 'null' }] },
+      category: { type: 'string', enum: ['QUALITY', 'DELAY', 'OUTAGE', 'SLA', 'INVOICE_DISPUTE', 'SECURITY', 'PERSONAL_DATA', 'ETHICS'] }, severity: lvl,
+      title: { type: 'string', minLength: 5, maxLength: 200 }, description: { type: 'string', minLength: 10, maxLength: 5000 }, impact: optText(2000), location: optText(200), occurredOn: dateStr } } } }, async (req, reply) =>
+    reply.status(201).send(await scoped(req, 'incident.report', (tx, ctx) => evals.reportIncident(tx, ctx, req.body as any))));
+  app.get('/api/v1/incidents/:id', { schema: { tags: ['evaluation'], params: idParams } }, async (req) => scoped(req, 'incident.read', async (tx, ctx) =>
+    ({ ...(await evals.getIncident(tx, ctx, (req.params as any).id)), can: { verify: can(ctx.roles, 'incident.verify'), report: can(ctx.roles, 'incident.report'), roles: ctx.roles } })));
+  app.post('/api/v1/incidents/:id/transitions', { schema: { tags: ['evaluation'], params: idParams, body: { type: 'object', required: ['action', 'note'], additionalProperties: false,
+    properties: { action: { type: 'string', enum: ['START_REVIEW', 'VERIFY', 'REJECT', 'DISPUTE', 'RESOLVE_DISPUTE', 'MARK_DUPLICATE', 'CLOSE', 'REOPEN'] }, note: { type: 'string', maxLength: 5000 },
+      severity: lvl, countedInMetric: { type: 'boolean' }, duplicateOfId: { anyOf: [uuid, { type: 'null' }] }, upheld: { type: 'boolean' }, evidenceDocumentVersionId: { anyOf: [uuid, { type: 'null' }] } } } } }, async (req) => {
+    const b = req.body as any;
+    // Tedarikçi itirazı dahil tüm geçişler doğrulama yetkisi ister (itiraz cezayı askıya aldığı için).
+    return scoped(req, 'incident.verify', (tx, ctx) => evals.transitionIncident(tx, ctx, (req.params as any).id, b.action, b));
+  });
+  app.post('/api/v1/incidents/:id/actions', { schema: { tags: ['evaluation'], params: idParams, body: { type: 'object', required: ['title', 'ownerRole', 'dueDate'], additionalProperties: false,
+    properties: { title: { type: 'string', minLength: 5, maxLength: 300 }, ownerRole: { type: 'string', enum: ['REQUESTER', 'BUYER', 'PROCUREMENT_MANAGER', 'TECH_EVALUATOR', 'LEGAL', 'FINANCE', 'SECURITY', 'MASTER_DATA'] }, dueDate: dateStr } } } }, async (req, reply) =>
+    reply.status(201).send(await scoped(req, 'incident.verify', (tx, ctx) => evals.addCorrectiveAction(tx, ctx, (req.params as any).id, req.body as any))));
+  app.post('/api/v1/corrective-actions/:id/complete', { schema: { tags: ['evaluation'], params: idParams, body: { type: 'object', required: ['note'], properties: { note: { type: 'string', maxLength: 5000 } } } } }, async (req) =>
+    scoped(req, 'corrective.complete', (tx, ctx) => evals.completeAction(tx, ctx, (req.params as any).id, (req.body as any).note)));
+  app.post('/api/v1/corrective-actions/:id/verify', { schema: { tags: ['evaluation'], params: idParams } }, async (req) =>
+    scoped(req, 'incident.verify', (tx, ctx) => evals.verifyAction(tx, ctx, (req.params as any).id)));
+  const score = { type: 'integer', minimum: 0, maximum: 100 } as const;
+  const dims = { type: 'object', additionalProperties: false, properties: { quality: score, delivery: score, sla: score, communication: score, commercial: score } } as const;
+  app.post('/api/v1/suppliers/:id/performance-reviews', { schema: { tags: ['evaluation'], params: idParams, body: { type: 'object', required: ['periodStart', 'periodEnd', 'category', 'scores', 'basis'], additionalProperties: false,
+    properties: { periodStart: dateStr, periodEnd: dateStr, category: { type: 'string', minLength: 2, maxLength: 100 }, weights: dims, scores: dims, basis: { type: 'string', maxLength: 5000 } } } } }, async (req, reply) =>
+    reply.status(201).send(await scoped(req, 'performance.review', (tx, ctx) => evals.addPerformanceReview(tx, ctx, (req.params as any).id, req.body as any))));
+  app.get('/api/v1/suppliers/:id/scorecard', { schema: { tags: ['evaluation'], params: idParams, querystring: { type: 'object', properties: { year: { type: 'integer', minimum: 2000, maximum: 2100 } } } } }, async (req) =>
+    scoped(req, 'assessment.read', async (tx, ctx) => ({ ...(await evals.scorecard(tx, ctx, (req.params as any).id, (req.query as any).year ?? Number(new Date().getFullYear()))),
+      can: { review: can(ctx.roles, 'performance.review'), reportIncident: can(ctx.roles, 'incident.report') } })));
+
+  // --- Faz 5: AI yönetişimi (07, T22–T24) ---
+  app.get('/api/v1/ai/overview', { schema: { tags: ['ai'] } }, async (req) => scoped(req, 'ai.read', async (tx, ctx) =>
+    ({ ...(await ai.overview(tx)), can: { manage: can(ctx.roles, 'ai.policy.manage') } })));
+  app.put('/api/v1/ai/policy', { schema: { tags: ['ai'], body: { type: 'object', required: ['allowedProviders', 'allowedRegions', 'monthlyBudget', 'budgetCurrency', 'dailyCallLimit', 'allowUpgrade'], additionalProperties: false,
+    properties: { allowedProviders: { type: 'array', maxItems: 20, items: { type: 'string', minLength: 1, maxLength: 60 } }, allowedRegions: { type: 'array', maxItems: 20, items: { type: 'string', minLength: 1, maxLength: 40 } },
+      // null önce: tür dönüştürme boş değeri "" veya 0'a çevirmesin (boş = sınırsız).
+      monthlyBudget: { anyOf: [{ type: 'null' }, { type: 'string' }] }, budgetCurrency: { type: 'string', pattern: '^[A-Z]{3}$' }, dailyCallLimit: { anyOf: [{ type: 'null' }, { type: 'integer', minimum: 0 }] },
+      allowUpgrade: { type: 'boolean' } } } } }, async (req) => scoped(req, 'ai.policy.manage', (tx, ctx) => ai.setPolicy(tx, ctx, req.body as any)));
+  app.delete('/api/v1/ai/policy', { schema: { tags: ['ai'] } }, async (req) => scoped(req, 'ai.policy.manage', (tx, ctx) => ai.deletePolicy(tx, ctx)));
+  app.post('/api/v1/ai/runs/:id/retry', { schema: { tags: ['ai'], params: idParams } }, async (req) => scoped(req, 'ai.read', (tx, ctx) => ai.retryRun(tx, ctx, (req.params as any).id)));
+  app.get('/api/v1/document-versions/:id/ai-fields', { schema: { tags: ['ai'], params: idParams } }, async (req) => scoped(req, 'document.read', async (tx) => ({ items: await ai.documentAiFields(tx, (req.params as any).id) })));
+
+  // --- Faz 5: raporlar (UX13). Dışa aktarma ekranla aynı yetki ve kapsamı uygular. ---
+  const period = { type: 'object', required: ['from', 'to'], properties: { from: { type: 'string', format: 'date' }, to: { type: 'string', format: 'date' } } } as const;
+  app.get('/api/v1/reports/summary', { schema: { tags: ['reports'], querystring: period } }, async (req) => scoped(req, 'report.read', (tx, ctx) => kpi.summary(tx, ctx, req.query as any)));
+  app.get('/api/v1/reports/summary.csv', { schema: { tags: ['reports'], querystring: period } }, async (req, reply) => {
+    const csv = await scoped(req, 'report.read', (tx, ctx) => kpi.summaryCsv(tx, ctx, req.query as any));
+    const q = req.query as { from: string; to: string };
+    return reply.header('content-type', 'text/csv; charset=utf-8').header('content-disposition', `attachment; filename="yonetim-gostergeleri-${q.from}-${q.to}.csv"`).send(csv);
+  });
+
   app.get('/api/v1/supplier-options', { schema: { tags: ['projects'] } }, async (req) => scoped(req, 'supplier.read', async (tx) =>
     ({ items: (await tx.query(`SELECT id, legal_name AS "legalName", status FROM suppliers WHERE status IN ('ACTIVE','CONDITIONAL','CANDIDATE') ORDER BY legal_name LIMIT 500`)).rows })));
 

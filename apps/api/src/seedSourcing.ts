@@ -157,3 +157,41 @@ export async function ensurePurchasingDemo(owner: pg.Pool, app: App, auth: DevAu
   await inv(s2, 'EGE2026000877', [{ description: 'Acil saha desteği', quantity: '6', unit: 'saat', unitPrice: '2500' }]);
   log('Faz 4 demo: sipariş, kabuller ve 3 fatura oluşturuldu (onay kullanıcıda).');
 }
+
+// Faz 5 demo (09 Demo veri seti: "bir güvenlik olayı"): yayımlı güvenlik anketi, bulgulu değerlendirme, iddia aşamasında güvenlik olayı,
+// performans incelemesi. Kritik engel oluşturulmaz (diğer demo akışları sürsün); sonuçlar kurallarla türetilir.
+export async function ensureEvaluationDemo(owner: pg.Pool, app: App, auth: DevAuthProvider, tenantId: string, log = console.log) {
+  if ((await owner.query(`SELECT 1 FROM questionnaire_templates WHERE tenant_id = $1`, [tenantId])).rowCount) { log('Faz 5 demo zaten var; atlandı.'); return; }
+  const sup = async (name: string) => (await owner.query<{ id: string }>(`SELECT id FROM suppliers WHERE tenant_id = $1 AND legal_name LIKE $2`, [tenantId, `${name}%`])).rows[0]?.id;
+  const [s1, s2] = [await sup('Anadolu Bilişim'), await sup('Ege Sistem')];
+  if (!s1 || !s2) { log('Faz 5 demo: tedarikçi yok; atlandı.'); return; }
+  const tok = async (key: string) => auth.issue(`dev|${key}@example.test`);
+  async function call(who: string, method: string, url: string, body?: unknown) {
+    const r = await app.inject({ method: method as any, url, payload: body as any, headers: { authorization: `Bearer ${await tok(who)}`, 'x-tenant-id': tenantId } });
+    if (r.statusCode >= 400) throw new Error(`${method} ${url} → ${r.statusCode} ${r.body}`);
+    return r.body ? JSON.parse(r.body) : null;
+  }
+  const t = await call('selin.guvenlik', 'POST', '/api/v1/questionnaire-templates', { code: 'BT-ERISIM', name: 'BT erişimli hizmet güvenlik anketi', category: 'BT erişimli hizmet', questions: [
+    { controlId: 'ERS-01', reference: 'ISO/IEC 27036-2 tedarikçi erişimi (eşleme uzman onayı bekliyor)', text: 'Uzak ve ayrıcalıklı erişimde çok faktörlü kimlik doğrulama uygulanıyor mu?', critical: true, evidenceRequired: false },
+    { controlId: 'ERS-02', reference: 'ISO/IEC 27002 erişim hakları', text: 'Personel ayrıldığında erişim aynı gün kapatılıyor mu?', critical: false, evidenceRequired: false },
+    { controlId: 'YDK-01', reference: 'ISO/IEC 27002 yedekleme', text: 'Yedekten geri dönüş yılda en az bir kez test edilip raporlanıyor mu?', critical: false, evidenceRequired: true },
+    { controlId: 'OLY-01', reference: 'Sözleşme olay bildirim maddesi', text: 'Olay bildirim süresi ve iletişim sorumlusu sözleşmede belirli mi?', critical: false, evidenceRequired: false },
+    { controlId: 'KVK-01', reference: 'KVKK veri işleme ve aktarım', text: 'Alt işleyen listesi ve veri konumu paylaşıldı mı?', critical: false, evidenceRequired: false },
+  ] });
+  await call('kerem.hukuk', 'POST', `/api/v1/questionnaire-templates/${t.id}/publish`);
+  const a = await call('alper.satinalma', 'POST', '/api/v1/assessments', { supplierId: s2, templateId: t.id, scope: 'Yedekleme ve felaket kurtarma hizmeti',
+    inherentFactors: { dataSensitivity: 'HIGH', accessLevel: 'MEDIUM', criticality: 'HIGH', substitutability: 'MEDIUM', subcontractorDependence: 'LOW' } });
+  const d = await call('alper.satinalma', 'GET', `/api/v1/assessments/${a.id}`);
+  const resp: Record<string, string> = { 'ERS-01': 'YES', 'ERS-02': 'PARTIAL', 'YDK-01': 'YES', 'OLY-01': 'YES', 'KVK-01': 'YES' };
+  for (const q of d.questions as { id: string; controlId: string }[]) {
+    await call('alper.satinalma', 'PUT', `/api/v1/assessments/${a.id}/answers/${q.id}`, { response: resp[q.controlId], note: 'Tedarikçi beyanı (sentetik)' });
+  }
+  // İnceleme yarım bırakılır: ERS-02 bulgulu, yedekleme kanıtı eksik → kullanıcı tamamlar.
+  const ers02 = (d.questions as { id: string; controlId: string }[]).find((q) => q.controlId === 'ERS-02')!;
+  await call('selin.guvenlik', 'POST', `/api/v1/assessments/${a.id}/answers/${ers02.id}/review`, { review: 'FINDING', findingSeverity: 'MEDIUM', findingNote: 'Erişim kapatma ortalama 3 gün sürüyor (sentetik).' });
+  await call('alper.satinalma', 'POST', '/api/v1/incidents', { supplierId: s1, category: 'SECURITY', severity: 'HIGH', title: 'Paylaşılan hesapla uzak erişim şüphesi',
+    description: 'Erişim kayıtlarında aynı hesapla iki farklı kişinin bağlandığı görüldü (sentetik).', impact: 'Sunucu bakım ortamı', occurredOn: '2026-10-14' });
+  await call('alper.satinalma', 'POST', `/api/v1/suppliers/${s1}/performance-reviews`, { periodStart: '2026-01-01', periodEnd: '2026-09-30', category: 'BT bakım hizmeti',
+    scores: { quality: 85, delivery: 78, sla: 72, communication: 90, commercial: 80 }, basis: 'Kabul kayıtları ve aylık SLA raporları (sentetik).' });
+  log('Faz 5 demo: güvenlik anketi, bulgulu değerlendirme, güvenlik olayı (iddia) ve performans incelemesi oluşturuldu.');
+}

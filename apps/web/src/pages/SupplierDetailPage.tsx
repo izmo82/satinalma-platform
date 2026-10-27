@@ -1,5 +1,7 @@
 import { useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
+import { cn } from '@/lib/utils';
+import { SupplierEvaluation } from './SupplierEvaluation.tsx';
 import { useResource } from '../lib/useApi.ts';
 import { api, ApiError } from '../lib/api.ts';
 import { fmtDateTime } from '../lib/format.ts';
@@ -7,6 +9,8 @@ import { supplierStatus } from '../lib/labels.ts';
 import { hasRole, useSession } from '../lib/session.tsx';
 import { Banner, ErrorState, Field, Loading, Modal, Tag } from '../ui/kit.tsx';
 import { Icon } from '../ui/icons.tsx';
+
+const SUPPLIER_TABS = [['kayit', 'Kayıt ve onay'], ['degerlendirme', 'Değerlendirme ve risk'], ['olaylar', 'Olaylar'], ['karne', 'Performans karnesi']] as const;
 
 interface Supplier {
   id: string; status: string; country: string; taxIdType: string | null; taxId: string | null; legalName: string; identityReviewRequired: boolean;
@@ -21,6 +25,8 @@ export function SupplierDetailPage() {
   const { id } = useParams();
   const { me } = useSession();
   const r = useResource<Supplier>(`/api/v1/suppliers/${id}`);
+  const [params, setParams] = useSearchParams();
+  const tab = params.get('sekme') ?? 'kayit';
   const [dialog, setDialog] = useState<null | 'approve' | 'reject' | 'identity'>(null);
   const [actionError, setActionError] = useState<ApiError | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -77,6 +83,13 @@ export function SupplierDetailPage() {
       )}
       {s.status === 'MERGED' && s.mergedIntoId && <Banner tone="neutral" title="Bu kayıt başka bir tedarikçiyle birleştirildi"><Link to={`/tedarikciler/${s.mergedIntoId}`}>Güncel kayda git</Link></Banner>}
 
+      <div role="tablist" aria-label="Tedarikçi" className="mb-4 flex gap-6 overflow-x-auto border-b border-border">
+        {SUPPLIER_TABS.map(([k, l]) => (
+          <button key={k} role="tab" aria-selected={tab === k} onClick={() => { const p = new URLSearchParams(params); k === 'kayit' ? p.delete('sekme') : p.set('sekme', k); setParams(p, { replace: true }); }}
+            className={cn('-mb-px min-h-10 whitespace-nowrap border-b-2 font-semibold transition-colors duration-150', tab === k ? 'border-ink text-ink' : 'border-transparent text-ink-muted hover:text-ink')}>{l}</button>
+        ))}
+      </div>
+      {tab !== 'kayit' ? <SupplierEvaluation tab={tab} supplierId={s.id} /> : <>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 16 }}>
         <section className="panel" aria-labelledby="kimlik">
           <div className="panel-head"><h2 id="kimlik">Kimlik ve kayıt</h2></div>
@@ -131,6 +144,7 @@ export function SupplierDetailPage() {
             : <p className="muted">Henüz onay yok.</p>}
         </div>
       </section>
+      </>}
 
       {(dialog === 'approve' || dialog === 'reject') && (
         <DecisionDialog kind={dialog} onClose={() => setDialog(null)} onSubmit={(rationale) => run(() => api(`/api/v1/suppliers/${s.id}/approvals`, {

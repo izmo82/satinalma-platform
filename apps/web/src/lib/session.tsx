@@ -41,7 +41,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, []);
   useEffect(() => { void refresh(); }, [refresh]);
   const switchTenant = useCallback(async (id: string) => { session.tenant = id; await refresh(); }, [refresh]);
-  const logout = useCallback(() => { session.token = null; session.tenant = null; setMe(null); void endSession(); }, []);
+  // Çıkışta adres köke döner: sonraki kullanıcı önceki kullanıcının (belki yetkisiz olduğu) sayfasına düşmez.
+  const logout = useCallback(() => { session.token = null; session.tenant = null; setMe(null); window.history.replaceState(null, '', '/'); void endSession(); }, []);
   return <Ctx.Provider value={{ me, loading, authError, refresh, switchTenant, logout }}>{children}</Ctx.Provider>;
 }
 

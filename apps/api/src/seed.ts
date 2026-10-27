@@ -9,7 +9,7 @@ import { DevAuthProvider } from './auth.ts';
 import { S3ObjectStore } from './storage.ts';
 import { buildApp } from './server.ts';
 import { createSyntheticWorld, DEMO_TENANT_A, syntheticPdf, ublInvoiceXml } from './devdata.ts';
-import { ensureLifecycleDemo, ensurePurchasingDemo, ensureSourcingDemo } from './seedSourcing.ts';
+import { ensureEvaluationDemo, ensureLifecycleDemo, ensurePurchasingDemo, ensureSourcingDemo } from './seedSourcing.ts';
 import { processJobs } from './worker.ts';
 
 const config = loadConfig();
@@ -24,6 +24,7 @@ if (exists.rows[0]) {
   await ensureSourcingDemo(owner, app0, auth0, exists.rows[0].id);
   await ensureLifecycleDemo(owner, app0, auth0, exists.rows[0].id, () => processJobs(pool0, new S3ObjectStore(config.objectStore), null));
   await ensurePurchasingDemo(owner, app0, auth0, exists.rows[0].id);
+  await ensureEvaluationDemo(owner, app0, auth0, exists.rows[0].id);
   await app0.close(); await pool0.end(); await owner.end();
   process.exit(0);
 }
@@ -124,6 +125,7 @@ await contract('Eski Temizlik Sözleşmesi (arşiv)', { method: 'PENDING_CLASSIF
 await ensureSourcingDemo(owner, app, auth, world.tenantA);
 await ensureLifecycleDemo(owner, app, auth, world.tenantA, () => processJobs(pool, new S3ObjectStore(config.objectStore), null));
 await ensurePurchasingDemo(owner, app, auth, world.tenantA);
+await ensureEvaluationDemo(owner, app, auth, world.tenantA);
 console.log('Sentetik demo verisi oluşturuldu. Kullanıcılar (dev oturumu):');
 for (const [k, u] of Object.entries(world.users)) console.log(`  ${k.padEnd(12)} ${u.email}`);
 await app.close();
