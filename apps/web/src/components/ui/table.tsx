@@ -5,9 +5,13 @@ import { cn } from "@/lib/utils"
 
 function Table({ className, ...props }: React.ComponentProps<"table">) {
   return (
+    // Dar ekranda yatay kayan tablo klavyeyle de kaydırılabilmeli (WCAG 2.1.1): kapsayıcı odaklanabilir bölge.
     <div
       data-slot="table-container"
-      className="relative w-full overflow-x-auto rounded-md border border-border bg-surface"
+      tabIndex={0}
+      role="region"
+      aria-label={props["aria-label"] ?? "Tablo"}
+      className="relative w-full overflow-x-auto rounded-md border border-border bg-surface focus-visible:outline-2 focus-visible:outline-offset-2"
     >
       <table
         data-slot="table"

@@ -119,7 +119,8 @@
   h2 { font-size: var(--text-xl); }
   h3 { font-size: var(--text-lg); }
   h4 { font-size: var(--text-base); }
-  a { color: var(--ink); text-underline-offset: 3px; text-decoration-color: var(--rule-strong); }
+  /* Metin içindeki bağlantı yalnız renkle ayrışmaz (WCAG 1.4.1): alt çizgi her zaman; menü/düğme/tablo bağlantıları kendi sınıfıyla kaldırır. */
+  a { color: var(--ink); text-decoration-line: underline; text-underline-offset: 3px; text-decoration-color: var(--ink-subtle); }
   a:hover { text-decoration-color: currentColor; }
   ::selection { background: var(--istampa-soft); color: var(--ink); }
   :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 2px; }

@@ -70,7 +70,8 @@ export function DocumentViewer({ versionId, mimeType, regions = [], targetPage, 
           <button className="btn btn-sm" onClick={() => setScale((s) => Math.min(3, s + 0.2))} aria-label="Yakınlaştır"><Icon name="zoomIn" /></button>
         </>}
       </div>
-      <div className="viewer-pages" ref={pagesRef}>
+      {/* Kayan sayfa alanı klavyeyle de kaydırılabilir (ok tuşları, sayfa aşağı). */}
+      <div className="viewer-pages" ref={pagesRef} tabIndex={0} role="region" aria-label="Belge sayfaları">
         {error ? <ErrorState error={error} onRetry={() => setAttempt((a) => a + 1)} />
           : doc ? Array.from({ length: doc.numPages }, (_, i) => (
             <PdfPage key={i} doc={doc} pageNo={i + 1} scale={scale} isTarget={targetPage === i + 1}

@@ -1,0 +1,62 @@
+import AxeBuilder from '@axe-core/playwright';
+import { expect, test, type Page } from '@playwright/test';
+
+// Hareket azaltma tercihiyle: renk geçişi ortasında ölçüm yapılmaz (uygulama prefers-reduced-motion'a uyar).
+test.use({ reducedMotion: 'reduce' });
+
+// Faz 6 / T41: kritik ekranlarda otomatik erişilebilirlik denetimi (axe, WCAG 2.2 AA kuralları). Otomatik denetim gerçek ekran okuyucu
+// oturumunun yerine geçmez; ciddi/kritik ihlal sıfır olmalıdır.
+async function login(page: Page, email: string) {
+  await page.goto('/');
+  await page.getByRole('radio', { name: new RegExp(email.replace('.', '\\.')) }).check();
+  await page.getByRole('button', { name: 'Oturum aç' }).click();
+  await expect(page.getByRole('heading', { name: 'İşlerim' })).toBeVisible();
+}
+async function audit(page: Page, name: string) {
+  const r = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa']).analyze();
+  const serious = r.violations.filter((v) => v.impact === 'serious' || v.impact === 'critical');
+  expect(serious.map((v) => `${name}: ${v.id} (${v.impact}) ${v.nodes.slice(0, 3).map((n) => n.target.join(' ')).join(' | ')}`)).toEqual([]);
+}
+const nav = (page: Page, link: string) => page.getByRole('navigation', { name: 'Ana menü' }).getByRole('link', { name: link }).first().click();
+
+test('satınalma: işlerim, siparişler, tedarikçi sekmeleri, olaylar', async ({ page }) => {
+  await login(page, 'alper.satinalma@example.test');
+  await audit(page, 'İşlerim');
+  await nav(page, 'Siparişler');
+  await expect(page.getByRole('heading', { name: 'Siparişler' })).toBeVisible();
+  await audit(page, 'Siparişler');
+  await page.getByRole('table').getByRole('link').first().click();
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('PO-');
+  await audit(page, 'Sipariş detayı');
+  await nav(page, 'Tedarikçiler');
+  await page.getByRole('link', { name: /Anadolu Bilişim/ }).click();
+  for (const tab of ['Değerlendirme ve risk', 'Olaylar', 'Performans karnesi']) {
+    await page.getByRole('tab', { name: tab }).click();
+    await page.waitForLoadState('networkidle');
+    await audit(page, `Tedarikçi · ${tab}`);
+  }
+  await nav(page, 'Olaylar');
+  await expect(page.getByRole('heading', { name: 'Tedarikçi olayları' })).toBeVisible();
+  await audit(page, 'Olaylar');
+});
+
+test('finans: faturalar, fatura detayı, raporlar', async ({ page }) => {
+  await login(page, 'nur.finansonay@example.test');
+  await nav(page, 'Faturalar');
+  await expect(page.getByRole('heading', { name: 'Faturalar' })).toBeVisible();
+  await audit(page, 'Faturalar');
+  await page.getByRole('link', { name: 'ANB2026000102' }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('ANB2026000102');
+  await audit(page, 'Fatura detayı');
+  await nav(page, 'Raporlar');
+  await expect(page.getByText('Fatura istisna oranı')).toBeVisible();
+  await audit(page, 'Raporlar');
+});
+
+test('hukuk: sözleşme imza çalışma alanı', async ({ page }) => {
+  await login(page, 'leyla.hukuk@example.test');
+  await nav(page, 'Sözleşmeler');
+  await page.getByRole('link', { name: 'Nakliye Hizmet Sözleşmesi' }).first().click();
+  await expect(page.getByRole('heading', { name: 'Nakliye Hizmet Sözleşmesi' })).toBeVisible();
+  await audit(page, 'İmza çalışma alanı');
+});
