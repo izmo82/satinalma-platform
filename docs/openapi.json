@@ -1,0 +1,2439 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Satınalma ve Sözleşme Platformu API",
+    "version": "0.1.0",
+    "description": "Kiracı bağlamı doğrulanmış üyelikten türetilir; X-Tenant-Id yalnız seçim bildirir."
+  },
+  "components": {
+    "securitySchemes": {
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    },
+    "schemas": {}
+  },
+  "paths": {
+    "/api/v1/auth/config": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/dev/token": {
+      "post": {
+        "tags": [
+          "dev"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "email"
+                ],
+                "properties": {
+                  "email": {
+                    "type": "string",
+                    "maxLength": 200
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/me": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/members": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/tasks": {
+      "get": {
+        "tags": [
+          "tasks"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "mine",
+                "overdue",
+                "all"
+              ]
+            },
+            "in": "query",
+            "name": "view",
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/documents": {
+      "post": {
+        "tags": [
+          "documents"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/document-versions/{id}": {
+      "get": {
+        "tags": [
+          "documents"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/document-versions/{id}/content": {
+      "get": {
+        "tags": [
+          "documents"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/document-versions/{id}/seller-identity": {
+      "post": {
+        "tags": [
+          "documents"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "taxIdType",
+                  "taxId",
+                  "name",
+                  "country"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "taxIdType": {
+                    "type": "string",
+                    "enum": [
+                      "VKN",
+                      "TCKN",
+                      "FOREIGN"
+                    ]
+                  },
+                  "taxId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 40
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 300
+                  },
+                  "country": {
+                    "type": "string",
+                    "pattern": "^[A-Z]{2}$"
+                  },
+                  "iban": {
+                    "type": "string",
+                    "maxLength": 40,
+                    "nullable": true
+                  },
+                  "page": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "nullable": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/suppliers": {
+      "get": {
+        "tags": [
+          "suppliers"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "in": "query",
+            "name": "status",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 100
+            },
+            "in": "query",
+            "name": "q",
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/suppliers/{id}": {
+      "get": {
+        "tags": [
+          "suppliers"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/suppliers/{id}/approvals": {
+      "post": {
+        "tags": [
+          "suppliers"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "kind",
+                  "decision",
+                  "rationale",
+                  "expectedRowVersion"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "MASTER_DATA",
+                      "SECURITY",
+                      "FINANCE"
+                    ]
+                  },
+                  "decision": {
+                    "type": "string",
+                    "enum": [
+                      "APPROVED",
+                      "REJECTED"
+                    ]
+                  },
+                  "rationale": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2000
+                  },
+                  "expectedRowVersion": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/suppliers/{id}/activate": {
+      "post": {
+        "tags": [
+          "suppliers"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "expectedRowVersion"
+                ],
+                "properties": {
+                  "expectedRowVersion": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/suppliers/{id}/identity": {
+      "post": {
+        "tags": [
+          "suppliers"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "country",
+                  "taxIdType",
+                  "taxId",
+                  "rationale",
+                  "expectedRowVersion"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "country": {
+                    "type": "string",
+                    "pattern": "^[A-Z]{2}$"
+                  },
+                  "taxIdType": {
+                    "type": "string",
+                    "enum": [
+                      "VKN",
+                      "TCKN",
+                      "FOREIGN"
+                    ]
+                  },
+                  "taxId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 40
+                  },
+                  "rationale": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2000
+                  },
+                  "expectedRowVersion": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/contracts": {
+      "get": {
+        "tags": [
+          "contracts"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "contracts"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "title",
+                  "documentVersionId",
+                  "stage",
+                  "signatureMethod",
+                  "parties"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "title": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 300
+                  },
+                  "documentVersionId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "supplierId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "nullable": true
+                  },
+                  "stage": {
+                    "type": "string",
+                    "enum": [
+                      "DRAFT",
+                      "EXECUTION",
+                      "ARCHIVE_IMPORT"
+                    ]
+                  },
+                  "signatureMethod": {
+                    "type": "string",
+                    "enum": [
+                      "WET_IMAGE_REVIEW",
+                      "QUALIFIED_ELECTRONIC",
+                      "ELECTRONIC_OTHER",
+                      "HYBRID",
+                      "NOT_REQUIRED",
+                      "PENDING_CLASSIFICATION"
+                    ]
+                  },
+                  "originalCustodyRequired": {
+                    "type": "boolean",
+                    "default": false
+                  },
+                  "effectiveDate": {
+                    "type": "string",
+                    "format": "date",
+                    "nullable": true
+                  },
+                  "parties": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 20,
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "role",
+                        "displayName"
+                      ],
+                      "additionalProperties": false,
+                      "properties": {
+                        "role": {
+                          "type": "string",
+                          "enum": [
+                            "BUYER",
+                            "SUPPLIER",
+                            "OTHER"
+                          ]
+                        },
+                        "displayName": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 300
+                        },
+                        "legalEntityId": {
+                          "type": "string",
+                          "format": "uuid",
+                          "nullable": true
+                        },
+                        "supplierId": {
+                          "type": "string",
+                          "format": "uuid",
+                          "nullable": true
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/contract-versions/{id}/signature-status": {
+      "get": {
+        "tags": [
+          "signatures"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/contract-versions/{id}/signature-policy": {
+      "patch": {
+        "tags": [
+          "signatures"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "signatureMethod",
+                  "originalCustodyRequired"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "signatureMethod": {
+                    "type": "string",
+                    "enum": [
+                      "WET_IMAGE_REVIEW",
+                      "QUALIFIED_ELECTRONIC",
+                      "ELECTRONIC_OTHER",
+                      "HYBRID",
+                      "NOT_REQUIRED",
+                      "PENDING_CLASSIFICATION"
+                    ]
+                  },
+                  "originalCustodyRequired": {
+                    "type": "boolean"
+                  },
+                  "stage": {
+                    "type": "string",
+                    "enum": [
+                      "DRAFT",
+                      "EXECUTION",
+                      "ARCHIVE_IMPORT"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/contract-versions/{id}/versions": {
+      "post": {
+        "tags": [
+          "contracts"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "documentVersionId",
+                  "kind",
+                  "stage"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "documentVersionId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "MAIN",
+                      "AMENDMENT",
+                      "ANNEX",
+                      "SOW"
+                    ]
+                  },
+                  "stage": {
+                    "type": "string",
+                    "enum": [
+                      "DRAFT",
+                      "EXECUTION",
+                      "ARCHIVE_IMPORT"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/contract-versions/{id}/signature-requirements": {
+      "post": {
+        "tags": [
+          "signatures"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "partyId",
+                  "signerRole",
+                  "acceptableMethods"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "partyId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "signerRole": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  },
+                  "requirementCount": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 20,
+                    "default": 1
+                  },
+                  "acceptableMethods": {
+                    "type": "array",
+                    "minItems": 1,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "WET_IMAGE_REVIEW",
+                        "QUALIFIED_ELECTRONIC",
+                        "ELECTRONIC_OTHER"
+                      ]
+                    }
+                  },
+                  "required": {
+                    "type": "boolean",
+                    "default": true
+                  },
+                  "page": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "nullable": true
+                  },
+                  "policyVersion": {
+                    "type": "string",
+                    "default": "sig-policy-v1"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/contract-versions/{id}/signature-analysis-jobs": {
+      "post": {
+        "tags": [
+          "signatures"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/contract-versions/{id}/signature-reviews": {
+      "post": {
+        "tags": [
+          "signatures"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "requirementId",
+                  "decision",
+                  "observedMark",
+                  "rationale",
+                  "documentSha256"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "requirementId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "slot": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "default": 1
+                  },
+                  "decision": {
+                    "type": "string",
+                    "enum": [
+                      "IMAGE_CONFIRMED",
+                      "MISSING",
+                      "UNCLEAR"
+                    ]
+                  },
+                  "observedMark": {
+                    "type": "string",
+                    "enum": [
+                      "FULL_SIGNATURE",
+                      "STAMP_ONLY",
+                      "INITIALS_ONLY",
+                      "NAME_ONLY",
+                      "NONE",
+                      "ILLEGIBLE"
+                    ]
+                  },
+                  "rationale": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 2000
+                  },
+                  "detectionId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "nullable": true
+                  },
+                  "page": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "nullable": true
+                  },
+                  "documentSha256": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{64}$"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/contract-versions/{id}/original-custody-events": {
+      "post": {
+        "tags": [
+          "signatures"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "status",
+                  "location",
+                  "responsibleUserId",
+                  "occurredAt"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "RECEIPT_DECLARED",
+                      "CUSTODY_CONFIRMED"
+                    ]
+                  },
+                  "location": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 300
+                  },
+                  "responsibleUserId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "occurredAt": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "evidenceReference": {
+                    "type": "string",
+                    "maxLength": 500,
+                    "nullable": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/contract-versions/{id}/digital-validation-jobs": {
+      "post": {
+        "tags": [
+          "signatures"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "requirementId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "nullable": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/contract-versions/{id}/signature-exceptions": {
+      "post": {
+        "tags": [
+          "signatures"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "requirementIds",
+                  "reason",
+                  "residualRisk",
+                  "scope",
+                  "expiresAt"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "requirementIds": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "string",
+                      "format": "uuid"
+                    }
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2000
+                  },
+                  "residualRisk": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2000
+                  },
+                  "scope": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  },
+                  "expiresAt": {
+                    "type": "string",
+                    "format": "date-time"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/signature-exceptions/{id}/decision": {
+      "post": {
+        "tags": [
+          "signatures"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "decision",
+                  "rationale"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "decision": {
+                    "type": "string",
+                    "enum": [
+                      "APPROVED",
+                      "REJECTED"
+                    ]
+                  },
+                  "rationale": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2000
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/contract-versions/{id}/finalize-signature-review": {
+      "post": {
+        "tags": [
+          "signatures"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/audit-events": {
+      "get": {
+        "tags": [
+          "audit"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "query",
+            "name": "entityId",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/projects": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "title",
+                  "category",
+                  "lines",
+                  "criteria",
+                  "companyId"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "companyId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "title": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 200
+                  },
+                  "category": {
+                    "type": "string",
+                    "minLength": 2,
+                    "maxLength": 120
+                  },
+                  "need": {
+                    "type": "string",
+                    "maxLength": 4000
+                  },
+                  "currency": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z]{3}$"
+                  },
+                  "budget": {
+                    "type": "string",
+                    "pattern": "^-?\\d{1,18}(\\.\\d{1,6})?$",
+                    "nullable": true
+                  },
+                  "budgetVerified": {
+                    "type": "boolean"
+                  },
+                  "costCenter": {
+                    "type": "string",
+                    "maxLength": 60,
+                    "nullable": true
+                  },
+                  "deliveryLocation": {
+                    "type": "string",
+                    "maxLength": 200,
+                    "nullable": true
+                  },
+                  "neededBy": {
+                    "type": "string",
+                    "format": "date",
+                    "nullable": true
+                  },
+                  "lines": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 500,
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "description",
+                        "unit",
+                        "quantity"
+                      ],
+                      "additionalProperties": false,
+                      "properties": {
+                        "lot": {
+                          "type": "string",
+                          "maxLength": 40
+                        },
+                        "description": {
+                          "type": "string",
+                          "minLength": 2,
+                          "maxLength": 500
+                        },
+                        "unit": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 30
+                        },
+                        "quantity": {
+                          "type": "string",
+                          "pattern": "^-?\\d{1,18}(\\.\\d{1,6})?$"
+                        },
+                        "spec": {
+                          "type": "string",
+                          "maxLength": 4000
+                        }
+                      }
+                    }
+                  },
+                  "criteria": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 20,
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "code",
+                        "name",
+                        "kind",
+                        "weight"
+                      ],
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "pattern": "^[A-Z][A-Z0-9_]{1,30}$"
+                        },
+                        "name": {
+                          "type": "string",
+                          "minLength": 2,
+                          "maxLength": 120
+                        },
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "PRICE",
+                            "SCORE"
+                          ]
+                        },
+                        "weight": {
+                          "type": "string",
+                          "pattern": "^-?\\d{1,18}(\\.\\d{1,6})?$"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{id}": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "projects"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "title",
+                  "category",
+                  "lines",
+                  "criteria"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "companyId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "title": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 200
+                  },
+                  "category": {
+                    "type": "string",
+                    "minLength": 2,
+                    "maxLength": 120
+                  },
+                  "need": {
+                    "type": "string",
+                    "maxLength": 4000
+                  },
+                  "currency": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z]{3}$"
+                  },
+                  "budget": {
+                    "type": "string",
+                    "pattern": "^-?\\d{1,18}(\\.\\d{1,6})?$",
+                    "nullable": true
+                  },
+                  "budgetVerified": {
+                    "type": "boolean"
+                  },
+                  "costCenter": {
+                    "type": "string",
+                    "maxLength": 60,
+                    "nullable": true
+                  },
+                  "deliveryLocation": {
+                    "type": "string",
+                    "maxLength": 200,
+                    "nullable": true
+                  },
+                  "neededBy": {
+                    "type": "string",
+                    "format": "date",
+                    "nullable": true
+                  },
+                  "lines": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 500,
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "description",
+                        "unit",
+                        "quantity"
+                      ],
+                      "additionalProperties": false,
+                      "properties": {
+                        "lot": {
+                          "type": "string",
+                          "maxLength": 40
+                        },
+                        "description": {
+                          "type": "string",
+                          "minLength": 2,
+                          "maxLength": 500
+                        },
+                        "unit": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 30
+                        },
+                        "quantity": {
+                          "type": "string",
+                          "pattern": "^-?\\d{1,18}(\\.\\d{1,6})?$"
+                        },
+                        "spec": {
+                          "type": "string",
+                          "maxLength": 4000
+                        }
+                      }
+                    }
+                  },
+                  "criteria": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 20,
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "code",
+                        "name",
+                        "kind",
+                        "weight"
+                      ],
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "pattern": "^[A-Z][A-Z0-9_]{1,30}$"
+                        },
+                        "name": {
+                          "type": "string",
+                          "minLength": 2,
+                          "maxLength": 120
+                        },
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "PRICE",
+                            "SCORE"
+                          ]
+                        },
+                        "weight": {
+                          "type": "string",
+                          "pattern": "^-?\\d{1,18}(\\.\\d{1,6})?$"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{id}/criteria-revisions": {
+      "post": {
+        "tags": [
+          "projects"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "criteria",
+                  "reason"
+                ],
+                "properties": {
+                  "criteria": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "code",
+                        "name",
+                        "kind",
+                        "weight"
+                      ],
+                      "additionalProperties": false,
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "pattern": "^[A-Z][A-Z0-9_]{1,30}$"
+                        },
+                        "name": {
+                          "type": "string",
+                          "minLength": 2,
+                          "maxLength": 120
+                        },
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "PRICE",
+                            "SCORE"
+                          ]
+                        },
+                        "weight": {
+                          "type": "string",
+                          "pattern": "^-?\\d{1,18}(\\.\\d{1,6})?$"
+                        }
+                      }
+                    }
+                  },
+                  "reason": {
+                    "type": "string",
+                    "maxLength": 2000
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{id}/rounds": {
+      "post": {
+        "tags": [
+          "rfq"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "closesAt",
+                  "supplierIds"
+                ],
+                "properties": {
+                  "closesAt": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "supplierIds": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 50,
+                    "items": {
+                      "type": "string",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/rfq-rounds/{id}/decision": {
+      "post": {
+        "tags": [
+          "rfq"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "approve"
+                ],
+                "properties": {
+                  "approve": {
+                    "type": "boolean"
+                  },
+                  "note": {
+                    "type": "string",
+                    "maxLength": 2000
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/rfq-rounds/{id}/close": {
+      "post": {
+        "tags": [
+          "rfq"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "reason"
+                ],
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "maxLength": 2000
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/rfq-questions/{id}/answer": {
+      "post": {
+        "tags": [
+          "rfq"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "answer"
+                ],
+                "properties": {
+                  "answer": {
+                    "type": "string",
+                    "maxLength": 4000
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{id}/comparison": {
+      "get": {
+        "tags": [
+          "evaluation"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{id}/fx-rates": {
+      "post": {
+        "tags": [
+          "evaluation"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "currency",
+                  "rate",
+                  "source",
+                  "asOf"
+                ],
+                "properties": {
+                  "currency": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z]{3}$"
+                  },
+                  "rate": {
+                    "type": "string",
+                    "pattern": "^-?\\d{1,18}(\\.\\d{1,6})?$"
+                  },
+                  "source": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 200
+                  },
+                  "asOf": {
+                    "type": "string",
+                    "format": "date"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/bids/{id}/scores": {
+      "post": {
+        "tags": [
+          "evaluation"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "criterionCode",
+                  "score",
+                  "evidence"
+                ],
+                "properties": {
+                  "criterionCode": {
+                    "type": "string",
+                    "maxLength": 32
+                  },
+                  "score": {
+                    "type": "string",
+                    "pattern": "^-?\\d{1,18}(\\.\\d{1,6})?$"
+                  },
+                  "evidence": {
+                    "type": "string",
+                    "maxLength": 4000
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{id}/evaluations": {
+      "post": {
+        "tags": [
+          "evaluation"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/evaluations/{id}": {
+      "get": {
+        "tags": [
+          "evaluation"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/evaluations/{id}/report.xlsx": {
+      "get": {
+        "tags": [
+          "evaluation"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/evaluations/{id}/decision.pdf": {
+      "get": {
+        "tags": [
+          "evaluation"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/projects/{id}/awards": {
+      "post": {
+        "tags": [
+          "award"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "evaluationId",
+                  "rationale",
+                  "allocations"
+                ],
+                "properties": {
+                  "evaluationId": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "rationale": {
+                    "type": "string",
+                    "maxLength": 4000
+                  },
+                  "allocations": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 1000,
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "projectLineId",
+                        "supplierId",
+                        "quantity"
+                      ],
+                      "additionalProperties": false,
+                      "properties": {
+                        "projectLineId": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "supplierId": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "quantity": {
+                          "type": "string",
+                          "pattern": "^-?\\d{1,18}(\\.\\d{1,6})?$"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/awards/{id}/decision": {
+      "post": {
+        "tags": [
+          "award"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "approve"
+                ],
+                "properties": {
+                  "approve": {
+                    "type": "boolean"
+                  },
+                  "note": {
+                    "type": "string",
+                    "maxLength": 2000
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/supplier-options": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/portal/rounds": {
+      "get": {
+        "tags": [
+          "portal"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/portal/rounds/{id}": {
+      "get": {
+        "tags": [
+          "portal"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/portal/rounds/{id}/bids": {
+      "post": {
+        "tags": [
+          "portal"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "currency",
+                  "lines"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "currency": {
+                    "type": "string",
+                    "pattern": "^[A-Z]{3}$"
+                  },
+                  "validityDays": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 365,
+                    "nullable": true
+                  },
+                  "note": {
+                    "type": "string",
+                    "maxLength": 4000
+                  },
+                  "lines": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 500,
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "projectLineId",
+                        "unit",
+                        "quantity",
+                        "unitPrice",
+                        "scope"
+                      ],
+                      "additionalProperties": false,
+                      "properties": {
+                        "projectLineId": {
+                          "type": "string",
+                          "format": "uuid"
+                        },
+                        "unit": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 30
+                        },
+                        "quantity": {
+                          "type": "string",
+                          "pattern": "^-?\\d{1,18}(\\.\\d{1,6})?$"
+                        },
+                        "unitPrice": {
+                          "type": "string",
+                          "pattern": "^-?\\d{1,18}(\\.\\d{1,6})?$"
+                        },
+                        "scope": {
+                          "type": "string",
+                          "enum": [
+                            "INCLUDED",
+                            "EXCLUDED",
+                            "ALTERNATIVE"
+                          ]
+                        },
+                        "note": {
+                          "type": "string",
+                          "maxLength": 1000
+                        }
+                      }
+                    }
+                  },
+                  "costs": {
+                    "type": "array",
+                    "maxItems": 20,
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "kind",
+                        "amount"
+                      ],
+                      "additionalProperties": false,
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "SHIPPING",
+                            "INSTALLATION",
+                            "MAINTENANCE",
+                            "RENEWAL",
+                            "OTHER"
+                          ]
+                        },
+                        "amount": {
+                          "type": "string",
+                          "pattern": "^-?\\d{1,18}(\\.\\d{1,6})?$"
+                        },
+                        "note": {
+                          "type": "string",
+                          "maxLength": 500
+                        }
+                      }
+                    }
+                  },
+                  "attachmentIds": {
+                    "type": "array",
+                    "maxItems": 20,
+                    "items": {
+                      "type": "string",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/portal/rounds/{id}/files": {
+      "post": {
+        "tags": [
+          "portal"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/bid-files/{id}/content": {
+      "get": {
+        "tags": [
+          "portal"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/portal/rounds/{id}/questions": {
+      "post": {
+        "tags": [
+          "portal"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "question"
+                ],
+                "properties": {
+                  "question": {
+                    "type": "string",
+                    "maxLength": 4000
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    }
+  },
+  "security": [
+    {
+      "bearer": []
+    }
+  ]
+}

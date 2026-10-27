@@ -1,0 +1,594 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-27T15:48:33+00:00",
+  "title": "Design System: Satınalma ve Sözleşme",
+  "extensions": {
+    "colorMeta": {
+      "ink": {
+        "role": "primary",
+        "displayName": "Koyu Mürekkep",
+        "canonical": "#1d2230",
+        "tonalRamp": [
+          "#070a17",
+          "#1e2432",
+          "#3a3f4f",
+          "#575d6e",
+          "#767d8e",
+          "#979eb0",
+          "#bdc4d7",
+          "#e7eeff"
+        ]
+      },
+      "on-ink": {
+        "role": "primary",
+        "displayName": "Mürekkep Üstü Kâğıt",
+        "canonical": "#f8f6f0",
+        "tonalRamp": [
+          "#0c0b07",
+          "#252420",
+          "#41403b",
+          "#5f5d58",
+          "#7f7d78",
+          "#a09e99",
+          "#c6c4be",
+          "#f0eee8"
+        ]
+      },
+      "istampa": {
+        "role": "secondary",
+        "displayName": "Istampa Moru",
+        "canonical": "#5b3fa0",
+        "tonalRamp": [
+          "#160043",
+          "#2c0064",
+          "#462686",
+          "#6347a9",
+          "#8269ce",
+          "#a28af3",
+          "#c8b0ff",
+          "#f1e0ff"
+        ]
+      },
+      "istampa-soft": {
+        "role": "secondary",
+        "displayName": "Istampa Pembesi",
+        "canonical": "#efeaf8",
+        "tonalRamp": [
+          "#0d0912",
+          "#26222c",
+          "#423d48",
+          "#5f5b67",
+          "#7f7b87",
+          "#a09ca9",
+          "#c6c1cf",
+          "#f1ecfa"
+        ]
+      },
+      "verified": {
+        "role": "secondary",
+        "displayName": "Kural Yeşili",
+        "canonical": "#2a6a59",
+        "tonalRamp": [
+          "#001308",
+          "#002e21",
+          "#004c3c",
+          "#2b6b5a",
+          "#4d8b79",
+          "#6ead9a",
+          "#94d4c0",
+          "#bdffea"
+        ]
+      },
+      "verified-soft": {
+        "role": "secondary",
+        "displayName": "Kural Yeşili Zemin",
+        "canonical": "#e2efe9",
+        "tonalRamp": [
+          "#050d0a",
+          "#1d2722",
+          "#38433e",
+          "#55615c",
+          "#75807b",
+          "#96a29c",
+          "#bbc8c2",
+          "#e5f2ec"
+        ]
+      },
+      "ai": {
+        "role": "secondary",
+        "displayName": "Öneri Grisi",
+        "canonical": "#5f6370",
+        "tonalRamp": [
+          "#080b14",
+          "#20242f",
+          "#3c3f4b",
+          "#595d6a",
+          "#797d8a",
+          "#9a9eac",
+          "#bfc4d2",
+          "#e9eefd"
+        ]
+      },
+      "danger": {
+        "role": "tertiary",
+        "displayName": "Kiremit",
+        "canonical": "#a8372a",
+        "tonalRamp": [
+          "#340000",
+          "#580000",
+          "#7c0200",
+          "#a13124",
+          "#c75344",
+          "#ed7665",
+          "#ff9c89",
+          "#ffd0bf"
+        ]
+      },
+      "danger-soft": {
+        "role": "tertiary",
+        "displayName": "Kiremit Zemin",
+        "canonical": "#f8e3de",
+        "tonalRamp": [
+          "#140705",
+          "#2f201c",
+          "#4c3b37",
+          "#6b5955",
+          "#8b7874",
+          "#ad9995",
+          "#d3bfba",
+          "#fee9e4"
+        ]
+      },
+      "warn": {
+        "role": "tertiary",
+        "displayName": "Okru",
+        "canonical": "#855600",
+        "tonalRamp": [
+          "#220000",
+          "#411600",
+          "#603400",
+          "#815200",
+          "#a3722c",
+          "#c6944f",
+          "#eeb975",
+          "#ffe49e"
+        ]
+      },
+      "warn-soft": {
+        "role": "tertiary",
+        "displayName": "Okru Zemin",
+        "canonical": "#f7ebcd",
+        "tonalRamp": [
+          "#120a00",
+          "#2c230a",
+          "#493f26",
+          "#675d43",
+          "#877c61",
+          "#a99e81",
+          "#cfc3a6",
+          "#faeed0"
+        ]
+      },
+      "info": {
+        "role": "tertiary",
+        "displayName": "Arduvaz",
+        "canonical": "#33415e",
+        "tonalRamp": [
+          "#020921",
+          "#17233e",
+          "#313f5c",
+          "#4e5d7c",
+          "#6d7d9e",
+          "#8e9fc0",
+          "#b3c4e8",
+          "#ddefff"
+        ]
+      },
+      "info-soft": {
+        "role": "tertiary",
+        "displayName": "Arduvaz Zemin",
+        "canonical": "#e5e8ef",
+        "tonalRamp": [
+          "#090b0f",
+          "#222429",
+          "#3d4045",
+          "#5b5e63",
+          "#7a7d83",
+          "#9c9ea5",
+          "#c1c4cb",
+          "#ebeef5"
+        ]
+      },
+      "focus": {
+        "role": "tertiary",
+        "displayName": "Odak Mavisi",
+        "canonical": "#2f4f8f",
+        "tonalRamp": [
+          "#000039",
+          "#031d59",
+          "#1e3c7a",
+          "#3a5b9c",
+          "#597cc0",
+          "#799ee4",
+          "#9dc4ff",
+          "#c6efff"
+        ]
+      },
+      "paper": {
+        "role": "neutral",
+        "displayName": "Kâğıt",
+        "canonical": "#f4f2ec",
+        "tonalRamp": [
+          "#0c0b07",
+          "#252420",
+          "#41403b",
+          "#5f5d58",
+          "#7f7d78",
+          "#a09e99",
+          "#c6c4be",
+          "#f0eee8"
+        ]
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "Yüzey",
+        "canonical": "#fbfaf6",
+        "tonalRamp": [
+          "#0c0b09",
+          "#252421",
+          "#40403d",
+          "#5e5e5a",
+          "#7e7d7a",
+          "#9f9e9b",
+          "#c5c4c0",
+          "#efeeea"
+        ]
+      },
+      "field": {
+        "role": "neutral",
+        "displayName": "Alan Beyazı",
+        "canonical": "#ffffff",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#242424",
+          "#404040",
+          "#5d5d5d",
+          "#7d7d7d",
+          "#9e9e9e",
+          "#c4c4c4",
+          "#eeeeee"
+        ]
+      },
+      "surface-sunken": {
+        "role": "neutral",
+        "displayName": "Çökük Zemin",
+        "canonical": "#ece8de",
+        "tonalRamp": [
+          "#0e0b05",
+          "#27241c",
+          "#433f37",
+          "#615d55",
+          "#817d74",
+          "#a29e95",
+          "#c8c4ba",
+          "#f2eee4"
+        ]
+      },
+      "rail": {
+        "role": "neutral",
+        "displayName": "Menü Rayı",
+        "canonical": "#e9e5da",
+        "tonalRamp": [
+          "#0e0b05",
+          "#27241c",
+          "#434037",
+          "#615d54",
+          "#817d73",
+          "#a29e94",
+          "#c8c4b9",
+          "#f2eee3"
+        ]
+      },
+      "selected": {
+        "role": "neutral",
+        "displayName": "Seçili",
+        "canonical": "#e7e2d5",
+        "tonalRamp": [
+          "#0e0b04",
+          "#27241a",
+          "#433f35",
+          "#625d52",
+          "#817d71",
+          "#a39e92",
+          "#c9c4b7",
+          "#f3eee1"
+        ]
+      },
+      "rule-faint": {
+        "role": "neutral",
+        "displayName": "Soluk Çizgi",
+        "canonical": "#ebe6da",
+        "tonalRamp": [
+          "#0e0b04",
+          "#27241b",
+          "#433f36",
+          "#625d53",
+          "#817d72",
+          "#a39e93",
+          "#c9c4b8",
+          "#f3eee2"
+        ]
+      },
+      "rule-line": {
+        "role": "neutral",
+        "displayName": "Çizgi",
+        "canonical": "#ddd6c6",
+        "tonalRamp": [
+          "#0f0a02",
+          "#292317",
+          "#453f32",
+          "#635d4f",
+          "#837d6e",
+          "#a49e8f",
+          "#cac4b4",
+          "#f5eede"
+        ]
+      },
+      "rule-strong": {
+        "role": "neutral",
+        "displayName": "Güçlü Çizgi",
+        "canonical": "#c2b9a5",
+        "tonalRamp": [
+          "#110a00",
+          "#2a2313",
+          "#473f2e",
+          "#655d4b",
+          "#857c6a",
+          "#a69e8a",
+          "#ccc3af",
+          "#f7eed9"
+        ]
+      },
+      "ink-muted": {
+        "role": "neutral",
+        "displayName": "Soluk Mürekkep",
+        "canonical": "#4c5262",
+        "tonalRamp": [
+          "#070a17",
+          "#1e2432",
+          "#3a3f4f",
+          "#575d6e",
+          "#767d8e",
+          "#979eb0",
+          "#bdc4d7",
+          "#e7eeff"
+        ]
+      },
+      "ink-subtle": {
+        "role": "neutral",
+        "displayName": "Silik Mürekkep",
+        "canonical": "#5c6270",
+        "tonalRamp": [
+          "#070b15",
+          "#1f2430",
+          "#3a404c",
+          "#585d6b",
+          "#777d8c",
+          "#989ead",
+          "#bdc4d4",
+          "#e7eeff"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "headline": {
+        "displayName": "Sayfa başlığı",
+        "purpose": "Her sayfanın h1 başlığı."
+      },
+      "title": {
+        "displayName": "Bölüm başlığı",
+        "purpose": "h2 bölüm başlıkları."
+      },
+      "title-sm": {
+        "displayName": "Çekmece başlığı",
+        "purpose": "Çekmece, diyalog ve h3."
+      },
+      "body": {
+        "displayName": "Gövde",
+        "purpose": "Tüm gövde, tablo hücresi ve form; rakamlar tabular."
+      },
+      "label": {
+        "displayName": "Etiket",
+        "purpose": "Köken/durum etiketleri, alan adları, filtre çipleri."
+      },
+      "column-head": {
+        "displayName": "Sütun başlığı",
+        "purpose": "Tablo sütun başlıkları, cümle düzeninde."
+      },
+      "mono": {
+        "displayName": "Mono",
+        "purpose": "SHA-256, IBAN, VKN ve evrak kimlikleri."
+      }
+    },
+    "shadows": [
+      {
+        "name": "paper-page",
+        "value": "0 1px 2px rgba(29,34,48,.12), 0 6px 18px rgba(29,34,48,.10)",
+        "purpose": "Görüntüleyicide masa zemini üzerindeki PDF sayfası."
+      },
+      {
+        "name": "paper-sheet",
+        "value": "0 1px 2px rgba(29,34,48,.06), 0 12px 32px rgba(29,34,48,.08)",
+        "purpose": "Giriş ekranının tek kâğıt yaprağı."
+      }
+    ],
+    "motion": [
+      {
+        "name": "state-150",
+        "value": "150ms ease-out",
+        "purpose": "Düğme, menü öğesi, çip ve sekme renk geçişleri; hareket yok, yalnız renk."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "0.01ms",
+        "purpose": "prefers-reduced-motion altında tüm animasyon ve geçişler."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "narrow",
+        "value": "640px"
+      },
+      {
+        "name": "rail-collapse",
+        "value": "900px"
+      },
+      {
+        "name": "secondary-columns",
+        "value": "1360px"
+      }
+    ],
+    "stamp": {
+      "rotation": "-1.5deg",
+      "border": "1.5px",
+      "note": "Eğim ve 1.5px çerçeve yalnız insan kararı etiketine aittir."
+    },
+    "focus": {
+      "value": "outline: 2px solid var(--focus); outline-offset: 2px",
+      "purpose": "Tüm odaklanabilir öğeler."
+    }
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Ekrandaki tek birincil eylem; koyu mürekkep zemin, satır içinde.",
+      "html": "<button class=\"ds-btn-primary\">İşi aç</button>",
+      "css": ".ds-btn-primary{font-family:'Source Sans 3 Variable',system-ui,-apple-system,'Segoe UI',sans-serif;display:inline-flex;align-items:center;gap:8px;height:36px;padding:0 16px;border-radius:6px;border:1px solid #1d2230;background:var(--ink,#1d2230);color:#f8f6f0;font-size:13px;font-weight:600;cursor:pointer;transition:background-color 150ms ease-out}.ds-btn-primary:hover{background:#2e3446}.ds-btn-primary:focus-visible{outline:2px solid var(--focus,#2f4f8f);outline-offset:2px;}"
+    },
+    {
+      "name": "Outline Button",
+      "kind": "button",
+      "refersTo": "button-outline",
+      "description": "Varsayılan ikincil eylem; yüzey zemin, ince çerçeve.",
+      "html": "<button class=\"ds-btn-outline\">Yenile</button>",
+      "css": ".ds-btn-outline{font-family:'Source Sans 3 Variable',system-ui,-apple-system,'Segoe UI',sans-serif;display:inline-flex;align-items:center;gap:8px;height:36px;padding:0 16px;border-radius:6px;border:1px solid #ddd6c6;background:var(--surface,#fbfaf6);color:var(--ink,#1d2230);font-size:13px;font-weight:600;cursor:pointer;transition:background-color 150ms ease-out}.ds-btn-outline:hover{background:var(--selected,#e7e2d5)}.ds-btn-outline:focus-visible{outline:2px solid var(--focus,#2f4f8f);outline-offset:2px;}"
+    },
+    {
+      "name": "Köken Etiketleri (Mor Istampa)",
+      "kind": "custom",
+      "refersTo": "tag-human",
+      "description": "Sistemin imzası: insan kararı mor eğik kaşe, kural yeşil çerçeve, otomatik öneri kesik gri. Dekoratif kullanılmaz.",
+      "html": "<div class=\"ds-legend\"><span>Kanıtın kökeni:</span><span class=\"ds-tag ds-tag-human\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M5 22h14\"/><path d=\"M19.27 13.73A2.5 2.5 0 0 0 17.5 13h-11A2.5 2.5 0 0 0 4 15.5V17a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-1.5c0-.66-.26-1.3-.73-1.77Z\"/><path d=\"M14 13V8.5C14 7 15 7 15 5a3 3 0 0 0-3-3c-1.66 0-3 1-3 3s1 2 1 3.5V13\"/></svg>İnsan kararı</span><span class=\"ds-tag ds-tag-ok\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M20 6 9 17l-5-5\"/></svg>Kural ile doğrulandı</span><span class=\"ds-tag ds-tag-ai\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z\"/></svg>Otomatik öneri</span></div>",
+      "css": ".ds-legend{font-family:'Source Sans 3 Variable',system-ui,-apple-system,'Segoe UI',sans-serif;display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;font-size:13px;color:#4c5262}.ds-tag{font-family:'Source Sans 3 Variable',system-ui,-apple-system,'Segoe UI',sans-serif;display:inline-flex;align-items:center;gap:6px;border-radius:4px;padding:1px 8px;font-size:13px;line-height:20px;font-weight:600;white-space:nowrap;}.ds-tag-human{border:1.5px solid #5b3fa0;color:#5b3fa0;background:#efeaf8;font-weight:700;transform:rotate(-1.5deg)}.ds-tag-ok{border:1.5px solid #2a6a59;color:#2a6a59;background:#e2efe9}.ds-tag-ai{border:1.5px dashed #5f6370;color:#5f6370;background:transparent}"
+    },
+    {
+      "name": "Durum Etiketleri",
+      "kind": "chip",
+      "refersTo": "tag-warn",
+      "description": "Uyarı, hata, bilgi: çerçevesiz yumuşak zemin, ikon ve metinle.",
+      "html": "<div class=\"ds-row\"><span class=\"ds-tag ds-tag-warn\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m21.73 14-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3\"/><path d=\"M12 9v4\"/><path d=\"M12 17h.01\"/></svg>Yüksek</span><span class=\"ds-tag ds-tag-danger\">Gecikti · 12.10.2026</span><span class=\"ds-tag ds-tag-info\">İnceleme bekliyor</span></div>",
+      "css": ".ds-row{display:flex;gap:8px;flex-wrap:wrap}.ds-tag{font-family:'Source Sans 3 Variable',system-ui,-apple-system,'Segoe UI',sans-serif;display:inline-flex;align-items:center;gap:6px;border-radius:4px;padding:1px 8px;font-size:13px;line-height:20px;font-weight:600;white-space:nowrap;border:1px solid transparent}.ds-tag-warn{background:#f7ebcd;color:#855600}.ds-tag-danger{background:#f8e3de;color:#a8372a}.ds-tag-info{background:#e5e8ef;color:#33415e}"
+    },
+    {
+      "name": "Filtre Çipi",
+      "kind": "chip",
+      "refersTo": "filter-chip",
+      "description": "Basılı durumda koyu mürekkep; sayı tabular.",
+      "html": "<div class=\"ds-row\"><button class=\"ds-chip\" aria-pressed=\"true\">Tümü <span class=\"ds-count\">24</span></button><button class=\"ds-chip\" aria-pressed=\"false\">Askıda <span class=\"ds-count\">3</span></button></div>",
+      "css": ".ds-row{display:flex;gap:8px}.ds-chip{font-family:'Source Sans 3 Variable',system-ui,-apple-system,'Segoe UI',sans-serif;display:inline-flex;align-items:center;gap:6px;min-height:32px;padding:0 12px;border-radius:6px;border:1px solid #c2b9a5;background:#fbfaf6;color:#1d2230;font-size:13px;font-weight:600;cursor:pointer;transition:background-color 150ms}.ds-chip:hover{background:#ece8de}.ds-chip[aria-pressed=true]{background:#1d2230;border-color:#1d2230;color:#f8f6f0}.ds-chip .ds-count{font-variant-numeric:tabular-nums;color:#5c6270}.ds-chip[aria-pressed=true] .ds-count{color:#cfd2db}.ds-chip:focus-visible{outline:2px solid var(--focus,#2f4f8f);outline-offset:2px;}"
+    },
+    {
+      "name": "Form Alanı",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "Alan beyazı zemin, güçlü çizgi, üstte etiket, altta ipucu; imleç mor.",
+      "html": "<div class=\"ds-field\"><label for=\"ds-i\">Gerekçe</label><input id=\"ds-i\" class=\"ds-input\" placeholder=\"Kısa gerekçe\"><span class=\"ds-hint\">Denetim kaydına yazılır.</span></div>",
+      "css": ".ds-field{font-family:'Source Sans 3 Variable',system-ui,-apple-system,'Segoe UI',sans-serif;display:grid;gap:4px;max-width:360px;color:#1d2230}.ds-field label{font-size:13px;font-weight:600}.ds-input{font:inherit;font-size:14px;min-height:36px;padding:6px 10px;border:1px solid #c2b9a5;border-radius:6px;background:#fff;color:#1d2230;caret-color:#5b3fa0}.ds-input:focus-visible{outline:2px solid var(--focus,#2f4f8f);outline-offset:2px;}.ds-input[aria-invalid=true]{border-color:#a8372a}.ds-hint{font-size:12px;color:#4c5262}"
+    },
+    {
+      "name": "Menü Rayı",
+      "kind": "nav",
+      "refersTo": "nav-item",
+      "description": "Sol 256px açık kâğıt ray; etkin öğe mürekkep zemin, sağda bekleyen iş sayısı.",
+      "html": "<nav class=\"ds-rail\"><a class=\"ds-nav is-active\" href=\"#\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><polyline points=\"22 12 16 12 14 15 10 15 8 12 2 12\"/><path d=\"M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z\"/></svg>İşlerim<span class=\"ds-n\">4</span></a><a class=\"ds-nav\" href=\"#\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><polyline points=\"22 12 16 12 14 15 10 15 8 12 2 12\"/><path d=\"M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z\"/></svg>Sözleşmeler<span class=\"ds-n\">2</span></a><a class=\"ds-nav\" href=\"#\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><polyline points=\"22 12 16 12 14 15 10 15 8 12 2 12\"/><path d=\"M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z\"/></svg>Faturalar<span class=\"ds-later\">Faz 4</span></a></nav>",
+      "css": ".ds-rail{font-family:'Source Sans 3 Variable',system-ui,-apple-system,'Segoe UI',sans-serif;width:256px;box-sizing:border-box;padding:12px;background:#e9e5da;display:grid;gap:2px;border-right:1px solid #ddd6c6}.ds-nav{display:flex;align-items:center;gap:12px;min-height:36px;padding:0 10px;border-radius:6px;font-size:14px;font-weight:600;color:#4c5262;text-decoration:none;transition:background-color 150ms}.ds-nav:hover{background:#ece8de;color:#1d2230}.ds-nav.is-active{background:#1d2230;color:#f8f6f0}.ds-nav:focus-visible{outline:2px solid var(--focus,#2f4f8f);outline-offset:2px;}.ds-n{margin-left:auto;font-size:13px;font-variant-numeric:tabular-nums}.ds-later{margin-left:auto;font-size:12px;font-weight:400;color:#4c5262}"
+    },
+    {
+      "name": "Panel",
+      "kind": "card",
+      "refersTo": "panel",
+      "description": "Kart yerine çizgiyle ayrılmış panel; gölgesiz, başlık şeridi alt çizgili.",
+      "html": "<section class=\"ds-panel\"><header class=\"ds-panel-head\">Durum</header><dl class=\"ds-facts\"><dt>Sonuç</dt><dd>Eksik</dd><dt>Otomatik tarama</dt><dd class=\"ds-muted\">Yapılmadı</dd></dl></section>",
+      "css": ".ds-panel{font-family:'Source Sans 3 Variable',system-ui,-apple-system,'Segoe UI',sans-serif;max-width:420px;background:#fbfaf6;border:1px solid #ddd6c6;border-radius:6px;color:#1d2230;font-size:14px}.ds-panel-head{padding:12px 16px;border-bottom:1px solid #ddd6c6;font-weight:650}.ds-facts{display:grid;grid-template-columns:max-content 1fr;gap:8px 16px;margin:0;padding:16px}.ds-facts dt{color:#4c5262}.ds-facts dd{margin:0}.ds-muted{color:#4c5262}"
+    },
+    {
+      "name": "Bant",
+      "kind": "custom",
+      "refersTo": "",
+      "description": "Uyarı/hata/bilgi/nötr bandı; köken mürekkebi taşımaz.",
+      "html": "<div class=\"ds-banner\" role=\"status\"><svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3\"/><path d=\"M12 9v4\"/><path d=\"M12 17h.01\"/></svg><div><strong>Otomatik kontrol yapılamadı</strong><div class=\"ds-sub\">Manuel inceleme tam olarak çalışır.</div></div></div>",
+      "css": ".ds-banner{font-family:'Source Sans 3 Variable',system-ui,-apple-system,'Segoe UI',sans-serif;display:flex;gap:12px;align-items:flex-start;max-width:520px;padding:12px 16px;border:1px solid #e8d29c;border-radius:6px;background:#f7ebcd;color:#1d2230;font-size:14px}.ds-banner svg{color:#855600;flex-shrink:0;margin-top:2px}.ds-banner strong{font-weight:600}.ds-sub{color:#4c5262;margin-top:2px}"
+    }
+  ],
+  "narrative": {
+    "northStar": "Mor Istampa",
+    "overview": "Bir satınalma dosyası, evrak masasında açılmış gibi okunur: kâğıt beyazı zemin, koyu mürekkep metin, çizgiyle ayrılmış paneller. Sistemin tek fikri, bir kanıtın kimden geldiğinin rengiyle değil mürekkebiyle okunmasıdır. İnsan kararı (onay, kurul kararı, imza teyidi) mor ıstampa olarak basılır; hafifçe eğik, kalın çerçeveli bir kaşe. Kural doğrulaması ince yeşil çerçeve taşır. Otomatik öneri kesik çizgili gri bir taslaktır ve asla mürekkep sayılmaz.\n\nYoğunluk bir çalışma aracının yoğunluğudur: 14px gövde, 4px ızgara, tabular rakamlar, satır içinde birincil eylem. Kart duvarı, gri zemin + mavi vurgu ve rozet yığını bu dünyanın reddettiği kategori varsayılanlarıdır; durum tek bir etiketle, ikon ve metinle birlikte söylenir. Gölge yoktur; derinlik zemin tonları (kâğıt, yüzey, çökük zemin, menü rayı) ve 1px çizgilerle kurulur.",
+    "keyCharacteristics": [
+      "Kâğıt zemin üzerinde koyu mürekkep; birincil eylem mürekkep zeminli düğme.",
+      "Üç köken mürekkebi: mor ıstampa (insan), yeşil çerçeve (kural), kesik gri (otomatik öneri).",
+      "Kart yerine çizgiyle bölünmüş paneller; gölgesiz, tonla katmanlanmış yüzeyler.",
+      "Source Sans 3, tabular rakam; evrak numarası, hash, IBAN ve VKN için IBM Plex Mono.",
+      "Sol 256px açık kâğıt menü rayı, üstte şirket kapsamı şeridi."
+    ],
+    "rules": [
+      {
+        "name": "The Three-Ink Rule",
+        "body": "Mor ıstampa yalnız insan kararını, yeşil çerçeve yalnız kural doğrulamasını, kesik gri yalnız otomatik öneriyi basar. Bu üç mürekkep sistemin imzasıdır; dekoratif, marka veya genel \"başarılı\" anlamında kullanılmaz. Test: bu öğeyi bir insan mı onayladı, bir kural mı geçti, bir algılayıcı mı önerdi? Cevap yoksa mürekkep de yoktur.",
+        "section": "colors"
+      },
+      {
+        "name": "The Never-Purple-For-Machines Rule",
+        "body": "Bir otomatik öneri, ne kadar emin olursa olsun, mor taşımaz; insan teyidi gelene kadar kesik gri kalır.",
+        "section": "colors"
+      },
+      {
+        "name": "The Color-Never-Alone Rule",
+        "body": "Her durum rengi bir ikon ve bir metinle birlikte gelir; renk tek başına anlam taşımaz.",
+        "section": "colors"
+      },
+      {
+        "name": "The Tabular Figures Rule",
+        "body": "Tutarlar, tarihler, sayaçlar ve tablo hücreleri tabular rakamla dizilir; sütunlar hizada okunur.",
+        "section": "typography"
+      },
+      {
+        "name": "The Sentence-Case Rule",
+        "body": "Başlıklar, sütun başlıkları ve etiketler cümle düzenindedir; büyük harfli üst başlık (eyebrow) kullanılmaz.",
+        "section": "typography"
+      },
+      {
+        "name": "The Paper-Only Shadow Rule",
+        "body": "Gölge yalnız fiziksel bir evrakı temsil eden yüzeye düşer; panel, tablo, düğme ve etiket düz kalır.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "**Do** mor ıstampayı yalnız insan kararına (onay, kurul kararı, imza teyidi) bas.",
+      "**Do** kural doğrulamasını yeşil çerçeveyle, otomatik öneriyi kesik griyle göster ve kökeni lejantla açıkla.",
+      "**Do** olmamış olayları (karar yok, uygulanamaz, tarama yapılmadı) etiket değil soluk metin olarak yaz.",
+      "**Do** derinliği zemin tonu ve 1px çizgiyle kur; gölgeyi yalnız evrak sayfasına ver.",
+      "**Do** tutar, tarih ve sayaçları tabular rakamla, kimlikleri IBM Plex Mono ile diz.",
+      "**Do** her durum renginin yanına ikon ve metin koy."
+    ],
+    "donts": [
+      "**Don't** ıstampa morunu, kural yeşilini veya kesik griyi süs, marka vurgusu ya da genel \"aktif/başarılı\" anlamında kullanma.",
+      "**Don't** otomatik öneriyi mor veya dolgulu göster; öneri insan teyidine kadar taslaktır.",
+      "**Don't** gri zemin + mavi vurgu + rozet duvarı kategori varsayılanına dön; odak mavisi vurgu rengi değildir.",
+      "**Don't** kart duvarı ve gölgeli kart kullan; paneller çizgiyle ayrılır.",
+      "**Don't** büyük harfli üst başlık (eyebrow) veya sayfa üstü etiket ekle.",
+      "**Don't** silik mürekkebi menü rayı veya çökük zemin üzerinde küçük metin için kullan; orada soluk mürekkep kullan."
+    ]
+  }
+}
