@@ -119,7 +119,7 @@ export function deriveSignatureStatus(e: SignatureEvidence): SignatureStatus {
     } else if (r.state === 'PENDING') {
       const eOnly = r.slots.length === 0;
       blockers.push({ code: eOnly ? 'ESIGN_NOT_VALIDATED' : 'REVIEW_PENDING', requirementId: r.id, partyName: r.partyName,
-        action: eOnly ? 'E-imzayı doğrulama servisiyle kontrol edin.' : 'Bu taraf için imza incelemesi yapın.' });
+        action: eOnly ? 'E-imza doğrulaması gerekiyor: doğrulama servisi sonucu ya da yetkili kişinin yöntem sınıflandırması (web).' : 'Bu taraf için imza incelemesi yapın.' });
     }
   }
 

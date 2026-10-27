@@ -124,7 +124,7 @@ export async function recordReceipt(tx: Tx, ctx: TenantContext, poLineId: string
   const [pl] = await poLineStates(tx, [poLineId], null);
   if (!pl) throw notFound();
   if (pl.poStatus !== 'OPEN') throw conflict('po_not_open', 'Sipariş kapatıldı veya iptal edildi; yeni kabul kaydedilemez.');
-  if (cmp(dec(pl.receivedQty) + dec(b.quantity), dec(pl.orderedQty)) > 0) throw unprocessable('over_receipt', `Toplam kabul sipariş miktarını (${pl.orderedQty} ${pl.unit}) aşamaz; şu an ${pl.receivedQty}.`);
+  if (cmp(dec(pl.receivedQty) + dec(b.quantity), dec(pl.orderedQty)) > 0) throw unprocessable('over_receipt', `Toplam kabul sipariş miktarını (${pl.orderedQty} ${pl.unit}) aşamaz; şimdiye kadar kabul edilen ${pl.receivedQty} ${pl.unit}.`);
   if (pl.kind === 'SERVICE' && (!b.periodFrom || !b.periodTo)) throw unprocessable('period_required', 'Hizmet kabulü dönem (başlangıç–bitiş) ile kaydedilir.');
   const company = (await tx.query<{ company_id: string }>(`SELECT company_id FROM po_lines WHERE id = $1`, [poLineId])).rows[0]!.company_id;
   const r = (await tx.query<{ id: string }>(`INSERT INTO receipts (tenant_id, company_id, po_line_id, quantity, period_from, period_to, note, recorded_by, idempotency_key, idempotency_hash)

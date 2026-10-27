@@ -16,6 +16,14 @@ struct Notice: Equatable {
         }
         return Notice(tone: .error, text: error.localizedDescription)
     }
+
+    /// Açık kalan form için: belirsiz sonuçta ekran yenileme değil, aynı içerikle güvenli tekrar gönderim önerilir.
+    static func formResult(_ error: Error) -> Notice {
+        if let e = error as? APIError, e.outcomeUnknown {
+            return Notice(tone: .warn, text: "Yanıt alınamadı; kayıt sunucuda oluşmuş olabilir. \"Tekrar gönder\" güvenlidir: aynı içerik ikinci kayıt açmaz. Alanlar bu yüzden kilitli; vazgeçerseniz listeyi yenileyip kontrol edin.")
+        }
+        return from(error)
+    }
 }
 
 struct NoticeView: View {

@@ -29,7 +29,7 @@ struct ScanView: View {
                     }
                     PhotosPicker(selection: $photoItems, maxSelectionCount: 30, matching: .images) { Label("Fotoğraflardan seç", systemImage: "photo.on.rectangle") }
                     Button { showFiles = true } label: { Label("PDF dosyası seç", systemImage: "doc") }
-                } footer: { Text("Belge önce bu cihazda şifreli taslak olarak saklanır; siz yükleyince sunucuya gider.") }
+                } footer: { Text("Belge önce bu cihazda şifreli taslak olarak saklanır; bağlantı varsa hemen yüklenir, yoksa bağlantı gelince.") }
             } else {
                 ScanComposer(pages: $pages, importedPDF: $importedPDF) { pdf, count, title, kind, company in
                     do {
@@ -182,7 +182,8 @@ struct DraftRow: View {
                 if (draft.state == .pending || draft.state == .failed) && draft.ownerUserId != nil && !draft.companyId.isEmpty { Button(draft.attempts > 0 ? "Tekrar yükle" : "Yükle", action: onUpload).buttonStyle(.bordered) }
                 if draft.state == .uploading { ProgressView() }
                 Spacer()
-                if draft.state != .uploading { Button("Sil", role: .destructive, action: onRemove).buttonStyle(.borderless) }
+                if draft.state == .uploaded { Button("Listeden kaldır", action: onRemove).buttonStyle(.borderless).accessibilityHint("Yalnız bu cihazdaki kaydı kaldırır; sunucudaki belge silinmez.") }
+                else if draft.state != .uploading { Button("Sil", role: .destructive, action: onRemove).buttonStyle(.borderless) }
             }
         }
         .accessibilityElement(children: .contain)

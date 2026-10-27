@@ -107,7 +107,10 @@ final class DraftStore {
 
     /// Oturumdaki kullanıcıya ait taslaklar (diğer kullanıcılarınki gizli kalır, silinmez). Sahiplik alanından önce kaydedilmiş taslaklar
     /// kaybolmasın diye gösterilir ama yüklenemez (kimin adına yükleneceği bilinmiyor); kullanıcı yeniden tarar veya siler.
-    func visible(userId: String?, tenantId: String?) -> [Draft] { drafts.filter { ($0.ownerUserId == userId && $0.tenantId == tenantId) || $0.ownerUserId == nil } }
+    /// Yüklenmiş sahipsiz kayıtlar gösterilmez: içerik sunucuda, burada kaybedilecek bir şey yok ve başka kullanıcının kaydı gibi görünür.
+    func visible(userId: String?, tenantId: String?) -> [Draft] {
+        drafts.filter { ($0.ownerUserId == userId && $0.tenantId == tenantId) || ($0.ownerUserId == nil && $0.state != .uploaded) }
+    }
 
     @discardableResult
     func add(pdf: Data, title: String, kind: String, company: Me.Company, pageCount: Int, userId: String, tenantId: String) throws -> Draft {

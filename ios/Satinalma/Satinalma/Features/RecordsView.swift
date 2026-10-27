@@ -113,7 +113,8 @@ struct PurchaseOrderView: View {
                     if d.receipts.isEmpty { Text("Henüz kabul yok.").foregroundStyle(.secondary) }
                     ForEach(d.receipts) { r in
                         VStack(alignment: .leading) {
-                            Text("\((Decimal(string: r.quantity) ?? 0) < 0 ? "Ters kabul" : "Kabul") \(Fmt.qty(r.quantity)) · \(d.lines.first { $0.poLineId == r.poLineId }?.description ?? "")").font(.subheadline)
+                            let ln = d.lines.first { $0.poLineId == r.poLineId }
+                            Text("\((Decimal(string: r.quantity) ?? 0) < 0 ? "Ters kabul" : "Kabul"): \(Fmt.qty(r.quantity)) \(ln?.unit ?? "") · \(ln?.description ?? "")").font(.subheadline)
                             Text("\(r.note) · \(r.recordedBy) · \(Fmt.date(r.recordedAt))").font(.footnote).foregroundStyle(.secondary)
                         }
                     }
@@ -164,10 +165,11 @@ struct ReceiptSheet: View {
         NavigationStack {
             Form {
                 Section {
-                    TextField("Miktar (\(line.unit))", text: $qty).keyboardType(.decimalPad).disabled(locked)
-                    TextField("Not: ne teslim alındı", text: $note, axis: .vertical).disabled(locked)
+                    TextField("Miktar (\(line.unit))", text: $qty).keyboardType(.decimalPad).disabled(locked).foregroundStyle(locked ? .secondary : .primary)
+                    TextField("Not: ne teslim alındı", text: $note, axis: .vertical).disabled(locked).foregroundStyle(locked ? .secondary : .primary)
                 } header: { Text(line.description) } footer: {
-                    Text("Kalan: \(Fmt.qty(remaining)) \(line.unit). Miktar ve not (en az 3 karakter) zorunlu.")
+                    Text(locked ? "Bu gönderim kaydedildiyse kalan miktar azalmıştır; alanlar kilitli, aynı içerik ikinci kez kaydedilmez."
+                         : "Kalan: \(Fmt.qty(remaining)) \(line.unit). Miktar ve not (en az 3 karakter) zorunlu.")
                 }
                 if line.kind == "SERVICE" {
                     Section("Hizmet dönemi") { DatePicker("Başlangıç", selection: $from, displayedComponents: .date); DatePicker("Bitiş", selection: $to, in: from..., displayedComponents: .date) }.disabled(locked)
@@ -180,13 +182,14 @@ struct ReceiptSheet: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Vazgeç") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(locked ? "Tekrar gönder" : "Kaydet") {
-                        busy = true
+                        busy = true; notice = nil
                         Task {
                             do { try await submit(qty.replacingOccurrences(of: ",", with: "."), note, line.kind == "SERVICE" ? iso.string(from: from) : nil, line.kind == "SERVICE" ? iso.string(from: to) : nil, key) }
-                            catch { notice = Notice.from(error); if (error as? APIError)?.outcomeUnknown == true { locked = true } }
+                            catch { notice = Notice.formResult(error); if (error as? APIError)?.outcomeUnknown == true { locked = true } }
                             busy = false
                         }
                     }.disabled(busy || !valid)
+                    .overlay { if busy { ProgressView() } }
                 }
             }
         }
@@ -198,9 +201,11 @@ struct IncidentsList: View {
     @State private var data: IncidentList?
     @State private var error: Notice?
     @State private var reporting = false
+    @State private var notice: Notice?
     var body: some View {
         List {
             OfflineBanner().listRowInsets(EdgeInsets())
+            if let notice { NoticeView(notice: notice) }
             Loadable(value: data, error: error, retry: load) { d in
                 if d.items.isEmpty { ContentUnavailableView("Olay yok", systemImage: "checkmark.shield") }
                 ForEach(d.items) { x in
@@ -216,7 +221,7 @@ struct IncidentsList: View {
         }
         .navigationDestination(for: IncidentRow.self) { IncidentView(incidentId: $0.id) }
         .toolbar { if data?.can.report == true { Button { reporting = true } label: { Label("Olay bildir", systemImage: "plus") }.disabled(!session.isOnline) } }
-        .sheet(isPresented: $reporting) { ReportIncidentSheet { await load() } }
+        .sheet(isPresented: $reporting) { ReportIncidentSheet { code in notice = Notice(tone: .info, text: "\(code) bildirildi."); await load() } }
         .refreshable { await load() }
         .task { await load() }
     }
@@ -296,7 +301,7 @@ struct IncidentView: View {
 }
 
 struct ReportIncidentSheet: View {
-    let onDone: () async -> Void
+    let onDone: (String) async -> Void
     @Environment(SessionStore.self) private var session
     @Environment(\.dismiss) private var dismiss
     @State private var suppliers: [SupplierOption] = []
@@ -324,7 +329,7 @@ struct ReportIncidentSheet: View {
                 Section("Olay") {
                     TextField("Başlık", text: $title)
                     TextField("Ne oldu (gözlem; suçlama değil)", text: $description, axis: .vertical).lineLimit(3...8)
-                }.disabled(locked)
+                }.disabled(locked).foregroundStyle(locked ? .secondary : .primary)
                 if let notice { NoticeView(notice: notice) }
                 Section { Text("Bildirim iddiadır; doğrulama başka bir yetkilinindir.").font(.footnote).foregroundStyle(.secondary) }
             }
@@ -332,7 +337,7 @@ struct ReportIncidentSheet: View {
             .task { if let (r, _) = try? await session.get("/api/v1/supplier-options") as (SupplierOptions, String?) { suppliers = r.items } }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Vazgeç") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) { Button(locked ? "Tekrar gönder" : "Bildir") { Task { await send() } }.disabled(busy || supplierId.isEmpty || title.count < 5 || description.count < 10) }
+                ToolbarItem(placement: .confirmationAction) { Button(locked ? "Tekrar gönder" : "Bildir") { Task { await send() } }.overlay { if busy { ProgressView() } }.disabled(busy || supplierId.isEmpty || title.count < 5 || description.count < 10) }
             }
         }
     }
@@ -340,11 +345,11 @@ struct ReportIncidentSheet: View {
         struct Body: Encodable, Sendable { let supplierId: String; let category: String; let severity: String; let title: String; let description: String; let occurredOn: String }
         struct Res: Decodable, Sendable { let code: String }
         let f = DateFormatter(); f.dateFormat = "yyyy-MM-dd"; f.timeZone = TimeZone(identifier: "Europe/Istanbul")
-        busy = true; defer { busy = false }
+        busy = true; notice = nil; defer { busy = false }
         do {
             let r: Res = try await session.post("/api/v1/incidents", body: Body(supplierId: supplierId, category: category, severity: severity, title: title, description: description, occurredOn: f.string(from: occurredOn)), idempotencyKey: key)
             notice = Notice(tone: .info, text: "\(r.code) bildirildi.")
-            await onDone(); dismiss()
-        } catch { notice = Notice.from(error); if (error as? APIError)?.outcomeUnknown == true { locked = true } }
+            await onDone(r.code); dismiss()
+        } catch { notice = Notice.formResult(error); if (error as? APIError)?.outcomeUnknown == true { locked = true } }
     }
 }

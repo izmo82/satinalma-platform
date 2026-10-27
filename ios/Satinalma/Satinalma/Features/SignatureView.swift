@@ -16,6 +16,8 @@ struct SignatureView: View {
             OfflineBanner().listRowInsets(EdgeInsets())
             if let notice { NoticeView(notice: notice) }
             Loadable(value: data, error: error, retry: load) { s in
+                // Uzun sözleşme adları gezinme başlığında kesilir; tam ad içerikte gösterilir.
+                Text(s.contractVersion.title).font(.title2.weight(.bold)).accessibilityAddTraits(.isHeader).listRowBackground(Color.clear)
                 Section("Durum") {
                     LabeledContent("Sonuç", value: Labels.overall[s.status.overall] ?? s.status.overall)
                     LabeledContent("Otomatik tarama", value: Labels.detection[s.status.automaticCheck] ?? s.status.automaticCheck)
@@ -61,7 +63,7 @@ struct SignatureView: View {
                 }
             }
         }
-        .navigationTitle(data?.contractVersion.title ?? "İmza kontrolü")
+        .navigationTitle("İmza kontrolü").navigationBarTitleDisplayMode(.inline)
         .refreshable { await load() }
         .task { await load() }
         .sheet(isPresented: Binding(get: { reviewing != nil }, set: { if !$0 { reviewing = nil } })) {
