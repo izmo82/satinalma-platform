@@ -1,0 +1,39 @@
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { randomUUID } from 'node:crypto';
+import { makeHarness } from './harness.ts';
+
+// Faz 5 raporlar (UX13): tanım, kapsam, veri anı; dışa aktarma aynı yetkiyle ve denetim kaydıyla.
+let h: Awaited<ReturnType<typeof makeHarness>>;
+beforeAll(async () => { h = await makeHarness(); });
+afterAll(async () => { await h.close(); });
+
+describe('yönetim göstergeleri', () => {
+  it('her gösterge tanım, kaynak ve durumla döner; hesaplanamayan gösterge uydurulmaz', async () => {
+    const inv = await h.call('finance', 'POST', '/api/v1/invoices', { body: { companyId: h.world.companyA1.id, supplierId: h.world.suppliers.s1, kind: 'INVOICE', invoiceNo: `RP${randomUUID().slice(0, 8)}`,
+      issueDate: '2026-10-05', currency: 'TRY', lines: [{ description: 'Hizmet', quantity: '1', unit: 'ay', unitPrice: '100', netAmount: '100.00' }] } });
+    expect(inv.status).toBe(201);
+    const r = await h.call('auditor', 'GET', '/api/v1/reports/summary?from=2026-10-01&to=2026-10-31');
+    expect(r.status).toBe(200);
+    const by = Object.fromEntries(r.body.indicators.map((i: any) => [i.key, i]));
+    // Tahsis edilmemiş fatura açık uyumsuzluktur.
+    expect(by.invoice_exception_rate).toMatchObject({ status: 'OK', values: [{ numerator: '1', denominator: '1', ratio: '100.0' }] });
+    expect(by.savings).toMatchObject({ status: 'NOT_AVAILABLE' });
+    expect(by.savings.note).toContain('en pahalı teklif');
+    expect(by.automation_reliability.status).toBe('NO_DATA');
+    expect(r.body.dataAsOf).toBeTruthy();
+    for (const i of r.body.indicators) { expect(i.definition.length).toBeGreaterThan(10); expect(i.source).toBeTruthy(); }
+  });
+
+  it('yetkisiz rol ne ekranı ne dışa aktarmayı görür; CSV formül enjeksiyonuna karşı kaçışlı ve denetim kaydı var', async () => {
+    expect((await h.call('tenantAdmin', 'GET', '/api/v1/reports/summary?from=2026-01-01&to=2026-12-31')).status).toBe(403);
+    expect((await h.call('tenantAdmin', 'GET', '/api/v1/reports/summary.csv?from=2026-01-01&to=2026-12-31')).status).toBe(403);
+    const csv = await h.call('finance', 'GET', '/api/v1/reports/summary.csv?from=2026-01-01&to=2026-12-31');
+    expect(csv.status).toBe(200);
+    expect(csv.headers['content-type']).toContain('text/csv');
+    expect(csv.raw.toString('utf8').startsWith('\uFEFFGösterge;')).toBe(true);
+    expect(csv.raw.toString('utf8')).not.toMatch(/\n=|;=/);
+    const a = await h.owner.query(`SELECT count(*)::int AS n FROM audit_events WHERE action = 'report.exported' AND tenant_id = $1`, [h.world.tenantA]);
+    expect(a.rows[0].n).toBeGreaterThan(0);
+    expect((await h.call('finance', 'GET', '/api/v1/reports/summary?from=2026-12-31&to=2026-01-01')).status).toBe(422);
+  });
+});

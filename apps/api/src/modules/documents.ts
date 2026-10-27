@@ -7,6 +7,7 @@ import { openTask } from '../tasks.ts';
 import { ApiError, notFound } from '../errors.ts';
 import { parseUblInvoice } from './einvoice.ts';
 import { invoiceFromEInvoice, type EInvoiceIntake } from './invoices.ts';
+import { requestAi } from './ai.ts';
 import { resolveSeller, type ResolveResult } from './suppliers.ts';
 import { nextCode } from '../codes.ts';
 
@@ -33,6 +34,8 @@ export interface UploadResult {
   supplier: ResolveResult | null;
   /** e-Fatura XML'den açılan fatura kaydı (yalnız yapılandırılmış fatura belgesinde). */
   invoice?: EInvoiceIntake | null;
+  /** AI yönlendirme kararı (çalışmasa da kayıtlı; T23). */
+  ai?: { runId: string; status: string; reason: string | null };
 }
 
 /**
@@ -126,7 +129,12 @@ export async function uploadDocument(tx: Tx, ctx: TenantContext, store: ObjectSt
       title: 'Fatura alanları girilmeli', reason: 'Yapılandırılmış veri yok ve OCR sağlayıcısı yapılandırılmadı.',
       nextAction: 'Belgeyi açıp satıcı kimliğini ve tutarları girin.', assigneeRole: 'FINANCE', dedupeKey: `doc:${dvId}:manual-extraction`,
     });
-    return { ...base, processing: { stage: 'MANUAL_EXTRACTION_REQUIRED', message: 'Otomatik okuma yapılamadı; manuel alan girişi gerekli.' }, supplier: null };
+    // AI02 yalnız yönlendirme kapısından geçerse kuyruğa girer (izinli sağlayıcı, bölge, bütçe). Kapı kapalıysa manuel görev sürer.
+    const ai = await requestAi(tx, ctx, { task: 'AI02', entityType: 'document_version', entityId: dvId, documentVersionId: dvId, companyId: input.companyId,
+      workload: { pages: inspected.pageCount ?? 1, inputTokens: 1500 * (inspected.pageCount ?? 1), outputTokens: 500 } });
+    return { ...base, processing: { stage: 'MANUAL_EXTRACTION_REQUIRED', message: ai.status === 'QUEUED'
+      ? 'AI okuması kuyrukta; sonuç inceleme önerisi olarak gelir. Alanlar onaylanana kadar manuel giriş görevi açık.'
+      : 'Otomatik okuma yapılamadı; manuel alan girişi gerekli.' }, supplier: null, ai };
   }
   return { ...base, processing: { stage: 'STORED', message: 'Belge sürümü kaydedildi.' }, supplier: null };
 }

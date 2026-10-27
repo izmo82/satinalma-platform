@@ -5,6 +5,8 @@ import { S3ObjectStore, type ObjectStore } from './storage.ts';
 import { processSignatureJob } from './modules/contracts.ts';
 import { processNoticeReminder, processObligationDue } from './modules/contractTerms.ts';
 import { processErpExport } from './modules/invoices.ts';
+import { processAiRun } from './modules/ai.ts';
+import { hasAiProviders } from './ai/provider.ts';
 
 /**
  * Durumsuz worker: kuyruktan iş çeker (SKIP LOCKED), işi isteyen kullanıcının GÜNCEL üyeliğiyle kiracı bağlamı kurar.
@@ -13,7 +15,7 @@ import { processErpExport } from './modules/invoices.ts';
 export async function processJobs(pool: pg.Pool, store: ObjectStore, detectorProvider: string | null, limit = 10, erpAdapterName: string | null = process.env.ERP_ADAPTER || null): Promise<number> {
   const claimed = await withoutTenant(pool, async (c) =>
     (await c.query<{ id: string; tenant_id: string; company_id: string | null; kind: string; requested_by: string | null }>(
-      'SELECT * FROM claim_jobs($1, $2)', [['signature.detect', 'contract.notice_reminder', 'contract.obligation_due', ...(erpAdapterName ? ['erp.export'] : [])], limit])).rows);
+      'SELECT * FROM claim_jobs($1, $2)', [['signature.detect', 'contract.notice_reminder', 'contract.obligation_due', ...(erpAdapterName ? ['erp.export'] : []), ...(hasAiProviders() ? ['ai.run'] : [])], limit])).rows);
   for (const job of claimed) {
     const m = await withoutTenant(pool, async (c) => (await c.query<{ tenant_id: string; roles: string[]; company_ids: string[] }>(
       'SELECT * FROM auth_memberships($1)', [job.requested_by])).rows.find((r) => r.tenant_id === job.tenant_id));
@@ -29,6 +31,7 @@ export async function processJobs(pool: pg.Pool, store: ObjectStore, detectorPro
       }
       if (job.kind === 'contract.notice_reminder') await withTenant(pool, ctx, (tx) => processNoticeReminder(tx, ctx, job.id));
       else if (job.kind === 'erp.export') await withTenant(pool, ctx, (tx) => processErpExport(tx, ctx, job.id, erpAdapterName));
+      else if (job.kind === 'ai.run') await processAiRun(pool, ctx, store, job.id);
       else if (job.kind === 'contract.obligation_due') await withTenant(pool, ctx, (tx) => processObligationDue(tx, ctx, job.id));
       else await withTenant(pool, ctx, (tx) => processSignatureJob(tx, ctx, store, job.id, detectorProvider));
     } catch (err) {

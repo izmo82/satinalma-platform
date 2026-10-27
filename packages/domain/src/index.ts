@@ -5,3 +5,5 @@ export * from './money.ts';
 export * from './sourcing.ts';
 export * from './contractTerms.ts';
 export * from './invoiceMatch.ts';
+export * from './supplierRisk.ts';
+export * from './aiRouter.ts';
