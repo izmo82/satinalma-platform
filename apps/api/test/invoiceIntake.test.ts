@@ -115,6 +115,11 @@ async function po(cv: string | null, qty = '10', price = '1000') {
 const getPo = async (id: string) => (await call('buyer', 'GET', `/api/v1/purchase-orders/${id}`)).body;
 const limit = async (cv: string) => (await call('finance', 'GET', `/api/v1/contract-versions/${cv}/limit`)).body;
 const reason = 'Talep sahibi miktarı güncelledi (sentetik)';
+/** Onay incelenen sürüme bağlıdır: önce güncel kontrol parmak izi okunur (If-Match). */
+const approve = async (id: string) => {
+  const fp = (await call('finance2', 'GET', `/api/v1/invoices/${id}`)).body.checkFingerprint as string;
+  return h.call('finance2', 'POST', `/api/v1/invoices/${id}/approve`, { headers: { 'if-match': fp } });
+};
 
 describe('sipariş değişikliği', () => {
   it('miktar artışı limit kilidiyle kontrol edilir; özgün kalem korunur, revizyon ve fark görünür', async () => {
@@ -149,7 +154,7 @@ describe('sipariş değişikliği', () => {
     const inv = await call('finance', 'POST', '/api/v1/invoices', { companyId: h.world.companyA1.id, supplierId: h.world.suppliers.s1, kind: 'INVOICE', invoiceNo: `PO${randomUUID().slice(0, 8)}`,
       issueDate: '2026-10-20', currency: 'TRY', lines: [{ description: 'Yedek parça', quantity: '6', unit: 'adet', unitPrice: '100', netAmount: '600.00' }] });
     await call('finance', 'PUT', `/api/v1/invoices/${inv.body.id}/allocations`, { allocations: [{ lineNo: 1, poLineId: line, contractVersionId: null, quantity: '6', amount: '600.00' }] });
-    expect((await call('finance2', 'POST', `/api/v1/invoices/${inv.body.id}/approve`)).status).toBe(200);
+    expect((await approve(inv.body.id)).status).toBe(200);
     const price = await call('buyer', 'POST', `/api/v1/purchase-orders/${id}/changes`, { baseChangeNo: 0, reason, lines: [{ poLineId: line, quantity: '10', unitPrice: '120' }] });
     expect(price.body.error.code).toBe('price_locked');
   });
@@ -245,7 +250,7 @@ describe('inceleme bulguları (regresyon)', () => {
     expect((await call('buyer', 'POST', `/api/v1/purchase-orders/${id}/changes`, { baseChangeNo: 0, reason, lines: [{ poLineId: line, quantity: '10', unitPrice: '80' }] })).status).toBe(201);
     const after = (await call('finance', 'GET', `/api/v1/invoices/${inv.body.id}`)).body;
     expect(after.exceptionCurrent).toBe(false);
-    const ap = await call('finance2', 'POST', `/api/v1/invoices/${inv.body.id}/approve`);
+    const ap = await approve(inv.body.id);
     expect(ap.status).toBe(409);
     expect(ap.body.error.code).toBe('exception_stale');
   });
@@ -262,5 +267,55 @@ describe('inceleme bulguları (regresyon)', () => {
       const l = (await getPo(id)).lines[0];
       expect(Number(l.receivedQty)).toBeLessThanOrEqual(Number(l.orderedQty));
     }
+  });
+});
+
+describe('T44 nihai onay görülen sürüme bağlı', () => {
+  it('If-Match yoksa 428; inceleme sonrası tahsis değiştiyse eski parmak iziyle onay 409', async () => {
+    const id = await po(null, '10', '100');
+    const line = (await getPo(id)).lines[0].poLineId;
+    await call('buyer', 'POST', `/api/v1/po-lines/${line}/receipts`, { quantity: '10', note: 'Teslim alındı (sentetik)' });
+    const inv = await call('finance', 'POST', '/api/v1/invoices', { companyId: h.world.companyA1.id, supplierId: h.world.suppliers.s1, kind: 'INVOICE', invoiceNo: `T44${randomUUID().slice(0, 8)}`,
+      issueDate: '2026-10-20', currency: 'TRY', lines: [{ description: 'Yedek parça', quantity: '10', unit: 'adet', unitPrice: '100', netAmount: '1000.00' }] });
+    const alloc = (q: string) => call('finance', 'PUT', `/api/v1/invoices/${inv.body.id}/allocations`, { allocations: [{ lineNo: 1, poLineId: line, contractVersionId: null, quantity: q, amount: '1000.00' }] });
+    await alloc('10');
+    const seen = (await call('finance2', 'GET', `/api/v1/invoices/${inv.body.id}`)).body.checkFingerprint;
+    expect((await call('finance2', 'POST', `/api/v1/invoices/${inv.body.id}/approve`)).status).toBe(428);
+    await alloc('9');
+    const stale = await h.call('finance2', 'POST', `/api/v1/invoices/${inv.body.id}/approve`, { headers: { 'if-match': seen } });
+    expect(stale.status).toBe(409);
+    expect(stale.body.error.code).toBe('invoice_changed');
+    await alloc('10');
+    expect((await approve(inv.body.id)).status).toBe(200);
+  });
+});
+
+describe('zayıf bağlantı: yanıtı kaybolan istek tekrar gönderilince ikinci kayıt açılmaz', () => {
+  it('aynı Idempotency-Key ile kabul ve olay tek kayıt; anahtar başka kalemde kullanılırsa 409', async () => {
+    const id = await po(null, '10', '100');
+    const line = (await getPo(id)).lines[0].poLineId;
+    const key = `rcpt-${randomUUID()}`;
+    const send = () => h.call('buyer', 'POST', `/api/v1/po-lines/${line}/receipts`, { body: { quantity: '5', note: 'Mobil kabul (sentetik)' }, headers: { 'idempotency-key': key } });
+    const a = await send(); const b = await send();
+    expect(a.status).toBe(201);
+    expect(b.body).toMatchObject({ id: a.body.id, duplicate: true });
+    expect((await getPo(id)).lines[0].receivedQty).toBe('5');
+    const other = await po(null, '10', '100');
+    const otherLine = (await getPo(other)).lines[0].poLineId;
+    expect((await h.call('buyer', 'POST', `/api/v1/po-lines/${otherLine}/receipts`, { body: { quantity: '1', note: 'Yanlış anahtar (sentetik)' }, headers: { 'idempotency-key': key } })).status).toBe(409);
+    // Aynı anahtar, aynı kalem ama farklı miktar: eski kayıt başarı diye dönmez.
+    const changed = await h.call('buyer', 'POST', `/api/v1/po-lines/${line}/receipts`, { body: { quantity: '3', note: 'Mobil kabul (sentetik)' }, headers: { 'idempotency-key': key } });
+    expect(changed.status).toBe(409);
+    expect(changed.body.error.code).toBe('idempotency_mismatch');
+    expect((await getPo(id)).lines[0].receivedQty).toBe('5');
+    const ikey = `inc-${randomUUID()}`;
+    const inc = () => h.call('buyer', 'POST', '/api/v1/incidents', { body: { supplierId: h.world.suppliers.s1, category: 'DELAY', severity: 'LOW', title: 'Mobil olay bildirimi',
+      description: 'Bağlantı koptu, tekrar gönderildi (sentetik).', occurredOn: '2026-10-20' }, headers: { 'idempotency-key': ikey } });
+    const i1 = await inc(); const i2 = await inc();
+    expect(i2.body).toMatchObject({ id: i1.body.id, code: i1.body.code, duplicate: true });
+    const i3 = await h.call('buyer', 'POST', '/api/v1/incidents', { body: { supplierId: h.world.suppliers.s1, category: 'DELAY', severity: 'HIGH', title: 'Mobil olay bildirimi',
+      description: 'Bağlantı koptu, tekrar gönderildi (sentetik).', occurredOn: '2026-10-20' }, headers: { 'idempotency-key': ikey } });
+    expect(i3.status).toBe(409);
+    expect(i3.body.error.code).toBe('idempotency_mismatch');
   });
 });

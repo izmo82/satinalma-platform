@@ -376,7 +376,7 @@ interface InvDetail {
   erp: null | { status: string; externalId: string | null; attempts: number; lastError: string | null; updatedAt: string };
   check: { issues: { code: string; severity: string; message: string; ownerRole: string; lineNo?: number }[]; canApprove: boolean; needsException: boolean; netAmount: string; payable: string; taxTotal: string; otherTaxTotal: string; grossAmount: string };
   contracts: { contractVersionId: string; title: string; currency: string; ceiling: string | null; netConsumption: string; openCommitment: string }[];
-  status: string; exceptionCurrent: boolean | null;
+  status: string; exceptionCurrent: boolean | null; checkFingerprint: string;
   can: { manage: boolean; approve: boolean; approveException: boolean };
 }
 const SEV = { BLOCK: { text: 'Engel', tone: 'danger', icon: 'x' }, EXCEPTION: { text: 'İstisna', tone: 'warn', icon: 'alert' }, REVIEW: { text: 'İnceleme', tone: 'info', icon: 'help' } } as const;
@@ -470,7 +470,7 @@ export function InvoicePage() {
                     {(p) => <textarea className="input" rows={3} {...p} value={reason} onChange={(e) => setReason(e.target.value)} />}</Field>}
                   {canEx && <Button disabled={a.busy || reason.trim().length < 10} onClick={() => void a.run(() => api(`/api/v1/invoices/${d.invoice.id}/exception-approval`, { method: 'POST', json: { reason } }), 'İstisna onaylandı.')}><Icon name="stamp" />İstisnayı onayla</Button>}
                   {canFin && <>
-                    <Button disabled={a.busy || !d.check.canApprove || needsEx} onClick={() => void a.run(() => api(`/api/v1/invoices/${d.invoice.id}/approve`, { method: 'POST' }), 'Fatura onaylandı.')}><Icon name="stamp" />Finans onayı</Button>
+                    <Button disabled={a.busy || !d.check.canApprove || needsEx} onClick={() => void a.run(() => api(`/api/v1/invoices/${d.invoice.id}/approve`, { method: 'POST', ifMatch: d.checkFingerprint }), 'Fatura onaylandı.')}><Icon name="stamp" />Finans onayı</Button>
                     <Button variant="outline" disabled={a.busy || reason.trim().length < 10} onClick={() => void a.run(() => api(`/api/v1/invoices/${d.invoice.id}/reject`, { method: 'POST', json: { reason } }), 'Fatura reddedildi.')}>Reddet</Button>
                   </>}
                 </>;

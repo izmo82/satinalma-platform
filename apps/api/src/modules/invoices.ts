@@ -109,17 +109,26 @@ async function poLineStates(tx: Tx, poLineIds: string[], excludeInvoiceId: strin
     FROM po_lines_current pl JOIN purchase_orders po ON po.id = pl.po_id WHERE pl.id = ANY($1::uuid[])`, [poLineIds, excludeInvoiceId])).rows;
 }
 
-export async function recordReceipt(tx: Tx, ctx: TenantContext, poLineId: string, b: { quantity: string; periodFrom?: string | null; periodTo?: string | null; note: string }) {
+export async function recordReceipt(tx: Tx, ctx: TenantContext, poLineId: string, b: { quantity: string; periodFrom?: string | null; periodTo?: string | null; note: string }, idempotencyKey?: string) {
   if (!isDecimal(b.quantity) || Number(b.quantity) <= 0) throw unprocessable('invalid_number', 'Kabul miktarı pozitif olmalı.');
   await lockPosOfLines(tx, [poLineId]);
+  const bodyHash = idempotencyKey ? sha(JSON.stringify([poLineId, b.quantity, b.periodFrom ?? null, b.periodTo ?? null, b.note.trim()])) : null;
+  // Yanıtı kaybolan istek tekrar gelirse ikinci kabul açılmaz: aynı anahtarla önceki kayıt döner.
+  if (idempotencyKey) {
+    const prev = (await tx.query<{ id: string; idempotency_hash: string | null }>(`SELECT id, idempotency_hash FROM receipts WHERE idempotency_key = $1`, [idempotencyKey])).rows[0];
+    if (prev) {
+      if (prev.idempotency_hash !== bodyHash) throw conflict('idempotency_mismatch', 'Aynı istek anahtarı farklı bir kabul için kullanıldı; ekranı yenileyip yeni kayıt açın.');
+      return { id: prev.id, duplicate: true };
+    }
+  }
   const [pl] = await poLineStates(tx, [poLineId], null);
   if (!pl) throw notFound();
   if (pl.poStatus !== 'OPEN') throw conflict('po_not_open', 'Sipariş kapatıldı veya iptal edildi; yeni kabul kaydedilemez.');
   if (cmp(dec(pl.receivedQty) + dec(b.quantity), dec(pl.orderedQty)) > 0) throw unprocessable('over_receipt', `Toplam kabul sipariş miktarını (${pl.orderedQty} ${pl.unit}) aşamaz; şu an ${pl.receivedQty}.`);
   if (pl.kind === 'SERVICE' && (!b.periodFrom || !b.periodTo)) throw unprocessable('period_required', 'Hizmet kabulü dönem (başlangıç–bitiş) ile kaydedilir.');
   const company = (await tx.query<{ company_id: string }>(`SELECT company_id FROM po_lines WHERE id = $1`, [poLineId])).rows[0]!.company_id;
-  const r = (await tx.query<{ id: string }>(`INSERT INTO receipts (tenant_id, company_id, po_line_id, quantity, period_from, period_to, note, recorded_by)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`, [ctx.tenantId, company, poLineId, b.quantity, b.periodFrom ?? null, b.periodTo ?? null, b.note.trim(), ctx.userId])).rows[0]!;
+  const r = (await tx.query<{ id: string }>(`INSERT INTO receipts (tenant_id, company_id, po_line_id, quantity, period_from, period_to, note, recorded_by, idempotency_key, idempotency_hash)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`, [ctx.tenantId, company, poLineId, b.quantity, b.periodFrom ?? null, b.periodTo ?? null, b.note.trim(), ctx.userId, idempotencyKey ?? null, bodyHash])).rows[0]!;
   await closeTasks(tx, `receipt-needed:${poLineId}`);
   await audit(tx, ctx, 'receipt.recorded', 'po_line', poLineId, { receiptId: r.id, quantity: b.quantity });
   return { id: r.id };
@@ -395,7 +404,7 @@ export async function approveException(tx: Tx, ctx: TenantContext, invoiceId: st
 }
 
 /** Finans onayı: limit kilidi altında yeniden kontrol (T15), istisna parmak izi eşleşmesi (BR04), görev ayrılığı. */
-export async function approveInvoice(tx: Tx, ctx: TenantContext, invoiceId: string, erpAdapterName: string | null = null) {
+export async function approveInvoice(tx: Tx, ctx: TenantContext, invoiceId: string, erpAdapterName: string | null = null, expectedFingerprint?: string) {
   const inv = (await tx.query<{ company_id: string; created_by: string; legal_status: string }>(`SELECT company_id, created_by, legal_status FROM invoices WHERE id = $1`, [invoiceId])).rows[0];
   if (!inv) throw notFound();
   if (inv.legal_status !== 'RECEIVED') throw conflict('legally_cancelled', 'Hukuki olarak iptal/ret edilmiş e-belge onaylanamaz.');
@@ -406,7 +415,10 @@ export async function approveInvoice(tx: Tx, ctx: TenantContext, invoiceId: stri
   await lockContracts(tx, Object.keys(pre.check.contractImpact));
   if (await finalDecision(tx, invoiceId)) throw conflict('invoice_decided', 'Bu fatura için karar verildi.');
   const { check, fingerprint } = await evaluate(tx, invoiceId);
+  // Önce engel (kilit altında güncel limit/eşleştirme), sonra sürüm: engel varsa sebebi söylenir.
   if (!check.canApprove) throw unprocessable('invoice_blocked', check.issues.find((x) => x.severity === 'BLOCK')!.message, { issues: check.issues });
+  // Onay, onaylayanın gördüğü kontrol sonucuna bağlıdır (web/iOS aynı): arada tahsis, sipariş veya kabul değiştiyse 409 (T44).
+  if (expectedFingerprint !== undefined && expectedFingerprint !== fingerprint) throw conflict('invoice_changed', 'Fatura siz incelerken değişti (tahsis, sipariş veya kabul); güncel hali yükleyip yeniden inceleyin.');
   if (check.needsException) {
     const ex = (await tx.query<{ check_hash: string; decided_by: string }>(`SELECT check_hash, decided_by FROM invoice_decisions WHERE invoice_id = $1 AND kind = 'EXCEPTION_APPROVAL' ORDER BY decided_at DESC LIMIT 1`, [invoiceId])).rows[0];
     if (!ex) throw unprocessable('exception_required', 'Bu fatura istisna onayı gerektiriyor; sorumluya görev açıldı.', { issues: check.issues });
@@ -453,7 +465,7 @@ async function syncIssueTasks(tx: Tx, ctx: TenantContext, invoiceId: string, inv
 export async function getInvoice(tx: Tx, ctx: TenantContext, id: string) {
   const inv = (await tx.query(`SELECT i.id, i.kind, i.invoice_no AS "invoiceNo", i.ettn, i.issue_date::text AS "issueDate", i.currency, i.company_id AS "companyId",
       i.supplier_id AS "supplierId", s.legal_name AS "supplierName", s.status AS "supplierStatus", i.legal_status AS "legalStatus", i.payment_status AS "paymentStatus",
-      i.original_invoice_id AS "originalInvoiceId", i.advance_invoice_id AS "advanceInvoiceId", i.advance_offset::text AS "advanceOffset", i.document_version_id AS "documentVersionId",
+      i.original_invoice_id AS "originalInvoiceId", i.advance_invoice_id AS "advanceInvoiceId", i.advance_offset::text AS "advanceOffset", i.document_version_id AS "documentVersionId", (SELECT sha256 FROM document_versions dv WHERE dv.id = i.document_version_id) AS "documentSha256",
       i.declared_tax_total::text AS "declaredTaxTotal", i.declared_withholding::text AS "declaredWithholding", i.declared_payable::text AS "declaredPayable", i.declared_other_tax_total::text AS "declaredOtherTaxTotal",
       i.created_by = $2 AS "createdByMe", u.display_name AS "createdBy", i.created_at AS "createdAt"
     FROM invoices i JOIN suppliers s ON s.id = i.supplier_id JOIN users u ON u.id = i.created_by WHERE i.id = $1`, [id, ctx.userId])).rows[0];
@@ -477,6 +489,8 @@ export async function getInvoice(tx: Tx, ctx: TenantContext, id: string) {
     invoice: inv, lines, allocations, decisions, intake, erp, check, contracts, poLines,
     status: final ? final.kind : check.canApprove ? (check.needsException ? (exception?.checkHash === fingerprint ? 'EXCEPTION_APPROVED' : 'NEEDS_EXCEPTION') : 'READY') : 'BLOCKED',
     exceptionCurrent: exception ? exception.checkHash === fingerprint : null,
+    /** Onay isteği If-Match ile bu değeri gönderir (görülen kontrol sonucu). */
+    checkFingerprint: fingerprint,
   };
 }
 

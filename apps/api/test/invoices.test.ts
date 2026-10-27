@@ -42,7 +42,11 @@ async function invoice(qty: string, price = '1000', kind = 'INVOICE', extra: Rec
 }
 const allocate = (id: string, a: { poLineId?: string | null; contractVersionId?: string | null; quantity: string; amount: string }, extra: Record<string, unknown> = {}) =>
   call('finance', 'PUT', `/api/v1/invoices/${id}/allocations`, { allocations: [{ lineNo: 1, poLineId: a.poLineId ?? null, contractVersionId: a.contractVersionId ?? null, quantity: a.quantity, amount: a.amount }], ...extra });
-const approve = (id: string, who: Who = 'finance2') => call(who, 'POST', `/api/v1/invoices/${id}/approve`);
+// Onay incelenen sürüme bağlıdır (If-Match = kontrol parmak izi).
+const approve = async (id: string, who: Who = 'finance2') => {
+  const fp = (await call(who, 'GET', `/api/v1/invoices/${id}`)).body.checkFingerprint as string;
+  return h.call(who, 'POST', `/api/v1/invoices/${id}/approve`, { headers: { 'if-match': fp } });
+};
 const limit = async (cv: string) => (await call('finance', 'GET', `/api/v1/contract-versions/${cv}/limit`)).body;
 
 describe('T14 limit hesabı ve T13 eksik kabul', () => {

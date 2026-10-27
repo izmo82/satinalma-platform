@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   assessmentOutcome, criticalBlock, DEFAULT_INCIDENT_POLICY, DEFAULT_WEIGHTS, DIMENSION_TR, incidentImpact, inherentRisk, LEVEL_TR, MIN_SAMPLE,
   PERFORMANCE_DIMENSIONS, performanceScore, validateResidual, validateWeights,
@@ -225,7 +226,18 @@ export interface IncidentInput {
   impact?: string | null; location?: string | null; occurredOn: string;
 }
 
-export async function reportIncident(tx: Tx, ctx: TenantContext, b: IncidentInput) {
+export async function reportIncident(tx: Tx, ctx: TenantContext, b: IncidentInput, idempotencyKey?: string) {
+  const bodyHash = idempotencyKey ? createHash('sha256').update(JSON.stringify([b.supplierId, b.contractVersionId ?? null, b.poId ?? null, b.category, b.severity, b.title.trim(),
+    b.description.trim(), b.impact?.trim() || null, b.location?.trim() || null, b.occurredOn])).digest('hex') : null;
+  if (idempotencyKey) {
+    await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`incident-idem:${ctx.tenantId}:${idempotencyKey}`]);
+    const prev = (await tx.query<{ id: string; code: string; idempotency_hash: string | null }>(`SELECT id, code, idempotency_hash FROM supplier_incidents WHERE idempotency_key = $1`, [idempotencyKey])).rows[0];
+    if (prev) {
+      // Aynı anahtar farklı içerikle (ör. düzeltilmiş tedarikçi/şiddet) gelirse eski olay "bildirildi" diye dönmez.
+      if (prev.idempotency_hash !== bodyHash) throw conflict('idempotency_mismatch', 'Aynı istek anahtarı farklı bir olay bildirimi için kullanıldı; ekranı yenileyip yeni bildirim açın.');
+      return { id: prev.id, code: prev.code, possibleDuplicates: [], duplicate: true };
+    }
+  }
   if (!(await tx.query(`SELECT 1 FROM suppliers WHERE id = $1`, [b.supplierId])).rowCount) throw notFound();
   if (b.occurredOn > today()) throw unprocessable('future_date', 'Olay tarihi gelecekte olamaz.');
   // Bağlı sipariş/sözleşme aynı tedarikçiye ait ve bildirenin erişebildiği kayıt olmalı (RLS görünürlüğü).
@@ -234,9 +246,9 @@ export async function reportIncident(tx: Tx, ctx: TenantContext, b: IncidentInpu
   const n = (await tx.query<{ value: string }>(`INSERT INTO tenant_counters (tenant_id, name, value) VALUES ($1, 'incident', 1)
     ON CONFLICT (tenant_id, name) DO UPDATE SET value = tenant_counters.value + 1 RETURNING value`, [ctx.tenantId])).rows[0]!.value;
   const code = `OLY-${new Date().getFullYear()}-${String(n).padStart(4, '0')}`;
-  const i = (await tx.query<{ id: string }>(`INSERT INTO supplier_incidents (tenant_id, code, supplier_id, contract_version_id, po_id, category, severity, title, description, impact, location, occurred_on, reported_by)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`, [ctx.tenantId, code, b.supplierId, b.contractVersionId ?? null, b.poId ?? null, b.category, b.severity,
-      b.title.trim(), b.description.trim(), b.impact?.trim() || null, b.location?.trim() || null, b.occurredOn, ctx.userId])).rows[0]!;
+  const i = (await tx.query<{ id: string }>(`INSERT INTO supplier_incidents (tenant_id, code, supplier_id, contract_version_id, po_id, category, severity, title, description, impact, location, occurred_on, reported_by, idempotency_key, idempotency_hash)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`, [ctx.tenantId, code, b.supplierId, b.contractVersionId ?? null, b.poId ?? null, b.category, b.severity,
+      b.title.trim(), b.description.trim(), b.impact?.trim() || null, b.location?.trim() || null, b.occurredOn, ctx.userId, idempotencyKey ?? null, bodyHash])).rows[0]!;
   await tx.query(`INSERT INTO incident_events (tenant_id, incident_id, kind, to_status, note, actor) VALUES ($1,$2,'REPORTED','REPORTED',$3,$4)`, [ctx.tenantId, i.id, b.description.trim(), ctx.userId]);
   // Mükerrer olay kontrolü: aynı tedarikçi, kategori ve ±3 gün içindeki açık olaylar aday olarak gösterilir; otomatik birleştirilmez.
   const possibleDuplicates = (await tx.query(`SELECT id, code, title, occurred_on::text AS "occurredOn" FROM supplier_incidents WHERE supplier_id = $1 AND category = $2 AND id <> $3

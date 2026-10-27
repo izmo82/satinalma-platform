@@ -87,6 +87,11 @@ export async function buildApp(deps: AppDeps) {
     return withTenant(deps.pool, ctx, (tx) => fn(tx, ctx));
   }
   const ifMatch = (req: FastifyRequest) => (typeof req.headers['if-match'] === 'string' ? req.headers['if-match'] : undefined);
+  /** İstemci tekrar anahtarı (zayıf bağlantıda yanıtı kaybolan isteği tekrar göndermek güvenli olsun). */
+  const idemKey = (req: FastifyRequest) => {
+    const k = req.headers['idempotency-key'];
+    return typeof k === 'string' && /^[A-Za-z0-9_-]{8,100}$/.test(k) ? k : undefined;
+  };
 
   app.get('/health', { schema: { hide: true } }, async () => ({ ok: true }));
   app.get('/api/openapi.json', { schema: { hide: true } }, async () => app.swagger());
@@ -460,7 +465,7 @@ export async function buildApp(deps: AppDeps) {
     scoped(req, 'po.manage', (tx, ctx) => invoices.closePo(tx, ctx, (req.params as any).id, req.body as any)));
   app.post('/api/v1/po-lines/:id/receipts', { schema: { tags: ['po'], params: idParams, body: { type: 'object', required: ['quantity', 'note'],
     properties: { quantity: money2, periodFrom: { anyOf: [{ type: 'string', format: 'date' }, { type: 'null' }] }, periodTo: { anyOf: [{ type: 'string', format: 'date' }, { type: 'null' }] }, note: { type: 'string', maxLength: 1000 } } } } }, async (req, reply) =>
-    reply.status(201).send(await scoped(req, 'receipt.record', (tx, ctx) => invoices.recordReceipt(tx, ctx, (req.params as any).id, req.body as any))));
+    reply.status(201).send(await scoped(req, 'receipt.record', (tx, ctx) => invoices.recordReceipt(tx, ctx, (req.params as any).id, req.body as any, idemKey(req)))));
   app.post('/api/v1/receipts/:id/reverse', { schema: { tags: ['po'], params: idParams, body: { type: 'object', required: ['quantity', 'note'], properties: { quantity: money2, note: { type: 'string', maxLength: 1000 } } } } }, async (req, reply) =>
     reply.status(201).send(await scoped(req, 'receipt.record', (tx, ctx) => invoices.reverseReceipt(tx, ctx, (req.params as any).id, req.body as any))));
   app.get('/api/v1/contract-versions/:id/limit', { schema: { tags: ['contracts'], params: idParams } }, async (req) =>
@@ -488,8 +493,12 @@ export async function buildApp(deps: AppDeps) {
     scoped(req, 'invoice.manage', (tx, ctx) => invoices.setAllocations(tx, ctx, (req.params as any).id, req.body as any)));
   app.post('/api/v1/invoices/:id/exception-approval', { schema: { tags: ['invoices'], params: idParams, body: { type: 'object', required: ['reason'], properties: { reason: { type: 'string', maxLength: 2000 } } } } }, async (req) =>
     scoped(req, 'invoice.exception.approve', (tx, ctx) => invoices.approveException(tx, ctx, (req.params as any).id, (req.body as any).reason)));
-  app.post('/api/v1/invoices/:id/approve', { schema: { tags: ['invoices'], params: idParams } }, async (req) =>
-    scoped(req, 'invoice.approve', (tx, ctx) => invoices.approveInvoice(tx, ctx, (req.params as any).id, deps.config.erpAdapter ?? null)));
+  app.post('/api/v1/invoices/:id/approve', { schema: { tags: ['invoices'], params: idParams } }, async (req) => {
+    // Nihai onay görülen sürüme bağlı: If-Match = kontrol parmak izi; yoksa 428 (eski ekrandan/çevrimdışı onay yok).
+    const expected = ifMatch(req);
+    if (!expected) throw new ApiError(428, 'precondition_required', 'Onay, incelenen fatura sürümüyle (If-Match) gönderilmeli.');
+    return scoped(req, 'invoice.approve', (tx, ctx) => invoices.approveInvoice(tx, ctx, (req.params as any).id, deps.config.erpAdapter ?? null, expected.replace(/^"|"$/g, '')));
+  });
   app.post('/api/v1/invoices/:id/reject', { schema: { tags: ['invoices'], params: idParams, body: { type: 'object', required: ['reason'], properties: { reason: { type: 'string', maxLength: 2000 } } } } }, async (req) =>
     scoped(req, 'invoice.approve', (tx, ctx) => invoices.rejectInvoice(tx, ctx, (req.params as any).id, (req.body as any).reason)));
   app.put('/api/v1/tolerance-rules', { schema: { tags: ['invoices'], body: { type: 'object', required: ['currency', 'absAmount', 'percent', 'combine'],
@@ -665,7 +674,7 @@ export async function buildApp(deps: AppDeps) {
     properties: { supplierId: uuid, contractVersionId: { anyOf: [uuid, { type: 'null' }] }, poId: { anyOf: [uuid, { type: 'null' }] },
       category: { type: 'string', enum: ['QUALITY', 'DELAY', 'OUTAGE', 'SLA', 'INVOICE_DISPUTE', 'SECURITY', 'PERSONAL_DATA', 'ETHICS'] }, severity: lvl,
       title: { type: 'string', minLength: 5, maxLength: 200 }, description: { type: 'string', minLength: 10, maxLength: 5000 }, impact: optText(2000), location: optText(200), occurredOn: dateStr } } } }, async (req, reply) =>
-    reply.status(201).send(await scoped(req, 'incident.report', (tx, ctx) => evals.reportIncident(tx, ctx, req.body as any))));
+    reply.status(201).send(await scoped(req, 'incident.report', (tx, ctx) => evals.reportIncident(tx, ctx, req.body as any, idemKey(req)))));
   app.get('/api/v1/incidents/:id', { schema: { tags: ['evaluation'], params: idParams } }, async (req) => scoped(req, 'incident.read', async (tx, ctx) =>
     ({ ...(await evals.getIncident(tx, ctx, (req.params as any).id)), can: { verify: can(ctx.roles, 'incident.verify'), report: can(ctx.roles, 'incident.report'), roles: ctx.roles } })));
   app.post('/api/v1/incidents/:id/transitions', { schema: { tags: ['evaluation'], params: idParams, body: { type: 'object', required: ['action', 'note'], additionalProperties: false,
