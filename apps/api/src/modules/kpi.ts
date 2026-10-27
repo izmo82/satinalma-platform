@@ -2,7 +2,7 @@ import { noticeDeadline } from '@sp/domain';
 import type { TenantContext, Tx } from '../db.ts';
 import { audit } from '../audit.ts';
 import { unprocessable } from '../errors.ts';
-import { invoiceHasIssue } from './invoices.ts';
+import { unapprovedInvoicesWithIssues } from './invoices.ts';
 
 /**
  * Yönetim göstergeleri (02 §19, UX13). Her gösterge tanımı, payı/paydası, kapsamı (dönem + kullanıcının erişebildiği şirketler, RLS),
@@ -13,6 +13,7 @@ export interface Indicator {
   values: { currency: string | null; numerator: string; denominator: string; ratio: string | null }[];
   note: string | null; source: string;
 }
+const MAX_INVOICES = 20_000; // istek yolunda üst sınır; aşılırsa not düşülür, dönem daraltılır
 const pct = (n: number, d: number) => (d ? (Math.round((n / d) * 1000) / 10).toFixed(1) : null);
 
 export async function summary(tx: Tx, ctx: TenantContext, q: { from: string; to: string }) {
@@ -21,12 +22,13 @@ export async function summary(tx: Tx, ctx: TenantContext, q: { from: string; to:
 
   // Fatura istisna oranı: dönemde tarihli faturalardan kontrolde en az bir bulgusu olan (karar verilmişse karar anındaki bulgular).
   const inv = (await tx.query<{ id: string; issues: unknown[] | null }>(`SELECT i.id, (SELECT d.issues FROM invoice_decisions d WHERE d.invoice_id = i.id AND d.kind = 'APPROVAL') AS issues
-    FROM invoices i WHERE i.issue_date BETWEEN $1 AND $2 AND i.kind <> 'ADVANCE' ORDER BY i.issue_date LIMIT 2000`, [q.from, q.to])).rows;
-  let withIssue = 0;
-  for (const r of inv) withIssue += (r.issues ? r.issues.length > 0 : await invoiceHasIssue(tx, r.id)) ? 1 : 0;
+    FROM invoices i WHERE i.issue_date BETWEEN $1 AND $2 AND i.kind <> 'ADVANCE' ORDER BY i.issue_date LIMIT ${MAX_INVOICES}`, [q.from, q.to])).rows;
+  // Onaylananlar onay anındaki bulgularla; onaylanmamışlar güncel kontrolle, toplu ve fatura sayısından bağımsız sorgu sayısıyla.
+  const flagged = await unapprovedInvoicesWithIssues(tx, inv.filter((r) => !r.issues).map((r) => r.id));
+  const withIssue = inv.filter((r) => (r.issues ? r.issues.length > 0 : flagged.has(r.id))).length;
   out.push({ key: 'invoice_exception_rate', label: 'Fatura istisna oranı', definition: 'Kontrole giren faturalardan en az bir açık uyumsuzluğu olanların oranı (onaylananlarda onay anındaki bulgular).',
     status: inv.length ? 'OK' : 'NO_DATA', values: [{ currency: null, numerator: String(withIssue), denominator: String(inv.length), ratio: pct(withIssue, inv.length) }],
-    note: inv.length >= 2000 ? 'İlk 2000 fatura hesaplandı.' : null, source: 'invoices, invoice_decisions, eşleştirme kontrolü' });
+    note: inv.length >= MAX_INVOICES ? `Dönemin ilk ${MAX_INVOICES} faturası hesaplandı; dönemi daraltın.` : null, source: 'invoices, invoice_decisions, eşleştirme kontrolü' });
 
   // Sözleşme kapsamı: onaylı fatura tahsislerinden geçerli sözleşmeye (doğrudan veya sözleşmeli sipariş) bağlı tutarın oranı.
   const cov = (await tx.query<{ currency: string; covered: string; total: string }>(`SELECT i.currency,
@@ -87,7 +89,7 @@ export async function summary(tx: Tx, ctx: TenantContext, q: { from: string; to:
   return { period: q, scope: { companyIds: ctx.companyIds, note: 'Yalnız erişiminiz olan şirketlerin verisi.' }, dataAsOf: new Date().toISOString(), indicators: out };
 }
 
-const csvCell = (v: string | null) => {
+export const csvCell = (v: string | null) => {
   const s = v ?? '';
   // Formül enjeksiyonu kaçışı: hücre =, +, -, @ ile başlıyorsa metin olarak.
   // Düz sayı (negatif dahil) olduğu gibi kalır; yalnız formül başlatabilecek metin kaçışlanır.

@@ -270,3 +270,14 @@ describe('Denetim izi', () => {
     await expect(h.owner.query(`UPDATE audit_events SET action = 'x' WHERE entity_id = $1`, [up.body.documentVersionId])).rejects.toThrow(/immutable_record/);
   });
 });
+
+describe('Faz 7 DAST bulguları', () => {
+  it('NUL baytlı sorgu ve çok parçalı olmayan yükleme 4xx döner (500 değil); yanıtlar içerik türü tahminine kapalı', async () => {
+    const nul = await h.call('masterData', 'GET', '/api/v1/suppliers?status=%00&q=q');
+    expect(nul.status).toBe(400);
+    expect(nul.headers['x-content-type-options']).toBe('nosniff');
+    const notMultipart = await h.call('buyer', 'POST', '/api/v1/documents', { body: { companyId: h.world.companyA1.id } });
+    expect(notMultipart.status).toBe(415);
+    expect(notMultipart.body.error.code).toBe('multipart_required');
+  });
+});

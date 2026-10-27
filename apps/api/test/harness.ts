@@ -22,12 +22,13 @@ registerDetector({
 });
 
 /** YALNIZ TEST: bellekteki sahte ERP. `timeoutOnce` anahtarları ilk gönderimde kaydı oluşturup zaman aşımı verir (T18). */
-export const fakeErp = { records: new Map<string, string>(), timeoutOnce: new Set<string>(), posts: new Map<string, number>() };
+export const fakeErp = { records: new Map<string, string>(), timeoutOnce: new Set<string>(), failAlways: new Set<string>(), posts: new Map<string, number>() };
 registerErpAdapter({
   name: 'test-erp',
   async find(key) { const id = fakeErp.records.get(key); return id ? { externalId: id } : null; },
   async post(p) {
     fakeErp.posts.set(p.idempotencyKey, (fakeErp.posts.get(p.idempotencyKey) ?? 0) + 1);
+    if (fakeErp.failAlways.has(p.idempotencyKey)) throw new Error('Cari kart bulunamadı (sahte ERP)');
     const id = `ERP-${fakeErp.records.size + 1}`;
     fakeErp.records.set(p.idempotencyKey, id);
     if (fakeErp.timeoutOnce.delete(p.idempotencyKey)) throw new ErpTimeout();
@@ -37,12 +38,13 @@ registerErpAdapter({
 
 const secret = 'test-secret-'.padEnd(40, 'x');
 
-export async function makeHarness() {
+export async function makeHarness(overrides: Partial<Config> = {}) {
   const config: Config = {
     env: 'test', port: 0, databaseUrl: TEST_APP_URL, databaseOwnerUrl: TEST_OWNER_URL, authMode: 'dev', oidc: null,
     devAuthSecret: secret, dataRegion: 'TR',
     objectStore: { endpoint: TEST_S3_ENDPOINT, region: 'us-east-1', bucket: 'sp-documents-test', forcePathStyle: true },
     signedUrlTtlSeconds: 60, signatureDetectorProvider: null, esignValidatorProvider: null, erpAdapter: 'test-erp', webOrigin: 'http://localhost:5174',
+    ...overrides,
   };
   process.env.AWS_ACCESS_KEY_ID ??= 'test';
   process.env.AWS_SECRET_ACCESS_KEY ??= 'test';

@@ -6,6 +6,7 @@ import { processSignatureJob } from './modules/contracts.ts';
 import { processNoticeReminder, processObligationDue } from './modules/contractTerms.ts';
 import { processErpExport } from './modules/invoices.ts';
 import { processAiRun } from './modules/ai.ts';
+import { processPurge, processTenantExport } from './modules/governance.ts';
 import { hasAiProviders } from './ai/provider.ts';
 
 /**
@@ -15,7 +16,7 @@ import { hasAiProviders } from './ai/provider.ts';
 export async function processJobs(pool: pg.Pool, store: ObjectStore, detectorProvider: string | null, limit = 10, erpAdapterName: string | null = process.env.ERP_ADAPTER || null): Promise<number> {
   const claimed = await withoutTenant(pool, async (c) =>
     (await c.query<{ id: string; tenant_id: string; company_id: string | null; kind: string; requested_by: string | null }>(
-      'SELECT * FROM claim_jobs($1, $2)', [['signature.detect', 'contract.notice_reminder', 'contract.obligation_due', ...(erpAdapterName ? ['erp.export'] : []), ...(hasAiProviders() ? ['ai.run'] : [])], limit])).rows);
+      'SELECT * FROM claim_jobs($1, $2)', [['signature.detect', 'contract.notice_reminder', 'contract.obligation_due', 'retention.purge', 'tenant.export', ...(erpAdapterName ? ['erp.export'] : []), ...(hasAiProviders() ? ['ai.run'] : [])], limit])).rows);
   for (const job of claimed) {
     const m = await withoutTenant(pool, async (c) => (await c.query<{ tenant_id: string; roles: string[]; company_ids: string[] }>(
       'SELECT * FROM auth_memberships($1)', [job.requested_by])).rows.find((r) => r.tenant_id === job.tenant_id));
@@ -24,6 +25,8 @@ export async function processJobs(pool: pg.Pool, store: ObjectStore, detectorPro
       roles: m?.roles ?? [], companyIds: m?.company_ids ?? [], correlationId: `job-${job.id}`,
     };
     try {
+      // İmha onaylandıktan sonraki bayt silme kullanıcı yetkisi gerektirmez (karar verildi); onaylayan ayrılsa da silme yapılır.
+      if (job.kind === 'retention.purge') { await withTenant(pool, { ...ctx, roles: [], companyIds: [] }, (tx) => processPurge(tx, store, job.id)); continue; }
       if (!m || (job.company_id && !m.company_ids.includes(job.company_id))) {
         await withTenant(pool, { ...ctx, companyIds: job.company_id ? [job.company_id] : [] }, (tx) =>
           tx.query(`UPDATE jobs SET status = 'BLOCKED', error_code = 'REQUESTER_NOT_AUTHORIZED', updated_at = now() WHERE id = $1`, [job.id]));
@@ -32,6 +35,7 @@ export async function processJobs(pool: pg.Pool, store: ObjectStore, detectorPro
       if (job.kind === 'contract.notice_reminder') await withTenant(pool, ctx, (tx) => processNoticeReminder(tx, ctx, job.id));
       else if (job.kind === 'erp.export') await withTenant(pool, ctx, (tx) => processErpExport(tx, ctx, job.id, erpAdapterName));
       else if (job.kind === 'ai.run') await processAiRun(pool, ctx, store, job.id);
+      else if (job.kind === 'tenant.export') await processTenantExport(pool, ctx, store, job.id);
       else if (job.kind === 'contract.obligation_due') await withTenant(pool, ctx, (tx) => processObligationDue(tx, ctx, job.id));
       else await withTenant(pool, ctx, (tx) => processSignatureJob(tx, ctx, store, job.id, detectorProvider));
     } catch (err) {

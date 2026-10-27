@@ -170,6 +170,34 @@ describe('T17 mükerrer fatura ve olay, T18 ERP zaman aşımı', () => {
   });
 });
 
+describe('Faz 7: yetkili ERP tekrar gönderimi', () => {
+  it('kalıcı hatayla DEAD olan aktarım, sebep giderilince gerekçeli tekrar gönderimle tek kayıt olarak onaylanır', async () => {
+    const cv = await contract('1000000.00');
+    const inv = await invoice('1', '300');
+    await allocate(inv.id, { contractVersionId: cv, quantity: '1', amount: inv.net });
+    const key = `erp-invoice-${inv.id}`;
+    fakeErp.failAlways.add(key);
+    expect((await approve(inv.id)).status).toBe(200);
+    const job = async () => (await h.owner.query(`SELECT status FROM jobs WHERE idempotency_key = $1`, [key])).rows[0].status;
+    for (let i = 0; i < 10 && (await job()) !== 'DEAD'; i++) {
+      await h.owner.query(`UPDATE jobs SET run_after = now() WHERE idempotency_key = $1`, [key]);
+      await processJobs(h.pool, h.store, null, 10, 'test-erp');
+    }
+    expect(await job()).toBe('DEAD');
+    expect((await call('finance', 'GET', `/api/v1/invoices/${inv.id}`)).body.erp).toMatchObject({ status: 'FAILED' });
+    expect((await call('finance', 'POST', `/api/v1/integration/erp/exports/${inv.id}/replay`, { reason: 'kısa' })).status).toBe(400);
+    expect((await h.call('auditor', 'POST', `/api/v1/integration/erp/exports/${inv.id}/replay`, { body: { reason: 'Cari kart ERP tarafında açıldı (sentetik).' } })).status).toBe(403);
+    fakeErp.failAlways.delete(key);
+    const r = await call('finance', 'POST', `/api/v1/integration/erp/exports/${inv.id}/replay`, { reason: 'Cari kart ERP tarafında açıldı (sentetik).' });
+    expect(r.status).toBe(200);
+    for (let i = 0; i < 5; i++) await processJobs(h.pool, h.store, null, 10, 'test-erp');
+    expect((await call('finance', 'GET', `/api/v1/invoices/${inv.id}`)).body.erp).toMatchObject({ status: 'CONFIRMED', externalId: fakeErp.records.get(key) });
+    // Onaylanmış aktarım tekrar gönderilemez.
+    expect((await call('finance', 'POST', `/api/v1/integration/erp/exports/${inv.id}/replay`, { reason: 'Gereksiz tekrar denemesi (sentetik).' })).status).toBe(409);
+    expect((await h.owner.query(`SELECT reason FROM audit_events WHERE action = 'erp.export.replayed' AND entity_id = $1`, [inv.id])).rows[0].reason).toContain('Cari kart');
+  });
+});
+
 describe('T37 arşiv sözleşmesi', () => {
   it('imza durumu bilinmeyen arşiv sözleşmesine bağlı mevcut fatura iptal edilmez; politika incelemesi açılır', async () => {
     const cv = await contract(null, { stage: 'ARCHIVE_IMPORT', method: 'WET_IMAGE_REVIEW' });
@@ -182,5 +210,38 @@ describe('T37 arşiv sözleşmesi', () => {
     expect((await approve(inv.id)).body.error.code).toBe('exception_required');
     expect((await call('legal2', 'POST', `/api/v1/invoices/${inv.id}/exception-approval`, { reason: 'Hukuk/finans politika incelemesi: hizmet alındı, ödeme yapılabilir (sentetik).' })).status).toBe(200);
     expect((await approve(inv.id)).status).toBe(200);
+  });
+});
+
+describe('Faz 7: rapor için toplu fatura kontrolü', () => {
+  it('toplu kontrol, onaylanmamış her faturada tek tek kontrolle aynı sonucu verir (bu dosyadaki bütün senaryolar)', async () => {
+    const { withTenant } = await import('../src/db.ts');
+    const { invoiceHasIssue, unapprovedInvoicesWithIssues } = await import('../src/modules/invoices.ts');
+    // Onaylanmamış çeşitli durumlar: tahsissiz, kabulü eksik sipariş, tam kabullü sipariş, tavanlı sözleşme, belgede yazan tutar farkı.
+    const cv = await contract('5000.00');
+    await invoice('1', '100');
+    const p1 = await po(null, '10', '100'); const l1 = await poLine(p1.body.id);
+    const i1 = await invoice('10', '100'); await allocate(i1.id, { poLineId: l1, quantity: '10', amount: i1.net });
+    const p2 = await po(null, '5', '100'); const l2 = await poLine(p2.body.id); await receive(l2, '5');
+    const i2 = await invoice('5', '100'); await allocate(i2.id, { poLineId: l2, quantity: '5', amount: i2.net });
+    const i3 = await invoice('1', '4000'); await allocate(i3.id, { contractVersionId: cv, quantity: '1', amount: i3.net });
+    const i4 = await invoice('1', '9000'); await allocate(i4.id, { contractVersionId: cv, quantity: '1', amount: i4.net });
+    await invoice('2', '50', 'INVOICE', { declaredPayable: '999.00' });
+    // Avans mahsubu: bakiyeyi aşan ve aşmayan (toplu yolda avans bakiyesi avans faturası başına bir kez hesaplanır).
+    const adv = await invoice('1', '1000', 'ADVANCE');
+    const i5 = await invoice('1', '500'); await allocate(i5.id, { contractVersionId: cv, quantity: '1', amount: i5.net }, { advanceOffset: '2000', advanceInvoiceId: adv.id });
+    const i6 = await invoice('1', '500'); await allocate(i6.id, { contractVersionId: cv, quantity: '1', amount: i6.net }, { advanceOffset: '300', advanceInvoiceId: adv.id });
+    const ctx = { tenantId: h.world.tenantA, userId: h.world.users.finance.id, roles: ['FINANCE'], companyIds: [h.world.companyA1.id, h.world.companyA2.id], correlationId: 'test' };
+    const ids = (await h.owner.query<{ id: string }>(`SELECT i.id FROM invoices i WHERE i.tenant_id = $1
+      AND NOT EXISTS (SELECT 1 FROM invoice_decisions d WHERE d.invoice_id = i.id AND d.kind = 'APPROVAL')`, [h.world.tenantA])).rows.map((r) => r.id);
+    expect(ids.length).toBeGreaterThan(5);
+    await withTenant(h.pool, ctx, async (tx) => {
+      const bulk = await unapprovedInvoicesWithIssues(tx, ids);
+      const single = new Set<string>();
+      for (const id of ids) if (await invoiceHasIssue(tx, id)) single.add(id);
+      expect([...bulk].sort()).toEqual([...single].sort());
+      expect(single.size).toBeGreaterThan(0);
+      expect(single.size).toBeLessThan(ids.length); // hem bulgulu hem bulgusuz fatura var
+    });
   });
 });

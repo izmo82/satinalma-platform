@@ -94,13 +94,14 @@ export async function processAiRun(pool: pg.Pool, ctx: TenantContext, store: Obj
     const run = (await tx.query<{ id: string; task: AiTask; status: string; document_version_id: string | null; company_id: string | null; provider: string; model_id: string }>(
       `SELECT r.id, r.task, r.status, r.document_version_id, r.company_id, m.provider, m.model_id FROM ai_runs r JOIN ai_models m ON m.id = r.model_ref WHERE r.id = $1 FOR UPDATE OF r`, [j.payload.runId])).rows[0];
     if (!run || run.status !== 'QUEUED') { await finishJob(tx, 'SUCCEEDED', { skipped: true }); return null; }
-    const dv = run.document_version_id ? (await tx.query<{ storage_key: string; mime_type: string }>(`SELECT storage_key, mime_type FROM document_versions WHERE id = $1 AND basic_check_status = 'PASSED'`, [run.document_version_id])).rows[0] : null;
+    const dv = run.document_version_id ? (await tx.query<{ storage_key: string; mime_type: string }>(`SELECT storage_key, mime_type FROM document_versions dv WHERE id = $1 AND basic_check_status = 'PASSED'
+      AND NOT EXISTS (SELECT 1 FROM document_disposals x WHERE x.document_id = dv.document_id)`, [run.document_version_id])).rows[0] : null;
     const fail = async (reason: string, code: string) => {
       await tx.query(`UPDATE ai_runs SET status = $2, reason = $3, finished_at = now() WHERE id = $1`, [run.id, code === 'NO_PROVIDER' ? 'NO_PROVIDER' : 'FAILED', reason]);
       await finishJob(tx, code === 'NO_PROVIDER' ? 'BLOCKED' : 'FAILED', { reason: code }); return null;
     };
     if (!aiProvider(run.provider)) return fail('Bağdaştırıcı çalışma anında yok.', 'NO_PROVIDER');
-    if (!dv) return fail('Belge yok veya güvenlik kontrolünden geçmedi.', 'NO_DOCUMENT');
+    if (!dv) return fail('Belge yok, güvenlik kontrolünden geçmedi veya imha edildi.', 'NO_DOCUMENT');
     await tx.query(`UPDATE ai_runs SET status = 'RUNNING' WHERE id = $1`, [run.id]);
     await tx.query(`UPDATE jobs SET status = 'RUNNING', updated_at = now() WHERE id = $1`, [jobId]);
     return { run, dv };

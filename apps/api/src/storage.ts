@@ -1,4 +1,4 @@
-import { GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import type { Config } from './config.ts';
 
@@ -8,6 +8,8 @@ export interface ObjectStore {
   get(key: string): Promise<Buffer>;
   exists(key: string): Promise<boolean>;
   signedGetUrl(key: string, ttlSeconds: number, downloadName: string): Promise<string>;
+  /** Yalnız onaylı imha ve süresi dolan dışa aktarım için. Sürümlü bucket'ta silme işareti bırakır; yedeklerden silinme ayrıca belgelenir. */
+  delete(key: string): Promise<void>;
 }
 
 export class S3ObjectStore implements ObjectStore {
@@ -34,6 +36,9 @@ export class S3ObjectStore implements ObjectStore {
     } catch {
       return false;
     }
+  }
+  async delete(key: string) {
+    await this.s3.send(new DeleteObjectCommand({ Bucket: this.cfg.bucket, Key: key }));
   }
   async signedGetUrl(key: string, ttlSeconds: number, downloadName: string) {
     return getSignedUrl(this.s3, new GetObjectCommand({

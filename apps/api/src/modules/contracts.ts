@@ -301,7 +301,12 @@ export async function processSignatureJob(tx: Tx, ctx: TenantContext, store: Obj
   const tenant = await tx.query<{ data_region: string }>(`SELECT data_region FROM tenants`);
   const sel = selectDetector(configuredProvider, tenant.rows[0]!.data_region);
   const dv = await tx.query<{ storage_key: string; mime_type: string; page_count: number | null }>(
-    `SELECT storage_key, mime_type, page_count FROM document_versions WHERE id = $1`, [cv.document_version_id]);
+    `SELECT storage_key, mime_type, page_count FROM document_versions dv WHERE id = $1
+       AND NOT EXISTS (SELECT 1 FROM document_disposals x WHERE x.document_id = dv.document_id)`, [cv.document_version_id]);
+  if (!dv.rows[0]) {
+    await tx.query(`UPDATE jobs SET status = 'BLOCKED', error_code = 'DOCUMENT_DISPOSED', updated_at = now() WHERE id = $1`, [jobId]);
+    return;
+  }
   if (!sel.ok) {
     await tx.query(`UPDATE jobs SET status = 'BLOCKED', error_code = $2, updated_at = now() WHERE id = $1`, [jobId, sel.reason]);
     return;

@@ -51,6 +51,7 @@ export async function uploadDocument(tx: Tx, ctx: TenantContext, store: ObjectSt
     `SELECT dv.id, dv.document_id, dv.version_no, dv.basic_check_status, dv.basic_check_reason
      FROM document_versions dv JOIN documents d ON d.id = dv.document_id
      WHERE dv.sha256 = $1 AND dv.company_id = $2 AND d.kind = $3 AND ($4::uuid IS NULL OR dv.document_id = $4)
+       AND NOT EXISTS (SELECT 1 FROM document_disposals x WHERE x.document_id = dv.document_id)
      ORDER BY dv.created_at LIMIT 1`,
     [inspected.sha256, input.companyId, input.kind, input.documentId]);
   if (dup.rows[0]) {
@@ -65,6 +66,10 @@ export async function uploadDocument(tx: Tx, ctx: TenantContext, store: ObjectSt
   let documentId = input.documentId;
   let versionNo = 1;
   if (documentId) {
+    await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`retention:${ctx.tenantId}`]); // imha onayıyla sıralı (governance.retentionLock)
+    if ((await tx.query(`SELECT 1 FROM document_disposals WHERE document_id = $1`, [documentId])).rowCount) {
+      throw new ApiError(409, 'document_disposed', 'Bu belge saklama süresi sonunda imha edildi; yeni sürüm eklenemez. Yeni belge olarak yükleyin.');
+    }
     const d = await tx.query<{ max: number | null }>(
       `SELECT max(version_no) AS max FROM document_versions WHERE document_id = $1 AND company_id = $2`, [documentId, input.companyId]);
     if (d.rows[0]?.max == null) throw notFound();
@@ -78,6 +83,8 @@ export async function uploadDocument(tx: Tx, ctx: TenantContext, store: ObjectSt
 
   const key = objectKey(ctx.tenantId, inspected.sha256);
   // Orijinal baytlar hash anahtarıyla, dönüştürülmeden saklanır (T46). Önizleme ayrı türetilir.
+  // İmha sonrası nesne silme işiyle yarışmasın: aynı anahtar için kilit commit'e kadar tutulur (bkz. governance.processPurge).
+  await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`obj:${key}`]);
   await store.put(key, input.body, inspected.mimeType);
 
   const v = await tx.query<{ id: string }>(

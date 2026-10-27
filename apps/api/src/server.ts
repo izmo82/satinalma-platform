@@ -19,6 +19,8 @@ import * as invoices from './modules/invoices.ts';
 import * as evals from './modules/supplierEval.ts';
 import * as ai from './modules/ai.ts';
 import * as kpi from './modules/kpi.ts';
+import * as gov from './modules/governance.ts';
+import * as integration from './modules/integration.ts';
 import { decisionSummaryPdf, evaluationWorkbook } from './reports.ts';
 
 export interface AppDeps {
@@ -68,6 +70,9 @@ export async function buildApp(deps: AppDeps) {
       return reply.status(400).send({ error: { code: 'validation_failed', message: 'İstek doğrulanamadı.',
         details: err.validation.map((v: any) => ({ field: v.instancePath || v.params?.missingProperty, message: v.message })) } });
     }
+    if (err.code === 'FST_INVALID_MULTIPART_CONTENT_TYPE') return reply.status(415).send({ error: { code: 'multipart_required', message: 'Dosya çok parçalı form (multipart/form-data) ile gönderilmeli.' } });
+    // Metinde NUL baytı veya geçersiz UTF-8: veritabanına gitmeden önce yakalanmayan girdi; istemci hatasıdır.
+    if (err.code === '22021' || err.code === '22P05') return reply.status(400).send({ error: { code: 'validation_failed', message: 'Girdide geçersiz karakter var.' } });
     if (err.code === 'FST_REQ_FILE_TOO_LARGE') return reply.status(413).send({ error: { code: 'file_too_large', message: 'Dosya 25 MB sınırını aşıyor.' } });
     // PostgreSQL kısıtları: iş kuralı ihlali olarak döner, ayrıntı sızdırmaz.
     if (err.code === '23505') return reply.status(409).send({ error: { code: 'duplicate', message: 'Bu kayıt zaten mevcut.' } });
@@ -78,6 +83,9 @@ export async function buildApp(deps: AppDeps) {
     req.log.error({ err: { message: err.message, code: err.code } }, 'unhandled');
     return reply.status(500).send({ error: { code: 'internal', message: 'Beklenmeyen bir hata oluştu. İşlem kaydedilmedi.' } });
   });
+
+  // API doğrudan erişildiğinde de (ters vekil olmadan) içerik türü tahmin edilmez.
+  app.addHook('onSend', async (_req, reply) => { reply.header('X-Content-Type-Options', 'nosniff'); });
 
   /** Kimlik → üyelik → kiracı bağlamı → izin → RLS'li transaction. */
   async function scoped<T>(req: FastifyRequest, perm: Permission | null, fn: (tx: Tx, ctx: TenantContext) => Promise<T>): Promise<T> {
@@ -208,7 +216,8 @@ export async function buildApp(deps: AppDeps) {
         `SELECT dv.id, dv.document_id AS "documentId", dv.version_no AS "versionNo", dv.sha256, dv.mime_type AS "mimeType",
                 dv.size_bytes AS "sizeBytes", dv.original_filename AS "filename", dv.basic_check_status AS "basicCheckStatus",
                 dv.basic_check_reason AS "basicCheckReason", dv.av_scan_status AS "avScanStatus", dv.page_count AS "pageCount",
-                dv.company_id AS "companyId", d.kind, d.title, dv.created_at AS "createdAt"
+                dv.company_id AS "companyId", d.kind, d.title, dv.created_at AS "createdAt",
+                (SELECT x.disposed_at FROM document_disposals x WHERE x.document_id = dv.document_id) AS "disposedAt"
          FROM document_versions dv JOIN documents d ON d.id = dv.document_id WHERE dv.id = $1`, [id]);
       if (!v.rows[0]) throw notFound();
       const fields = await tx.query(
@@ -224,9 +233,12 @@ export async function buildApp(deps: AppDeps) {
   app.get('/api/v1/document-versions/:id/content', { schema: { tags: ['documents'], params: idParams } }, async (req, reply) => {
     const meta = await scoped(req, 'document.read', async (tx, ctx) => {
       const { id } = req.params as { id: string };
-      const r = await tx.query<{ storage_key: string; mime_type: string; basic_check_status: string; original_filename: string }>(
-        `SELECT storage_key, mime_type, basic_check_status, original_filename FROM document_versions WHERE id = $1`, [id]);
+      const r = await tx.query<{ storage_key: string; mime_type: string; basic_check_status: string; original_filename: string; disposed: boolean }>(
+        `SELECT storage_key, mime_type, basic_check_status, original_filename,
+                EXISTS (SELECT 1 FROM document_disposals x WHERE x.document_id = dv.document_id) AS disposed
+         FROM document_versions dv WHERE id = $1`, [id]);
       if (!r.rows[0]) throw notFound();
+      if (r.rows[0].disposed) throw new ApiError(410, 'disposed', 'Belge saklama süresi sonunda imha edildi; baytlar artık yok. Üst veri ve hash kaydı korunur.');
       if (r.rows[0].basic_check_status !== 'PASSED') throw new ApiError(423, 'quarantined', 'Belge karantinada; görüntülenemez.');
       await tx.query(`INSERT INTO audit_events (tenant_id, actor_user_id, action, entity_type, entity_id, correlation_id)
         VALUES ($1,$2,'document.content.read','document_version',$3,$4)`, [ctx.tenantId, ctx.userId, id, ctx.correlationId]);
@@ -720,6 +732,60 @@ export async function buildApp(deps: AppDeps) {
     const q = req.query as { from: string; to: string };
     return reply.header('content-type', 'text/csv; charset=utf-8').header('content-disposition', `attachment; filename="yonetim-gostergeleri-${q.from}-${q.to}.csv"`).send(csv);
   });
+
+  // --- Faz 7 / T48: saklama, hukuki saklama, imha ve kiracı dışa aktarımı ---------------------------------
+  const decision = { type: 'object', required: ['decision', 'note'], properties: { decision: { type: 'string', enum: ['APPROVE', 'REJECT'] }, note: text(2000) } } as const;
+  const kindParams = { type: 'object', required: ['kind'], properties: { kind: { type: 'string', enum: ['INVOICE', 'CONTRACT', 'QUOTE', 'OTHER'] } } } as const;
+  app.get('/api/v1/retention', { schema: { tags: ['governance'] } }, async (req) => scoped(req, 'retention.read', async (tx, ctx) => ({
+    ...(await gov.retentionOverview(tx)),
+    can: { managePolicy: can(ctx.roles, 'retention.manage'), manageHold: can(ctx.roles, 'legal_hold.manage'), propose: can(ctx.roles, 'disposal.propose'), approve: can(ctx.roles, 'disposal.approve') },
+    userId: ctx.userId,
+  })));
+  app.put('/api/v1/retention/policies/:kind', { schema: { tags: ['governance'], params: kindParams, body: { type: 'object', required: ['retentionMonths', 'legalBasis'],
+    properties: { retentionMonths: { type: 'integer', minimum: 1, maximum: 1200 }, legalBasis: text(500) } } } }, async (req) =>
+    scoped(req, 'retention.manage', (tx, ctx) => gov.setPolicy(tx, ctx, (req.params as any).kind, req.body as any)));
+  app.delete('/api/v1/retention/policies/:kind', { schema: { tags: ['governance'], params: kindParams } }, async (req) =>
+    scoped(req, 'retention.manage', (tx, ctx) => gov.deletePolicy(tx, ctx, (req.params as any).kind)));
+  app.get('/api/v1/retention/candidates', { schema: { tags: ['governance'] } }, async (req) => scoped(req, 'retention.read', (tx) => gov.retentionCandidates(tx)));
+  app.post('/api/v1/legal-holds', { schema: { tags: ['governance'], body: { type: 'object', required: ['scope', 'matterRef', 'reason'], properties: {
+    scope: { type: 'string', enum: ['TENANT', 'COMPANY', 'DOCUMENT'] }, companyId: { anyOf: [{ type: 'null' }, uuid] }, documentId: { anyOf: [{ type: 'null' }, uuid] },
+    matterRef: text(200), reason: { type: 'string', minLength: 10, maxLength: 2000 } } } } }, async (req, reply) =>
+    reply.status(201).send(await scoped(req, 'legal_hold.manage', (tx, ctx) => gov.createHold(tx, ctx, req.body as any))));
+  app.post('/api/v1/legal-holds/:id/release', { schema: { tags: ['governance'], params: idParams, body: { type: 'object', required: ['reason'], properties: { reason: { type: 'string', minLength: 10, maxLength: 2000 } } } } }, async (req) =>
+    scoped(req, 'legal_hold.manage', (tx, ctx) => gov.releaseHold(tx, ctx, (req.params as any).id, (req.body as any).reason)));
+  app.post('/api/v1/disposal-batches', { schema: { tags: ['governance'], body: { type: 'object', required: ['documentIds', 'reason'], properties: {
+    documentIds: { type: 'array', minItems: 1, maxItems: 500, items: uuid }, reason: { type: 'string', minLength: 10, maxLength: 2000 } } } } }, async (req, reply) =>
+    reply.status(201).send(await scoped(req, 'disposal.propose', (tx, ctx) => gov.proposeDisposal(tx, ctx, req.body as any))));
+  app.get('/api/v1/disposal-batches/:id', { schema: { tags: ['governance'], params: idParams } }, async (req) =>
+    scoped(req, 'retention.read', async (tx, ctx) => ({ ...(await gov.getBatch(tx, (req.params as any).id)), canDecide: can(ctx.roles, 'disposal.approve'), userId: ctx.userId })));
+  app.post('/api/v1/disposal-batches/:id/decision', { schema: { tags: ['governance'], params: idParams, body: decision } }, async (req) =>
+    scoped(req, 'disposal.approve', (tx, ctx) => gov.decideDisposal(tx, ctx, (req.params as any).id, req.body as any)));
+
+  app.get('/api/v1/tenant-exports', { schema: { tags: ['governance'] } }, async (req) => scoped(req, null, async (tx, ctx) => {
+    if (!can(ctx.roles, 'tenant.export.request') && !can(ctx.roles, 'tenant.export.approve') && !can(ctx.roles, 'audit.read')) throw forbidden('tenant.export.request');
+    return { items: await gov.listExports(tx), can: { request: can(ctx.roles, 'tenant.export.request'), approve: can(ctx.roles, 'tenant.export.approve') }, userId: ctx.userId };
+  }));
+  app.post('/api/v1/tenant-exports', { schema: { tags: ['governance'], body: { type: 'object', required: ['reason'], properties: { reason: { type: 'string', minLength: 10, maxLength: 2000 } } } } }, async (req, reply) =>
+    reply.status(201).send(await scoped(req, 'tenant.export.request', (tx, ctx) => gov.requestExport(tx, ctx, (req.body as any).reason))));
+  app.post('/api/v1/tenant-exports/:id/decision', { schema: { tags: ['governance'], params: idParams, body: decision } }, async (req) =>
+    scoped(req, 'tenant.export.approve', (tx, ctx) => gov.decideExport(tx, ctx, (req.params as any).id, req.body as any)));
+  app.post('/api/v1/tenant-exports/:id/download', { schema: { tags: ['governance'], params: idParams } }, async (req) =>
+    scoped(req, 'tenant.export.request', (tx, ctx) => gov.exportDownload(tx, ctx, deps.store, (req.params as any).id, deps.config.signedUrlTtlSeconds)));
+
+  // --- Faz 7: ERP mutabakatı, yetkili tekrar gönderim, CSV aktarım ve sonuç dosyası ------------------------
+  app.get('/api/v1/integration/erp/reconciliation', { schema: { tags: ['integration'], querystring: period } }, async (req) =>
+    scoped(req, 'integration.reconcile', async (tx, ctx) => ({ ...(await integration.reconciliation(tx, req.query as any, deps.config.erpAdapter ?? null)), canReplay: can(ctx.roles, 'integration.replay') })));
+  app.post('/api/v1/integration/erp/exports/:id/replay', { schema: { tags: ['integration'], params: idParams, body: { type: 'object', required: ['reason'], properties: { reason: { type: 'string', minLength: 10, maxLength: 1000 } } } } }, async (req) =>
+    scoped(req, 'integration.replay', (tx, ctx) => integration.replay(tx, ctx, (req.params as any).id, (req.body as any).reason, deps.config.erpAdapter ?? null)));
+  app.get('/api/v1/integration/erp/batch.csv', { schema: { tags: ['integration'], querystring: period } }, async (req, reply) => {
+    const r = await scoped(req, 'integration.replay', (tx, ctx) => integration.batchCsv(tx, ctx, req.query as any));
+    const q = req.query as { from: string; to: string };
+    return reply.header('content-type', 'text/csv; charset=utf-8').header('content-disposition', `attachment; filename="erp-aktarim-${q.from}-${q.to}.csv"`)
+      .header('x-row-count', String(r.rows)).header('cache-control', 'no-store').send(r.csv);
+  });
+  app.post('/api/v1/integration/erp/results', { bodyLimit: 5 * 1024 * 1024, schema: { tags: ['integration'], body: { type: 'object', required: ['csv', 'dryRun'], properties: {
+    csv: { type: 'string', minLength: 1, maxLength: 5 * 1024 * 1024 }, dryRun: { type: 'boolean' } } } } }, async (req) =>
+    scoped(req, 'integration.replay', (tx, ctx) => integration.applyResultCsv(tx, ctx, req.body as any)));
 
   app.get('/api/v1/supplier-options', { schema: { tags: ['projects'] } }, async (req) => scoped(req, 'supplier.read', async (tx) =>
     ({ items: (await tx.query(`SELECT id, legal_name AS "legalName", status FROM suppliers WHERE status IN ('ACTIVE','CONDITIONAL','CANDIDATE') ORDER BY legal_name LIMIT 500`)).rows })));

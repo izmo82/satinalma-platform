@@ -61,6 +61,18 @@ export const PERMISSIONS = {
   'ai.read': ['TENANT_ADMIN', 'AUDITOR', 'PROCUREMENT_MANAGER'],
   'ai.policy.manage': ['TENANT_ADMIN'],
   'audit.read': ['AUDITOR', 'TENANT_ADMIN'],
+  // Faz 7: saklama, hukuki saklama, imha ve kiracı dışa aktarımı (T48). Kiracı yöneticisi tüm belgelere kendiliğinden erişmez:
+  // dışa aktarım ve imha ikinci bir kişinin (hukuk) onayıyla yürür; öneren onaylayamaz.
+  'retention.read': ['LEGAL', 'TENANT_ADMIN', 'AUDITOR'],
+  'retention.manage': ['LEGAL'],
+  'legal_hold.manage': ['LEGAL'],
+  'disposal.propose': ['LEGAL', 'TENANT_ADMIN'],
+  'disposal.approve': ['LEGAL'],
+  'tenant.export.request': ['TENANT_ADMIN'],
+  'tenant.export.approve': ['LEGAL'],
+  // ERP mutabakatı ve yetkili tekrar gönderim.
+  'integration.reconcile': ['FINANCE', 'AUDITOR'],
+  'integration.replay': ['FINANCE'],
   'task.read': ROLES.filter((r) => r !== 'SUPPLIER' && r !== 'PLATFORM_OPS'),
 } as const satisfies Record<string, readonly Role[]>;
 

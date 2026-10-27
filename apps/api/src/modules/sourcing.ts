@@ -583,6 +583,7 @@ export async function uploadBidFile(tx: Tx, ctx: TenantContext, store: ObjectSto
   const existing = (await tx.query(`SELECT id FROM bid_files WHERE round_id = $1 AND supplier_id = $2 AND sha256 = $3`, [roundId, sid, ins.sha256])).rows[0];
   if (existing) return { id: existing.id as string, duplicate: true, status: ins.status, reason: ins.reason };
   const key = objectKey(ctx.tenantId, ins.sha256);
+  await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`obj:${key}`]); // imha silmesiyle yarışmasın
   if (!(await store.exists(key))) await store.put(key, f.body, ins.mimeType);
   const row = (await tx.query<{ id: string }>(`INSERT INTO bid_files (tenant_id, company_id, project_id, round_id, supplier_id, title, original_filename, mime_type,
       size_bytes, sha256, storage_key, basic_check_status, basic_check_reason, uploaded_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`,

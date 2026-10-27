@@ -10,7 +10,7 @@ const app = await buildApp({
     signatureDetectorProvider: null, esignValidatorProvider: null, webOrigin: 'http://localhost' },
   pool: createPool('postgres://unused@localhost/unused', 1),
   auth: new DevAuthProvider('x'.repeat(32)),
-  store: { put: async () => {}, get: async () => Buffer.alloc(0), exists: async () => false, signedGetUrl: async () => '' },
+  store: { put: async () => {}, get: async () => Buffer.alloc(0), exists: async () => false, signedGetUrl: async () => '', delete: async () => {} },
 });
 await app.ready();
 await writeFile(new URL('../../../docs/openapi.json', import.meta.url), JSON.stringify(app.swagger(), null, 2));

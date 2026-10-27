@@ -23,10 +23,11 @@ export function createPool(url: string, max = 10): pg.Pool {
  * Her istek kendi transaction'ında, yalnız transaction-local (SET LOCAL eşdeğeri) kiracı bağlamıyla çalışır.
  * Bağlantı havuza döndüğünde bağlam otomatik düşer; pooled bağlantıda sızıntı olmaz (T03).
  */
-export async function withTenant<T>(pool: pg.Pool, ctx: TenantContext, fn: (tx: Tx) => Promise<T>): Promise<T> {
+export async function withTenant<T>(pool: pg.Pool, ctx: TenantContext, fn: (tx: Tx) => Promise<T>, opts: { snapshot?: boolean } = {}): Promise<T> {
   const client = await pool.connect();
   try {
-    await client.query('BEGIN');
+    // snapshot: tek tutarlı görüntüden okuma (dışa aktarım); yazma yapılmaz.
+    await client.query(opts.snapshot ? 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY' : 'BEGIN');
     await client.query(
       `SELECT set_config('app.tenant_id', $1, true), set_config('app.user_id', $2, true), set_config('app.company_ids', $3, true),
               set_config('app.supplier_id', $4, true)`,

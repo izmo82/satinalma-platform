@@ -195,3 +195,35 @@ export async function ensureEvaluationDemo(owner: pg.Pool, app: App, auth: DevAu
     scores: { quality: 85, delivery: 78, sla: 72, communication: 90, commercial: 80 }, basis: 'Kabul kayıtları ve aylık SLA raporları (sentetik).' });
   log('Faz 5 demo: güvenlik anketi, bulgulu değerlendirme, güvenlik olayı (iddia) ve performans incelemesi oluşturuldu.');
 }
+
+/**
+ * Faz 7 demo: saklama ve imha akışını denemek için eski tarihli iki sentetik teklif dosyası. Saklama politikası tanımlanmaz
+ * (kurumun kararıdır); "Teklif" için süre tanımlanınca bu belgeler imha adayı olarak görünür.
+ */
+export async function ensureRetentionDemo(owner: pg.Pool, app: App, auth: DevAuthProvider, tenantId: string, log = console.log) {
+  // İmha onayı ikinci bir hukuk yetkilisini gerektirir: belgeler bütün hukuk kullanıcılarının erişebildiği şirkete konur.
+  const company = (await owner.query<{ id: string }>(`SELECT le.id FROM legal_entities le WHERE le.tenant_id = $1 AND NOT EXISTS (SELECT 1 FROM memberships m
+    WHERE m.tenant_id = $1 AND 'LEGAL' = ANY(m.roles) AND NOT le.id = ANY(m.company_ids)) ORDER BY le.name LIMIT 1`, [tenantId])).rows[0];
+  if (!company) { log('Faz 7 demo: ortak şirket yok; atlandı.'); return; }
+  const { syntheticPdf } = await import('./devdata.ts');
+  const token = await auth.issue('dev|leyla.hukuk@example.test');
+  let added = 0;
+  for (const [title, year] of [['Arşiv teklif dosyası 2014 — kablo alımı (SENTETİK)', '2014-03-14'], ['Arşiv teklif dosyası 2015 — yazıcı bakımı (SENTETİK)', '2015-06-02'],
+    ['Arşiv teklif dosyası 2013 — ofis mobilyası (SENTETİK)', '2013-09-20'], ['Arşiv teklif dosyası 2012 — kırtasiye (SENTETİK)', '2012-05-11']] as const) {
+    if ((await owner.query(`SELECT 1 FROM documents WHERE tenant_id = $1 AND title = $2`, [tenantId, title])).rowCount) continue;
+    added++;
+    const boundary = `----sp${randomUUID()}`;
+    const body = Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="companyId"\r\n\r\n${company.id}\r\n--${boundary}\r\nContent-Disposition: form-data; name="kind"\r\n\r\nQUOTE\r\n`),
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="title"\r\n\r\n${title}\r\n`),
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="arsiv-teklif.pdf"\r\nContent-Type: application/pdf\r\n\r\n`),
+      syntheticPdf([[`SENTETIK ARSIV TEKLIF ${year}`, title.normalize('NFD').replace(/[^\x20-\x7e]/g, '')]]), Buffer.from(`\r\n--${boundary}--\r\n`),
+    ]);
+    const r = await app.inject({ method: 'POST', url: '/api/v1/documents', payload: body,
+      headers: { authorization: `Bearer ${token}`, 'x-tenant-id': tenantId, 'content-type': `multipart/form-data; boundary=${boundary}` } });
+    if (r.statusCode >= 400) throw new Error(`upload → ${r.statusCode} ${r.body}`);
+    // Yalnız demo: belge yıllar önce yüklenmiş gibi tarihlenir (saklama süresi gerçek zamanda beklenemez).
+    await owner.query(`UPDATE document_versions SET created_at = $2::date + time '10:00' WHERE document_id = $1`, [JSON.parse(r.body).documentId, year]);
+  }
+  log(added ? `Faz 7 demo: eski tarihli ${added} sentetik teklif dosyası eklendi (saklama politikası tanımlanmadı).` : 'Faz 7 demo zaten var; atlandı.');
+}

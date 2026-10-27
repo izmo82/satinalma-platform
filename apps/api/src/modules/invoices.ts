@@ -354,27 +354,36 @@ export async function setAllocations(tx: Tx, ctx: TenantContext, invoiceId: stri
 }
 
 /** Kontrol girdisini güncel veriden kurar ve domain kontrolünü çalıştırır. */
+type InvRow = { id: string; kind: InvoiceCheckInput['kind']; currency: string; supplier_id: string; advance_offset: string; advance_invoice_id: string | null; supplier_status: string;
+  tax_total: string | null; withholding: string | null; payable: string | null; other_tax: string | null };
+const INV_SQL = `SELECT i.id, i.kind, i.currency, i.supplier_id, i.advance_offset::text, i.advance_invoice_id, s.status AS supplier_status,
+  i.declared_tax_total::text AS tax_total, i.declared_withholding::text AS withholding, i.declared_payable::text AS payable, i.declared_other_tax_total::text AS other_tax
+  FROM invoices i JOIN suppliers s ON s.id = i.supplier_id WHERE i.id = ANY($1::uuid[])`;
+const LINES_SQL = `SELECT invoice_id, line_no AS "lineNo", description, trim_scale(quantity)::text AS quantity, unit, trim_scale(unit_price)::text AS "unitPrice", net_amount::text AS "netAmount",
+  trim_scale(tax_rate)::text AS "taxRate", tax_amount::text AS "taxAmount", other_tax_amount::text AS "otherTax" FROM invoice_lines WHERE invoice_id = ANY($1::uuid[]) ORDER BY invoice_id, line_no`;
+const ALLOC_SQL = `SELECT invoice_id, line_no AS "lineNo", po_line_id AS "poLineId", contract_version_id AS "contractVersionId",
+  trim_scale(quantity)::text AS quantity, amount::text FROM invoice_allocations WHERE invoice_id = ANY($1::uuid[]) ORDER BY invoice_id, line_no`;
+const ADVANCE_SQL = `SELECT (a.total - coalesce((SELECT sum(i.advance_offset) FROM invoices i WHERE i.advance_invoice_id = $1 AND i.id <> $2 AND ${APPROVED}), 0))::text AS v
+  FROM (SELECT sum(net_amount) AS total FROM invoice_lines WHERE invoice_id = $1) a`;
+
+function checkInput(inv: InvRow, lines: InvoiceCheckInput['lines'], allocations: AllocationInput[], poLines: PoLineState[], contracts: ContractState[], tolerance: ToleranceRule | null, advanceBalance: string): InvoiceCheckInput {
+  return { kind: inv.kind, currency: inv.currency, supplierActive: inv.supplier_status === 'ACTIVE', lines, allocations, poLines, contracts,
+    tolerance, advanceOffset: inv.advance_offset, advanceBalance, declared: { taxTotal: inv.tax_total, withholding: inv.withholding, payable: inv.payable, otherTaxTotal: inv.other_tax } };
+}
+const strip = <T extends { invoice_id: string }>({ invoice_id: _, ...rest }: T) => rest;
+
 async function evaluate(tx: Tx, invoiceId: string) {
-  const inv = (await tx.query<{ id: string; kind: InvoiceCheckInput['kind']; currency: string; supplier_id: string; advance_offset: string; advance_invoice_id: string | null; supplier_status: string;
-      tax_total: string | null; withholding: string | null; payable: string | null; other_tax: string | null }>(
-    `SELECT i.id, i.kind, i.currency, i.supplier_id, i.advance_offset::text, i.advance_invoice_id, s.status AS supplier_status,
-      i.declared_tax_total::text AS tax_total, i.declared_withholding::text AS withholding, i.declared_payable::text AS payable, i.declared_other_tax_total::text AS other_tax FROM invoices i JOIN suppliers s ON s.id = i.supplier_id WHERE i.id = $1`, [invoiceId])).rows[0];
+  const inv = (await tx.query<InvRow>(INV_SQL, [[invoiceId]])).rows[0];
   if (!inv) throw notFound();
-  const lines = (await tx.query(`SELECT line_no AS "lineNo", description, trim_scale(quantity)::text AS quantity, unit, trim_scale(unit_price)::text AS "unitPrice", net_amount::text AS "netAmount",
-      trim_scale(tax_rate)::text AS "taxRate", tax_amount::text AS "taxAmount", other_tax_amount::text AS "otherTax" FROM invoice_lines WHERE invoice_id = $1 ORDER BY line_no`, [invoiceId])).rows;
-  const allocations: AllocationInput[] = (await tx.query(`SELECT line_no AS "lineNo", po_line_id AS "poLineId", contract_version_id AS "contractVersionId",
-    trim_scale(quantity)::text AS quantity, amount::text FROM invoice_allocations WHERE invoice_id = $1 ORDER BY line_no`, [invoiceId])).rows;
+  const lines = (await tx.query(LINES_SQL, [[invoiceId]])).rows.map(strip) as InvoiceCheckInput['lines'];
+  const allocations = (await tx.query(ALLOC_SQL, [[invoiceId]])).rows.map(strip) as AllocationInput[];
   const poLines = await poLineStates(tx, allocations.map((a) => a.poLineId).filter((x): x is string => !!x), invoiceId);
   const cvIds = [...new Set([...poLines.map((p) => p.contractVersionId), ...allocations.map((a) => a.contractVersionId)].filter((x): x is string => !!x))];
   const contracts: ContractState[] = [];
   for (const c of cvIds) { const s = await contractState(tx, c, invoiceId); if (s) contracts.push(s); }
   const tolerance = (await tx.query<ToleranceRule>(`SELECT currency, abs_amount::text AS "absAmount", percent::text, combine FROM tolerance_rules WHERE currency = $1`, [inv.currency])).rows[0] ?? null;
-  const advanceBalance = inv.advance_invoice_id ? (await tx.query<{ v: string }>(`SELECT (a.total - coalesce((SELECT sum(i.advance_offset) FROM invoices i
-      WHERE i.advance_invoice_id = $1 AND i.id <> $2 AND ${APPROVED}), 0))::text AS v
-    FROM (SELECT sum(net_amount) AS total FROM invoice_lines WHERE invoice_id = $1) a`, [inv.advance_invoice_id, invoiceId])).rows[0]!.v : '0';
-  const input: InvoiceCheckInput = { kind: inv.kind, currency: inv.currency, supplierActive: inv.supplier_status === 'ACTIVE', lines, allocations, poLines, contracts,
-    tolerance, advanceOffset: inv.advance_offset, advanceBalance, declared: { taxTotal: inv.tax_total, withholding: inv.withholding, payable: inv.payable, otherTaxTotal: inv.other_tax } };
-  const check = checkInvoice(input);
+  const advanceBalance = inv.advance_invoice_id ? (await tx.query<{ v: string }>(ADVANCE_SQL, [inv.advance_invoice_id, invoiceId])).rows[0]!.v : '0';
+  const check = checkInvoice(checkInput(inv, lines, allocations, poLines, contracts, tolerance, advanceBalance));
   // Parmak izi, istisnanın dayandığı sipariş kalemi durumunu da kapsar: sipariş fiyatı/miktarı veya kabul değişirse istisna eskir.
   const fingerprint = sha(JSON.stringify({ a: allocations, o: inv.advance_offset, i: check.issues.map((x) => [x.code, x.lineNo ?? null]),
     p: [...poLines].sort((x, y) => x.poLineId.localeCompare(y.poLineId)).map((x) => [x.poLineId, x.orderedQty, x.unitPrice, x.receivedQty, x.invoicedQty, x.poStatus]) }));
@@ -385,6 +394,40 @@ async function evaluate(tx: Tx, invoiceId: string) {
 export async function invoiceHasIssue(tx: Tx, invoiceId: string) {
   const { check } = await evaluate(tx, invoiceId);
   return check.issues.length > 0;
+}
+
+/**
+ * Rapor için toplu, yan etkisiz kontrol: fatura sayısından bağımsız sabit sayıda sorgu (N+1 yok). YALNIZ onaylanmamış faturalar için
+ * `evaluate` ile aynı sonucu verir: tek tek kontroldeki "bu faturayı hariç tut" filtreleri yalnız onaylı faturaları etkiler.
+ */
+export async function unapprovedInvoicesWithIssues(tx: Tx, ids: string[]): Promise<Set<string>> {
+  const out = new Set<string>();
+  if (!ids.length) return out;
+  const invs = (await tx.query<InvRow>(INV_SQL, [ids])).rows;
+  const group = <T extends { invoice_id: string }>(rows: T[]) => { const m = new Map<string, Omit<T, 'invoice_id'>[]>(); for (const r of rows) m.set(r.invoice_id, [...(m.get(r.invoice_id) ?? []), strip(r)]); return m; };
+  const lines = group((await tx.query(LINES_SQL, [ids])).rows);
+  const allocs = group((await tx.query(ALLOC_SQL, [ids])).rows);
+  const allPoLines = await poLineStates(tx, [...new Set([...allocs.values()].flat().map((a: any) => a.poLineId).filter((x): x is string => !!x))], null);
+  const poById = new Map(allPoLines.map((p) => [p.poLineId, p]));
+  const cvIds = [...new Set([...allPoLines.map((p) => p.contractVersionId), ...[...allocs.values()].flat().map((a: any) => a.contractVersionId)].filter((x): x is string => !!x))];
+  const cvById = new Map<string, ContractState>();
+  for (const c of cvIds) { const s = await contractState(tx, c, null); if (s) cvById.set(c, s); }
+  const tolerances = new Map((await tx.query<ToleranceRule>(`SELECT currency, abs_amount::text AS "absAmount", percent::text, combine FROM tolerance_rules`)).rows.map((t) => [t.currency, t]));
+  // Avans bakiyesi avans faturası başına bir kez (ADVANCE_SQL ile aynı ifade; hariç tutulan fatura onaysız olduğundan etkisiz).
+  const advIds = [...new Set(invs.map((i) => i.advance_invoice_id).filter((x): x is string => !!x))];
+  const advBalance = new Map((await tx.query<{ id: string; v: string }>(`SELECT a.id, ((SELECT sum(net_amount) FROM invoice_lines WHERE invoice_id = a.id)
+      - coalesce((SELECT sum(i.advance_offset) FROM invoices i WHERE i.advance_invoice_id = a.id AND ${APPROVED}), 0))::text AS v
+    FROM invoices a WHERE a.id = ANY($1::uuid[])`, [advIds])).rows.map((r) => [r.id, r.v]));
+  for (const inv of invs) {
+    const allocations = (allocs.get(inv.id) ?? []) as AllocationInput[];
+    const poLines = [...new Set(allocations.map((a) => a.poLineId).filter((x): x is string => !!x))].map((id) => poById.get(id)).filter((x): x is PoLineState => !!x);
+    const cv = [...new Set([...poLines.map((p) => p.contractVersionId), ...allocations.map((a) => a.contractVersionId)].filter((x): x is string => !!x))];
+    const advanceBalance = inv.advance_invoice_id ? advBalance.get(inv.advance_invoice_id)! : '0';
+    const check = checkInvoice(checkInput(inv, (lines.get(inv.id) ?? []) as InvoiceCheckInput['lines'], allocations, poLines,
+      cv.map((c) => cvById.get(c)).filter((x): x is ContractState => !!x), tolerances.get(inv.currency) ?? null, advanceBalance));
+    if (check.issues.length) out.add(inv.id);
+  }
+  return out;
 }
 
 export async function approveException(tx: Tx, ctx: TenantContext, invoiceId: string, reason: string) {
@@ -529,6 +572,9 @@ export async function setTolerance(tx: Tx, ctx: TenantContext, b: { currency: st
 
 // --- ERP aktarımı (worker) ve gelen durum olayları --------------------------------------------
 
+/** ERP'ye giden ödenecek tutar: satır netleri − avans mahsubu, tam ondalık (float yok). Aktarım ve mutabakat aynı ifadeyi kullanır. `i` = invoices. */
+export const ERP_PAYABLE_SQL = `((SELECT coalesce(sum(l.net_amount), 0) FROM invoice_lines l WHERE l.invoice_id = i.id) - i.advance_offset)::numeric(20,2)::text`;
+
 export async function processErpExport(tx: Tx, ctx: TenantContext, jobId: string, adapterName: string | null) {
   const j = (await tx.query<{ payload: { invoiceId: string }; attempts: number; max_attempts: number }>(`SELECT payload, attempts, max_attempts FROM jobs WHERE id = $1`, [jobId])).rows[0]!;
   const ex = (await tx.query<{ status: string; idempotency_key: string; post_calls: number }>(`SELECT status, idempotency_key, post_calls FROM erp_exports WHERE invoice_id = $1 FOR UPDATE`, [j.payload.invoiceId])).rows[0];
@@ -547,15 +593,15 @@ export async function processErpExport(tx: Tx, ctx: TenantContext, jobId: string
     const found = await adapter.find(ex.idempotency_key);
     if (found) return confirm(found.externalId, 'reconciled');
   }
-  const inv = (await tx.query<{ invoice_no: string; currency: string; tax_id: string | null; net: string; offset: string }>(`SELECT i.invoice_no, i.currency, s.tax_id,
-      (SELECT sum(net_amount)::text FROM invoice_lines WHERE invoice_id = i.id) AS net, i.advance_offset::text AS offset FROM invoices i JOIN suppliers s ON s.id = i.supplier_id WHERE i.id = $1`, [j.payload.invoiceId])).rows[0]!;
+  const inv = (await tx.query<{ invoice_no: string; currency: string; tax_id: string | null; net: string; payable: string }>(`SELECT i.invoice_no, i.currency, s.tax_id,
+      (SELECT sum(net_amount)::text FROM invoice_lines WHERE invoice_id = i.id) AS net, ${ERP_PAYABLE_SQL} AS payable FROM invoices i JOIN suppliers s ON s.id = i.supplier_id WHERE i.id = $1`, [j.payload.invoiceId])).rows[0]!;
   const allocs = (await tx.query<{ contract_code: string | null; po_code: string | null; amount: string }>(`SELECT f.code AS contract_code, po.code AS po_code, a.amount::text
     FROM invoice_allocations a LEFT JOIN po_lines pl ON pl.id = a.po_line_id LEFT JOIN purchase_orders po ON po.id = pl.po_id
     LEFT JOIN contract_versions cv ON cv.id = coalesce(a.contract_version_id, po.contract_version_id) LEFT JOIN contract_families f ON f.id = cv.family_id WHERE a.invoice_id = $1`, [j.payload.invoiceId])).rows;
   await tx.query(`UPDATE erp_exports SET post_calls = post_calls + 1 WHERE invoice_id = $1`, [j.payload.invoiceId]);
   try {
     const r = await adapter.post({ idempotencyKey: ex.idempotency_key, invoiceNo: inv.invoice_no, supplierTaxId: inv.tax_id, currency: inv.currency, netAmount: inv.net,
-      payable: (Number(inv.net) - Number(inv.offset)).toFixed(2), allocations: allocs.map((a) => ({ contractCode: a.contract_code, poCode: a.po_code, amount: a.amount })) });
+      payable: inv.payable, allocations: allocs.map((a) => ({ contractCode: a.contract_code, poCode: a.po_code, amount: a.amount })) });
     return confirm(r.externalId, 'posted');
   } catch (e) {
     const timeout = e instanceof ErpTimeout;
