@@ -120,3 +120,40 @@ export async function ensureLifecycleDemo(owner: pg.Pool, app: App, auth: DevAut
   while (await runJobs()) { /* zamanı gelen uyarılar */ }
   log('Faz 3 demo: koşullar (doğrulanmış), ihbar uyarısı ve 2 yükümlülük oluşturuldu.');
 }
+
+// Faz 4 demo: sözleşmeli sipariş, kısmi kabul ve üç fatura (onaya hazır, kabulden fazla, sözleşmesiz). Onay verilmez; karar kullanıcıya bırakılır.
+export async function ensurePurchasingDemo(owner: pg.Pool, app: App, auth: DevAuthProvider, tenantId: string, log = console.log) {
+  if ((await owner.query(`SELECT 1 FROM purchase_orders WHERE tenant_id = $1`, [tenantId])).rowCount) { log('Faz 4 demo zaten var; atlandı.'); return; }
+  const cv = (await owner.query<{ id: string; company_id: string }>(`SELECT cv.id, f.company_id FROM contract_versions cv JOIN contract_families f ON f.id = cv.family_id
+    JOIN contract_terms t ON t.contract_version_id = cv.id AND t.verified_at IS NOT NULL
+    WHERE f.tenant_id = $1 AND f.title LIKE 'Yıllık Bakım%' AND cv.superseded_by_id IS NULL LIMIT 1`, [tenantId])).rows[0];
+  if (!cv) { log('Faz 4 demo: doğrulanmış koşullu sözleşme yok; atlandı.'); return; }
+  const sup = async (name: string) => (await owner.query<{ id: string }>(`SELECT id FROM suppliers WHERE tenant_id = $1 AND legal_name LIKE $2 AND status = 'ACTIVE'`, [tenantId, `${name}%`])).rows[0]?.id;
+  const [s1, s2] = [await sup('Anadolu Bilişim'), await sup('Ege Sistem')];
+  if (!s1 || !s2) { log('Faz 4 demo: aktif tedarikçi yok; atlandı.'); return; }
+  const email = 'nur.finansonay@example.test';
+  const f2 = (await owner.query<{ id: string }>(`SELECT id FROM users WHERE email = $1`, [email])).rows[0]?.id
+    ?? (await owner.query<{ id: string }>(`INSERT INTO users (auth_subject, email, display_name) VALUES ($1,$2,'Nur Aydın') RETURNING id`, [`dev|${email}`, email])).rows[0]!.id;
+  await owner.query(`INSERT INTO memberships (tenant_id, user_id, roles, company_ids) VALUES ($1,$2,ARRAY['FINANCE'],ARRAY[$3]::uuid[]) ON CONFLICT DO NOTHING`, [tenantId, f2, cv.company_id]);
+  const tok = async (key: string) => auth.issue(`dev|${key}@example.test`);
+  async function call(who: string, method: string, url: string, body?: unknown) {
+    const r = await app.inject({ method: method as any, url, payload: body as any, headers: { authorization: `Bearer ${await tok(who)}`, 'x-tenant-id': tenantId } });
+    if (r.statusCode >= 400) throw new Error(`${method} ${url} → ${r.statusCode} ${r.body}`);
+    return r.body ? JSON.parse(r.body) : null;
+  }
+  const po = await call('alper.satinalma', 'POST', '/api/v1/purchase-orders', { companyId: cv.company_id, supplierId: s1, contractVersionId: cv.id, currency: 'TRY', lines: [
+    { kind: 'GOODS', description: 'Yedek disk 2 TB', unit: 'adet', quantity: '10', unitPrice: '4000' },
+    { kind: 'SERVICE', description: 'Aylık bakım hizmeti', unit: 'ay', quantity: '12', unitPrice: '50000' }] });
+  const lines = (await call('alper.satinalma', 'GET', `/api/v1/purchase-orders/${po.id}`)).lines as { poLineId: string }[];
+  await call('alper.satinalma', 'POST', `/api/v1/po-lines/${lines[0]!.poLineId}/receipts`, { quantity: '6', note: 'İlk sevkiyat, irsaliye 0012 (sentetik)' });
+  await call('alper.satinalma', 'POST', `/api/v1/po-lines/${lines[1]!.poLineId}/receipts`, { quantity: '1', note: 'Ekim bakımı yapıldı', periodFrom: '2026-10-01', periodTo: '2026-10-31' });
+  const inv = async (supplierId: string, invoiceNo: string, l: { description: string; quantity: string; unit: string; unitPrice: string }[]) =>
+    (await call('ferda.finans', 'POST', '/api/v1/invoices', { companyId: cv.company_id, supplierId, kind: 'INVOICE', invoiceNo, issueDate: '2026-10-20', currency: 'TRY',
+      lines: l.map((x) => ({ ...x, netAmount: (Number(x.quantity) * Number(x.unitPrice)).toFixed(2), taxRate: '20' })) })).id as string;
+  const a = await inv(s1, 'ANB2026000101', [{ description: 'Ekim bakım hizmeti', quantity: '1', unit: 'ay', unitPrice: '50000' }]);
+  await call('ferda.finans', 'PUT', `/api/v1/invoices/${a}/allocations`, { allocations: [{ lineNo: 1, poLineId: lines[1]!.poLineId, contractVersionId: null, quantity: '1', amount: '50000.00' }] });
+  const b = await inv(s1, 'ANB2026000102', [{ description: 'Yedek disk 2 TB', quantity: '8', unit: 'adet', unitPrice: '4000' }]);
+  await call('ferda.finans', 'PUT', `/api/v1/invoices/${b}/allocations`, { allocations: [{ lineNo: 1, poLineId: lines[0]!.poLineId, contractVersionId: null, quantity: '8', amount: '32000.00' }] });
+  await inv(s2, 'EGE2026000877', [{ description: 'Acil saha desteği', quantity: '6', unit: 'saat', unitPrice: '2500' }]);
+  log('Faz 4 demo: sipariş, kabuller ve 3 fatura oluşturuldu (onay kullanıcıda).');
+}

@@ -12,6 +12,8 @@ export interface Config {
   signedUrlTtlSeconds: number;
   signatureDetectorProvider: string | null;
   esignValidatorProvider: string | null;
+  /** Yapılandırılmış ERP bağdaştırıcısı adı; yoksa ERP aktarımı NOT_CONFIGURED kalır. */
+  erpAdapter?: string | null;
   webOrigin: string;
 }
 
@@ -83,6 +85,7 @@ export function loadConfig(): Config {
     signedUrlTtlSeconds: Number(process.env.SIGNED_URL_TTL_SECONDS ?? 60),
     signatureDetectorProvider: process.env.SIGNATURE_DETECTOR_PROVIDER || null,
     esignValidatorProvider: process.env.ESIGN_VALIDATOR_PROVIDER || null,
+    erpAdapter: process.env.ERP_ADAPTER || null,
     webOrigin: process.env.WEB_ORIGIN ?? 'http://localhost:5174',
   };
 }

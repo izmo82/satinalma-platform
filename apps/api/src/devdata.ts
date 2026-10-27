@@ -10,7 +10,7 @@ export interface SyntheticWorld {
   companyA2: { id: string; vkn: string; name: string };
   companyB1: { id: string; vkn: string; name: string };
   users: Record<'buyer' | 'masterData' | 'legal' | 'legal2' | 'finance' | 'security' | 'tenantAdmin' | 'auditor' | 'buyerB' | 'multi'
-    | 'techEval' | 'supplier1' | 'supplier2' | 'supplier3', { id: string; email: string }>;
+    | 'techEval' | 'supplier1' | 'supplier2' | 'supplier3' | 'finance2', { id: string; email: string }>;
   /** Tedarikçi portalı için sentetik firmalar: iki aktif, bir aday (BR02). */
   suppliers: { s1: string; s2: string; s3: string };
 }
@@ -58,6 +58,7 @@ export async function createSyntheticWorld(owner: pg.Pool, suffix = ''): Promise
       buyerB: await user('bora.baskakiraci', 'Bora Koç'),
       multi: await user('ece.cokkiracili', 'Ece Polat'),
       techEval: await user('tolga.teknik', 'Tolga Er'),
+      finance2: await user('nur.finansonay', 'Nur Aydın'),
       supplier1: await user('teklif.anadolu', 'Anadolu Bilişim Teklif Sorumlusu'),
       supplier2: await user('teklif.ege', 'Ege Sistem Teklif Sorumlusu'),
       supplier3: await user('teklif.kuzey', 'Kuzey Teknoloji Teklif Sorumlusu'),
@@ -86,6 +87,7 @@ export async function createSyntheticWorld(owner: pg.Pool, suffix = ''): Promise
     await member(tenantA, users.multi.id, ['BUYER'], [companyA2.id]);
     await member(tenantB, users.multi.id, ['BUYER'], [companyB1.id]);
     await member(tenantA, users.techEval.id, ['TECH_EVALUATOR'], [companyA1.id]);
+    await member(tenantA, users.finance2.id, ['FINANCE'], [companyA1.id]);
     await supplierMember(users.supplier1.id, suppliers.s1);
     await supplierMember(users.supplier2.id, suppliers.s2);
     await supplierMember(users.supplier3.id, suppliers.s3);

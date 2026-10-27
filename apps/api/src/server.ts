@@ -15,6 +15,7 @@ import { activateSupplier, recordApproval, resolveIdentity as resolveSupplierIde
 import * as contracts from './modules/contracts.ts';
 import * as sourcing from './modules/sourcing.ts';
 import * as lifecycle from './modules/contractTerms.ts';
+import * as invoices from './modules/invoices.ts';
 import { decisionSummaryPdf, evaluationWorkbook } from './reports.ts';
 
 export interface AppDeps {
@@ -158,6 +159,7 @@ export async function buildApp(deps: AppDeps) {
                 WHEN 'contract_version' THEN (SELECT f.code FROM contract_versions cv JOIN contract_families f ON f.id = cv.family_id WHERE cv.id = t.entity_id)
                 WHEN 'document_version' THEN (SELECT d.code FROM document_versions dv JOIN documents d ON d.id = dv.document_id WHERE dv.id = t.entity_id)
                 WHEN 'supplier' THEN (SELECT s.tax_id_type || ' ' || s.tax_id FROM suppliers s WHERE s.id = t.entity_id)
+                WHEN 'invoice' THEN (SELECT i.invoice_no FROM invoices i WHERE i.id = t.entity_id)
               END AS "refNo"
        FROM tasks t WHERE t.status = 'OPEN' AND t.assignee_role = ANY($1::text[])
          AND ($2 <> 'overdue' OR (t.due_at IS NOT NULL AND t.due_at < now()))
@@ -432,6 +434,55 @@ export async function buildApp(deps: AppDeps) {
     return { items: r.rows };
   }));
 
+  // --- Faz 4: sipariş, kabul, fatura, ERP (UX10, T13–T18, T37) ------------------------------
+  const money2 = { type: 'string', pattern: '^\\d{1,18}(\\.\\d{1,6})?$' } as const;
+  app.get('/api/v1/purchase-orders', { schema: { tags: ['po'] } }, async (req) => scoped(req, 'po.read', async (tx) => ({ items: await invoices.listPos(tx) })));
+  app.get('/api/v1/purchase-orders/:id', { schema: { tags: ['po'], params: idParams } }, async (req) => scoped(req, 'po.read', async (tx, ctx) =>
+    ({ ...(await invoices.getPo(tx, (req.params as any).id)), can: { receive: can(ctx.roles, 'receipt.record') } })));
+  app.post('/api/v1/purchase-orders', { schema: { tags: ['po'], body: { type: 'object', required: ['companyId', 'supplierId', 'currency', 'lines'], additionalProperties: false,
+    properties: { companyId: uuid, supplierId: uuid, contractVersionId: { anyOf: [uuid, { type: 'null' }] }, projectId: { anyOf: [uuid, { type: 'null' }] }, currency: { type: 'string', pattern: '^[A-Z]{3}$' },
+      lines: { type: 'array', minItems: 1, maxItems: 500, items: { type: 'object', required: ['kind', 'description', 'unit', 'quantity', 'unitPrice'], additionalProperties: false,
+        properties: { kind: { type: 'string', enum: ['GOODS', 'SERVICE'] }, description: { type: 'string', minLength: 2, maxLength: 300 }, unit: { type: 'string', minLength: 1, maxLength: 30 }, quantity: money2, unitPrice: money2 } } } } } } }, async (req, reply) =>
+    reply.status(201).send(await scoped(req, 'po.manage', (tx, ctx) => invoices.createPo(tx, ctx, req.body as any))));
+  app.post('/api/v1/po-lines/:id/receipts', { schema: { tags: ['po'], params: idParams, body: { type: 'object', required: ['quantity', 'note'],
+    properties: { quantity: money2, periodFrom: { anyOf: [{ type: 'string', format: 'date' }, { type: 'null' }] }, periodTo: { anyOf: [{ type: 'string', format: 'date' }, { type: 'null' }] }, note: { type: 'string', maxLength: 1000 } } } } }, async (req, reply) =>
+    reply.status(201).send(await scoped(req, 'receipt.record', (tx, ctx) => invoices.recordReceipt(tx, ctx, (req.params as any).id, req.body as any))));
+  app.post('/api/v1/receipts/:id/reverse', { schema: { tags: ['po'], params: idParams, body: { type: 'object', required: ['quantity', 'note'], properties: { quantity: money2, note: { type: 'string', maxLength: 1000 } } } } }, async (req, reply) =>
+    reply.status(201).send(await scoped(req, 'receipt.record', (tx, ctx) => invoices.reverseReceipt(tx, ctx, (req.params as any).id, req.body as any))));
+  app.get('/api/v1/contract-versions/:id/limit', { schema: { tags: ['contracts'], params: idParams } }, async (req) =>
+    scoped(req, null, async (tx, ctx) => {
+      if (!can(ctx.roles, 'contract.read') && !can(ctx.roles, 'invoice.read')) throw forbidden('contract.read');
+      return invoices.contractLimit(tx, (req.params as any).id);
+    }));
+  app.get('/api/v1/invoices', { schema: { tags: ['invoices'] } }, async (req) => scoped(req, 'invoice.read', async (tx) => ({ items: await invoices.listInvoices(tx) })));
+  app.get('/api/v1/invoices/:id', { schema: { tags: ['invoices'], params: idParams } }, async (req) => scoped(req, 'invoice.read', async (tx, ctx) =>
+    ({ ...(await invoices.getInvoice(tx, ctx, (req.params as any).id)), can: { manage: can(ctx.roles, 'invoice.manage'), approve: can(ctx.roles, 'invoice.approve'),
+      approveException: can(ctx.roles, 'invoice.exception.approve') } })));
+  app.post('/api/v1/invoices', { schema: { tags: ['invoices'], body: { type: 'object', required: ['companyId', 'supplierId', 'kind', 'invoiceNo', 'issueDate', 'currency', 'lines'], additionalProperties: false,
+    properties: { companyId: uuid, supplierId: uuid, kind: { type: 'string', enum: ['INVOICE', 'CREDIT_NOTE', 'ADVANCE'] }, invoiceNo: { type: 'string', minLength: 1, maxLength: 40 },
+      ettn: { anyOf: [uuid, { type: 'null' }] }, issueDate: { type: 'string', format: 'date' }, currency: { type: 'string', pattern: '^[A-Z]{3}$' }, documentVersionId: { anyOf: [uuid, { type: 'null' }] },
+      originalInvoiceId: { anyOf: [uuid, { type: 'null' }] }, lines: { type: 'array', minItems: 1, maxItems: 500, items: { type: 'object', required: ['description', 'quantity', 'unit', 'unitPrice', 'netAmount'], additionalProperties: false,
+        properties: { description: { type: 'string', minLength: 1, maxLength: 300 }, quantity: money2, unit: { type: 'string', minLength: 1, maxLength: 30 }, unitPrice: money2, netAmount: money2, taxRate: money2 } } } } } } }, async (req, reply) => {
+    const r = await scoped(req, 'invoice.manage', (tx, ctx) => invoices.createInvoice(tx, ctx, req.body as any));
+    return reply.status(r.duplicate ? 200 : 201).send(r);
+  });
+  app.put('/api/v1/invoices/:id/allocations', { schema: { tags: ['invoices'], params: idParams, body: { type: 'object', required: ['allocations'], additionalProperties: false,
+    properties: { advanceOffset: money2, advanceInvoiceId: { anyOf: [uuid, { type: 'null' }] }, allocations: { type: 'array', maxItems: 2000, items: { type: 'object', required: ['lineNo', 'poLineId', 'contractVersionId', 'quantity', 'amount'], additionalProperties: false,
+      properties: { lineNo: { type: 'integer', minimum: 1 }, poLineId: { anyOf: [uuid, { type: 'null' }] }, contractVersionId: { anyOf: [uuid, { type: 'null' }] }, quantity: money2, amount: money2 } } } } } } }, async (req) =>
+    scoped(req, 'invoice.manage', (tx, ctx) => invoices.setAllocations(tx, ctx, (req.params as any).id, req.body as any)));
+  app.post('/api/v1/invoices/:id/exception-approval', { schema: { tags: ['invoices'], params: idParams, body: { type: 'object', required: ['reason'], properties: { reason: { type: 'string', maxLength: 2000 } } } } }, async (req) =>
+    scoped(req, 'invoice.exception.approve', (tx, ctx) => invoices.approveException(tx, ctx, (req.params as any).id, (req.body as any).reason)));
+  app.post('/api/v1/invoices/:id/approve', { schema: { tags: ['invoices'], params: idParams } }, async (req) =>
+    scoped(req, 'invoice.approve', (tx, ctx) => invoices.approveInvoice(tx, ctx, (req.params as any).id, deps.config.erpAdapter ?? null)));
+  app.post('/api/v1/invoices/:id/reject', { schema: { tags: ['invoices'], params: idParams, body: { type: 'object', required: ['reason'], properties: { reason: { type: 'string', maxLength: 2000 } } } } }, async (req) =>
+    scoped(req, 'invoice.approve', (tx, ctx) => invoices.rejectInvoice(tx, ctx, (req.params as any).id, (req.body as any).reason)));
+  app.put('/api/v1/tolerance-rules', { schema: { tags: ['invoices'], body: { type: 'object', required: ['currency', 'absAmount', 'percent', 'combine'],
+    properties: { currency: { type: 'string', pattern: '^[A-Z]{3}$' }, absAmount: { anyOf: [money2, { type: 'null' }] }, percent: { anyOf: [money2, { type: 'null' }] }, combine: { type: 'string', enum: ['LOWER', 'HIGHER'] } } } } }, async (req) =>
+    scoped(req, 'tolerance.manage', (tx, ctx) => invoices.setTolerance(tx, ctx, req.body as any)));
+  app.post('/api/v1/integration/erp/status-events', { schema: { tags: ['integration'], body: { type: 'object', required: ['events'], properties: { events: { type: 'array', minItems: 1, maxItems: 500,
+    items: { type: 'object', required: ['eventId', 'invoiceId', 'status', 'at'], properties: { eventId: { type: 'string', minLength: 3, maxLength: 120 }, invoiceId: uuid, status: { type: 'string', enum: ['POSTED', 'PAID'] }, at: { type: 'string', format: 'date-time' } } } } } } } }, async (req) =>
+    scoped(req, 'integration.ingest', (tx, ctx) => invoices.ingestErpEvents(tx, ctx, (req.body as any).events)));
+
   // --- Faz 3: sözleşme koşulları, ihbar, yükümlülük, yenileme (UX09, T21) -----------------
   const date = { type: 'string', format: 'date' } as const;
   const nDate = { anyOf: [date, { type: 'null' }] } as const;
@@ -549,7 +600,7 @@ export async function buildApp(deps: AppDeps) {
     properties: { approve: { type: 'boolean' }, note: { type: 'string', maxLength: 2000 } } } } }, async (req) =>
     scoped(req, 'award.decide', (tx, ctx) => sourcing.decideAward(tx, ctx, (req.params as any).id, req.body as any)));
   // Davet listesi için tedarikçi arama (alıcı)
-  app.get('/api/v1/supplier-options', { schema: { tags: ['projects'] } }, async (req) => scoped(req, 'project.manage', async (tx) =>
+  app.get('/api/v1/supplier-options', { schema: { tags: ['projects'] } }, async (req) => scoped(req, 'supplier.read', async (tx) =>
     ({ items: (await tx.query(`SELECT id, legal_name AS "legalName", status FROM suppliers WHERE status IN ('ACTIVE','CONDITIONAL','CANDIDATE') ORDER BY legal_name LIMIT 500`)).rows })));
 
   // Tedarikçi portalı (UX04): yalnız SUPPLIER rolü ve davet edildiği turlar.
