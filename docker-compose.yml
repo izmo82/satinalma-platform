@@ -1,0 +1,29 @@
+# Yalnız yerel geliştirme/test: PostgreSQL ve S3 uyumlu depo. Uygulama bunlara yalnız ortam değişkenleriyle bağlanır.
+# Üretim benzeri tam yığın (kurum içi veya herhangi bir sunucu): deploy/compose; Kubernetes: deploy/kubernetes.
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: satinalma-db
+    environment:
+      POSTGRES_USER: sp_owner
+      POSTGRES_PASSWORD: ${DB_OWNER_PASSWORD:-local_owner_only}
+      POSTGRES_DB: satinalma
+    ports:
+      - "5544:5432"
+    volumes:
+      - ./infra/db/init:/docker-entrypoint-initdb.d:ro
+      - sp_db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sp_owner -d satinalma"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  objectstore:
+    image: adobe/s3mock:4.6.0
+    container_name: satinalma-s3
+    environment:
+      COM_ADOBE_TESTING_S3MOCK_STORE_INITIAL_BUCKETS: sp-documents-local,sp-documents-test
+    ports:
+      - "9190:9090"
+volumes:
+  sp_db:

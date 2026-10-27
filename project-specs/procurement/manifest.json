@@ -1,0 +1,112 @@
+{
+  "package_version": "1.2",
+  "date": "2026-10-27",
+  "analysis_library_file_id": "libfile_d9bda9f922888191961918928218ea4a",
+  "files": [
+    {
+      "path": "00_BASLANGIC.md",
+      "bytes": 2403,
+      "sha256": "826150af94ded9504e1488509379571b7c56bd3d222aa5cc278e0a2aa37bbe45"
+    },
+    {
+      "path": "01_MASTER_CLAUDE_PROMPT.md",
+      "bytes": 9133,
+      "sha256": "f3a7a663ed3af9c2c8045ab28640dc609241eb8692edd70bf624382d4393a000"
+    },
+    {
+      "path": "02_GUNCEL_ANALIZ.md",
+      "bytes": 96467,
+      "sha256": "26a8e96330f06bab7a49f21c5955107d900f522cb45cfdb9bbbad2523d864b8d"
+    },
+    {
+      "path": "03_URUN_GEREKSINIMLERI.md",
+      "bytes": 5924,
+      "sha256": "f1fc380a54c94a882ae64be0b6d2f40ba16ca21bb68ac1d3826c66783bd9d3ac"
+    },
+    {
+      "path": "04_UI_UX_TASARIMI.md",
+      "bytes": 5718,
+      "sha256": "5f445cff33b83c56d8e91578a0c539da0e502763a9b74f18f949500b74846bf7"
+    },
+    {
+      "path": "05_SUREC_AKISLARI.md",
+      "bytes": 3428,
+      "sha256": "99140ca7d95024d28c6fe5124a7c049b4d4b9142fead6b97abc8e254a767d07c"
+    },
+    {
+      "path": "06_IMZA_KONTROLU.md",
+      "bytes": 6923,
+      "sha256": "dda5465c570c78f59b829503222b96e28e311f988866e38e00c5aff4409df4ff"
+    },
+    {
+      "path": "07_AI_MODELLERI_VE_MALIYET.md",
+      "bytes": 4908,
+      "sha256": "a17d9c7a130f472e6e402dcd4ba67275c114e68e4a16993d1b2064813393a958"
+    },
+    {
+      "path": "08_MIMARI_VE_GUVENLIK.md",
+      "bytes": 4277,
+      "sha256": "cae36f86056cd73adc663a7d6c74b6fb77cf87b8f1a7808ee85ea33596ab9e5c"
+    },
+    {
+      "path": "09_KABUL_TESTLERI.md",
+      "bytes": 6318,
+      "sha256": "1d71730c6496f2f9cfa5627937ececcd484ea6415d5de2cba6a1c911fc87e6cb"
+    },
+    {
+      "path": "10_IZLENEBILIRLIK.md",
+      "bytes": 2028,
+      "sha256": "815d837f89891efdb10e9565f60f2e3c47094083dae49799232ed28f3caf1b25"
+    },
+    {
+      "path": "11_FAZLAR_VE_TESLIM.md",
+      "bytes": 4416,
+      "sha256": "19f9458663cf6b0f1ca3da4399949ce9d4bac902285c373737f3cf6bd3024df3"
+    },
+    {
+      "path": "12_KAYNAKLAR.md",
+      "bytes": 1647,
+      "sha256": "999904a5f2f5511aecaf1377d33edcae44c330f5a0e843fa708cf6844b341484"
+    },
+    {
+      "path": "analysis/Satinalma_Sozlesme_Yonetimi_Analizi.docx",
+      "bytes": 1169041,
+      "sha256": "470428d819fae89fbf7a955044f770a5d6a077d744e477acb3ac23fd319b58ee"
+    },
+    {
+      "path": "assets/figure-01.png",
+      "bytes": 175826,
+      "sha256": "50d2e7d42a66b59d7198d3cd7b70537d79a53a63672b0201c8da38dbd24d8cdd"
+    },
+    {
+      "path": "assets/figure-02.png",
+      "bytes": 151817,
+      "sha256": "89e2749fc698d01e60ca79be97330270a378be974c495bae85b658c035b76156"
+    },
+    {
+      "path": "assets/figure-03.png",
+      "bytes": 185385,
+      "sha256": "cf78e13dd9ff81d2545d1d4370c9a996733786e1457b70095413ea38c2614b9b"
+    },
+    {
+      "path": "assets/figure-04.png",
+      "bytes": 183661,
+      "sha256": "5376e0536e4ee69397a38a94275aef91d610d6a3f5c8c32a2811eec6e96727e5"
+    },
+    {
+      "path": "assets/figure-05.png",
+      "bytes": 158648,
+      "sha256": "6df92bbbc2f2d50a6fec9e1e59aea1179ed0482e4ff6c5b23c14c6aff9405ae2"
+    },
+    {
+      "path": "assets/figure-06.png",
+      "bytes": 201557,
+      "sha256": "ee630002ec063679638ccb1bbae84c5dda16b49675c565ad668703759792efe4"
+    },
+    {
+      "path": "assets/figure-07.png",
+      "bytes": 173613,
+      "sha256": "9a277cf05fb2af8d8131e45c8d36a7b1c69f8e37723b8e62e10da000b8e058d2"
+    }
+  ]
+}

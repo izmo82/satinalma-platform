@@ -1,0 +1,18 @@
+node_modules/
+dist/
+.env
+*.log
+.DS_Store
+apps/web/test-results/
+apps/web/playwright-report/
+ios/**/build/
+ios/**/DerivedData/
+ios/**/*.xcodeproj/xcuserdata/
+var/
+.smoke.env
+# impeccable: platform ikilisi ilk çalıştırmada indirilir; inceleme görüntüleri ve karar sayfası taslakları üretilen çıktıdır
+.claude/skills/impeccable/scripts/bin/
+.impeccable/review/
+.impeccable/mocks/
+.impeccable/config.local.json
+.claude/settings.local.json
