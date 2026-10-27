@@ -23,6 +23,11 @@ import { PortalHome, PortalRound } from './pages/PortalPages.tsx';
 // PDF görüntüleyici içeren ağır ekranlar ayrı paket olarak yüklenir.
 const DocumentPage = lazy(() => import('./pages/DocumentPage.tsx').then((m) => ({ default: m.DocumentPage })));
 const ContractPage = lazy(() => import('./pages/ContractLifecycle.tsx').then((m) => ({ default: m.ContractPage })));
+const purchasing = () => import('./pages/PurchasingPages.tsx');
+const PurchaseOrdersPage = lazy(() => purchasing().then((m) => ({ default: m.PurchaseOrdersPage })));
+const PurchaseOrderPage = lazy(() => purchasing().then((m) => ({ default: m.PurchaseOrderPage })));
+const InvoicesPage = lazy(() => purchasing().then((m) => ({ default: m.InvoicesPage })));
+const InvoicePage = lazy(() => purchasing().then((m) => ({ default: m.InvoicePage })));
 
 export function App() {
   const { me, loading } = useSession();
@@ -50,7 +55,8 @@ function Shell() {
     { to: '/tedarikciler', label: 'Tedarikçiler', icon: 'users', count: load(['supplier']) },
     { to: '/sozlesmeler', label: 'Sözleşmeler', icon: 'file', count: load(['contract_version']) },
     { to: '/belge-girisi', label: 'Belge girişi', icon: 'upload', count: load(['document_version']) },
-    { to: '/faturalar', label: 'Faturalar', icon: 'receipt', later: 'Faz 4' },
+    { to: '/siparisler', label: 'Siparişler', icon: 'package' },
+    { to: '/faturalar', label: 'Faturalar', icon: 'receipt', count: load(['invoice']) },
     { to: '/raporlar', label: 'Raporlar', icon: 'chart', later: 'Faz 5' },
   ];
   const companies = me.supplierPortal ? 'Tedarikçi portalı' : me.companies.length ? me.companies.map((c) => c.name).join(' · ') : 'Şirket belgesi erişimi yok';
@@ -110,7 +116,10 @@ function Shell() {
           <Route path="/belgeler/:id" element={<DocumentPage />} />
           <Route path="/sozlesmeler" element={<ContractsPage />} />
           <Route path="/sozlesmeler/:id" element={<ContractPage />} />
-          <Route path="/faturalar" element={<NotYetPage title="Faturalar" phase="Faz 4" what="Satır tahsisi, PO/kabul eşleştirme, limit ve ERP durumu" />} />
+          <Route path="/siparisler" element={<PurchaseOrdersPage />} />
+          <Route path="/siparisler/:id" element={<PurchaseOrderPage />} />
+          <Route path="/faturalar" element={<InvoicesPage />} />
+          <Route path="/faturalar/:id" element={<InvoicePage />} />
           <Route path="/raporlar" element={<NotYetPage title="Raporlar" phase="Faz 5" what="Kaynaklı raporlar ve dışa aktarma" />} />
           <Route path="*" element={<NotYetPage title="Sayfa bulunamadı" />} />
         </Routes>

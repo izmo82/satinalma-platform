@@ -1,0 +1,416 @@
+import { useState } from 'react';
+import { Link, useNavigate, useParams } from 'react-router-dom';
+import { api, ApiError } from '../lib/api.ts';
+import { useResource } from '../lib/useApi.ts';
+import { useSession, hasRole } from '../lib/session.tsx';
+import { fmtDate, fmtDateTime, fmtMoney } from '../lib/format.ts';
+import { roleLabel } from '../lib/labels.ts';
+import { Banner, Empty, ErrorState, Field, Loading, PageHeader, Tag, toneClass } from '../ui/kit.tsx';
+import { Icon } from '../ui/icons.tsx';
+import { Button } from '@/components/ui/button';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { cn } from '@/lib/utils';
+
+// UX10 Fatura + sipariş/kabul. Ödeme yürütme yok; ERP aktarımı, muhasebe ve ödeme durumu ayrı gösterilir.
+const num = (s: string) => Number(s).toLocaleString('tr-TR', { maximumFractionDigits: 6 });
+function useAct(reload: () => Promise<void>) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ tone: 'info' | 'warn' | 'danger'; text: string } | null>(null);
+  const run = async (fn: () => Promise<unknown>, ok: string) => {
+    setBusy(true); setMsg(null);
+    try { await fn(); setMsg({ tone: 'info', text: ok }); await reload(); return true; }
+    catch (e) { const err = e as ApiError; setMsg({ tone: err.status === 409 ? 'warn' : 'danger', text: err.message }); await reload(); return false; }
+    finally { setBusy(false); }
+  };
+  return { busy, run, feedback: msg && <Banner tone={msg.tone} icon={msg.tone === 'info' ? 'check' : undefined} title={msg.text} /> };
+}
+
+// --- Siparişler -----------------------------------------------------------------------------------
+
+export function PurchaseOrdersPage() {
+  const { me } = useSession();
+  const navigate = useNavigate();
+  const [creating, setCreating] = useState(false);
+  const r = useResource<{ items: { id: string; code: string; currency: string; status: string; issuedAt: string; supplierName: string; contractTitle: string | null; total: string }[] }>('/api/v1/purchase-orders');
+  return (
+    <div className="page">
+      <PageHeader title="Siparişler" actions={hasRole(me, 'BUYER', 'PROCUREMENT_MANAGER') && <Button onClick={() => setCreating(true)}><Icon name="package" />Sipariş ver</Button>}>
+        Hafif sipariş kaydı ve mal/hizmet kabulü. Sözleşmeye bağlı sipariş açık taahhüttür ve sözleşme limitinden düşer.
+      </PageHeader>
+      {creating && <PoForm onCancel={() => setCreating(false)} onCreated={(id) => navigate(`/siparisler/${id}`)} />}
+      {r.loading && !r.data ? <Loading /> : r.error ? <ErrorState error={r.error} onRetry={r.reload} /> : !r.data?.items.length ? (
+        <div className="rounded-md border border-border bg-surface"><Empty icon="receipt" title="Sipariş yok">Onaylanan tahsisten veya sözleşmeden sipariş verildiğinde burada görünür.</Empty></div>
+      ) : (
+        <Table>
+          <TableHeader><TableRow className="hover:bg-transparent"><TableHead>Sipariş no</TableHead><TableHead>Tedarikçi</TableHead><TableHead>Sözleşme</TableHead><TableHead className="text-right">Tutar</TableHead><TableHead>Tarih</TableHead></TableRow></TableHeader>
+          <TableBody>{r.data.items.map((p) => (
+            <TableRow key={p.id}>
+              <TableCell className="whitespace-nowrap"><Link className="font-semibold text-ink no-underline hover:underline" to={`/siparisler/${p.id}`}>{p.code}</Link>{p.status === 'CANCELLED' && <span className="ml-2 text-sm text-ink-subtle">İptal</span>}</TableCell>
+              <TableCell>{p.supplierName}</TableCell><TableCell>{p.contractTitle ?? <span className="text-ink-subtle">Sözleşmesiz</span>}</TableCell>
+              <TableCell className="whitespace-nowrap text-right">{fmtMoney(p.total, p.currency)}</TableCell><TableCell className="whitespace-nowrap text-sm text-ink-subtle">{fmtDate(p.issuedAt)}</TableCell>
+            </TableRow>
+          ))}</TableBody>
+        </Table>
+      )}
+    </div>
+  );
+}
+
+function PoForm({ onCancel, onCreated }: { onCancel: () => void; onCreated: (id: string) => void }) {
+  const { me } = useSession();
+  const sup = useResource<{ items: { id: string; legalName: string; status: string }[] }>('/api/v1/supplier-options');
+  const cons = useResource<{ items: { id: string; title: string }[] }>('/api/v1/contracts');
+  const [f, setF] = useState({ companyId: me?.companies[0]?.id ?? '', supplierId: '', contractVersionId: '', currency: 'TRY' });
+  const blank = { kind: 'GOODS', description: '', unit: '', quantity: '', unitPrice: '' };
+  const [lines, setLines] = useState([blank]);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const set = (i: number, k: keyof typeof blank, v: string) => setLines(lines.map((x, j) => j === i ? { ...x, [k]: v } : x));
+  return (
+    <form className="panel mb-5" onSubmit={(e) => { e.preventDefault(); setBusy(true); setErr(null);
+      void api<{ id: string }>('/api/v1/purchase-orders', { method: 'POST', json: { ...f, contractVersionId: f.contractVersionId || null, lines } })
+        .then((r) => onCreated(r.data.id), (x: ApiError) => setErr(x.message)).finally(() => setBusy(false)); }}>
+      <div className="panel-head"><h2>Sipariş ver</h2><span className="text-sm text-ink-subtle">Tedarikçi aktif olmalı; sözleşmeli siparişte limit kilit altında kontrol edilir.</span></div>
+      <div className="panel-body grid gap-3">
+        <div className="grid grid-cols-4 gap-x-3 max-[900px]:grid-cols-2">
+          <Field label="Şirket">{(p) => <select className="input" {...p} value={f.companyId} onChange={(e) => setF({ ...f, companyId: e.target.value })}>{me?.companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>}</Field>
+          <Field label="Tedarikçi">{(p) => <select className="input" required {...p} value={f.supplierId} onChange={(e) => setF({ ...f, supplierId: e.target.value })}><option value="">Seçin</option>{sup.data?.items.filter((s) => s.status === 'ACTIVE').map((s) => <option key={s.id} value={s.id}>{s.legalName}</option>)}</select>}</Field>
+          <Field label="Sözleşme (varsa)">{(p) => <select className="input" {...p} value={f.contractVersionId} onChange={(e) => setF({ ...f, contractVersionId: e.target.value })}><option value="">Sözleşmesiz</option>{cons.data?.items.map((c) => <option key={c.id} value={c.id}>{c.title}</option>)}</select>}</Field>
+          <Field label="Para birimi">{(p) => <input className="input" maxLength={3} {...p} value={f.currency} onChange={(e) => setF({ ...f, currency: e.target.value.toUpperCase() })} />}</Field>
+        </div>
+        {lines.map((l, i) => (
+          <div key={i} className="grid grid-cols-[110px_minmax(0,1fr)_100px_90px_130px_auto] items-start gap-3 max-[900px]:grid-cols-2">
+            <Field label="Tür">{(p) => <select className="input" {...p} value={l.kind} onChange={(e) => set(i, 'kind', e.target.value)}><option value="GOODS">Mal</option><option value="SERVICE">Hizmet</option></select>}</Field>
+            <Field label={`Kalem ${i + 1}`}>{(p) => <input className="input" required {...p} value={l.description} onChange={(e) => set(i, 'description', e.target.value)} />}</Field>
+            <Field label="Miktar">{(p) => <input className="input tabular text-right" required inputMode="decimal" {...p} value={l.quantity} onChange={(e) => set(i, 'quantity', e.target.value.replace(',', '.'))} />}</Field>
+            <Field label="Birim">{(p) => <input className="input" required {...p} value={l.unit} onChange={(e) => set(i, 'unit', e.target.value)} />}</Field>
+            <Field label="Birim fiyat">{(p) => <input className="input tabular text-right" required inputMode="decimal" {...p} value={l.unitPrice} onChange={(e) => set(i, 'unitPrice', e.target.value.replace(',', '.'))} />}</Field>
+            <Button type="button" variant="ghost" size="sm" className="mt-6" disabled={lines.length === 1} onClick={() => setLines(lines.filter((_, j) => j !== i))} aria-label={`Kalem ${i + 1} sil`}><Icon name="close" /></Button>
+          </div>
+        ))}
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" variant="outline" onClick={() => setLines([...lines, blank])}>Kalem ekle</Button>
+          <Button type="submit" disabled={busy}>Siparişi kaydet</Button><Button type="button" variant="ghost" onClick={onCancel}>Vazgeç</Button>
+        </div>
+        {err && <Banner tone="danger" title={err} />}
+      </div>
+    </form>
+  );
+}
+
+interface PoDetail {
+  po: { id: string; code: string; currency: string; status: string; issuedAt: string; supplierName: string; contractVersionId: string | null; contractTitle: string | null; issuedBy: string };
+  lines: { poLineId: string; description: string; unit: string; kind: string; orderedQty: string; unitPrice: string; receivedQty: string; invoicedQty: string }[];
+  receipts: { id: string; poLineId: string; quantity: string; periodFrom: string | null; periodTo: string | null; reversesId: string | null; note: string; recordedAt: string; recordedBy: string }[];
+  can: { receive: boolean };
+}
+
+export function PurchaseOrderPage() {
+  const { id } = useParams();
+  const r = useResource<PoDetail>(`/api/v1/purchase-orders/${id}`);
+  const a = useAct(r.reload);
+  const [form, setForm] = useState<{ lineId: string; quantity: string; note: string; periodFrom: string; periodTo: string; reverseOf?: string } | null>(null);
+  if (r.loading && !r.data) return <div className="page"><Loading rows={5} /></div>;
+  if (r.error || !r.data) return <div className="page"><ErrorState error={r.error} onRetry={r.reload} /></div>;
+  const d = r.data;
+  return (
+    <div className="page">
+      <p className="text-sm text-ink-subtle"><Link to="/siparisler" className="text-ink-subtle">Siparişler</Link> / {d.po.code}</p>
+      <PageHeader title={`${d.po.code} · ${d.po.supplierName}`}>{d.po.contractTitle ? <>Sözleşme: <Link to={`/sozlesmeler/${d.po.contractVersionId}?sekme=kosullar`}>{d.po.contractTitle}</Link></> : 'Sözleşmesiz sipariş'} · {d.po.issuedBy} · {fmtDateTime(d.po.issuedAt)}</PageHeader>
+      <Table>
+        <TableHeader><TableRow className="hover:bg-transparent"><TableHead>Kalem</TableHead><TableHead className="text-right">Sipariş</TableHead><TableHead className="text-right">Birim fiyat</TableHead>
+          <TableHead className="text-right">Kabul (net)</TableHead><TableHead className="text-right">Faturalanan</TableHead><TableHead><span className="sr-only">Eylem</span></TableHead></TableRow></TableHeader>
+        <TableBody>{d.lines.map((l) => {
+          const open = Number(l.orderedQty) - Number(l.receivedQty);
+          return (
+            <TableRow key={l.poLineId}>
+              <TableCell className="min-w-[200px]"><span className="font-semibold">{l.description}</span><span className="block text-sm text-ink-subtle">{l.kind === 'SERVICE' ? 'Hizmet (dönem kabulü)' : 'Mal'}</span></TableCell>
+              <TableCell className="whitespace-nowrap text-right">{num(l.orderedQty)} {l.unit}</TableCell>
+              <TableCell className="whitespace-nowrap text-right">{fmtMoney(l.unitPrice, d.po.currency)}</TableCell>
+              <TableCell className={cn('whitespace-nowrap text-right', open > 0 && 'text-warn')}>{num(l.receivedQty)} {l.unit}</TableCell>
+              <TableCell className="whitespace-nowrap text-right">{num(l.invoicedQty)} {l.unit}</TableCell>
+              <TableCell>{d.can.receive && open > 0 && <Button size="sm" variant="outline" onClick={() => setForm({ lineId: l.poLineId, quantity: String(open), note: '', periodFrom: '', periodTo: '' })}>Kabul kaydet</Button>}</TableCell>
+            </TableRow>
+          );
+        })}</TableBody>
+      </Table>
+      {form && (
+        <form className="panel mt-4 max-w-[640px]" onSubmit={(e) => { e.preventDefault(); void a.run(() => form.reverseOf
+          ? api(`/api/v1/receipts/${form.reverseOf}/reverse`, { method: 'POST', json: { quantity: form.quantity, note: form.note } })
+          : api(`/api/v1/po-lines/${form.lineId}/receipts`, { method: 'POST', json: { quantity: form.quantity, note: form.note, periodFrom: form.periodFrom || null, periodTo: form.periodTo || null } }),
+          form.reverseOf ? 'Ters kabul kaydedildi.' : 'Kabul kaydedildi.').then((ok) => ok && setForm(null)); }}>
+          <div className="panel-head"><h2>{form.reverseOf ? 'Ters kabul' : 'Kabul kaydı'}: {d.lines.find((l) => l.poLineId === form.lineId)?.description}</h2></div>
+          <div className="panel-body grid grid-cols-2 gap-x-4 max-[640px]:grid-cols-1">
+            <Field label="Miktar">{(p) => <input className="input tabular text-right" inputMode="decimal" {...p} value={form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value.replace(',', '.') })} />}</Field>
+            <span />
+            {!form.reverseOf && d.lines.find((l) => l.poLineId === form.lineId)?.kind === 'SERVICE' && <>
+              <Field label="Dönem başı">{(p) => <input className="input" type="date" {...p} value={form.periodFrom} onChange={(e) => setForm({ ...form, periodFrom: e.target.value })} />}</Field>
+              <Field label="Dönem sonu">{(p) => <input className="input" type="date" {...p} value={form.periodTo} onChange={(e) => setForm({ ...form, periodTo: e.target.value })} />}</Field></>}
+            <div className="col-span-full"><Field label={form.reverseOf ? 'Ters kabul nedeni' : 'Not'} hint="Ne teslim alındı veya neden geri alınıyor.">{(p) => <input className="input" {...p} value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} />}</Field></div>
+            <div className="col-span-full flex gap-2"><Button type="submit" disabled={a.busy}>Kaydet</Button><Button type="button" variant="outline" onClick={() => setForm(null)}>Vazgeç</Button></div>
+          </div>
+        </form>
+      )}
+      <section className="panel mt-5">
+        <div className="panel-head"><h2>Kabul geçmişi</h2><span className="text-sm text-ink-subtle">Kayıtlar silinmez; düzeltme ters kabulle yapılır.</span></div>
+        <div className="panel-body">{!d.receipts.length ? <p className="text-ink-muted">Henüz kabul yok.</p> : (
+          <ol className="timeline">{d.receipts.map((x) => (
+            <li key={x.id}><strong className={cn('tabular', Number(x.quantity) < 0 && 'text-danger')}>{Number(x.quantity) < 0 ? 'Ters kabul' : 'Kabul'} {num(x.quantity)} {d.lines.find((l) => l.poLineId === x.poLineId)?.unit} · {d.lines.find((l) => l.poLineId === x.poLineId)?.description}</strong>
+              <span>{x.note}{x.periodFrom ? ` · dönem ${fmtDate(x.periodFrom)}–${fmtDate(x.periodTo)}` : ''}</span>
+              <span className="subtle">{x.recordedBy} · {fmtDateTime(x.recordedAt)}{d.can.receive && Number(x.quantity) > 0 && <> · <button type="button" className="underline" onClick={() => setForm({ lineId: x.poLineId, quantity: '', note: '', periodFrom: '', periodTo: '', reverseOf: x.id })}>Ters kabul</button></>}</span></li>
+          ))}</ol>)}</div>
+      </section>
+      {a.feedback}
+    </div>
+  );
+}
+
+// --- Faturalar ------------------------------------------------------------------------------------
+
+const KIND = { INVOICE: 'Fatura', CREDIT_NOTE: 'İade / alacak', ADVANCE: 'Avans' } as const;
+const STATUS: Record<string, { text: string; tone: 'human' | 'ok' | 'warn' | 'danger' | 'info' | 'neutral'; icon: string }> = {
+  APPROVAL: { text: 'Finans onaylı', tone: 'human', icon: 'stamp' }, REJECTION: { text: 'Reddedildi', tone: 'neutral', icon: 'x' },
+  READY: { text: 'Onaya hazır', tone: 'ok', icon: 'check' }, NEEDS_EXCEPTION: { text: 'İstisna gerekli', tone: 'warn', icon: 'alert' },
+  EXCEPTION_APPROVED: { text: 'İstisna onaylı, finans onayı bekliyor', tone: 'info', icon: 'clock' }, BLOCKED: { text: 'Engelli', tone: 'danger', icon: 'x' },
+};
+const ERP: Record<string, string> = { PENDING: 'ERP: aktarım bekliyor', UNKNOWN: 'ERP: belirsiz (zaman aşımı) — sorgulanacak', CONFIRMED: 'ERP: aktarıldı', FAILED: 'ERP: hata', NOT_CONFIGURED: 'ERP bağlantısı yapılandırılmadı' };
+
+export function InvoicesPage() {
+  const { me } = useSession();
+  const navigate = useNavigate();
+  const r = useResource<{ items: { id: string; kind: keyof typeof KIND; invoiceNo: string; issueDate: string; currency: string; supplierName: string; netAmount: string; legalStatus: string; paymentStatus: string; decision: string | null; erpStatus: string | null; duplicateCount: number }[] }>('/api/v1/invoices');
+  const [creating, setCreating] = useState(false);
+  return (
+    <div className="page">
+      <PageHeader title="Faturalar" actions={hasRole(me, 'FINANCE') && <Button onClick={() => setCreating(true)}><Icon name="receipt" />Fatura gir</Button>}>
+        Satır tahsisi, sipariş/kabul eşleştirmesi ve limit kontrolü. Hukuki e-belge durumu, kurum içi onay, ERP aktarımı ve ödeme ayrı durumlardır; ödeme bu sistemden yürütülmez.
+      </PageHeader>
+      {creating && <InvoiceForm onCancel={() => setCreating(false)} onCreated={(id) => navigate(`/faturalar/${id}`)} />}
+      {r.loading && !r.data ? <Loading /> : r.error ? <ErrorState error={r.error} onRetry={r.reload} /> : !r.data?.items.length ? (
+        <div className="rounded-md border border-border bg-surface"><Empty icon="receipt" title="Fatura yok">e-Fatura girişi veya elle giriş sonrası burada görünür.</Empty></div>
+      ) : (
+        <Table>
+          <TableHeader><TableRow className="hover:bg-transparent"><TableHead>Fatura no</TableHead><TableHead>Tedarikçi</TableHead><TableHead className="text-right">Net</TableHead>
+            <TableHead>Onay</TableHead><TableHead className="max-[900px]:hidden">ERP / ödeme</TableHead><TableHead>Tarih</TableHead></TableRow></TableHeader>
+          <TableBody>{r.data.items.map((x) => (
+            <TableRow key={x.id}>
+              <TableCell className="whitespace-nowrap"><Link className="font-semibold text-ink no-underline hover:underline" to={`/faturalar/${x.id}`}>{x.invoiceNo}</Link>
+                <span className="block text-sm text-ink-subtle">{KIND[x.kind]}{x.duplicateCount > 0 ? ` · ${x.duplicateCount} tekrar geliş` : ''}</span></TableCell>
+              <TableCell>{x.supplierName}</TableCell>
+              <TableCell className="whitespace-nowrap text-right">{fmtMoney(x.netAmount, x.currency)}</TableCell>
+              <TableCell>{x.legalStatus !== 'RECEIVED' ? <Tag label={{ text: 'Hukuken iptal/ret', tone: 'danger', icon: 'x' }} /> : x.decision ? <Tag label={STATUS[x.decision]} /> : <span className="text-sm text-ink-subtle">Bekliyor</span>}</TableCell>
+              <TableCell className="text-sm text-ink-muted max-[900px]:hidden">{x.erpStatus ? ERP[x.erpStatus] : '—'}{x.paymentStatus === 'PAID' ? ' · ödendi (ERP)' : ''}</TableCell>
+              <TableCell className="whitespace-nowrap text-sm text-ink-subtle">{fmtDate(x.issueDate)}</TableCell>
+            </TableRow>
+          ))}</TableBody>
+        </Table>
+      )}
+    </div>
+  );
+}
+
+function InvoiceForm({ onCancel, onCreated }: { onCancel: () => void; onCreated: (id: string) => void }) {
+  const { me } = useSession();
+  const sup = useResource<{ items: { id: string; legalName: string; status: string }[] }>('/api/v1/supplier-options');
+  const [f, setF] = useState({ companyId: me?.companies[0]?.id ?? '', supplierId: '', kind: 'INVOICE', invoiceNo: '', ettn: '', issueDate: '', currency: 'TRY', originalInvoiceId: '' });
+  const [lines, setLines] = useState([{ description: '', quantity: '', unit: '', unitPrice: '', taxRate: '20' }]);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const net = (l: { quantity: string; unitPrice: string }) => (Number(l.quantity) * Number(l.unitPrice) || 0).toFixed(2);
+  return (
+    <form className="panel mb-5" onSubmit={(e) => { e.preventDefault(); setBusy(true); setErr(null);
+      void api<{ id: string; duplicate: boolean }>('/api/v1/invoices', { method: 'POST', json: { ...f, ettn: f.ettn || null, originalInvoiceId: f.kind === 'CREDIT_NOTE' ? f.originalInvoiceId || null : null,
+        lines: lines.map((l) => ({ ...l, netAmount: net(l) })) } }).then((r) => onCreated(r.data.id), (x: ApiError) => setErr(x.message)).finally(() => setBusy(false)); }}>
+      <div className="panel-head"><h2>Fatura gir</h2><span className="text-sm text-ink-subtle">Aynı tedarikçi için aynı ETTN veya fatura no ikinci kayıt açmaz.</span></div>
+      <div className="panel-body grid gap-3">
+        <div className="grid grid-cols-4 gap-x-3 max-[900px]:grid-cols-2">
+          <Field label="Şirket">{(p) => <select className="input" {...p} value={f.companyId} onChange={(e) => setF({ ...f, companyId: e.target.value })}>{me?.companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>}</Field>
+          <Field label="Tedarikçi">{(p) => <select className="input" required {...p} value={f.supplierId} onChange={(e) => setF({ ...f, supplierId: e.target.value })}><option value="">Seçin</option>{sup.data?.items.map((s) => <option key={s.id} value={s.id}>{s.legalName}</option>)}</select>}</Field>
+          <Field label="Tür">{(p) => <select className="input" {...p} value={f.kind} onChange={(e) => setF({ ...f, kind: e.target.value })}>{Object.entries(KIND).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>}</Field>
+          <Field label="Fatura no">{(p) => <input className="input" required {...p} value={f.invoiceNo} onChange={(e) => setF({ ...f, invoiceNo: e.target.value })} />}</Field>
+          <Field label="ETTN (varsa)">{(p) => <input className="input mono" {...p} value={f.ettn} onChange={(e) => setF({ ...f, ettn: e.target.value })} />}</Field>
+          <Field label="Fatura tarihi">{(p) => <input className="input" type="date" required {...p} value={f.issueDate} onChange={(e) => setF({ ...f, issueDate: e.target.value })} />}</Field>
+          <Field label="Para birimi">{(p) => <input className="input" maxLength={3} {...p} value={f.currency} onChange={(e) => setF({ ...f, currency: e.target.value.toUpperCase() })} />}</Field>
+          {f.kind === 'CREDIT_NOTE' && <Field label="Özgün fatura kimliği">{(p) => <input className="input mono" {...p} value={f.originalInvoiceId} onChange={(e) => setF({ ...f, originalInvoiceId: e.target.value })} />}</Field>}
+        </div>
+        {lines.map((l, i) => (
+          <div key={i} className="grid grid-cols-[minmax(0,1fr)_100px_90px_130px_120px_auto] items-start gap-3 max-[900px]:grid-cols-2">
+            <Field label={`Satır ${i + 1}`}>{(p) => <input className="input" required {...p} value={l.description} onChange={(e) => setLines(lines.map((x, j) => j === i ? { ...x, description: e.target.value } : x))} />}</Field>
+            <Field label="Miktar">{(p) => <input className="input tabular text-right" required inputMode="decimal" {...p} value={l.quantity} onChange={(e) => setLines(lines.map((x, j) => j === i ? { ...x, quantity: e.target.value.replace(',', '.') } : x))} />}</Field>
+            <Field label="Birim">{(p) => <input className="input" required {...p} value={l.unit} onChange={(e) => setLines(lines.map((x, j) => j === i ? { ...x, unit: e.target.value } : x))} />}</Field>
+            <Field label="Birim fiyat">{(p) => <input className="input tabular text-right" required inputMode="decimal" {...p} value={l.unitPrice} onChange={(e) => setLines(lines.map((x, j) => j === i ? { ...x, unitPrice: e.target.value.replace(',', '.') } : x))} />}</Field>
+            <div className="field"><span className="text-sm font-semibold">Net</span><span className="tabular min-h-[34px] py-1.5 text-right">{fmtMoney(net(l), f.currency)}</span></div>
+            <Button type="button" variant="ghost" size="sm" className="mt-6" disabled={lines.length === 1} onClick={() => setLines(lines.filter((_, j) => j !== i))} aria-label={`Satır ${i + 1} sil`}><Icon name="close" /></Button>
+          </div>
+        ))}
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" variant="outline" onClick={() => setLines([...lines, { description: '', quantity: '', unit: '', unitPrice: '', taxRate: '20' }])}>Satır ekle</Button>
+          <Button type="submit" disabled={busy}>Faturayı kaydet</Button><Button type="button" variant="ghost" onClick={onCancel}>Vazgeç</Button>
+        </div>
+        {err && <Banner tone="danger" title={err} />}
+      </div>
+    </form>
+  );
+}
+
+interface InvDetail {
+  invoice: { id: string; kind: keyof typeof KIND; invoiceNo: string; ettn: string | null; issueDate: string; currency: string; supplierId: string; supplierName: string; supplierStatus: string;
+    legalStatus: string; paymentStatus: string; originalInvoiceId: string | null; advanceInvoiceId: string | null; advanceOffset: string; createdByMe: boolean; createdBy: string; createdAt: string };
+  lines: { lineNo: number; description: string; quantity: string; unit: string; unitPrice: string; netAmount: string }[];
+  allocations: { lineNo: number; poLineId: string | null; contractVersionId: string | null; quantity: string; amount: string; poId: string | null; poCode: string | null; poLineDescription: string | null; contractTitle: string | null }[];
+  decisions: { kind: string; reason: string | null; decidedAt: string; decidedBy: string }[];
+  intake: { source: string; duplicate: boolean; receivedAt: string }[];
+  erp: null | { status: string; externalId: string | null; attempts: number; lastError: string | null; updatedAt: string };
+  check: { issues: { code: string; severity: string; message: string; ownerRole: string; lineNo?: number }[]; canApprove: boolean; needsException: boolean; netAmount: string; payable: string };
+  contracts: { contractVersionId: string; title: string; currency: string; ceiling: string | null; netConsumption: string; openCommitment: string }[];
+  status: string; exceptionCurrent: boolean | null;
+  can: { manage: boolean; approve: boolean; approveException: boolean };
+}
+const SEV = { BLOCK: { text: 'Engel', tone: 'danger', icon: 'x' }, EXCEPTION: { text: 'İstisna', tone: 'warn', icon: 'alert' }, REVIEW: { text: 'İnceleme', tone: 'info', icon: 'help' } } as const;
+
+export function InvoicePage() {
+  const { id } = useParams();
+  const r = useResource<InvDetail>(`/api/v1/invoices/${id}`);
+  const a = useAct(r.reload);
+  const [editing, setEditing] = useState(false);
+  const [reason, setReason] = useState('');
+  if (r.loading && !r.data) return <div className="page"><Loading rows={6} /></div>;
+  if (r.error || !r.data) return <div className="page"><ErrorState error={r.error} onRetry={r.reload} /></div>;
+  const d = r.data;
+  const decided = d.decisions.some((x) => x.kind === 'APPROVAL' || x.kind === 'REJECTION');
+  const issuesFor = (lineNo?: number) => d.check.issues.filter((x) => x.lineNo === lineNo);
+  return (
+    <div className="page">
+      <p className="text-sm text-ink-subtle"><Link to="/faturalar" className="text-ink-subtle">Faturalar</Link> / {d.invoice.invoiceNo}</p>
+      <div className="mb-4 mt-1 flex flex-wrap items-start gap-3">
+        <h1 className="min-w-0 flex-1">{KIND[d.invoice.kind]} {d.invoice.invoiceNo} · {d.invoice.supplierName}</h1>
+        <Tag label={STATUS[d.status]} />
+      </div>
+      <div className="mb-5 flex flex-wrap gap-x-6 gap-y-1 text-sm text-ink-muted">
+        <span>Tarih {fmtDate(d.invoice.issueDate)}</span>{d.invoice.ettn && <span className="mono">ETTN {d.invoice.ettn}</span>}
+        <span>Hukuki durum: {d.invoice.legalStatus === 'RECEIVED' ? 'alındı' : 'iptal/ret'}</span>
+        <span>{d.erp ? ERP[d.erp.status] : 'ERP: onaydan sonra'}</span><span>Ödeme: {d.invoice.paymentStatus === 'PAID' ? 'ödendi (ERP teyidi)' : 'ödenmedi'}</span>
+        {d.intake.filter((x) => x.duplicate).length > 0 && <span className="text-warn">Bu fatura {d.intake.filter((x) => x.duplicate).length} kez tekrar geldi; yeni kayıt açılmadı.</span>}
+      </div>
+      <div className="grid grid-cols-[minmax(0,1fr)_380px] gap-6 max-[1100px]:grid-cols-1">
+        <div className="grid content-start gap-5">
+          <section className="panel">
+            <div className="panel-head"><h2>Satırlar ve tahsis</h2>{d.can.manage && !decided && !editing && <Button size="sm" variant="outline" className="ml-auto" onClick={() => setEditing(true)}><Icon name="pen" />Tahsisi düzenle</Button>}</div>
+            <div className="panel-body grid gap-4">
+              {d.lines.map((l) => (
+                <div key={l.lineNo} className="grid gap-1.5 border-b border-[#ebe6da] pb-3 last:border-b-0 last:pb-0">
+                  <div className="flex flex-wrap justify-between gap-2"><span className="font-semibold">{l.lineNo}. {l.description}</span>
+                    <span className="tabular">{num(l.quantity)} {l.unit} × {fmtMoney(l.unitPrice, d.invoice.currency)} = <span className="font-semibold">{fmtMoney(l.netAmount, d.invoice.currency)}</span></span></div>
+                  {d.allocations.filter((x) => x.lineNo === l.lineNo).map((x, i) => (
+                    <p key={i} className="flex flex-wrap gap-x-2 text-sm text-ink-muted"><Icon name="arrow" size={14} className="mt-0.5" />
+                      {x.poCode ? <>Sipariş <Link to={`/siparisler/${x.poId}`}>{x.poCode}</Link> · {x.poLineDescription}</> : x.contractTitle ? <>Sözleşme: {x.contractTitle}</> : 'Bağsız'}
+                      <span className="tabular">· {num(x.quantity)} · {fmtMoney(x.amount, d.invoice.currency)}</span></p>
+                  ))}
+                  {issuesFor(l.lineNo).map((x, i) => <Issue key={i} x={x} />)}
+                </div>
+              ))}
+              {issuesFor(undefined).map((x, i) => <Issue key={i} x={x} />)}
+              {editing && <AllocationEditor d={d} onDone={() => { setEditing(false); void r.reload(); }} />}
+            </div>
+          </section>
+          {a.feedback}
+        </div>
+        <aside className="grid content-start gap-5">
+          <section className="panel">
+            <div className="panel-head"><h2>Tutar</h2></div>
+            <div className="panel-body"><dl className="facts">
+              <dt>Net</dt><dd className="tabular font-semibold">{fmtMoney(d.check.netAmount, d.invoice.currency)}</dd>
+              {Number(d.invoice.advanceOffset) > 0 && <><dt>Avans mahsubu</dt><dd className="tabular">− {fmtMoney(d.invoice.advanceOffset, d.invoice.currency)}</dd></>}
+              <dt>Ödenecek (net)</dt><dd className="tabular">{fmtMoney(d.check.payable, d.invoice.currency)}</dd>
+            </dl></div>
+          </section>
+          {d.contracts.filter((c) => c.ceiling).map((c) => (
+            <section key={c.contractVersionId} className="panel">
+              <div className="panel-head"><h2>Limit · {c.title}</h2></div>
+              <div className="panel-body"><dl className="facts">
+                <dt>Tavan</dt><dd className="tabular">{fmtMoney(c.ceiling, c.currency)}</dd><dt>Net tüketim</dt><dd className="tabular">{fmtMoney(c.netConsumption, c.currency)}</dd>
+                <dt>Açık taahhüt</dt><dd className="tabular">{fmtMoney(c.openCommitment, c.currency)}</dd>
+                <dt>Kullanılabilir</dt><dd className="tabular font-semibold">{fmtMoney((Number(c.ceiling) - Number(c.netConsumption) - Number(c.openCommitment)).toFixed(2), c.currency)}</dd>
+              </dl><p className="mt-2 text-sm text-ink-subtle">Bu fatura hariç; onay anında kilit altında yeniden hesaplanır.</p></div>
+            </section>
+          ))}
+          <section className="panel">
+            <div className="panel-head"><h2>Karar</h2></div>
+            <div className="panel-body grid gap-3">
+              {d.decisions.map((x, i) => <p key={i}><Tag label={x.kind === 'REJECTION' ? { text: `Ret · ${x.decidedBy}`, tone: 'neutral', icon: 'x' } : { text: `${x.kind === 'APPROVAL' ? 'Finans onayı' : 'İstisna onayı'} · ${x.decidedBy}`, tone: 'human', icon: 'stamp' }} />
+                <span className="block text-sm text-ink-subtle">{fmtDateTime(x.decidedAt)}{x.reason ? ` · ${x.reason}` : ''}</span></p>)}
+              {d.exceptionCurrent === false && !decided && <Banner tone="warn" title="İstisna eskidi">Onaydan sonra tahsis veya kontrol sonucu değişti; yeniden istisna onayı gerekir.</Banner>}
+              {!decided && (() => {
+                const needsEx = d.status === 'NEEDS_EXCEPTION' || d.exceptionCurrent === false;
+                const canEx = needsEx && d.can.approveException && !d.invoice.createdByMe;
+                const canFin = d.can.approve && !d.invoice.createdByMe;
+                return <>
+                  {needsEx && !canEx && <p className="text-sm text-ink-muted">İstisna onayını satınalma yöneticisi verir; bulgular sorumlularına görev olarak düştü.</p>}
+                  {d.can.approve && d.invoice.createdByMe && <p className="text-sm text-ink-muted">Faturayı siz girdiniz; görev ayrılığı gereği başka bir finans kullanıcısı onaylar.</p>}
+                  {(canEx || canFin) && <Field label={canEx ? 'Gerekçe' : 'Ret gerekçesi'} hint={canEx ? 'İstisnada kapsam, tutar ve süreyi yazın.' : 'Yalnız reddederken gerekli.'}>
+                    {(p) => <textarea className="input" rows={3} {...p} value={reason} onChange={(e) => setReason(e.target.value)} />}</Field>}
+                  {canEx && <Button disabled={a.busy || reason.trim().length < 10} onClick={() => void a.run(() => api(`/api/v1/invoices/${d.invoice.id}/exception-approval`, { method: 'POST', json: { reason } }), 'İstisna onaylandı.')}><Icon name="stamp" />İstisnayı onayla</Button>}
+                  {canFin && <>
+                    <Button disabled={a.busy || !d.check.canApprove || needsEx} onClick={() => void a.run(() => api(`/api/v1/invoices/${d.invoice.id}/approve`, { method: 'POST' }), 'Fatura onaylandı.')}><Icon name="stamp" />Finans onayı</Button>
+                    <Button variant="outline" disabled={a.busy || reason.trim().length < 10} onClick={() => void a.run(() => api(`/api/v1/invoices/${d.invoice.id}/reject`, { method: 'POST', json: { reason } }), 'Fatura reddedildi.')}>Reddet</Button>
+                  </>}
+                </>;
+              })()}
+              {d.erp?.lastError && <p className="text-sm text-ink-muted">{d.erp.lastError}</p>}
+            </div>
+          </section>
+        </aside>
+      </div>
+    </div>
+  );
+}
+
+function Issue({ x }: { x: InvDetail['check']['issues'][number] }) {
+  const s = SEV[x.severity as keyof typeof SEV];
+  return (
+    <div className={cn('flex flex-wrap items-start gap-2 rounded-md px-3 py-2 text-sm', x.severity === 'BLOCK' ? 'bg-danger-soft' : x.severity === 'EXCEPTION' ? 'bg-warn-soft' : 'bg-info-soft')}>
+      <span className={cn('inline-flex items-center gap-1 rounded-sm px-1.5 font-semibold', toneClass[s.tone])}><Icon name={s.icon} size={13} />{s.text}</span>
+      <span className="min-w-0 flex-1">{x.message}</span>
+      <span className="font-semibold">Çözen: {roleLabel[x.ownerRole] ?? x.ownerRole}</span>
+    </div>
+  );
+}
+
+function AllocationEditor({ d, onDone }: { d: InvDetail; onDone: () => void }) {
+  const pos = useResource<{ items: { id: string; code: string; supplierName: string; contractTitle: string | null }[] }>('/api/v1/purchase-orders');
+  const [rows, setRows] = useState(d.allocations.length ? d.allocations.map((x) => ({ lineNo: x.lineNo, target: x.poLineId ? `po:${x.poLineId}` : x.contractVersionId ? `cv:${x.contractVersionId}` : '', quantity: x.quantity, amount: x.amount }))
+    : d.lines.map((l) => ({ lineNo: l.lineNo, target: '', quantity: l.quantity, amount: l.netAmount })));
+  const [poLines, setPoLines] = useState<Record<string, { poLineId: string; description: string }[]>>({});
+  const [offset, setOffset] = useState(d.invoice.advanceOffset);
+  const [advanceId, setAdvanceId] = useState(d.invoice.advanceInvoiceId ?? '');
+  const [err, setErr] = useState<string | null>(null);
+  const supplierPos = (pos.data?.items ?? []).filter((p) => p.supplierName === d.invoice.supplierName);
+  async function loadLines(poId: string) { if (poLines[poId]) return; const r = await api<{ lines: { poLineId: string; description: string }[] }>(`/api/v1/purchase-orders/${poId}`); setPoLines((x) => ({ ...x, [poId]: r.data.lines })); }
+  return (
+    <form className="grid gap-3 rounded-md border border-border bg-white p-3" onSubmit={(e) => { e.preventDefault(); setErr(null);
+      void api(`/api/v1/invoices/${d.invoice.id}/allocations`, { method: 'PUT', json: { advanceOffset: offset || '0', advanceInvoiceId: advanceId || null,
+        allocations: rows.filter((x) => x.target).map((x) => ({ lineNo: x.lineNo, poLineId: x.target.startsWith('po:') ? x.target.slice(3) : null, contractVersionId: x.target.startsWith('cv:') ? x.target.slice(3) : null, quantity: x.quantity, amount: x.amount })) } })
+        .then(onDone, (x: ApiError) => setErr(x.message)); }}>
+      <p className="text-sm text-ink-muted">Satırı siparişin kalemine bağlayın. Tek satır birden çok siparişe bölünebilir; tahsis toplamı satır tutarını aşamaz.</p>
+      <div className="flex flex-wrap gap-2">{supplierPos.map((p) => <Button key={p.id} type="button" size="sm" variant="outline" onClick={() => void loadLines(p.id)}>{p.code} kalemlerini yükle</Button>)}
+        {!supplierPos.length && <span className="text-sm text-ink-subtle">Bu tedarikçinin siparişi yok; sözleşmesiz tahsis istisna gerektirir.</span>}</div>
+      {rows.map((x, i) => (
+        <div key={i} className="grid grid-cols-[60px_minmax(0,1fr)_100px_130px_auto] items-start gap-2 max-[640px]:grid-cols-2">
+          <span className="pt-2 text-sm font-semibold">Satır {x.lineNo}</span>
+          <select className="input" aria-label={`Satır ${x.lineNo} hedef`} value={x.target} onChange={(e) => setRows(rows.map((y, j) => j === i ? { ...y, target: e.target.value } : y))}>
+            <option value="">Seçin</option>
+            {Object.entries(poLines).flatMap(([poId, ls]) => ls.map((l) => <option key={l.poLineId} value={`po:${l.poLineId}`}>{supplierPos.find((p) => p.id === poId)?.code} · {l.description}</option>))}
+          </select>
+          <input className="input tabular text-right" aria-label="Miktar" value={x.quantity} onChange={(e) => setRows(rows.map((y, j) => j === i ? { ...y, quantity: e.target.value.replace(',', '.') } : y))} />
+          <input className="input tabular text-right" aria-label="Tutar" value={x.amount} onChange={(e) => setRows(rows.map((y, j) => j === i ? { ...y, amount: e.target.value.replace(',', '.') } : y))} />
+          <Button type="button" variant="ghost" size="sm" onClick={() => setRows([...rows.slice(0, i + 1), { ...x, quantity: '', amount: '' }, ...rows.slice(i + 1)])}>Böl</Button>
+        </div>
+      ))}
+      {d.invoice.kind === 'INVOICE' && <div className="grid grid-cols-2 gap-x-3 max-[640px]:grid-cols-1">
+        <Field label="Avans faturası kimliği (mahsup)">{(p) => <input className="input mono" {...p} value={advanceId} onChange={(e) => setAdvanceId(e.target.value)} />}</Field>
+        <Field label="Mahsup tutarı">{(p) => <input className="input tabular text-right" {...p} value={offset} onChange={(e) => setOffset(e.target.value.replace(',', '.'))} />}</Field></div>}
+      <div className="flex gap-2"><Button type="submit">Tahsisi kaydet ve kontrol et</Button><Button type="button" variant="outline" onClick={onDone}>Vazgeç</Button></div>
+      {err && <Banner tone="danger" title={err} />}
+    </form>
+  );
+}

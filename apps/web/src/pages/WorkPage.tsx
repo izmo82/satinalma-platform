@@ -14,7 +14,8 @@ interface Task { id: string; kind: string; entityType: string; entityId: string;
 
 export const entityHref = (t: { entityType: string; entityId: string }) =>
   t.entityType === 'supplier' ? `/tedarikciler/${t.entityId}` : t.entityType === 'contract_version' ? `/sozlesmeler/${t.entityId}`
-    : t.entityType === 'document_version' ? `/belgeler/${t.entityId}` : t.entityType === 'project' ? `/projeler/${t.entityId}` : '/islerim';
+    : t.entityType === 'document_version' ? `/belgeler/${t.entityId}` : t.entityType === 'project' ? `/projeler/${t.entityId}`
+    : t.entityType === 'invoice' ? `/faturalar/${t.entityId}` : '/islerim';
 
 const VIEWS = [['mine', 'Benden beklenen'], ['overdue', 'Geciken'], ['all', 'Rolümdeki tüm işler']] as const;
 
