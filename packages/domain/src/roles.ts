@@ -31,6 +31,12 @@ export const PERMISSIONS = {
   'evaluation.create': ['BUYER', 'PROCUREMENT_MANAGER'],
   'award.propose': ['BUYER', 'PROCUREMENT_MANAGER'],
   'award.decide': ['PROCUREMENT_MANAGER'],
+  'contract.terms.edit': ['BUYER', 'PROCUREMENT_MANAGER', 'LEGAL'],
+  'contract.terms.verify': ['LEGAL'],
+  'contract.obligation.manage': ['BUYER', 'PROCUREMENT_MANAGER', 'LEGAL'],
+  'contract.obligation.record': ['REQUESTER', 'BUYER', 'PROCUREMENT_MANAGER', 'LEGAL', 'FINANCE', 'SECURITY'],
+  'contract.renewal.decide': ['PROCUREMENT_MANAGER'],
+  'holiday.manage': ['LEGAL', 'TENANT_ADMIN'],
   'audit.read': ['AUDITOR', 'TENANT_ADMIN'],
   'task.read': ROLES.filter((r) => r !== 'SUPPLIER' && r !== 'PLATFORM_OPS'),
 } as const satisfies Record<string, readonly Role[]>;

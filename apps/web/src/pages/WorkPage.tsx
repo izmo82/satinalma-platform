@@ -80,7 +80,7 @@ export function WorkPage() {
             <TableCaption className="sr-only">Açık işler, öneme ve tarihe göre sıralı</TableCaption>
             <TableHeader><TableRow className="hover:bg-transparent">
               <TableHead scope="col">Kayıt no</TableHead><TableHead scope="col">Önem</TableHead><TableHead scope="col">İş</TableHead><TableHead scope="col">Neden bekliyor</TableHead>
-              <TableHead scope="col">Sonraki adım</TableHead><TableHead scope="col" className="max-[1360px]:hidden">Sorumlu rol</TableHead><TableHead scope="col">Son tarih</TableHead><TableHead scope="col"><span className="sr-only">Eylem</span></TableHead>
+              <TableHead scope="col">Sonraki adım</TableHead><TableHead scope="col" className="max-[1600px]:hidden">Sorumlu rol</TableHead><TableHead scope="col">Son tarih</TableHead><TableHead scope="col"><span className="sr-only">Eylem</span></TableHead>
             </TableRow></TableHeader>
             <TableBody>
               {items.map((t, i) => (
@@ -88,9 +88,9 @@ export function WorkPage() {
                   <TableCell className="whitespace-nowrap">{t.refNo ?? <span className="text-ink-subtle">—</span>}</TableCell>
                   <TableCell><Tag label={severityLabel[t.severity]} /></TableCell>
                   <TableCell className="min-w-[200px]"><Link className="font-semibold text-ink no-underline hover:underline" to={entityHref(t)}>{t.title}</Link></TableCell>
-                  <TableCell className="min-w-[220px] text-ink-muted">{t.reason}</TableCell>
+                  <TableCell className="min-w-[220px] max-w-[44ch] text-ink-muted">{t.reason}</TableCell>
                   <TableCell className="min-w-[200px]">{t.nextAction}</TableCell>
-                  <TableCell className="whitespace-nowrap max-[1360px]:hidden">{roleLabel[t.assigneeRole] ?? t.assigneeRole}</TableCell>
+                  <TableCell className="whitespace-nowrap max-[1600px]:hidden">{roleLabel[t.assigneeRole] ?? t.assigneeRole}</TableCell>
                   <TableCell className="tabular whitespace-nowrap"><Due at={t.dueAt} /><div className="text-sm text-ink-subtle" title={t.createdAt}>Açıldı {relative(t.createdAt)}</div></TableCell>
                   <TableCell><Button asChild size="sm" variant={i === cursor ? 'default' : 'outline'}><Link to={entityHref(t)} aria-label={`İşi aç: ${t.title}`}>İşi aç</Link></Button></TableCell>
                 </TableRow>

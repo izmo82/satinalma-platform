@@ -22,7 +22,7 @@ import { PortalHome, PortalRound } from './pages/PortalPages.tsx';
 
 // PDF görüntüleyici içeren ağır ekranlar ayrı paket olarak yüklenir.
 const DocumentPage = lazy(() => import('./pages/DocumentPage.tsx').then((m) => ({ default: m.DocumentPage })));
-const SignatureWorkspace = lazy(() => import('./pages/SignatureWorkspace.tsx').then((m) => ({ default: m.SignatureWorkspace })));
+const ContractPage = lazy(() => import('./pages/ContractLifecycle.tsx').then((m) => ({ default: m.ContractPage })));
 
 export function App() {
   const { me, loading } = useSession();
@@ -109,7 +109,7 @@ function Shell() {
           <Route path="/belge-girisi" element={<IntakePage />} />
           <Route path="/belgeler/:id" element={<DocumentPage />} />
           <Route path="/sozlesmeler" element={<ContractsPage />} />
-          <Route path="/sozlesmeler/:id" element={<SignatureWorkspace />} />
+          <Route path="/sozlesmeler/:id" element={<ContractPage />} />
           <Route path="/faturalar" element={<NotYetPage title="Faturalar" phase="Faz 4" what="Satır tahsisi, PO/kabul eşleştirme, limit ve ERP durumu" />} />
           <Route path="/raporlar" element={<NotYetPage title="Raporlar" phase="Faz 5" what="Kaynaklı raporlar ve dışa aktarma" />} />
           <Route path="*" element={<NotYetPage title="Sayfa bulunamadı" />} />

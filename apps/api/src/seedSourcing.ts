@@ -92,3 +92,31 @@ export async function ensureSourcingDemo(owner: pg.Pool, app: App, auth: DevAuth
     lines: [{ description: 'Dizüstü bilgisayar', unit: 'adet', quantity: '25' }, { description: 'Monitör', unit: 'adet', quantity: '25' }] });
   log('Faz 2 demo: 3 proje (onaylı bölünmüş tahsis, teklife açık, taslak) oluşturuldu.');
 }
+
+/** Faz 3 demo: tatil listesi, doğrulanmış koşullar (ihbarı yakın), yükümlülükler. Var olan veri silinmez. */
+export async function ensureLifecycleDemo(owner: pg.Pool, app: App, auth: DevAuthProvider, tenantId: string, runJobs: () => Promise<number>, log = console.log) {
+  if ((await owner.query(`SELECT 1 FROM contract_terms WHERE tenant_id = $1`, [tenantId])).rowCount) { log('Faz 3 demo zaten var; atlandı.'); return; }
+  const cv = (await owner.query<{ id: string }>(`SELECT cv.id FROM contract_versions cv JOIN contract_families f ON f.id = cv.family_id
+    WHERE f.tenant_id = $1 AND f.title LIKE 'Yıllık Bakım%' AND cv.superseded_by_id IS NULL LIMIT 1`, [tenantId])).rows[0];
+  if (!cv) { log('Faz 3 demo: uygun sözleşme bulunamadı; atlandı.'); return; }
+  const tok = async (key: string) => auth.issue(`dev|${key}@example.test`);
+  async function call(who: string, method: string, url: string, body?: unknown) {
+    const r = await app.inject({ method: method as any, url, payload: body as any, headers: { authorization: `Bearer ${await tok(who)}`, 'x-tenant-id': tenantId } });
+    if (r.statusCode >= 400) throw new Error(`${method} ${url} → ${r.statusCode} ${r.body}`);
+    return r.body ? JSON.parse(r.body) : null;
+  }
+  // Yalnız sabit tarihli resmî tatiller; dini bayram tarihleri her yıl kurum tarafından girilir.
+  for (const [day, name] of [['2026-10-29', 'Cumhuriyet Bayramı'], ['2027-01-01', 'Yılbaşı'], ['2027-04-23', 'Ulusal Egemenlik ve Çocuk Bayramı'],
+    ['2027-05-01', 'Emek ve Dayanışma Günü'], ['2027-05-19', 'Atatürk\'ü Anma, Gençlik ve Spor Bayramı'], ['2027-07-15', 'Demokrasi ve Millî Birlik Günü'],
+    ['2027-08-30', 'Zafer Bayramı'], ['2027-10-29', 'Cumhuriyet Bayramı']]) await call('leyla.hukuk', 'POST', '/api/v1/holidays', { day, name });
+  const t = await call('leyla.hukuk', 'POST', `/api/v1/contract-versions/${cv.id}/terms`, { currency: 'TRY', valueType: 'CEILING', amount: '1000000.00',
+    paymentTerms: 'Fatura tarihinden itibaren 30 gün', startDate: '2026-01-01', endDate: '2026-12-31', autoRenewal: true, renewalMonths: 12,
+    noticeAmount: 60, noticeUnit: 'DAY', nonWorkingDay: 'PREVIOUS_WORKING_DAY', sourceRef: 'Madde 4.2 (süre), 9.1 (ihbar), s. 3 (sentetik)' });
+  await call('kerem.hukuk', 'POST', `/api/v1/contract-terms/${t.id}/verify`);
+  await call('leyla.hukuk', 'POST', `/api/v1/contract-versions/${cv.id}/obligations`, { title: 'Üç aylık bakım ve arıza raporu', counterparty: 'SUPPLIER', ownerRole: 'BUYER',
+    firstDue: '2026-11-15', recurrence: 'QUARTERLY', until: '2026-12-31', evidenceRequired: true, sourceRef: 'Ek-2 madde 3 (sentetik)' });
+  await call('leyla.hukuk', 'POST', `/api/v1/contract-versions/${cv.id}/obligations`, { title: 'Yıllık sızma testi raporu', counterparty: 'SUPPLIER', ownerRole: null,
+    firstDue: '2026-11-05', recurrence: 'YEARLY', until: null, evidenceRequired: true, sourceRef: 'Ek-4 bilgi güvenliği madde 2 (sentetik)' });
+  while (await runJobs()) { /* zamanı gelen uyarılar */ }
+  log('Faz 3 demo: koşullar (doğrulanmış), ihbar uyarısı ve 2 yükümlülük oluşturuldu.');
+}

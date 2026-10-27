@@ -9,7 +9,8 @@ import { DevAuthProvider } from './auth.ts';
 import { S3ObjectStore } from './storage.ts';
 import { buildApp } from './server.ts';
 import { createSyntheticWorld, DEMO_TENANT_A, syntheticPdf, ublInvoiceXml } from './devdata.ts';
-import { ensureSourcingDemo } from './seedSourcing.ts';
+import { ensureLifecycleDemo, ensureSourcingDemo } from './seedSourcing.ts';
+import { processJobs } from './worker.ts';
 
 const config = loadConfig();
 if (config.env === 'production' || config.authMode !== 'dev') throw new Error('Seed only runs in development with AUTH_MODE=dev');
@@ -21,6 +22,7 @@ if (exists.rows[0]) {
   const auth0 = new DevAuthProvider(config.devAuthSecret!);
   const app0 = await buildApp({ config: { ...config, env: 'test' }, pool: pool0, auth: auth0, store: new S3ObjectStore(config.objectStore) });
   await ensureSourcingDemo(owner, app0, auth0, exists.rows[0].id);
+  await ensureLifecycleDemo(owner, app0, auth0, exists.rows[0].id, () => processJobs(pool0, new S3ObjectStore(config.objectStore), null));
   await app0.close(); await pool0.end(); await owner.end();
   process.exit(0);
 }
@@ -119,6 +121,7 @@ await call('legal2', 'POST', `/api/v1/signature-exceptions/${x.body.exceptionId}
 await contract('Eski Temizlik Sözleşmesi (arşiv)', { method: 'PENDING_CLASSIFICATION', methods: ['WET_IMAGE_REVIEW'], stage: 'ARCHIVE_IMPORT' });
 
 await ensureSourcingDemo(owner, app, auth, world.tenantA);
+await ensureLifecycleDemo(owner, app, auth, world.tenantA, () => processJobs(pool, new S3ObjectStore(config.objectStore), null));
 console.log('Sentetik demo verisi oluşturuldu. Kullanıcılar (dev oturumu):');
 for (const [k, u] of Object.entries(world.users)) console.log(`  ${k.padEnd(12)} ${u.email}`);
 await app.close();

@@ -3,3 +3,4 @@ export * from './roles.ts';
 export * from './signature.ts';
 export * from './money.ts';
 export * from './sourcing.ts';
+export * from './contractTerms.ts';

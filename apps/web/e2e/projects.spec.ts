@@ -18,9 +18,12 @@ test('tedarikçi portalda teklif verir; alındı zamanı ve sürüm sunucudan ge
   await prices.nth(0).fill('');
   await page.getByRole('button', { name: /Teklifi gönder|Yeni sürüm gönder/ }).click();
   await expect(page.getByText('Teklif formunda eksik alanlar var')).toBeVisible();
+  // Önceki çalıştırmaların ekleri bu sürüme taşınmasın (yalnız yeni ek bağlanır).
+  const checked = page.locator('input[type=checkbox]:checked');
+  while (await checked.count()) await checked.first().uncheck();
   // Ek: gerçek dosya seçimi → sunucu kontrolü → bu sürüme bağlanır.
   await page.locator('#bid-file').setInputFiles({ name: 'teknik-foy-sentetik.pdf', mimeType: 'application/pdf',
-    buffer: Buffer.from(`%PDF-1.4\n% SENTETIK ${Date.now()}\n1 0 obj << >> endobj\ntrailer << >>\n%%EOF\n`) });
+    buffer: Buffer.from(`%PDF-1.4\n% SENTETIK ${Date.now()}-${Math.random()}\n1 0 obj << >> endobj\ntrailer << >>\n%%EOF\n`) });
   await expect(page.getByText(/teklife eklendi/)).toBeVisible();
   await prices.nth(0).fill('21500');
   await prices.nth(1).fill('18750.50');
@@ -77,4 +80,19 @@ test('İşlerim: kayıt no ve sekme sayıları', async ({ page }) => {
   await expect(page.getByRole('tab', { name: /Benden beklenen\s*\d+/ })).toBeVisible();
   await expect(page.getByRole('tab', { name: /Geciken\s*\d+/ })).toBeVisible();
   await expect(page.getByText(/^SZL-\d{4}-\d{4}$/).filter({ visible: true }).first()).toBeVisible();
+});
+
+test('sözleşme: ihbar son günü bitişe değil ihbar kuralına göre; görev İşlerim\'de (T21, UX09)', async ({ page }) => {
+  await login(page, 'kerem.hukuk@example.test', 'İşlerim');
+  await expect(page.getByText(/İhbar son günü 30\.10\.2026/).filter({ visible: true }).first()).toBeVisible();
+  await page.getByRole('link', { name: 'Sözleşmeler' }).click();
+  await page.getByRole('link', { name: /Yıllık Bakım Sözleşmesi 2026/ }).first().click();
+  await expect(page.getByRole('tab', { name: 'İmza kontrolü' })).toHaveAttribute('aria-selected', 'true');
+  await page.getByRole('tab', { name: 'Koşullar ve ihbar' }).click();
+  await expect(page.getByText('30 Eki 2026')).toBeVisible();
+  await expect(page.getByText(/önceki iş günü 30\.10\.2026/)).toBeVisible();
+  await expect(page.getByText(/Hukuk doğruladı/)).toBeVisible();
+  await page.getByRole('tab', { name: 'Yükümlülükler' }).click();
+  await expect(page.getByRole('heading', { name: 'Yıllık sızma testi raporu' })).toBeVisible();
+  await expect(page.getByText(/Sahipsiz/).first()).toBeVisible();
 });

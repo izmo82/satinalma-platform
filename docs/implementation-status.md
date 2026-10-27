@@ -2,17 +2,17 @@
 
 Son güncelleme: 2026-10-27 · Kapsam kaynağı: `project-specs/procurement/` (paket v1.2)
 Durum anahtarı: **PASS** = bu oturumda çalıştırılıp geçti · **FAIL** · **BLOCKED** = dış bağımlılık yok · **NOT_RUN** = test yazılmadı/çalıştırılmadı · **PARTIAL** = kısmen uygulandı (açıklama zorunlu).
-Kalan P0 varken ürün "tamamlandı" sayılmaz. Şu an **Faz 0–2 + Faz 3'ün imza çekirdeği + sağlayıcıdan bağımsız dağıtım + web arayüzünün yeniden tasarımı (Tailwind 4 + shadcn/ui, "Mor Istampa")** uygulandı.
+Kalan P0 varken ürün "tamamlandı" sayılmaz. Şu an **Faz 0–2 + Faz 3 (imza çekirdeği, koşullar/ihbar/yükümlülük/yenileme) + sağlayıcıdan bağımsız dağıtım + web arayüzünün yeniden tasarımı (Tailwind 4 + shadcn/ui, "Mor Istampa")** uygulandı.
 
 ## Çalıştırılan kontroller (2026-10-27, macOS, Node 24.14, PostgreSQL 17 Docker, S3 emülatörü adobe/s3mock 4.6.0)
 
 | Kontrol | Komut | Sonuç |
 |---|---|---|
-| Domain birim testleri | `npm test -w @sp/domain` | PASS 30/30 (10 yeni: ondalık hesap, karşılaştırma/TCO, eskime, tahsis) |
-| API entegrasyon (gerçek PostgreSQL + RLS + S3 emülatörü) | `npm test -w @sp/api` | PASS 50/50 (12 Faz 2: T09–T12, görev ayrılığı, mühür, teklif ekleri, XLSX, PDF, İşlerim kayıt no/sayılar). Önceki ek: Yeni 2 test: ADFS/Entra benzeri claim seti (farklı token iss, `oid`, `upn`, email_verified yok, güvenilen alan adı) |
+| Domain birim testleri | `npm test -w @sp/domain` | PASS 37/37 (Faz 2: ondalık, karşılaştırma/TCO, eskime, tahsis; Faz 3: ihbar son günü, tatil kuralı, 90/60/30, yükümlülük dönemleri, koşul farkı) |
+| API entegrasyon (gerçek PostgreSQL + RLS + S3 emülatörü) | `npm test -w @sp/api` | PASS 58/58, art arda 3 koşu (Faz 2: 13; Faz 3: 7 — T21, görev ayrılıklı doğrulama, değişiklik farkı, eskiyen uyarı, sırasız uyarı, fesih/çıkış görevleri, yükümlülük). |
 | TypeScript (domain, api, web) | `npm run typecheck` | PASS |
 | Web üretim derlemesi | `npm run build -w @sp/web` | PASS |
-| Playwright E2E (1440, 1280, 390) | `npm run e2e -w @sp/web` | PASS 23, 4 bilinçli atlandı; art arda iki tam koşu yeşil. Bir önceki koşuda portal testi bir kez düştü, tek başına ve sonraki iki tam koşuda geçti; neden bulunamadı (kararsızlık adayı). Önceki: (veri değiştiren testler yalnız 1440'ta). Yeni: tedarikçi portalında teklif, alıcı karşılaştırma/karar, sihirbaz doğrulaması, proje ekranlarında taşma yok |
+| Playwright E2E (1440, 1280, 390) | `npm run e2e -w @sp/web` | PASS 26, 4 bilinçli atlandı; art arda 3 tam koşu yeşil; portal testi 4 eşzamanlı tekrarla 40/40. Önceki kararsızlığın kök nedenleri bulundu ve düzeltildi: (1) portal formu her yeniden yüklemede kullanıcının yazdığını eziyordu, (2) aynı tedarikçinin eşzamanlı iki gönderimi aynı sürüm numarasında çakışıyordu, (3) aynı dosyanın eşzamanlı yüklemesi benzersizlik hatası veriyordu, (4) ek sayısı 20 sınırını aşınca genel doğrulama hatası görünüyordu |
 | Web arayüzü yeniden tasarımı (impeccable) | `impeccable detect` + bağımsız son inceleme ajanı | detect 0 bulgu. İnceleme: 1. tur `fix` (8 düzeltme), 2. tur 4 çözüldü / 4 kısmi + 2 gerileme → gerilemeler düzeltildi, yeniden incelenmedi. Sonradan kapatıldı: İşlerim'de kayıt no ve sekme sayıları. Açık: global arama/bildirim (backend yok; sahte kontrol eklenmedi). `DESIGN.md` + `.impeccable/design.json` yazıldı |
 | iOS simülatör derlemesi | `xcodebuild … -destination 'platform=iOS Simulator,name=iPhone 18 Pro' build` | PASS |
 | iOS simülatörde kritik akış (giriş → İşlerim → imza durumu) | elle, simülatör ekran görüntüsüyle | PASS (otomatik UI testi yok → NOT_RUN) |
@@ -47,7 +47,7 @@ Not: Test sağlayıcısı `test-fixture` yalnız `NODE_ENV=test`'te kaydedilebil
 | T12 iki tedarikçiye bölünmüş kazanan | PASS | domain "T12", API "T11 + T12", E2E karar | Satır toplamı ihtiyacı aşamaz (422), karşılaştırılamayan satıra tahsis yok, aday firma onayda engellenir (BR02), öneren onaylayamaz (BR03) |
 | T13–T18 PO/kabul/fatura/limit/ERP | NOT_RUN | — | Faz 4 (outbox/jobs tabloları hazır) |
 | T19–T20 olay/risk | NOT_RUN | — | Faz 5 |
-| T21 ihbar günü | NOT_RUN | — | Faz 3 sözleşme yaşam döngüsü kalan kısım |
+| T21 ihbar günü | PASS | domain `contractTerms.test.ts` "T21", API `lifecycle.test.ts` "T21" (5 test + sırasız uyarı), E2E sözleşme | Son gün bitişten ihbar süresi geri; hafta sonu/kiracı tatilinde sözleşme kuralına göre önceki iş günü; uyarı işleri 90/60/30 gün öncesine; görevin son tarihi ihbar son günü (bitiş değil); doğrulanmamış koşulda uyarı yok; koşul değişince eski uyarı eskir; daha acil uyarı geri alınmaz. Dini bayram tarihleri kiracı verisidir (seed yalnız sabit tarihli resmî tatiller) |
 | T22 AI kaynaksız alan/zararlı talimat | NOT_RUN | — | LLM entegrasyonu yok; XML ayrıştırıcı talimat çalıştırmaz |
 | T23 AI kota | NOT_RUN | — | Faz 5 |
 | T24 capability yok | PASS | `signature.test.ts` "T24/SIG16" | `UNSUPPORTED` + manuel görev |
@@ -85,13 +85,13 @@ Not: Test sağlayıcısı `test-fixture` yalnız `NODE_ENV=test`'te kaydedilebil
 | Malware/karantina | PARTIAL / BLOCKED | Yerleşik kontroller (sihirli bayt, PDF aktif içerik/şifre, XML DTD); gerçek AV servisi BLOCKED |
 | FR05–FR07 aday tedarikçi, VKN eşleme, IBAN | PASS (çekirdek) | `modules/suppliers.ts`, `modules/einvoice.ts`; UX07/UX08 web |
 | OCR/AI çıkarım | BLOCKED | Sağlayıcı yok; PDF faturada manuel giriş görevi ve `POST /document-versions/:id/seller-identity` |
-| FR08–FR09 sözleşme ailesi/sürüm | PARTIAL | `contract_families`, `contract_versions`, zeyilname sürümü; bedel/yükümlülük/ihbar NOT_RUN |
+| FR08–FR09 sözleşme ailesi/sürüm | PASS (çekirdek) / PARTIAL | `contract_families` (SZL no), `contract_versions`, zeyilname; `migrations/007_contract_terms.sql`, `modules/contractTerms.ts`: bedel/tavan/bedelsiz, ödeme koşulu, süre/süresiz, otomatik yenileme, ihbar kuralı + kaynak madde, hukuk doğrulaması (görev ayrılığı), revizyon farkı ve gerekçe, yükümlülük ve dönem kaydı (kanıtlı, değişmez), yenileme/fesih/yeniden müzakere kararı, fesihte çıkış kontrolü görevleri. NOT_RUN: fiyat dönemi/endeks revizyonu, SLA ceza/kredi hesabı, teminat takibi, kazanan teklif → sözleşme bağı, tavanın fatura tüketimine bağlanması (Faz 4) |
 | SIG01–SIG16 imza | PASS (çekirdek) / BLOCKED (gerçek algılayıcı, e-imza doğrulayıcı) | `003_contracts_signatures.sql`, `packages/domain/src/signature.ts`, `modules/contracts.ts`, `signature/detector.ts`, web `SignatureWorkspace.tsx`, iOS `SignatureStatusView` |
-| Asenkron iş/outbox | PARTIAL | `jobs`, `outbox_events`, `claim_jobs()`, `apps/api/src/worker.ts`; outbox yayımcısı NOT_RUN |
+| Asenkron iş/outbox | PARTIAL | `jobs`, `outbox_events`, `claim_jobs()`, `apps/api/src/worker.ts` (imza tespiti, ihbar uyarısı, yükümlülük vadesi; aynı aile için uyarılar advisory lock ile seri); outbox yayımcısı NOT_RUN |
 | UX01 İşlerim | PASS | `pages/WorkPage.tsx`: kayıt no (PRJ/SZL/BLG veya VKN; erişim yoksa boş), sekme sayıları aynı yetki sınırıyla, son tarih, satır eylemi, j/k |
 | UX06 Belge inceleme | PARTIAL | `pages/DocumentPage.tsx` (kaynak + alanlar + köken etiketi); alan→koordinat vurgusu OCR olmadan yalnız sayfa |
 | UX07/UX08 Aday havuzu/tedarikçi | PARTIAL | risk/performans/olay sekmeleri Faz 5 |
-| UX09/UX14 Sözleşme/imza | PASS (imza) | `ContractsPage.tsx`, `SignatureWorkspace.tsx` |
+| UX09/UX14 Sözleşme/imza | PASS | `ContractsPage.tsx`, `ContractLifecycle.tsx` (sekmeler: İmza kontrolü, Koşullar ve ihbar, Yükümlülükler), `SignatureWorkspace.tsx`; değişiklik farkı ve tarihin kaynak maddesi görünür |
 | UX02 Proje listesi | PASS | `pages/ProjectsPage.tsx`: aşama filtresi (URL'de korunur), şirket ve para birimi görünür; kayıtlı görünüm/kolon seçimi NOT_RUN |
 | UX03 Proje sihirbazı | PASS (çekirdek) | `pages/ProjectWizard.tsx`: ihtiyaç → kalem → bütçe → kriter → özet; adım doğrulaması, ilk hataya odak, taslak bu cihazda otomatik saklanır (sunucu taslağı "oluştur" ile) |
 | UX04 Tedarikçi portalı | PASS (çekirdek) | `pages/PortalPages.tsx`: sunucu saatli geri sayım, satır bazlı fiyat, kapsam/birim uyarısı, sürüm ve alındı, soru-cevap; ek dosya yükleme NOT_RUN |
@@ -100,12 +100,12 @@ Not: Test sağlayıcısı `test-fixture` yalnız `NODE_ENV=test`'te kaydedilebil
 | Faz 2 proje/RFQ/değerlendirme/tahsis | PASS (çekirdek) / PARTIAL | `migrations/005_projects_sourcing.sql`, `modules/sourcing.ts`, `packages/domain/src/sourcing.ts`, `src/reports.ts`. XLSX rapor deterministik (formül + kaynak sürüm + formül enjeksiyonu kaçışı); PDF karar özeti PASS (`decisionSummaryPdf`, gömülü Türkçe yazı tipi, eskimiş sürüm uyarısı, onaylayan kişiler; imaj içinde denendi); teklif ekleri PASS (`bid_files`/`bid_attachments`, yerleşik dosya kontrolü, tur açıkken yükleme, sürüme bağlama, alıcıya kapanıştan önce RLS ile kapalı, okuma denetim kaydı; gerçek AV taraması BLOCKED); tek kaynak/acil alım/iptal akışları NOT_RUN; kurum içi onay motoru (tutar/kategori kuralları) NOT_RUN — yayın ve seçim onayı sabit rol + görev ayrılığıyla |
 | iOS | PARTIAL | `ios/Satinalma` SwiftUI: Keychain oturum, İşlerim, salt okunur imza durumu; tarama/offline/kabul Faz 6 |
 | Dağıtım (sağlayıcıdan bağımsız) | PASS (compose, kind) / PARTIAL (kurum içi küme) | `deploy/compose`, `deploy/kubernetes` (iç CA bileşeni, egress politikası, kurulum Job'u, kind doğrulaması), `deploy/IDP.md`; kurum veri merkezinde kurulum ve yedek/restore tatbikatı NOT_RUN |
-| OpenAPI | PASS | `docs/openapi.json` (`npm run openapi -w @sp/api`, 50 yol) |
+| OpenAPI | PASS | `docs/openapi.json` (`npm run openapi -w @sp/api`, 58 yol) |
 
 ## Bilinen açıklar ve sonraki adımlar (öncelik sırası)
 1. **P0** İlk hedef: kurum içi Kubernetes (kullanıcı kararı). Kalan: kurumun kümesinde kurulum ve kurumun IdP'siyle (ADFS/Keycloak) giriş denemesi; iOS OIDC girişi.
 2. **P0** Faz 2 kalanları: tek kaynak/acil/iptal akışları, kurallı onay motoru (tutar/kategori), global arama ve bildirim (spec 04 §9), kayıtlı tablo görünümleri.
-3. **P0** Faz 3 kalan: bedel/tavan/yükümlülük/ihbar (T21), dar ekranda belge/alan sekmeleri.
+3. **P0** Faz 3 kalan küçük kısımlar: fiyat revizyonu/endeks, SLA ceza/kredi hesabı, teminat; dar ekranda belge/alan sekmeleri.
 4. **P0** Faz 4: PO/kabul/fatura tahsisi/limit (T13–T18, T37).
 5. Gerçek AV taraması, OCR ve imza algılayıcı sağlayıcı seçimi (Türkçe golden set ile).
 6. İngilizce arayüz metinleri; gerçek ekran okuyucu ve Dynamic Type testi.

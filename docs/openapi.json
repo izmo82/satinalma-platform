@@ -1203,6 +1203,460 @@
         }
       }
     },
+    "/api/v1/contract-versions/{id}/lifecycle": {
+      "get": {
+        "tags": [
+          "contracts"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/contract-versions/{id}/terms": {
+      "post": {
+        "tags": [
+          "contracts"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "currency",
+                  "valueType",
+                  "amount",
+                  "paymentTerms",
+                  "startDate",
+                  "endDate",
+                  "autoRenewal",
+                  "renewalMonths",
+                  "noticeAmount",
+                  "noticeUnit",
+                  "nonWorkingDay",
+                  "sourceRef"
+                ],
+                "properties": {
+                  "currency": {
+                    "type": "string",
+                    "pattern": "^[A-Z]{3}$"
+                  },
+                  "valueType": {
+                    "type": "string",
+                    "enum": [
+                      "FIXED",
+                      "CEILING",
+                      "UNPRICED"
+                    ]
+                  },
+                  "amount": {
+                    "type": "string",
+                    "pattern": "^\\d{1,18}(\\.\\d{1,2})?$",
+                    "nullable": true
+                  },
+                  "paymentTerms": {
+                    "type": "string",
+                    "maxLength": 500
+                  },
+                  "startDate": {
+                    "type": "string",
+                    "format": "date",
+                    "nullable": true
+                  },
+                  "endDate": {
+                    "type": "string",
+                    "format": "date",
+                    "nullable": true
+                  },
+                  "autoRenewal": {
+                    "type": "boolean"
+                  },
+                  "renewalMonths": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 120,
+                    "nullable": true
+                  },
+                  "noticeAmount": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 3650,
+                    "nullable": true
+                  },
+                  "noticeUnit": {
+                    "type": "string",
+                    "enum": [
+                      "DAY",
+                      "MONTH"
+                    ],
+                    "nullable": true
+                  },
+                  "nonWorkingDay": {
+                    "type": "string",
+                    "enum": [
+                      "PREVIOUS_WORKING_DAY",
+                      "AS_IS"
+                    ]
+                  },
+                  "sourceRef": {
+                    "type": "string",
+                    "maxLength": 300
+                  },
+                  "changeReason": {
+                    "type": "string",
+                    "maxLength": 2000,
+                    "nullable": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/contract-terms/{id}/verify": {
+      "post": {
+        "tags": [
+          "contracts"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/contract-versions/{id}/renewal-decision": {
+      "post": {
+        "tags": [
+          "contracts"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "decision",
+                  "rationale"
+                ],
+                "properties": {
+                  "decision": {
+                    "type": "string",
+                    "enum": [
+                      "RENEW",
+                      "TERMINATE",
+                      "RENEGOTIATE"
+                    ]
+                  },
+                  "rationale": {
+                    "type": "string",
+                    "maxLength": 4000
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/contract-versions/{id}/obligations": {
+      "post": {
+        "tags": [
+          "contracts"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "title",
+                  "counterparty",
+                  "ownerRole",
+                  "firstDue",
+                  "recurrence",
+                  "until",
+                  "evidenceRequired",
+                  "sourceRef"
+                ],
+                "properties": {
+                  "title": {
+                    "type": "string",
+                    "maxLength": 300
+                  },
+                  "counterparty": {
+                    "type": "string",
+                    "enum": [
+                      "BUYER",
+                      "SUPPLIER"
+                    ]
+                  },
+                  "ownerRole": {
+                    "type": "string",
+                    "nullable": true
+                  },
+                  "firstDue": {
+                    "type": "string",
+                    "format": "date"
+                  },
+                  "recurrence": {
+                    "type": "string",
+                    "enum": [
+                      "NONE",
+                      "MONTHLY",
+                      "QUARTERLY",
+                      "YEARLY"
+                    ]
+                  },
+                  "until": {
+                    "type": "string",
+                    "format": "date",
+                    "nullable": true
+                  },
+                  "evidenceRequired": {
+                    "type": "boolean"
+                  },
+                  "sourceRef": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 300
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/obligations/{id}/events": {
+      "post": {
+        "tags": [
+          "contracts"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "dueDate",
+                  "outcome",
+                  "note"
+                ],
+                "properties": {
+                  "dueDate": {
+                    "type": "string",
+                    "format": "date"
+                  },
+                  "outcome": {
+                    "type": "string",
+                    "enum": [
+                      "FULFILLED",
+                      "MISSED",
+                      "WAIVED"
+                    ]
+                  },
+                  "note": {
+                    "type": "string",
+                    "maxLength": 2000
+                  },
+                  "evidence": {
+                    "type": "string",
+                    "maxLength": 500,
+                    "nullable": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/obligations/{id}/retire": {
+      "post": {
+        "tags": [
+          "contracts"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "reason"
+                ],
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "maxLength": 2000
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/holidays": {
+      "get": {
+        "tags": [
+          "contracts"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "contracts"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "day",
+                  "name"
+                ],
+                "properties": {
+                  "day": {
+                    "type": "string",
+                    "format": "date"
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 2,
+                    "maxLength": 120
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
     "/api/v1/projects": {
       "get": {
         "tags": [

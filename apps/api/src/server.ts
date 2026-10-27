@@ -14,6 +14,7 @@ import { submitSellerIdentity, uploadDocument } from './modules/documents.ts';
 import { activateSupplier, recordApproval, resolveIdentity as resolveSupplierIdentity } from './modules/suppliers.ts';
 import * as contracts from './modules/contracts.ts';
 import * as sourcing from './modules/sourcing.ts';
+import * as lifecycle from './modules/contractTerms.ts';
 import { decisionSummaryPdf, evaluationWorkbook } from './reports.ts';
 
 export interface AppDeps {
@@ -430,6 +431,48 @@ export async function buildApp(deps: AppDeps) {
        FROM audit_events a LEFT JOIN users u ON u.id = a.actor_user_id WHERE a.entity_id = $1 ORDER BY a.id`, [(req.query as any).entityId]);
     return { items: r.rows };
   }));
+
+  // --- Faz 3: sözleşme koşulları, ihbar, yükümlülük, yenileme (UX09, T21) -----------------
+  const date = { type: 'string', format: 'date' } as const;
+  const nDate = { anyOf: [date, { type: 'null' }] } as const;
+  app.get('/api/v1/contract-versions/:id/lifecycle', { schema: { tags: ['contracts'], params: idParams } }, async (req) =>
+    scoped(req, 'contract.read', async (tx, ctx) => ({ ...(await lifecycle.getLifecycle(tx, ctx, (req.params as any).id)),
+      can: { edit: can(ctx.roles, 'contract.terms.edit'), verify: can(ctx.roles, 'contract.terms.verify'), manageObligations: can(ctx.roles, 'contract.obligation.manage'),
+        record: can(ctx.roles, 'contract.obligation.record'), decide: can(ctx.roles, 'contract.renewal.decide') } })));
+  app.post('/api/v1/contract-versions/:id/terms', { schema: { tags: ['contracts'], params: idParams, body: { type: 'object', additionalProperties: false,
+    required: ['currency', 'valueType', 'amount', 'paymentTerms', 'startDate', 'endDate', 'autoRenewal', 'renewalMonths', 'noticeAmount', 'noticeUnit', 'nonWorkingDay', 'sourceRef'],
+    properties: { currency: { type: 'string', pattern: '^[A-Z]{3}$' }, valueType: { type: 'string', enum: ['FIXED', 'CEILING', 'UNPRICED'] },
+      amount: { anyOf: [{ type: 'string', pattern: '^\\d{1,18}(\\.\\d{1,2})?$' }, { type: 'null' }] }, paymentTerms: { type: 'string', maxLength: 500 },
+      startDate: nDate, endDate: nDate, autoRenewal: { type: 'boolean' }, renewalMonths: { type: ['integer', 'null'], minimum: 1, maximum: 120 },
+      noticeAmount: { type: ['integer', 'null'], minimum: 0, maximum: 3650 }, noticeUnit: { anyOf: [{ type: 'string', enum: ['DAY', 'MONTH'] }, { type: 'null' }] },
+      nonWorkingDay: { type: 'string', enum: ['PREVIOUS_WORKING_DAY', 'AS_IS'] }, sourceRef: { type: 'string', maxLength: 300 }, changeReason: { type: ['string', 'null'], maxLength: 2000 } } } } }, async (req, reply) =>
+    reply.status(201).send(await scoped(req, 'contract.terms.edit', (tx, ctx) => lifecycle.saveTerms(tx, ctx, (req.params as any).id, req.body as any))));
+  app.post('/api/v1/contract-terms/:id/verify', { schema: { tags: ['contracts'], params: idParams } }, async (req) =>
+    scoped(req, 'contract.terms.verify', (tx, ctx) => lifecycle.verifyTerms(tx, ctx, (req.params as any).id)));
+  app.post('/api/v1/contract-versions/:id/renewal-decision', { schema: { tags: ['contracts'], params: idParams, body: { type: 'object', required: ['decision', 'rationale'],
+    properties: { decision: { type: 'string', enum: ['RENEW', 'TERMINATE', 'RENEGOTIATE'] }, rationale: { type: 'string', maxLength: 4000 } } } } }, async (req, reply) =>
+    reply.status(201).send(await scoped(req, 'contract.renewal.decide', (tx, ctx) => lifecycle.decideRenewal(tx, ctx, (req.params as any).id, req.body as any))));
+  app.post('/api/v1/contract-versions/:id/obligations', { schema: { tags: ['contracts'], params: idParams, body: { type: 'object', additionalProperties: false,
+    required: ['title', 'counterparty', 'ownerRole', 'firstDue', 'recurrence', 'until', 'evidenceRequired', 'sourceRef'],
+    properties: { title: { type: 'string', maxLength: 300 }, counterparty: { type: 'string', enum: ['BUYER', 'SUPPLIER'] }, ownerRole: { type: ['string', 'null'] },
+      firstDue: date, recurrence: { type: 'string', enum: ['NONE', 'MONTHLY', 'QUARTERLY', 'YEARLY'] }, until: nDate, evidenceRequired: { type: 'boolean' },
+      sourceRef: { type: 'string', minLength: 3, maxLength: 300 } } } } }, async (req, reply) =>
+    reply.status(201).send(await scoped(req, 'contract.obligation.manage', (tx, ctx) => lifecycle.addObligation(tx, ctx, (req.params as any).id, req.body as any))));
+  app.post('/api/v1/obligations/:id/events', { schema: { tags: ['contracts'], params: idParams, body: { type: 'object', required: ['dueDate', 'outcome', 'note'],
+    properties: { dueDate: date, outcome: { type: 'string', enum: ['FULFILLED', 'MISSED', 'WAIVED'] }, note: { type: 'string', maxLength: 2000 }, evidence: { type: ['string', 'null'], maxLength: 500 } } } } }, async (req, reply) =>
+    reply.status(201).send(await scoped(req, 'contract.obligation.record', (tx, ctx) => lifecycle.recordObligation(tx, ctx, (req.params as any).id, req.body as any))));
+  app.post('/api/v1/obligations/:id/retire', { schema: { tags: ['contracts'], params: idParams, body: { type: 'object', required: ['reason'], properties: { reason: { type: 'string', maxLength: 2000 } } } } }, async (req) =>
+    scoped(req, 'contract.obligation.manage', (tx, ctx) => lifecycle.retireObligation(tx, ctx, (req.params as any).id, (req.body as any).reason)));
+  app.get('/api/v1/holidays', { schema: { tags: ['contracts'] } }, async (req) => scoped(req, null, async (tx) =>
+    ({ items: (await tx.query(`SELECT day::text, name FROM tenant_holidays ORDER BY day`)).rows })));
+  app.post('/api/v1/holidays', { schema: { tags: ['contracts'], body: { type: 'object', required: ['day', 'name'], properties: { day: date, name: { type: 'string', minLength: 2, maxLength: 120 } } } } }, async (req, reply) =>
+    reply.status(201).send(await scoped(req, 'holiday.manage', async (tx, ctx) => {
+      const b = req.body as { day: string; name: string };
+      await tx.query(`INSERT INTO tenant_holidays (tenant_id, day, name, created_by) VALUES ($1,$2,$3,$4) ON CONFLICT (tenant_id, day) DO NOTHING`, [ctx.tenantId, b.day, b.name.trim(), ctx.userId]);
+      await tx.query(`INSERT INTO audit_events (tenant_id, actor_user_id, action, entity_type, entity_id, data, correlation_id) VALUES ($1,$2,'holiday.added','tenant',$1,$3,$4)`,
+        [ctx.tenantId, ctx.userId, b, ctx.correlationId]);
+      return { ok: true };
+    })));
 
   // --- Faz 2: proje, RFQ, tedarikçi portalı, karşılaştırma, tahsis ------------------------
   const dec = { type: 'string', pattern: '^-?\\d{1,18}(\\.\\d{1,6})?$' } as const;

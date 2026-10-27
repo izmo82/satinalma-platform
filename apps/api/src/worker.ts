@@ -3,6 +3,7 @@ import { loadConfig } from './config.ts';
 import { createPool, withoutTenant, withTenant, type TenantContext } from './db.ts';
 import { S3ObjectStore, type ObjectStore } from './storage.ts';
 import { processSignatureJob } from './modules/contracts.ts';
+import { processNoticeReminder, processObligationDue } from './modules/contractTerms.ts';
 
 /**
  * Durumsuz worker: kuyruktan iş çeker (SKIP LOCKED), işi isteyen kullanıcının GÜNCEL üyeliğiyle kiracı bağlamı kurar.
@@ -11,7 +12,7 @@ import { processSignatureJob } from './modules/contracts.ts';
 export async function processJobs(pool: pg.Pool, store: ObjectStore, detectorProvider: string | null, limit = 10): Promise<number> {
   const claimed = await withoutTenant(pool, async (c) =>
     (await c.query<{ id: string; tenant_id: string; company_id: string | null; kind: string; requested_by: string | null }>(
-      'SELECT * FROM claim_jobs($1, $2)', [['signature.detect'], limit])).rows);
+      'SELECT * FROM claim_jobs($1, $2)', [['signature.detect', 'contract.notice_reminder', 'contract.obligation_due'], limit])).rows);
   for (const job of claimed) {
     const m = await withoutTenant(pool, async (c) => (await c.query<{ tenant_id: string; roles: string[]; company_ids: string[] }>(
       'SELECT * FROM auth_memberships($1)', [job.requested_by])).rows.find((r) => r.tenant_id === job.tenant_id));
@@ -25,7 +26,9 @@ export async function processJobs(pool: pg.Pool, store: ObjectStore, detectorPro
           tx.query(`UPDATE jobs SET status = 'BLOCKED', error_code = 'REQUESTER_NOT_AUTHORIZED', updated_at = now() WHERE id = $1`, [job.id]));
         continue;
       }
-      await withTenant(pool, ctx, (tx) => processSignatureJob(tx, ctx, store, job.id, detectorProvider));
+      if (job.kind === 'contract.notice_reminder') await withTenant(pool, ctx, (tx) => processNoticeReminder(tx, ctx, job.id));
+      else if (job.kind === 'contract.obligation_due') await withTenant(pool, ctx, (tx) => processObligationDue(tx, ctx, job.id));
+      else await withTenant(pool, ctx, (tx) => processSignatureJob(tx, ctx, store, job.id, detectorProvider));
     } catch (err) {
       await withTenant(pool, ctx, (tx) => tx.query(
         `UPDATE jobs SET status = CASE WHEN attempts >= max_attempts THEN 'DEAD' ELSE 'QUEUED' END,
