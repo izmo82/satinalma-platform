@@ -95,6 +95,8 @@ export interface CommercialTerms {
   currency: string; valueType: 'FIXED' | 'CEILING' | 'UNPRICED'; amount: string | null; paymentTerms: string;
   startDate: string | null; endDate: string | null; autoRenewal: boolean; renewalMonths: number | null;
   noticeAmount: number | null; noticeUnit: NoticeUnit | null; nonWorkingDay: NonWorkingDayRule; sourceRef: string;
+  /** Tavanın vergi yöntemi: NET (vergi hariç, varsayılan) veya GROSS (KDV ve KDV dışı vergiler dahil). */
+  limitBasis?: 'NET' | 'GROSS';
 }
 
 export function validateTerms(t: CommercialTerms): string | null {
@@ -103,6 +105,7 @@ export function validateTerms(t: CommercialTerms): string | null {
   else if (t.amount === null || !/^\d{1,18}(\.\d{1,2})?$/.test(t.amount)) return 'Bedel veya tavan tutarı gerekli (en fazla 2 ondalık).';
   for (const [k, v] of [['Başlangıç', t.startDate], ['Bitiş', t.endDate]] as const) if (v !== null && !ISO.test(v)) return `${k} tarihi geçersiz.`;
   if (t.startDate && t.endDate && t.endDate < t.startDate) return 'Bitiş başlangıçtan önce olamaz.';
+  if (t.limitBasis != null && t.limitBasis !== 'NET' && t.limitBasis !== 'GROSS') return 'Limit yöntemi vergi hariç veya vergi dahil olmalı.';
   if ((t.noticeAmount === null) !== (t.noticeUnit === null)) return 'İhbar süresi ve birimi birlikte girilir.';
   if (t.noticeAmount !== null && !t.endDate) return 'Süresiz sözleşmede ihbar son günü bitişe göre hesaplanamaz; fesih bildirimi ayrı kuralla izlenir.';
   if (t.autoRenewal && !t.renewalMonths) return 'Otomatik yenilemede yenileme süresi gerekli.';
@@ -113,7 +116,7 @@ export function validateTerms(t: CommercialTerms): string | null {
 const FIELD_LABEL: Record<keyof CommercialTerms, string> = {
   currency: 'Para birimi', valueType: 'Bedel türü', amount: 'Bedel/tavan', paymentTerms: 'Ödeme koşulu', startDate: 'Başlangıç', endDate: 'Bitiş',
   autoRenewal: 'Otomatik yenileme', renewalMonths: 'Yenileme süresi', noticeAmount: 'İhbar süresi', noticeUnit: 'İhbar birimi',
-  nonWorkingDay: 'Tatil kuralı', sourceRef: 'Kaynak madde',
+  nonWorkingDay: 'Tatil kuralı', sourceRef: 'Kaynak madde', limitBasis: 'Limit yöntemi',
 };
 /** Önemli değişiklik farkı: onay ekranı eski ve yeni değeri birlikte gösterir (02 §11). */
 export function termsDiff(prev: CommercialTerms | null, next: CommercialTerms) {

@@ -9,9 +9,10 @@ import { Icon } from '../ui/icons.tsx';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { SignatureWorkspace } from './SignatureWorkspace.tsx';
+import { CommercialTab } from './ContractCommercial.tsx';
 
 // UX09 Sözleşme: imza, koşullar/ihbar ve yükümlülükler aynı sürüm üzerinde ayrı sekmeler.
-const TABS = [['imza', 'İmza kontrolü'], ['kosullar', 'Koşullar ve ihbar'], ['yukumlulukler', 'Yükümlülükler']] as const;
+const TABS = [['imza', 'İmza kontrolü'], ['kosullar', 'Koşullar ve ihbar'], ['yukumlulukler', 'Yükümlülükler'], ['ticari', 'Fiyat, SLA ve teminat']] as const;
 
 export function ContractPage() {
   const [params, setParams] = useSearchParams();
@@ -35,6 +36,7 @@ type Terms = {
   id: string; revision: number; currency: string; valueType: 'FIXED' | 'CEILING' | 'UNPRICED'; amount: string | null; paymentTerms: string;
   startDate: string | null; endDate: string | null; autoRenewal: boolean; renewalMonths: number | null; noticeAmount: number | null; noticeUnit: 'DAY' | 'MONTH' | null;
   nonWorkingDay: 'PREVIOUS_WORKING_DAY' | 'AS_IS'; sourceRef: string; changeReason: string | null; enteredBy: string; enteredAt: string; enteredByMe: boolean;
+  limitBasis: 'NET' | 'GROSS';
   verifiedBy: string | null; verifiedAt: string | null;
 };
 interface Lc {
@@ -59,7 +61,7 @@ const PERIOD = {
 } as const;
 const fmtVal = (v: unknown) => v === null || v === undefined || v === '' ? '—' : typeof v === 'boolean' ? (v ? 'Evet' : 'Hayır') : String(v);
 
-function useAct(reload: () => Promise<void>) {
+export function useAct(reload: () => Promise<void>) {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ tone: 'info' | 'warn' | 'danger'; text: string } | null>(null);
   const run = async (fn: () => Promise<unknown>, ok: string) => {
@@ -82,7 +84,7 @@ function Lifecycle({ tab }: { tab: string }) {
       <p className="text-sm text-ink-subtle"><Link to="/sozlesmeler" className="text-ink-subtle">Sözleşmeler</Link> / Sürüm {d.contract.versionNo}</p>
       <h1 className="mb-4 mt-1">{d.contract.title}</h1>
       {d.contract.superseded && <Banner tone="warn" title="Bu sürümün yerine yeni sürüm geldi">Koşul ve yükümlülükler güncel sürümde yönetilir; bu sürümdeki kayıtlar korunur.</Banner>}
-      {tab === 'kosullar' ? <TermsTab d={d} reload={r.reload} /> : <ObligationsTab d={d} reload={r.reload} />}
+      {tab === 'kosullar' ? <TermsTab d={d} reload={r.reload} /> : tab === 'ticari' ? <CommercialTab cvId={id!} readOnly={d.contract.superseded} /> : <ObligationsTab d={d} reload={r.reload} />}
     </div>
   );
 }
@@ -103,7 +105,8 @@ function TermsTab({ d, reload }: { d: Lc; reload: () => Promise<void> }) {
               {canEdit && !editing && <Button size="sm" variant="outline" className="ml-auto" onClick={() => setEditing(true)}><Icon name="pen" />Değiştir</Button>}</div>
             <div className="panel-body grid gap-3">
               <dl className="facts">
-                <dt>{VALUE_TYPE[t.valueType]}</dt><dd className="tabular font-semibold">{t.amount ? fmtMoney(t.amount, t.currency) : '—'}</dd>
+                <dt>{VALUE_TYPE[t.valueType]}</dt><dd className="tabular font-semibold">{t.amount ? fmtMoney(t.amount, t.currency) : '—'}
+                  {t.valueType === 'CEILING' && <span className="ml-2 text-sm font-normal text-ink-subtle">{t.limitBasis === 'GROSS' ? 'vergi dahil' : 'vergi hariç'}</span>}</dd>
                 <dt>Ödeme koşulu</dt><dd>{t.paymentTerms || '—'}</dd>
                 <dt>Süre</dt><dd className="tabular">{t.startDate ? fmtDate(t.startDate) : '—'} – {t.endDate ? fmtDate(t.endDate) : 'Süresiz'}</dd>
                 <dt>Yenileme</dt><dd>{t.autoRenewal ? `Otomatik, ${t.renewalMonths} ay` : 'Otomatik değil'}</dd>
@@ -183,7 +186,7 @@ function TermsForm({ initial, onSave, onCancel, busy }: { initial: Terms | null;
     currency: initial?.currency ?? 'TRY', valueType: initial?.valueType ?? 'CEILING', amount: initial?.amount ?? '', paymentTerms: initial?.paymentTerms ?? '',
     startDate: initial?.startDate ?? '', endDate: initial?.endDate ?? '', autoRenewal: initial?.autoRenewal ?? false, renewalMonths: String(initial?.renewalMonths ?? ''),
     hasNotice: initial ? initial.noticeAmount !== null : true, noticeAmount: String(initial?.noticeAmount ?? '60'), noticeUnit: initial?.noticeUnit ?? 'DAY',
-    nonWorkingDay: initial?.nonWorkingDay ?? 'PREVIOUS_WORKING_DAY', sourceRef: initial?.sourceRef ?? '', changeReason: '',
+    nonWorkingDay: initial?.nonWorkingDay ?? 'PREVIOUS_WORKING_DAY', sourceRef: initial?.sourceRef ?? '', changeReason: '', limitBasis: initial?.limitBasis ?? 'NET',
   });
   const set = (k: keyof typeof f, v: string | boolean) => setF((x) => ({ ...x, [k]: v }));
   useEffect(() => { if (f.valueType === 'UNPRICED') set('amount', ''); }, [f.valueType]);
@@ -191,7 +194,7 @@ function TermsForm({ initial, onSave, onCancel, busy }: { initial: Terms | null;
     <form className="panel" onSubmit={(e) => { e.preventDefault(); onSave({
       currency: f.currency, valueType: f.valueType, amount: f.valueType === 'UNPRICED' ? null : f.amount.replace(',', '.'), paymentTerms: f.paymentTerms,
       startDate: f.startDate || null, endDate: f.endDate || null, autoRenewal: f.autoRenewal, renewalMonths: f.autoRenewal ? Number(f.renewalMonths) || null : null,
-      noticeAmount: f.hasNotice ? Number(f.noticeAmount) : null, noticeUnit: f.hasNotice ? f.noticeUnit : null, nonWorkingDay: f.nonWorkingDay, sourceRef: f.sourceRef,
+      noticeAmount: f.hasNotice ? Number(f.noticeAmount) : null, noticeUnit: f.hasNotice ? f.noticeUnit : null, nonWorkingDay: f.nonWorkingDay, sourceRef: f.sourceRef, limitBasis: f.limitBasis,
       changeReason: initial ? f.changeReason : null }); }}>
       <div className="panel-head"><h2>{initial ? `Yeni revizyon (şu an ${initial.revision})` : 'Koşulları gir'}</h2></div>
       <div className="panel-body grid grid-cols-2 gap-x-4 max-[640px]:grid-cols-1">
@@ -201,6 +204,8 @@ function TermsForm({ initial, onSave, onCancel, busy }: { initial: Terms | null;
           <Field label="Tutar">{(p) => <input className="input tabular text-right" inputMode="decimal" disabled={f.valueType === 'UNPRICED'} {...p} value={f.amount} onChange={(e) => set('amount', e.target.value)} />}</Field>
           <Field label="Para">{(p) => <input className="input" maxLength={3} {...p} value={f.currency} onChange={(e) => set('currency', e.target.value.toUpperCase())} />}</Field>
         </div>
+        {f.valueType === 'CEILING' && <div className="col-span-full"><Field label="Tavan vergiyi kapsar mı?" hint="Vergi dahilse sipariş ve faturalar KDV ve KDV dışı vergilerle düşülür; siparişte KDV oranı zorunlu olur.">{(p) => <select className="input" {...p} value={f.limitBasis} onChange={(e) => set('limitBasis', e.target.value)}>
+          <option value="NET">Vergi hariç (net tutar)</option><option value="GROSS">Vergi dahil (KDV ve diğer vergiler)</option></select>}</Field></div>}
         <Field label="Başlangıç">{(p) => <input className="input" type="date" {...p} value={f.startDate} onChange={(e) => set('startDate', e.target.value)} />}</Field>
         <Field label="Bitiş" hint="Boş bırakılırsa süresiz.">{(p) => <input className="input" type="date" {...p} value={f.endDate} onChange={(e) => set('endDate', e.target.value)} />}</Field>
         <div className="col-span-full"><Field label="Ödeme koşulu">{(p) => <input className="input" {...p} value={f.paymentTerms} onChange={(e) => set('paymentTerms', e.target.value)} />}</Field></div>

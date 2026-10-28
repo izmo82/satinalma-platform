@@ -12,7 +12,7 @@ afterAll(async () => { await h.close(); });
 type Who = 'buyer' | 'finance' | 'finance2' | 'legal' | 'legal2';
 const call = (who: Who, method: string, url: string, body?: unknown) => h.call(who, method, url, body === undefined ? {} : { body });
 
-async function contract(ceiling: string | null, opts: { stage?: string; method?: string } = {}) {
+async function contract(ceiling: string | null, opts: { stage?: string; method?: string; limitBasis?: 'NET' | 'GROSS' } = {}) {
   const up = await h.upload('legal', { name: 's.pdf', mime: 'application/pdf', data: syntheticPdf([[`SENTETIK ${randomUUID()}`]]) },
     { companyId: h.world.companyA1.id, kind: 'CONTRACT', title: 'Tedarik Sözleşmesi (SENTETİK)' });
   const c = await call('legal', 'POST', '/api/v1/contracts', { title: `Tedarik ${randomUUID().slice(0, 4)} (SENTETİK)`, documentVersionId: up.body.documentVersionId,
@@ -21,7 +21,7 @@ async function contract(ceiling: string | null, opts: { stage?: string; method?:
   const cv = c.body.contractVersionId as string;
   if (ceiling) {
     const t = await call('legal', 'POST', `/api/v1/contract-versions/${cv}/terms`, { currency: 'TRY', valueType: 'CEILING', amount: ceiling, paymentTerms: '30 gün',
-      startDate: '2026-01-01', endDate: '2027-12-31', autoRenewal: false, renewalMonths: null, noticeAmount: null, noticeUnit: null, nonWorkingDay: 'AS_IS', sourceRef: 'Madde 5 (sentetik)' });
+      startDate: '2026-01-01', endDate: '2027-12-31', autoRenewal: false, renewalMonths: null, noticeAmount: null, noticeUnit: null, nonWorkingDay: 'AS_IS', sourceRef: 'Madde 5 (sentetik)', ...(opts.limitBasis ? { limitBasis: opts.limitBasis } : {}) });
     expect((await call('legal2', 'POST', `/api/v1/contract-terms/${t.body.id}/verify`)).status).toBe(200);
   }
   return cv;
@@ -37,7 +37,7 @@ async function invoice(qty: string, price = '1000', kind = 'INVOICE', extra: Rec
   const net = (Number(qty) * Number(price)).toFixed(2);
   const r = await call('finance', 'POST', '/api/v1/invoices', { companyId: h.world.companyA1.id, supplierId: h.world.suppliers.s1, kind, invoiceNo: `SNT${randomUUID().slice(0, 8)}`,
     issueDate: '2026-10-20', currency: 'TRY', lines: [{ description: 'Yedek parça', quantity: qty, unit: 'adet', unitPrice: price, netAmount: net }], ...extra });
-  expect(r.status).toBe(201);
+  expect(r.status, JSON.stringify(r.body)).toBe(201);
   return { id: r.body.id as string, net };
 }
 const allocate = (id: string, a: { poLineId?: string | null; contractVersionId?: string | null; quantity: string; amount: string }, extra: Record<string, unknown> = {}) =>
@@ -243,5 +243,86 @@ describe('Faz 7: rapor için toplu fatura kontrolü', () => {
       expect(single.size).toBeGreaterThan(0);
       expect(single.size).toBeLessThan(ids.length); // hem bulgulu hem bulgusuz fatura var
     });
+  });
+});
+
+describe('Faz 4: vergi dahil limit, KDV dışı vergi oranı, kategori toleransı', () => {
+  it('vergi dahil limitli sözleşmede siparişte KDV oranı zorunlu; açık taahhüt ve tüketim brüt; aşım KDV dahil hesaplanır', async () => {
+    const cv = await contract('130000.00', { limitBasis: 'GROSS' });
+    const noRate = await po(cv, '100');
+    expect(noRate.status).toBe(422);
+    expect(noRate.body.error.code).toBe('tax_rate_required');
+    const mk = (qty: string) => call('buyer', 'POST', '/api/v1/purchase-orders', { companyId: h.world.companyA1.id, supplierId: h.world.suppliers.s1, contractVersionId: cv, currency: 'TRY',
+      lines: [{ kind: 'GOODS', description: 'Yedek parça (sentetik)', unit: 'adet', quantity: qty, unitPrice: '1000', taxRate: '20' }] });
+    // 110 × 1000 × 1,20 = 132.000 > 130.000 (net 110.000 sığardı).
+    const over = await mk('110');
+    expect(over.status).toBe(422);
+    expect(over.body.error.message).toContain('(vergi dahil)');
+    const p = await mk('100');
+    expect(p.status).toBe(201);
+    let l = await limit(cv);
+    expect(l).toMatchObject({ limitBasis: 'GROSS', openCommitment: '120000.00', available: '10000.00' });
+    const line = await poLine(p.body.id);
+    await receive(line, '100');
+    const inv = await invoice('100', '1000', 'INVOICE');
+    await allocate(inv.id, { poLineId: line, quantity: '100', amount: inv.net });
+    expect((await approve(inv.id)).status).toBe(200);
+    l = await limit(cv);
+    // Fatura satırı KDV %20 (varsayılan) → tüketim 120.000 brüt; açık taahhüt kalmadı.
+    expect(l).toMatchObject({ netConsumption: '120000.00', openCommitment: '0.00', available: '10000.00' });
+  });
+
+  it('inceleme: oransız açık sipariş varken vergi dahil limite geçilmez; doğrulanmamış revizyon tavanı kaldırmaz; sipariş yalnız onaylı projeye bağlanır', async () => {
+    const cv = await contract('100000.00');
+    expect((await po(cv, '10')).status).toBe(201); // oran yok (NET sözleşme)
+    const terms = { currency: 'TRY', valueType: 'CEILING', amount: '100000.00', paymentTerms: '30 gün', startDate: '2026-01-01', endDate: '2027-12-31', autoRenewal: false,
+      renewalMonths: null, noticeAmount: null, noticeUnit: null, nonWorkingDay: 'AS_IS', sourceRef: 'Madde 5 (sentetik)' };
+    const g = await call('legal', 'POST', `/api/v1/contract-versions/${cv}/terms`, { ...terms, limitBasis: 'GROSS', changeReason: 'Vergi dahil tavana geçiş (sentetik).' });
+    expect(g.body.error.code).toBe('tax_rate_missing');
+    // Satınalmacı doğrulanmamış revizyonla tavanı kaldıramaz.
+    const loose = await call('buyer', 'POST', `/api/v1/contract-versions/${cv}/terms`, { ...terms, valueType: 'UNPRICED', amount: null, changeReason: 'Bedelsiz yapıldı (sentetik deneme).' });
+    expect(loose.status).toBe(201);
+    expect((await limit(cv)).ceiling).toBe('100000.00');
+    expect((await po(cv, '200')).status).toBe(422);
+    const proj = (await h.owner.query(`INSERT INTO projects (tenant_id, company_id, code, title, category, owner_user_id, created_by) VALUES ($1,$2,$3,'Taslak proje (SENTETİK)','Gevşek',$4,$4) RETURNING id`,
+      [h.world.tenantA, h.world.companyA1.id, `PRJ-T-${randomUUID().slice(0, 6)}`, h.world.users.buyer.id])).rows[0].id;
+    const linked = await call('buyer', 'POST', '/api/v1/purchase-orders', { companyId: h.world.companyA1.id, supplierId: h.world.suppliers.s1, projectId: proj, currency: 'TRY',
+      lines: [{ kind: 'GOODS', description: 'Yedek parça (sentetik)', unit: 'adet', quantity: '1', unitPrice: '10' }] });
+    expect(linked.body.error.code).toBe('project_not_awarded');
+  });
+
+  it('oranı tutmayan KDV dışı vergi onayı engeller; oranı tutan ve maktu vergi geçer, matraha girer', async () => {
+    const bad = await invoice('1', '1000', 'INVOICE', { lines: [{ description: 'Haberleşme', quantity: '1', unit: 'ay', unitPrice: '1000', netAmount: '1000.00', taxRate: '20',
+      otherTaxes: [{ code: '4080', name: 'ÖİV', rate: '7.5', amount: '80.00' }] }] });
+    const d = (await call('finance', 'GET', `/api/v1/invoices/${bad.id}`)).body;
+    expect(d.check.issues.find((x: any) => x.code === 'OTHER_TAX_RATE_MISMATCH')).toMatchObject({ severity: 'BLOCK', lineNo: 1 });
+    expect(d.lines[0].otherTaxes).toEqual([{ code: '4080', name: 'ÖİV', rate: '7.5', amount: '80.00' }]);
+    expect(d.lines[0].otherTax).toBe('80.00');
+    const ok = await invoice('1', '1000', 'INVOICE', { lines: [{ description: 'Haberleşme', quantity: '1', unit: 'ay', unitPrice: '1000', netAmount: '1000.00', taxRate: '20',
+      otherTaxes: [{ code: '4080', name: 'ÖİV', rate: '7.5', amount: '75.00' }, { code: '0071', name: 'ÖTV', rate: null, amount: '25.00' }] }] });
+    const c = (await call('finance', 'GET', `/api/v1/invoices/${ok.id}`)).body.check;
+    expect(c.issues.some((x: any) => x.code.startsWith('OTHER_TAX'))).toBe(false);
+    expect(c).toMatchObject({ otherTaxTotal: '100.00', taxTotal: '220.00' });
+  });
+
+  it('kategori kuralı siparişin projesinin kategorisine göre seçilir; kural listesi ve kaldırma kategoriyle', async () => {
+    expect((await call('finance', 'PUT', '/api/v1/tolerance-rules', { currency: 'TRY', absAmount: '100', percent: null, combine: 'LOWER' })).status).toBe(200);
+    expect((await call('finance', 'PUT', '/api/v1/tolerance-rules', { currency: 'TRY', category: 'BT donanımı', absAmount: '5000', percent: null, combine: 'LOWER' })).status).toBe(200);
+    const rules = (await call('finance', 'GET', '/api/v1/tolerance-rules')).body.items;
+    expect(rules.map((r: any) => [r.currency, r.category])).toEqual(expect.arrayContaining([['TRY', ''], ['TRY', 'BT donanımı']]));
+    const proj = (await h.owner.query(`INSERT INTO projects (tenant_id, company_id, code, title, category, owner_user_id, created_by) VALUES ($1,$2,$3,'Donanım yenileme (SENTETİK)','BT donanımı',$4,$4) RETURNING id`,
+      [h.world.tenantA, h.world.companyA1.id, `PRJ-T-${randomUUID().slice(0, 6)}`, h.world.users.buyer.id])).rows[0].id;
+    const p = await po(null, '10');
+    await h.owner.query(`UPDATE purchase_orders SET project_id = $1 WHERE id = $2`, [proj, p.body.id]);
+    const line = await poLine(p.body.id);
+    await receive(line, '10');
+    // 10 × 1200 = 12.000; sipariş 10.000 → fark 2.000: BT kuralı (5.000) içinde, genel kural (100) dışında.
+    const inv = await invoice('10', '1200');
+    await allocate(inv.id, { poLineId: line, quantity: '10', amount: inv.net });
+    let c = (await call('finance', 'GET', `/api/v1/invoices/${inv.id}`)).body.check;
+    expect(c.issues.some((x: any) => x.code === 'PRICE_MISMATCH')).toBe(false);
+    expect((await h.call('finance', 'DELETE', `/api/v1/tolerance-rules/TRY?category=${encodeURIComponent('BT donanımı')}`)).status).toBe(200);
+    c = (await call('finance', 'GET', `/api/v1/invoices/${inv.id}`)).body.check;
+    expect(c.issues.find((x: any) => x.code === 'PRICE_MISMATCH').message).toContain('TRY genel kuralı');
   });
 });

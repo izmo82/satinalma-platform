@@ -21,6 +21,9 @@ import * as ai from './modules/ai.ts';
 import * as kpi from './modules/kpi.ts';
 import * as gov from './modules/governance.ts';
 import * as integration from './modules/integration.ts';
+import * as commercial from './modules/commercial.ts';
+import * as approvals from './modules/approvals.ts';
+import * as search from './modules/search.ts';
 import { decisionSummaryPdf, evaluationWorkbook } from './reports.ts';
 import { RateLimiter, rateLimited } from './rateLimit.ts';
 
@@ -168,6 +171,19 @@ export async function buildApp(deps: AppDeps) {
     (await tx.query(`SELECT u.id, u.display_name AS "displayName" FROM users u JOIN memberships m ON m.user_id = u.id ORDER BY u.display_name`)).rows));
 
   // --- İşlerim (UX01) -----------------------------------------------------------
+  // --- Üst çubuk: arama, bildirim, kayıtlı görünümler (izin türe göre modül içinde) ---
+  app.get('/api/v1/search', { schema: { tags: ['search'], querystring: { type: 'object', required: ['q'], properties: { q: { type: 'string', maxLength: 100 } } } } }, async (req) =>
+    scoped(req, null, (tx, ctx) => search.search(tx, ctx, (req.query as any).q)));
+  app.get('/api/v1/notifications', { schema: { tags: ['search'] } }, async (req) => scoped(req, 'task.read', (tx, ctx) => search.notifications(tx, ctx)));
+  app.post('/api/v1/notifications/seen', { schema: { tags: ['search'] } }, async (req) => scoped(req, 'task.read', (tx, ctx) => search.markSeen(tx, ctx)));
+  const viewPage = { type: 'string', enum: ['projects', 'invoices', 'purchase_orders', 'tasks', 'suppliers', 'contracts'] } as const;
+  app.get('/api/v1/saved-views', { schema: { tags: ['search'], querystring: { type: 'object', required: ['page'], properties: { page: viewPage } } } }, async (req) =>
+    scoped(req, null, async (tx) => ({ items: await search.listViews(tx, (req.query as any).page) })));
+  app.post('/api/v1/saved-views', { schema: { tags: ['search'], body: { type: 'object', additionalProperties: false, required: ['page', 'name', 'params'],
+    properties: { page: viewPage, name: text(60), params: { type: 'object' } } } } }, async (req, reply) =>
+    reply.status(201).send(await scoped(req, null, (tx, ctx) => search.saveView(tx, ctx, req.body as any))));
+  app.delete('/api/v1/saved-views/:id', { schema: { tags: ['search'], params: idParams } }, async (req) => scoped(req, null, (tx) => search.deleteView(tx, (req.params as any).id)));
+
   app.get('/api/v1/tasks', {
     schema: { tags: ['tasks'], querystring: { type: 'object', properties: { view: { type: 'string', enum: ['mine', 'overdue', 'all'] } } } },
   }, async (req) => scoped(req, 'task.read', async (tx, ctx) => {
@@ -501,9 +517,10 @@ export async function buildApp(deps: AppDeps) {
       ettn: { anyOf: [uuid, { type: 'null' }] }, issueDate: { type: 'string', format: 'date' }, currency: { type: 'string', pattern: '^[A-Z]{3}$' }, documentVersionId: { anyOf: [uuid, { type: 'null' }] },
       originalInvoiceId: { anyOf: [uuid, { type: 'null' }] }, lines: { type: 'array', minItems: 1, maxItems: 500, items: { type: 'object', required: ['description', 'quantity', 'unit', 'unitPrice', 'netAmount'], additionalProperties: false,
         properties: { description: { type: 'string', minLength: 1, maxLength: 300 }, quantity: money2, unit: { type: 'string', minLength: 1, maxLength: 30 }, unitPrice: money2, netAmount: money2, taxRate: money2, taxAmount: { anyOf: [money2, { type: 'null' }] }, otherTax: { anyOf: [money2, { type: 'null' }] },
-          otherTaxes: { anyOf: [{ type: 'null' }, { type: 'array', maxItems: 10, items: { type: 'object', required: ['amount'], additionalProperties: false,
+          // Dizi dalı önce: tür zorlaması (coerceTypes) null dalında diziyi null'a çevirmesin.
+          otherTaxes: { anyOf: [{ type: 'array', maxItems: 10, items: { type: 'object', required: ['amount'], additionalProperties: false,
             properties: { code: { anyOf: [{ type: 'string', maxLength: 10 }, { type: 'null' }] }, name: { anyOf: [{ type: 'string', maxLength: 60 }, { type: 'null' }] },
-              rate: { anyOf: [money2, { type: 'null' }] }, amount: money2 } } }] } } } },
+              rate: { anyOf: [money2, { type: 'null' }] }, amount: money2 } } }, { type: 'null' }] } } } },
       declaredOtherTaxTotal: { anyOf: [money2, { type: 'null' }] },
       declaredTaxTotal: { anyOf: [money2, { type: 'null' }] }, declaredWithholding: { anyOf: [money2, { type: 'null' }] }, declaredPayable: { anyOf: [money2, { type: 'null' }] } } } } }, async (req, reply) => {
     const r = await scoped(req, 'invoice.manage', (tx, ctx) => invoices.createInvoice(tx, ctx, req.body as any));
@@ -543,9 +560,46 @@ export async function buildApp(deps: AppDeps) {
     scoped(req, 'contract.read', async (tx, ctx) => ({ ...(await lifecycle.getLifecycle(tx, ctx, (req.params as any).id)),
       can: { edit: can(ctx.roles, 'contract.terms.edit'), verify: can(ctx.roles, 'contract.terms.verify'), manageObligations: can(ctx.roles, 'contract.obligation.manage'),
         record: can(ctx.roles, 'contract.obligation.record'), decide: can(ctx.roles, 'contract.renewal.decide') } })));
+  // --- Faz 3: fiyat revizyonu, SLA kredisi, teminat (öneri → ikinci kişi onayı) ---
+  const dec6 = { type: 'string', pattern: '^\\d{1,14}(\\.\\d{1,6})?$' } as const;
+  const isoDate = { type: 'string', format: 'date' } as const;
+  app.get('/api/v1/contract-versions/:id/commercial', { schema: { tags: ['contracts'], params: idParams } }, async (req) => scoped(req, 'contract.read', async (tx, ctx) => {
+    if (can(ctx.roles, 'contract.guarantee.manage')) await commercial.guaranteeReminders(tx, ctx, (req.params as any).id);
+    return { ...(await commercial.overview(tx, (req.params as any).id, ctx.userId)),
+      can: { propose: can(ctx.roles, 'contract.commercial.propose'), approve: can(ctx.roles, 'contract.commercial.approve'), guarantee: can(ctx.roles, 'contract.guarantee.manage') } };
+  }));
+  app.post('/api/v1/contract-versions/:id/price-rules', { schema: { tags: ['contracts'], params: idParams, body: { type: 'object', additionalProperties: false,
+    required: ['indexName', 'baseIndex', 'basePeriod', 'period', 'capPercent', 'floorPercent', 'sourceRef'],
+    properties: { indexName: text(120), baseIndex: dec6, basePeriod: isoDate, period: { type: 'string', enum: ['MONTHLY', 'QUARTERLY', 'YEARLY'] },
+      capPercent: { anyOf: [dec6, { type: 'null' }] }, floorPercent: { anyOf: [dec6, { type: 'null' }] }, sourceRef: text(300), replaceReason: { anyOf: [{ type: 'string', maxLength: 2000 }, { type: 'null' }] } } } } }, async (req, reply) =>
+    reply.status(201).send(await scoped(req, 'contract.commercial.propose', (tx, ctx) => commercial.createPriceRule(tx, ctx, (req.params as any).id, req.body as any))));
+  app.post('/api/v1/price-rules/:id/revisions', { schema: { tags: ['contracts'], params: idParams, body: { type: 'object', additionalProperties: false, required: ['effectiveFrom', 'indexValue', 'indexSource'],
+    properties: { effectiveFrom: isoDate, indexValue: dec6, indexSource: text(300) } } } }, async (req, reply) =>
+    reply.status(201).send(await scoped(req, 'contract.commercial.propose', (tx, ctx) => commercial.proposeRevision(tx, ctx, (req.params as any).id, req.body as any))));
+  app.post('/api/v1/price-revisions/:id/approve', { schema: { tags: ['contracts'], params: idParams } }, async (req) =>
+    scoped(req, 'contract.commercial.approve', (tx, ctx) => commercial.approveRevision(tx, ctx, (req.params as any).id)));
+  app.post('/api/v1/contract-versions/:id/sla-terms', { schema: { tags: ['contracts'], params: idParams, body: { type: 'object', additionalProperties: false,
+    required: ['name', 'unit', 'direction', 'target', 'periodFee', 'currency', 'tiers', 'capPercent', 'sourceRef'],
+    properties: { name: text(160), unit: text(30), direction: { type: 'string', enum: ['MIN', 'MAX'] }, target: dec6, periodFee: dec6, currency: { type: 'string', pattern: '^[A-Z]{3}$' },
+      tiers: { type: 'array', minItems: 1, maxItems: 10, items: { type: 'object', additionalProperties: false, required: ['threshold', 'creditPercent'], properties: { threshold: dec6, creditPercent: dec6 } } },
+      capPercent: { anyOf: [dec6, { type: 'null' }] }, sourceRef: text(300) } } } }, async (req, reply) =>
+    reply.status(201).send(await scoped(req, 'contract.commercial.propose', (tx, ctx) => commercial.createSlaTerm(tx, ctx, (req.params as any).id, req.body as any))));
+  app.post('/api/v1/sla-terms/:id/measurements', { schema: { tags: ['contracts'], params: idParams, body: { type: 'object', additionalProperties: false, required: ['periodStart', 'measured', 'evidence'],
+    properties: { periodStart: isoDate, measured: { type: 'string', pattern: '^-?\\d{1,14}(\\.\\d{1,6})?$' }, evidence: text(2000), documentVersionId: { anyOf: [uuid, { type: 'null' }] } } } } }, async (req, reply) =>
+    reply.status(201).send(await scoped(req, 'contract.commercial.propose', (tx, ctx) => commercial.recordMeasurement(tx, ctx, (req.params as any).id, req.body as any))));
+  app.post('/api/v1/sla-measurements/:id/decision', { schema: { tags: ['contracts'], params: idParams, body: { type: 'object', additionalProperties: false, required: ['decision'],
+    properties: { decision: { type: 'string', enum: ['VERIFY', 'REJECT'] }, reason: { anyOf: [{ type: 'string', maxLength: 2000 }, { type: 'null' }] } } } } }, async (req) =>
+    scoped(req, 'contract.commercial.approve', (tx, ctx) => commercial.decideMeasurement(tx, ctx, (req.params as any).id, req.body as any)));
+  app.post('/api/v1/contract-versions/:id/guarantees', { schema: { tags: ['contracts'], params: idParams, body: { type: 'object', additionalProperties: false,
+    required: ['kind', 'amount', 'currency', 'issuer', 'referenceNo', 'validUntil'],
+    properties: { kind: { type: 'string', enum: ['PERFORMANCE', 'ADVANCE', 'WARRANTY', 'CASH', 'OTHER'] }, amount: dec6, currency: { type: 'string', pattern: '^[A-Z]{3}$' }, issuer: text(200),
+      referenceNo: text(100), validUntil: { anyOf: [isoDate, { type: 'null' }] }, documentVersionId: { anyOf: [uuid, { type: 'null' }] } } } } }, async (req, reply) =>
+    reply.status(201).send(await scoped(req, 'contract.guarantee.manage', (tx, ctx) => commercial.addGuarantee(tx, ctx, (req.params as any).id, req.body as any))));
+  app.post('/api/v1/guarantees/:id/return', { schema: { tags: ['contracts'], params: idParams, body: { type: 'object', additionalProperties: false, required: ['note'], properties: { note: text(2000) } } } }, async (req) =>
+    scoped(req, 'contract.guarantee.manage', (tx, ctx) => commercial.returnGuarantee(tx, ctx, (req.params as any).id, (req.body as any).note)));
   app.post('/api/v1/contract-versions/:id/terms', { schema: { tags: ['contracts'], params: idParams, body: { type: 'object', additionalProperties: false,
     required: ['currency', 'valueType', 'amount', 'paymentTerms', 'startDate', 'endDate', 'autoRenewal', 'renewalMonths', 'noticeAmount', 'noticeUnit', 'nonWorkingDay', 'sourceRef'],
-    properties: { currency: { type: 'string', pattern: '^[A-Z]{3}$' }, valueType: { type: 'string', enum: ['FIXED', 'CEILING', 'UNPRICED'] },
+    properties: { currency: { type: 'string', pattern: '^[A-Z]{3}$' }, valueType: { type: 'string', enum: ['FIXED', 'CEILING', 'UNPRICED'] }, limitBasis: { type: 'string', enum: ['NET', 'GROSS'] },
       amount: { anyOf: [{ type: 'string', pattern: '^\\d{1,18}(\\.\\d{1,2})?$' }, { type: 'null' }] }, paymentTerms: { type: 'string', maxLength: 500 },
       startDate: nDate, endDate: nDate, autoRenewal: { type: 'boolean' }, renewalMonths: { type: ['integer', 'null'], minimum: 1, maximum: 120 },
       noticeAmount: { type: ['integer', 'null'], minimum: 0, maximum: 3650 }, noticeUnit: { anyOf: [{ type: 'string', enum: ['DAY', 'MONTH'] }, { type: 'null' }] },
@@ -599,7 +653,7 @@ export async function buildApp(deps: AppDeps) {
   });
   app.get('/api/v1/projects/:id', { schema: { tags: ['projects'], params: idParams } }, async (req, reply) => {
     const r = await scoped(req, 'project.read', async (tx, ctx) => ({ ...(await sourcing.getProject(tx, ctx, (req.params as any).id)),
-      can: { manage: can(ctx.roles, 'project.manage'), approvePublish: can(ctx.roles, 'project.publish.approve'), score: can(ctx.roles, 'bid.score'),
+      can: { manage: can(ctx.roles, 'project.manage'), requestException: can(ctx.roles, 'sourcing.exception.request'), approvePublish: can(ctx.roles, 'project.publish.approve'), score: can(ctx.roles, 'bid.score'),
         evaluate: can(ctx.roles, 'evaluation.create'), propose: can(ctx.roles, 'award.propose'), decide: can(ctx.roles, 'award.decide'), answer: can(ctx.roles, 'rfq.answer') } }));
     return reply.header('etag', r.project.etag).send(r);
   });
@@ -613,7 +667,7 @@ export async function buildApp(deps: AppDeps) {
     reply.status(201).send(await scoped(req, 'project.manage', (tx, ctx) => sourcing.requestPublish(tx, ctx, (req.params as any).id, ifMatch(req), req.body as any))));
   app.post('/api/v1/rfq-rounds/:id/decision', { schema: { tags: ['rfq'], params: idParams, body: { type: 'object', required: ['approve'],
     properties: { approve: { type: 'boolean' }, note: { type: 'string', maxLength: 2000 } } } } }, async (req) =>
-    scoped(req, 'project.publish.approve', (tx, ctx) => sourcing.decidePublish(tx, ctx, (req.params as any).id, req.body as any)));
+    scoped(req, 'approval.decide', (tx, ctx) => sourcing.decidePublish(tx, ctx, (req.params as any).id, req.body as any)));
   app.post('/api/v1/rfq-rounds/:id/close', { schema: { tags: ['rfq'], params: idParams, body: { type: 'object', required: ['reason'], properties: { reason: { type: 'string', maxLength: 2000 } } } } }, async (req) =>
     scoped(req, 'project.publish.approve', (tx, ctx) => sourcing.closeRoundEarly(tx, ctx, (req.params as any).id, (req.body as any).reason)));
   app.post('/api/v1/rfq-questions/:id/answer', { schema: { tags: ['rfq'], params: idParams, body: { type: 'object', required: ['answer'], properties: { answer: { type: 'string', maxLength: 4000 } } } } }, async (req) =>
@@ -651,7 +705,33 @@ export async function buildApp(deps: AppDeps) {
     reply.status(201).send(await scoped(req, 'award.propose', (tx, ctx) => sourcing.proposeAward(tx, ctx, (req.params as any).id, req.body as any))));
   app.post('/api/v1/awards/:id/decision', { schema: { tags: ['award'], params: idParams, body: { type: 'object', required: ['approve'],
     properties: { approve: { type: 'boolean' }, note: { type: 'string', maxLength: 2000 } } } } }, async (req) =>
-    scoped(req, 'award.decide', (tx, ctx) => sourcing.decideAward(tx, ctx, (req.params as any).id, req.body as any)));
+    scoped(req, 'approval.decide', (tx, ctx) => sourcing.decideAward(tx, ctx, (req.params as any).id, req.body as any)));
+  app.post('/api/v1/projects/:id/exceptions', { schema: { tags: ['sourcing'], params: idParams, body: { type: 'object', additionalProperties: false, required: ['kind', 'reason'],
+    properties: { kind: { type: 'string', enum: ['SINGLE_SOURCE', 'URGENT', 'CANCEL', 'NO_AWARD'] }, reason: text(2000), supplierId: { anyOf: [uuid, { type: 'null' }] } } } } }, async (req, reply) =>
+    reply.status(201).send(await scoped(req, 'sourcing.exception.request', (tx, ctx) => sourcing.requestException(tx, ctx, (req.params as any).id, req.body as any))));
+  app.post('/api/v1/sourcing-exceptions/:id/decision', { schema: { tags: ['sourcing'], params: idParams, body: { type: 'object', additionalProperties: false, required: ['approve'],
+    properties: { approve: { type: 'boolean' }, note: { type: 'string', maxLength: 2000 } } } } }, async (req) =>
+    scoped(req, 'approval.decide', (tx, ctx) => sourcing.decideException(tx, ctx, (req.params as any).id, req.body as any)));
+  // --- Onay politikası (kurallı onay motoru) ---
+  const amount2 = { type: 'string', pattern: '^\\d{1,18}(\\.\\d{1,2})?$' } as const;
+  const ruleSchema = { type: 'object', additionalProperties: false, required: ['id', 'action', 'currency', 'minAmount', 'maxAmount', 'steps'],
+    properties: { id: { type: 'string', minLength: 1, maxLength: 40 }, action: { type: 'string', enum: ['RFQ_PUBLISH', 'AWARD', 'SOURCING_EXCEPTION'] },
+      companyId: { anyOf: [uuid, { type: 'null' }] }, category: { anyOf: [{ type: 'string', maxLength: 200 }, { type: 'null' }] }, currency: { type: 'string', pattern: '^[A-Z]{3}$' },
+      minAmount: amount2, maxAmount: { anyOf: [amount2, { type: 'null' }] },
+      steps: { type: 'array', minItems: 1, maxItems: 6, items: { type: 'object', additionalProperties: false, required: ['role', 'label'],
+        properties: { role: { type: 'string', enum: ['PROCUREMENT_MANAGER', 'FINANCE', 'LEGAL', 'SECURITY'] }, label: { type: 'string', minLength: 1, maxLength: 80 } } } },
+      minInvitees: { anyOf: [{ type: 'integer' }, { type: 'null' }] }, minResponseDays: { anyOf: [{ type: 'integer' }, { type: 'null' }] } } } as const;
+  app.get('/api/v1/approval-policies', { schema: { tags: ['approvals'] } }, async (req) => scoped(req, 'project.read', async (tx, ctx) =>
+    ({ items: await approvals.listPolicies(tx, ctx), can: { manage: can(ctx.roles, 'approval.policy.manage') } })));
+  app.post('/api/v1/approval-policies', { schema: { tags: ['approvals'], body: { type: 'object', additionalProperties: false, required: ['rules', 'note'],
+    properties: { rules: { type: 'array', maxItems: 200, items: ruleSchema }, note: text(2000) } } } }, async (req, reply) =>
+    reply.status(201).send(await scoped(req, 'approval.policy.manage', (tx, ctx) => approvals.createDraft(tx, ctx, req.body as any))));
+  app.post('/api/v1/approval-policies/:id/activate', { schema: { tags: ['approvals'], params: idParams } }, async (req) =>
+    scoped(req, 'approval.policy.manage', (tx, ctx) => approvals.activate(tx, ctx, (req.params as any).id)));
+  app.post('/api/v1/approval-policies/simulate', { schema: { tags: ['approvals'], body: { type: 'object', additionalProperties: false, required: ['action', 'companyId', 'currency'],
+    properties: { policyId: { anyOf: [uuid, { type: 'null' }] }, action: { type: 'string', enum: ['RFQ_PUBLISH', 'AWARD', 'SOURCING_EXCEPTION'] }, companyId: uuid,
+      category: { anyOf: [{ type: 'string', maxLength: 200 }, { type: 'null' }] }, currency: { type: 'string', pattern: '^[A-Z]{3}$' }, amount: { anyOf: [amount2, { type: 'null' }] } } } } }, async (req) =>
+    scoped(req, 'project.read', (tx) => approvals.simulate(tx, req.body as any)));
   // Davet listesi için tedarikçi arama (alıcı)
   // --- Faz 5: tedarikçi değerlendirmesi, olay, performans (02 §8–9, UX12, T19–T20) ---
   const lvl = { type: 'string', enum: ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'] } as const;

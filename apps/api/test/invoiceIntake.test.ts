@@ -217,6 +217,16 @@ describe('inceleme bulguları (regresyon)', () => {
     expect(inv.check.issues.filter((x: any) => /TAX|PAYABLE/.test(x.code))).toEqual([]);
   });
 
+  it('Faz 4: e-Faturadaki KDV dışı vergi kodu ve oranıyla ayrı alınır; oranı tutmayan tutar onayı engeller', async () => {
+    const up = await upload(xml({ lines: [{ name: 'Hat ücreti', qty: '1', unitCode: 'MON', price: '1000', net: '1000.00', rate: '20', tax: '216.00', oiv: '80.00' }],
+      taxTotal: '216.00', oivTotal: '80.00', amount: '1296.00' }));
+    expect(up.body.invoice.created).toBe(true);
+    const inv = (await call('finance', 'GET', `/api/v1/invoices/${up.body.invoice.invoiceId}`)).body;
+    expect(inv.lines[0].otherTaxes).toEqual([{ code: '4080', name: null, rate: '10', amount: '80.00' }]);
+    expect(inv.check.issues.find((x: any) => x.code === 'OTHER_TAX_RATE_MISMATCH')).toMatchObject({ severity: 'BLOCK' });
+    expect(inv.check.canApprove).toBe(false);
+  });
+
   it('geçersiz ETTN, olmayan tarih veya negatif tutar: belge saklanır, fatura açılmaz, sebep görünür', async () => {
     for (const o of [{ ettn: 'not-a-uuid' }, { issueDate: '2026-02-30' }, { amount: '-5.00' }]) {
       const up = await upload(xml(o));

@@ -16,28 +16,113 @@ interface Detail {
   project: { id: string; code: string; title: string; category: string; need: string; currency: string; budget: string | null; budgetVerified: boolean;
     costCenter: string | null; deliveryLocation: string | null; neededBy: string | null; status: string; etag: string; ownedByMe: boolean };
   lines: PLine[]; criteria: Crit[]; criteriaHistory: { revision: number; reason: string | null; createdAt: string }[];
-  round: null | { id: string; roundNo: number; closesAt: string; status: string; requestedByMe: boolean; closeReason: string | null };
+  round: null | { id: string; roundNo: number; closesAt: string; status: string; requestedByMe: boolean; closeReason: string | null; approval: Approval | null };
   invitations: { supplierId: string; supplierName: string; supplierStatus: string; bidVersion: number | null; submittedAt: string | null }[];
   questions: { id: string; question: string; askedAt: string; answer: string | null; answeredAt: string | null; supplierName: string }[];
   evaluations: { id: string; versionNo: number; createdAt: string; createdBy: string; current: boolean }[];
   awards: { id: string; versionNo: number; status: string; total: string; rationale: string; evaluationId: string; evaluationCurrent: boolean; proposedBy: string; proposedByMe: boolean;
     proposedAt: string; decidedBy: string | null; decidedAt: string | null; decisionNote: string | null;
-    lines: { projectLineId: string; supplierId: string; supplierName: string; quantity: string; unitPrice: string; amount: string }[] }[];
+    lines: { projectLineId: string; supplierId: string; supplierName: string; quantity: string; unitPrice: string; amount: string }[]; approval: Approval | null }[];
+  exceptions: { id: string; kind: keyof typeof EX_KIND; reason: string; status: 'REQUESTED' | 'APPROVED' | 'REJECTED' | 'USED'; requestedAt: string; requestedBy: string; requestedByMe: boolean;
+    decidedAt: string | null; supplierName: string | null; approval: Approval | null }[];
+  publishPolicy: { minInvitees: number | null; minResponseDays: number | null; steps: { role: string; label: string }[]; explanation: string };
   serverTime: string;
-  can: { manage: boolean; approvePublish: boolean; score: boolean; evaluate: boolean; propose: boolean; decide: boolean; answer: boolean };
+  can: { manage: boolean; requestException: boolean; approvePublish: boolean; score: boolean; evaluate: boolean; propose: boolean; decide: boolean; answer: boolean };
+}
+
+/** Onay motoru durumu: hangi politika sürümü/kural, adımlar, verilen kararlar ve bu kullanıcının karar yetkisi (sunucu hesaplar). */
+interface Approval {
+  status: 'OPEN' | 'APPROVED' | 'REJECTED' | 'CANCELLED';
+  plan: { policyVersion: number | null; ruleId: string | null; steps: { role: string; label: string }[]; explanation: string };
+  decisions: { stepNo: number; role: string; decision: 'APPROVE' | 'REJECT'; note: string | null; decidedByName: string; decidedAt: string }[];
+  nextStepNo: number | null; canDecide: boolean; cannotDecideReason: string | null;
+}
+const EX_KIND = { SINGLE_SOURCE: 'Tek kaynak', URGENT: 'Acil alım', CANCEL: 'Projeyi iptal', NO_AWARD: 'Sonuçsuz kapanış' } as const;
+const EX_HINT = {
+  SINGLE_SOURCE: 'Politikadaki en az davetli sayısının altında yayına izin verir (bir yayında kullanılır).',
+  URGENT: 'Politikadaki en az teklif süresinin altında kapanışa izin verir (bir yayında kullanılır).',
+  CANCEL: 'Onaylanınca proje iptal edilir; bekleyen/açık tur ve karar bekleyen öneri kapanır.',
+  NO_AWARD: 'Değerlendirmede uygun teklif yoksa proje kazanansız kapanır.',
+} as const;
+const EX_STATUS = { REQUESTED: 'Onay bekliyor', APPROVED: 'Onaylandı', REJECTED: 'Reddedildi', USED: 'Kullanıldı' } as const;
+
+function ApprovalSteps({ ap, onDecide, busy, approveText }: { ap: Approval; busy: boolean; approveText: string; onDecide: (approve: boolean, note: string) => void }) {
+  const [note, setNote] = useState('');
+  return (
+    <div className="grid gap-2 border-t border-border pt-3">
+      <ol className="grid gap-1 text-sm" aria-label="Onay adımları">
+        {ap.plan.steps.map((st, i) => {
+          const dec = ap.decisions.find((x) => x.stepNo === i + 1);
+          return (
+            <li key={i} className="flex flex-wrap items-baseline gap-x-2">
+              <span className="tabular text-ink-subtle">{i + 1}.</span><span className="font-semibold">{st.label}</span>
+              {dec ? <span className={dec.decision === 'APPROVE' ? 'text-ink-muted' : 'text-danger'}>{dec.decision === 'APPROVE' ? 'onayladı' : 'geri gönderdi'}: {dec.decidedByName} · {fmtDateTime(dec.decidedAt)}{dec.note ? ` · ${dec.note}` : ''}</span>
+                : ap.status === 'OPEN' && ap.nextStepNo === i + 1 ? <span className="text-info">sırada</span> : <span className="text-ink-subtle">bekliyor</span>}
+            </li>
+          );
+        })}
+      </ol>
+      <p className="text-sm text-ink-subtle">{ap.plan.explanation}</p>
+      {ap.status === 'OPEN' && (ap.canDecide ? <>
+        <Field label="Not (geri göndermede zorunlu)">{(p) => <textarea className="input" rows={2} {...p} value={note} onChange={(e) => setNote(e.target.value)} />}</Field>
+        <div className="flex flex-wrap gap-2">
+          <Button disabled={busy} onClick={() => onDecide(true, note)}><Icon name="stamp" />{approveText}</Button>
+          <Button variant="outline" disabled={busy} onClick={() => onDecide(false, note)}>Geri gönder</Button>
+        </div>
+      </> : ap.cannotDecideReason && <p className="text-sm text-ink-muted"><Icon name="lock" size={14} className="mr-1 inline" />{ap.cannotDecideReason}</p>)}
+    </div>
+  );
+}
+
+function ExceptionsPanel({ d, reload }: { d: Detail; reload: () => Promise<void> }) {
+  const a = useAction(reload);
+  const [f, setF] = useState<{ kind: keyof typeof EX_KIND; reason: string; supplierId: string } | null>(null);
+  const suppliers = useResource<{ items: { id: string; legalName: string; status: string }[] }>(f?.kind === 'SINGLE_SOURCE' ? '/api/v1/supplier-options' : null);
+  if (!d.exceptions.length && !d.can.requestException) return null;
+  return (
+    <section className="panel self-start">
+      <div className="panel-head"><h2>Kaynak bulma istisnaları</h2>
+        {d.can.requestException && !f && !['CONTRACTING', 'CANCELLED', 'NO_AWARD'].includes(d.project.status) && <Button size="sm" variant="outline" className="ml-auto" onClick={() => setF({ kind: 'SINGLE_SOURCE', reason: '', supplierId: '' })}>İstisna iste</Button>}</div>
+      <div className="panel-body grid gap-3">
+        {f && (
+          <form className="grid gap-2" onSubmit={(e) => { e.preventDefault(); void a.run(() => api(`/api/v1/projects/${d.project.id}/exceptions`, { method: 'POST',
+            json: { kind: f.kind, reason: f.reason, supplierId: f.kind === 'SINGLE_SOURCE' ? f.supplierId : null } }), `${EX_KIND[f.kind]} istisnası onaya gönderildi.`).then(() => setF(null)); }}>
+            <Field label="İstisna" hint={EX_HINT[f.kind]}>{(p) => <select className="input" {...p} value={f.kind} onChange={(e) => setF({ ...f, kind: e.target.value as keyof typeof EX_KIND })}>
+              {Object.entries(EX_KIND).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>}</Field>
+            {f.kind === 'SINGLE_SOURCE' && <Field label="Tedarikçi">{(p) => <select className="input" required {...p} value={f.supplierId} onChange={(e) => setF({ ...f, supplierId: e.target.value })}>
+              <option value="">Seçin</option>{suppliers.data?.items.map((x) => <option key={x.id} value={x.id}>{x.legalName}</option>)}</select>}</Field>}
+            <Field label="Gerekçe" hint="Neden, kapsam ve değerlendirilen alternatifler (en az 20 karakter).">{(p) => <textarea className="input" rows={3} required minLength={20} {...p} value={f.reason} onChange={(e) => setF({ ...f, reason: e.target.value })} />}</Field>
+            <div className="flex gap-2"><Button type="submit" disabled={a.busy || f.reason.trim().length < 20}>Onaya gönder</Button><Button type="button" variant="ghost" onClick={() => setF(null)}>Vazgeç</Button></div>
+          </form>
+        )}
+        {d.exceptions.map((x) => (
+          <div key={x.id} className="grid gap-1 border-b border-border pb-3 last:border-b-0 last:pb-0">
+            <div className="flex flex-wrap items-baseline justify-between gap-2"><span className="font-semibold">{EX_KIND[x.kind]}{x.supplierName ? ` · ${x.supplierName}` : ''}</span><span className="text-sm text-ink-subtle">{EX_STATUS[x.status]}</span></div>
+            <p className="text-sm">{x.reason}</p>
+            <p className="text-sm text-ink-subtle">İsteyen {x.requestedBy} · {fmtDateTime(x.requestedAt)}</p>
+            {x.approval && x.status === 'REQUESTED' && <ApprovalSteps ap={x.approval} busy={a.busy} approveText="İstisnayı onayla"
+              onDecide={(approve, note) => void a.run(() => api(`/api/v1/sourcing-exceptions/${x.id}/decision`, { method: 'POST', json: { approve, note } }), approve ? 'Karar kaydedildi.' : 'İstisna geri gönderildi.')} />}
+          </div>
+        ))}
+        {a.feedback}
+      </div>
+    </section>
+  );
 }
 
 const TABS = [['ozet', 'Özet'], ['kalemler', 'Kalemler'], ['teklifler', 'Teklifler'], ['karsilastirma', 'Karşılaştırma'], ['karar', 'Karar']] as const;
-const STAGE_TEXT: Record<string, string> = { DRAFT: 'Taslak', IN_APPROVAL: 'Onayda', OPEN: 'Teklife açık', EVALUATION: 'Değerlendirme', AWARD_APPROVAL: 'Seçim onayı', CONTRACTING: 'Sözleşme' };
+const STAGE_TEXT: Record<string, string> = { DRAFT: 'Taslak', IN_APPROVAL: 'Onayda', OPEN: 'Teklife açık', EVALUATION: 'Değerlendirme', AWARD_APPROVAL: 'Seçim onayı', CONTRACTING: 'Sözleşme', CANCELLED: 'İptal edildi', NO_AWARD: 'Sonuçsuz kapandı' };
 
 function nextStep(d: Detail): string {
   const s = d.project.status;
   if (s === 'DRAFT') return d.can.manage ? 'Kalemleri ve kriterleri gözden geçirip teklif turunu yayına gönderin.' : 'Satınalmacının yayına göndermesi bekleniyor.';
-  if (s === 'IN_APPROVAL') return d.round?.requestedByMe ? 'Satınalma yöneticisinin yayın onayı bekleniyor (görev ayrılığı).' : d.can.approvePublish ? 'Yayını onaylayın veya gerekçeyle geri gönderin.' : 'Yayın onayı bekleniyor.';
+  if (s === 'IN_APPROVAL') return d.round?.approval?.canDecide ? 'Yayını onaylayın veya gerekçeyle geri gönderin.' : `Yayın onayı bekleniyor${d.round?.approval?.nextStepNo ? ` (adım ${d.round.approval.nextStepNo}/${d.round.approval.plan.steps.length}: ${d.round.approval.plan.steps[d.round.approval.nextStepNo - 1]?.label})` : ''}.`;
   if (s === 'OPEN') return `Teklifler ${fmtDateTime(d.round?.closesAt)} kapanışına kadar mühürlü. Soruları yanıtlayın.`;
   if (s === 'EVALUATION') return 'Kapsamı ve karşılaştırmayı inceleyin, kanıtlı puanları girin, değerlendirme sürümü oluşturup tahsis önerin.';
-  if (s === 'AWARD_APPROVAL') return d.can.decide ? 'Önerilen tahsisi inceleyip onaylayın veya geri gönderin.' : 'Seçim onayı bekleniyor.';
+  if (s === 'AWARD_APPROVAL') return d.awards.find((a) => a.status === 'PROPOSED')?.approval?.canDecide ? 'Önerilen tahsisi inceleyip onaylayın veya geri gönderin.' : 'Seçim onayı bekleniyor.';
   if (s === 'CONTRACTING') return 'Kazanan tahsisi onaylandı. Sözleşme ve sipariş aşamasına geçilebilir.';
+  if (s === 'CANCELLED') return 'Proje onaylı istisnayla iptal edildi; kayıtlar korunur.';
+  if (s === 'NO_AWARD') return 'Proje kazanansız kapandı; yeni ihtiyaç için yeni proje açılır.';
   return '—';
 }
 
@@ -113,7 +198,10 @@ function Summary({ d, reload }: { d: Detail; reload: () => Promise<void> }) {
           </dl>
         </div>
       </section>
-      <RoundPanel d={d} reload={reload} />
+      <div className="grid content-start gap-6">
+        <RoundPanel d={d} reload={reload} />
+        <ExceptionsPanel d={d} reload={reload} />
+      </div>
     </div>
   );
 }
@@ -138,7 +226,9 @@ function RoundPanel({ d, reload }: { d: Detail; reload: () => Promise<void> }) {
             {round.closeReason && <><dt>Not</dt><dd>{round.closeReason}</dd></>}
           </dl>
         ) : <p className="text-ink-muted">Henüz teklif turu yok.</p>}
-        {round?.status === 'PENDING_APPROVAL' && d.can.approvePublish && !round.requestedByMe && (
+        {round?.status === 'PENDING_APPROVAL' && round.approval && <ApprovalSteps ap={round.approval} busy={a.busy} approveText="Yayını onayla"
+          onDecide={(approve, n) => void a.run(() => api(`/api/v1/rfq-rounds/${round.id}/decision`, { method: 'POST', json: { approve, note: n } }), approve ? 'Karar kaydedildi.' : 'Tur geri gönderildi.')} />}
+        {round?.status === 'PENDING_APPROVAL' && !round.approval && d.can.approvePublish && !round.requestedByMe && (
           <div className="grid gap-2 border-t border-border pt-3">
             <Field label="Not (geri göndermede zorunlu)">{(p) => <textarea className="input" rows={2} {...p} value={note} onChange={(e) => setNote(e.target.value)} />}</Field>
             <div className="flex flex-wrap gap-2">
@@ -147,7 +237,7 @@ function RoundPanel({ d, reload }: { d: Detail; reload: () => Promise<void> }) {
             </div>
           </div>
         )}
-        {round?.status === 'PENDING_APPROVAL' && round.requestedByMe && <Banner tone="neutral" icon="lock" title="Yayını siz başlattınız">Görev ayrılığı gereği onayı başka bir satınalma yöneticisi verir.</Banner>}
+        {round?.status === 'PENDING_APPROVAL' && !round.approval && round.requestedByMe && <Banner tone="neutral" icon="lock" title="Yayını siz başlattınız">Görev ayrılığı gereği onayı başka bir satınalma yöneticisi verir.</Banner>}
         {round?.status === 'OPEN' && d.can.approvePublish && (
           <div className="grid gap-2 border-t border-border pt-3">
             <Field label="Erken kapanış gerekçesi">{(p) => <textarea className="input" rows={2} {...p} value={note} onChange={(e) => setNote(e.target.value)} />}</Field>
@@ -158,6 +248,8 @@ function RoundPanel({ d, reload }: { d: Detail; reload: () => Promise<void> }) {
           <form className="grid gap-2 border-t border-border pt-3" onSubmit={(e) => { e.preventDefault(); void a.run(() => api(`/api/v1/projects/${d.project.id}/rounds`, { method: 'POST', ifMatch: d.project.etag,
             json: { closesAt: closesAt ? new Date(closesAt).toISOString() : '', supplierIds: picked } }), 'Tur yayın onayına gönderildi.'); }}>
             <h3 className="text-base">{d.round ? 'Yeni teklif turu' : 'Yayına gönder'}</h3>
+            {(d.publishPolicy.minInvitees || d.publishPolicy.minResponseDays) && <p className="text-sm text-ink-muted">Kurum politikası: {[d.publishPolicy.minInvitees ? `en az ${d.publishPolicy.minInvitees} davetli` : null, d.publishPolicy.minResponseDays ? `en az ${d.publishPolicy.minResponseDays} gün teklif süresi` : null].filter(Boolean).join(', ')}. Altında kalmak onaylı tek kaynak/acil alım istisnası ister.</p>}
+            <p className="text-sm text-ink-subtle">Onay: {d.publishPolicy.steps.map((x) => x.label).join(' → ')}</p>
             <Field label="Kapanış" hint="Kapanış sunucu saatine göre uygulanır; sonrasında teklif kabul edilmez.">{(p) => <input className="input tabular" type="datetime-local" {...p} value={closesAt} onChange={(e) => setClosesAt(e.target.value)} required />}</Field>
             <fieldset className="field">
               <legend>Davet edilecek tedarikçiler</legend>
@@ -431,7 +523,9 @@ function Decision({ d, reload }: { d: Detail; reload: () => Promise<void> }) {
             <AwardLines aw={open} lineName={lineName} currency={d.project.currency} />
             <p><span className="font-semibold">Gerekçe:</span> {open.rationale}</p>
             <p className="text-sm text-ink-subtle">Öneren: {open.proposedBy} · {fmtDateTime(open.proposedAt)}</p>
-            {d.can.decide && !open.proposedByMe ? (
+            {open.approval ? <ApprovalSteps ap={open.approval} busy={a.busy} approveText="Tahsisi onayla"
+              onDecide={(approve, n) => void a.run(() => api(`/api/v1/awards/${open.id}/decision`, { method: 'POST', json: { approve, note: n } }), approve ? 'Karar kaydedildi.' : 'Öneri geri gönderildi.')} />
+            : d.can.decide && !open.proposedByMe ? (
               <div className="grid gap-2 border-t border-border pt-3">
                 <Field label="Karar notu (geri göndermede zorunlu)">{(p) => <textarea className="input" rows={2} {...p} value={note} onChange={(e) => setNote(e.target.value)} />}</Field>
                 <div className="flex flex-wrap gap-2">

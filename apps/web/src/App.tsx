@@ -19,6 +19,7 @@ import { ProjectsPage } from './pages/ProjectsPage.tsx';
 import { ProjectWizard } from './pages/ProjectWizard.tsx';
 import { ProjectWorkspace } from './pages/ProjectWorkspace.tsx';
 import { PortalHome, PortalRound } from './pages/PortalPages.tsx';
+import { GlobalSearch, NotificationBell } from './ui/TopBar.tsx';
 
 // PDF görüntüleyici içeren ağır ekranlar ayrı paket olarak yüklenir.
 const DocumentPage = lazy(() => import('./pages/DocumentPage.tsx').then((m) => ({ default: m.DocumentPage })));
@@ -28,6 +29,8 @@ const PurchaseOrdersPage = lazy(() => purchasing().then((m) => ({ default: m.Pur
 const PurchaseOrderPage = lazy(() => purchasing().then((m) => ({ default: m.PurchaseOrderPage })));
 const InvoicesPage = lazy(() => purchasing().then((m) => ({ default: m.InvoicesPage })));
 const InvoicePage = lazy(() => purchasing().then((m) => ({ default: m.InvoicePage })));
+const SearchPage = lazy(() => import('./pages/SearchPage.tsx').then((m) => ({ default: m.SearchPage })));
+const ApprovalPolicyPage = lazy(() => import('./pages/ApprovalPolicyPage.tsx').then((m) => ({ default: m.ApprovalPolicyPage })));
 const ToleranceRulesPage = lazy(() => purchasing().then((m) => ({ default: m.ToleranceRulesPage })));
 const evaluation = () => import('./pages/EvaluationPages.tsx');
 const AssessmentPage = lazy(() => evaluation().then((m) => ({ default: m.AssessmentPage })));
@@ -114,6 +117,7 @@ function Shell() {
       <main id="main" ref={mainRef} tabIndex={-1} className="min-w-0 overflow-auto outline-none">
         <div className="flex min-h-12 items-center gap-2 border-b py-2 border-border px-8 text-sm text-ink-muted max-[900px]:px-4" title="Erişebildiğiniz şirketler">
           <span className="whitespace-nowrap text-ink-subtle">Şirket kapsamı</span><span className="truncate font-semibold text-ink max-[640px]:whitespace-normal">{companies}</span>
+          {!me.supplierPortal && <><GlobalSearch /><NotificationBell /></>}
         </div>
         {!online && <div className="bg-ink px-4 py-1.5 text-center text-sm text-primary-foreground" role="status"><Icon name="wifiOff" size={14} className="mr-1.5 inline" />Çevrimdışısınız. Görüntülenen veri güncel olmayabilir; kaydetme ve onay işlemleri bağlantı gelince yapılabilir.</div>}
         <Suspense fallback={<Loading label="Sayfa yükleniyor" />}>
@@ -135,6 +139,8 @@ function Shell() {
           <Route path="/siparisler/:id" element={<PurchaseOrderPage />} />
           <Route path="/faturalar" element={<InvoicesPage />} />
           <Route path="/faturalar/tolerans" element={<ToleranceRulesPage />} />
+          <Route path="/projeler/onay-politikasi" element={<ApprovalPolicyPage />} />
+          <Route path="/ara" element={<SearchPage />} />
           <Route path="/faturalar/erp-mutabakati" element={<ErpReconciliationPage />} />
           <Route path="/faturalar/:id" element={<InvoicePage />} />
           <Route path="/raporlar" element={<ReportsPage />} />

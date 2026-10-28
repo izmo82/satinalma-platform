@@ -89,6 +89,7 @@ export const projectStatus: Record<string, Label> = {
   AWARD_APPROVAL: { text: 'Seçim onayında', tone: 'info', icon: 'clock' },
   CONTRACTING: { text: 'Sözleşme aşamasında', tone: 'human', icon: 'stamp' },
   CANCELLED: { text: 'İptal', tone: 'neutral', icon: 'x' },
+  NO_AWARD: { text: 'Sonuçsuz kapandı', tone: 'neutral', icon: 'minus' },
 };
 export const PROJECT_STAGES = ['DRAFT', 'IN_APPROVAL', 'OPEN', 'EVALUATION', 'AWARD_APPROVAL', 'CONTRACTING'] as const;
 export const lineState: Record<string, Label> = {

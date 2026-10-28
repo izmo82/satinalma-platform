@@ -1,11 +1,12 @@
 import { useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { SavedViews } from '../ui/SavedViews.tsx';
 import { api, ApiError } from '../lib/api.ts';
 import { useResource } from '../lib/useApi.ts';
 import { useSession, hasRole } from '../lib/session.tsx';
 import { fmtDate, fmtDateTime, fmtMoney } from '../lib/format.ts';
 import { roleLabel } from '../lib/labels.ts';
-import { Banner, Empty, ErrorState, Field, Loading, PageHeader, Tag, toneClass } from '../ui/kit.tsx';
+import { Banner, Empty, ErrorState, Field, FilterChip, Loading, PageHeader, Tag, toneClass } from '../ui/kit.tsx';
 import { Icon } from '../ui/icons.tsx';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
@@ -61,16 +62,16 @@ function PoForm({ onCancel, onCreated }: { onCancel: () => void; onCreated: (id:
   const sup = useResource<{ items: { id: string; legalName: string; status: string }[] }>('/api/v1/supplier-options');
   const cons = useResource<{ items: { id: string; title: string }[] }>('/api/v1/contracts');
   const [f, setF] = useState({ companyId: me?.companies[0]?.id ?? '', supplierId: '', contractVersionId: '', currency: 'TRY' });
-  const blank = { kind: 'GOODS', description: '', unit: '', quantity: '', unitPrice: '' };
+  const blank = { kind: 'GOODS', description: '', unit: '', quantity: '', unitPrice: '', taxRate: '20' };
   const [lines, setLines] = useState([blank]);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const set = (i: number, k: keyof typeof blank, v: string) => setLines(lines.map((x, j) => j === i ? { ...x, [k]: v } : x));
   return (
     <form className="panel mb-5" onSubmit={(e) => { e.preventDefault(); setBusy(true); setErr(null);
-      void api<{ id: string }>('/api/v1/purchase-orders', { method: 'POST', json: { ...f, contractVersionId: f.contractVersionId || null, lines } })
+      void api<{ id: string }>('/api/v1/purchase-orders', { method: 'POST', json: { ...f, contractVersionId: f.contractVersionId || null, lines: lines.map((l) => ({ ...l, taxRate: l.taxRate.trim() || null })) } })
         .then((r) => onCreated(r.data.id), (x: ApiError) => setErr(x.message)).finally(() => setBusy(false)); }}>
-      <div className="panel-head"><h2>Sipariş ver</h2><span className="text-sm text-ink-subtle">Tedarikçi aktif olmalı; sözleşmeli siparişte limit kilit altında kontrol edilir.</span></div>
+      <div className="panel-head"><h2>Sipariş ver</h2><span className="text-sm text-ink-subtle">Tedarikçi aktif olmalı; sözleşmeli siparişte limit kilit altında kontrol edilir. Sözleşme limiti vergi dahilse KDV oranı zorunludur.</span></div>
       <div className="panel-body grid gap-3">
         <div className="grid grid-cols-4 gap-x-3 max-[900px]:grid-cols-2">
           <Field label="Şirket">{(p) => <select className="input" {...p} value={f.companyId} onChange={(e) => setF({ ...f, companyId: e.target.value })}>{me?.companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>}</Field>
@@ -79,12 +80,13 @@ function PoForm({ onCancel, onCreated }: { onCancel: () => void; onCreated: (id:
           <Field label="Para birimi">{(p) => <input className="input" maxLength={3} {...p} value={f.currency} onChange={(e) => setF({ ...f, currency: e.target.value.toUpperCase() })} />}</Field>
         </div>
         {lines.map((l, i) => (
-          <div key={i} className="grid grid-cols-[110px_minmax(0,1fr)_100px_90px_130px_auto] items-start gap-3 max-[900px]:grid-cols-2">
+          <div key={i} className="grid grid-cols-[110px_minmax(0,1fr)_100px_90px_130px_90px_auto] items-start gap-3 max-[900px]:grid-cols-2">
             <Field label="Tür">{(p) => <select className="input" {...p} value={l.kind} onChange={(e) => set(i, 'kind', e.target.value)}><option value="GOODS">Mal</option><option value="SERVICE">Hizmet</option></select>}</Field>
             <Field label={`Kalem ${i + 1}`}>{(p) => <input className="input" required {...p} value={l.description} onChange={(e) => set(i, 'description', e.target.value)} />}</Field>
             <Field label="Miktar">{(p) => <input className="input tabular text-right" required inputMode="decimal" {...p} value={l.quantity} onChange={(e) => set(i, 'quantity', e.target.value.replace(',', '.'))} />}</Field>
             <Field label="Birim">{(p) => <input className="input" required {...p} value={l.unit} onChange={(e) => set(i, 'unit', e.target.value)} />}</Field>
             <Field label="Birim fiyat">{(p) => <input className="input tabular text-right" required inputMode="decimal" {...p} value={l.unitPrice} onChange={(e) => set(i, 'unitPrice', e.target.value.replace(',', '.'))} />}</Field>
+            <Field label="KDV %">{(p) => <input className="input tabular text-right" inputMode="decimal" {...p} value={l.taxRate} onChange={(e) => set(i, 'taxRate', e.target.value.replace(',', '.'))} />}</Field>
             <Button type="button" variant="ghost" size="sm" className="mt-6" disabled={lines.length === 1} onClick={() => setLines(lines.filter((_, j) => j !== i))} aria-label={`Kalem ${i + 1} sil`}><Icon name="close" /></Button>
           </div>
         ))}
@@ -195,7 +197,7 @@ export function PurchaseOrderPage() {
 
 function PoChangeForm({ d, onDone }: { d: PoDetail; onDone: () => void }) {
   const [rows, setRows] = useState(d.lines.map((l) => ({ poLineId: l.poLineId, quantity: l.orderedQty, unitPrice: l.unitPrice })));
-  const blank = { kind: 'GOODS', description: '', unit: '', quantity: '', unitPrice: '' };
+  const blank = { kind: 'GOODS', description: '', unit: '', quantity: '', unitPrice: '', taxRate: '20' };
   const [added, setAdded] = useState<typeof blank[]>([]);
   const [reason, setReason] = useState('');
   const [err, setErr] = useState<string | null>(null);
@@ -207,7 +209,7 @@ function PoChangeForm({ d, onDone }: { d: PoDetail; onDone: () => void }) {
   const setAdd = (i: number, k: keyof typeof blank, v: string) => setAdded(added.map((x, j) => j === i ? { ...x, [k]: v } : x));
   return (
     <form className="panel mb-5" onSubmit={(e) => { e.preventDefault(); setBusy(true); setErr(null);
-      void api(`/api/v1/purchase-orders/${d.po.id}/changes`, { method: 'POST', json: { baseChangeNo: d.changeNo, reason, lines: changed, add: added } })
+      void api(`/api/v1/purchase-orders/${d.po.id}/changes`, { method: 'POST', json: { baseChangeNo: d.changeNo, reason, lines: changed, add: added.map((l) => ({ ...l, taxRate: l.taxRate.trim() || null })) } })
         .then(onDone, (x: ApiError) => setErr(x.message)).finally(() => setBusy(false)); }}>
       <div className="panel-head"><h2>Siparişi değiştir</h2><span className="text-sm text-ink-subtle">Miktar kabul edilen/faturalanan miktarın altına inemez; faturalanmış kalemin fiyatı değişmez.</span></div>
       <div className="panel-body grid gap-3">
@@ -222,12 +224,13 @@ function PoChangeForm({ d, onDone }: { d: PoDetail; onDone: () => void }) {
           );
         })}
         {added.map((l, i) => (
-          <div key={i} className="grid grid-cols-[110px_minmax(0,1fr)_100px_90px_130px_auto] items-start gap-3 max-[900px]:grid-cols-2">
+          <div key={i} className="grid grid-cols-[110px_minmax(0,1fr)_100px_90px_130px_90px_auto] items-start gap-3 max-[900px]:grid-cols-2">
             <Field label="Tür">{(p) => <select className="input" {...p} value={l.kind} onChange={(e) => setAdd(i, 'kind', e.target.value)}><option value="GOODS">Mal</option><option value="SERVICE">Hizmet</option></select>}</Field>
             <Field label={`Yeni kalem ${i + 1}`}>{(p) => <input className="input" required {...p} value={l.description} onChange={(e) => setAdd(i, 'description', e.target.value)} />}</Field>
             <Field label="Miktar">{(p) => <input className="input tabular text-right" required inputMode="decimal" {...p} value={l.quantity} onChange={(e) => setAdd(i, 'quantity', e.target.value.replace(',', '.'))} />}</Field>
             <Field label="Birim">{(p) => <input className="input" required {...p} value={l.unit} onChange={(e) => setAdd(i, 'unit', e.target.value)} />}</Field>
             <Field label="Birim fiyat">{(p) => <input className="input tabular text-right" required inputMode="decimal" {...p} value={l.unitPrice} onChange={(e) => setAdd(i, 'unitPrice', e.target.value.replace(',', '.'))} />}</Field>
+            <Field label="KDV %">{(p) => <input className="input tabular text-right" inputMode="decimal" {...p} value={l.taxRate} onChange={(e) => setAdd(i, 'taxRate', e.target.value.replace(',', '.'))} />}</Field>
             <Button type="button" variant="ghost" size="sm" className="mt-6" onClick={() => setAdded(added.filter((_, j) => j !== i))} aria-label={`Yeni kalem ${i + 1} sil`}><Icon name="close" /></Button>
           </div>
         ))}
@@ -281,6 +284,19 @@ export function InvoicesPage() {
   const navigate = useNavigate();
   const r = useResource<{ items: { id: string; kind: keyof typeof KIND; invoiceNo: string; issueDate: string; currency: string; supplierName: string; netAmount: string; legalStatus: string; paymentStatus: string; decision: string | null; erpStatus: string | null; duplicateCount: number }[] }>('/api/v1/invoices');
   const [creating, setCreating] = useState(false);
+  // Süzgeç ve kolonlar URL'de (kayıtlı görünüm ve paylaşılabilir bağlantı); yetki ve kapsam sunucuda.
+  const [params, setParams] = useSearchParams();
+  const durum = params.get('durum') ?? '';
+  const para = params.get('para') ?? '';
+  const hidden = new Set((params.get('gizle') ?? '').split(',').filter(Boolean));
+  const setParam = (k: string, v: string) => { const p = new URLSearchParams(params); v ? p.set(k, v) : p.delete(k); setParams(p, { replace: true }); };
+  const toggleCol = (c: string) => { const n = new Set(hidden); n.has(c) ? n.delete(c) : n.add(c); setParam('gizle', [...n].sort().join(',')); };
+  const all = r.data?.items ?? [];
+  const stateOf = (x: (typeof all)[number]) => x.legalStatus !== 'RECEIVED' ? 'IPTAL' : x.decision === 'APPROVAL' || x.decision === 'REJECTION' ? x.decision : 'BEKLIYOR';
+  const items = all.filter((x) => (!durum || stateOf(x) === durum) && (!para || x.currency === para));
+  const currencies = [...new Set(all.map((x) => x.currency))].sort();
+  const COLS = [['tedarikci', 'Tedarikçi'], ['erp', 'ERP / ödeme'], ['tarih', 'Tarih']] as const;
+  const show = (c: string) => !hidden.has(c);
   return (
     <div className="page">
       <PageHeader title="Faturalar" actions={<div className="flex flex-wrap gap-2">
@@ -290,21 +306,33 @@ export function InvoicesPage() {
         Satır tahsisi, sipariş/kabul eşleştirmesi ve limit kontrolü. Hukuki e-belge durumu, kurum içi onay, ERP aktarımı ve ödeme ayrı durumlardır; ödeme bu sistemden yürütülmez.
       </PageHeader>
       {creating && <InvoiceForm onCancel={() => setCreating(false)} onCreated={(id) => navigate(`/faturalar/${id}`)} />}
-      {r.loading && !r.data ? <Loading /> : r.error ? <ErrorState error={r.error} onRetry={r.reload} /> : !r.data?.items.length ? (
-        <div className="rounded-md border border-border bg-surface"><Empty icon="receipt" title="Fatura yok">e-Fatura girişi veya elle giriş sonrası burada görünür.</Empty></div>
+      <SavedViews page="invoices" />
+      <div className="mb-3 flex flex-wrap items-end gap-3">
+        <div className="flex flex-wrap gap-2" role="group" aria-label="Onay durumu süzgeci">
+          {([['', 'Tümü'], ['BEKLIYOR', 'Karar bekliyor'], ['APPROVAL', 'Onaylandı'], ['REJECTION', 'Reddedildi'], ['IPTAL', 'Hukuken iptal/ret']] as const).map(([k, l]) =>
+            <FilterChip key={k} pressed={durum === k} count={k ? all.filter((x) => stateOf(x) === k).length : all.length} onClick={() => setParam('durum', k)}>{l}</FilterChip>)}
+        </div>
+        {currencies.length > 1 && <label className="flex items-center gap-2 text-sm">Para birimi
+          <select className="input h-8 w-24" value={para} onChange={(e) => setParam('para', e.target.value)}><option value="">Tümü</option>{currencies.map((c) => <option key={c} value={c}>{c}</option>)}</select></label>}
+        <fieldset className="flex flex-wrap items-center gap-3 text-sm"><legend className="sr-only">Kolonlar</legend><span className="text-ink-subtle">Kolonlar:</span>
+          {COLS.map(([k, l]) => <label key={k} className="flex items-center gap-1.5"><input type="checkbox" className="accent-[var(--ink)]" aria-label={`${l} kolonunu göster`} checked={show(k)} onChange={() => toggleCol(k)} />{l}</label>)}
+        </fieldset>
+      </div>
+      {r.loading && !r.data ? <Loading /> : r.error ? <ErrorState error={r.error} onRetry={r.reload} /> : !items.length ? (
+        <div className="rounded-md border border-border bg-surface"><Empty icon="receipt" title={all.length ? 'Süzgece uyan fatura yok' : 'Fatura yok'}>{all.length ? 'Süzgeci değiştirin veya “Tümü”nü seçin.' : 'e-Fatura girişi veya elle giriş sonrası burada görünür.'}</Empty></div>
       ) : (
         <Table>
-          <TableHeader><TableRow className="hover:bg-transparent"><TableHead>Fatura no</TableHead><TableHead>Tedarikçi</TableHead><TableHead className="text-right">Net</TableHead>
-            <TableHead>Onay</TableHead><TableHead className="max-[900px]:hidden">ERP / ödeme</TableHead><TableHead>Tarih</TableHead></TableRow></TableHeader>
-          <TableBody>{r.data.items.map((x) => (
+          <TableHeader><TableRow className="hover:bg-transparent"><TableHead>Fatura no</TableHead>{show('tedarikci') && <TableHead>Tedarikçi</TableHead>}<TableHead className="text-right">Net</TableHead>
+            <TableHead>Onay</TableHead>{show('erp') && <TableHead className="max-[900px]:hidden">ERP / ödeme</TableHead>}{show('tarih') && <TableHead>Tarih</TableHead>}</TableRow></TableHeader>
+          <TableBody>{items.map((x) => (
             <TableRow key={x.id}>
               <TableCell className="whitespace-nowrap"><Link className="font-semibold text-ink no-underline hover:underline" to={`/faturalar/${x.id}`}>{x.invoiceNo}</Link>
                 <span className="block text-sm text-ink-subtle">{KIND[x.kind]}{x.duplicateCount > 0 ? ` · ${x.duplicateCount} tekrar geliş` : ''}</span></TableCell>
-              <TableCell>{x.supplierName}</TableCell>
+              {show('tedarikci') && <TableCell>{x.supplierName}</TableCell>}
               <TableCell className="whitespace-nowrap text-right">{fmtMoney(x.netAmount, x.currency)}</TableCell>
               <TableCell>{x.legalStatus !== 'RECEIVED' ? <Tag label={{ text: 'Hukuken iptal/ret', tone: 'danger', icon: 'x' }} /> : x.decision ? <Tag label={STATUS[x.decision]} /> : <span className="text-sm text-ink-subtle">Bekliyor</span>}</TableCell>
-              <TableCell className="text-sm text-ink-muted max-[900px]:hidden">{x.erpStatus ? ERP[x.erpStatus] : '—'}{x.paymentStatus === 'PAID' ? ' · ödendi (ERP)' : ''}</TableCell>
-              <TableCell className="whitespace-nowrap text-sm text-ink-subtle">{fmtDate(x.issueDate)}</TableCell>
+              {show('erp') && <TableCell className="text-sm text-ink-muted max-[900px]:hidden">{x.erpStatus ? ERP[x.erpStatus] : '—'}{x.paymentStatus === 'PAID' ? ' · ödendi (ERP)' : ''}</TableCell>}
+              {show('tarih') && <TableCell className="whitespace-nowrap text-sm text-ink-subtle">{fmtDate(x.issueDate)}</TableCell>}
             </TableRow>
           ))}</TableBody>
         </Table>
@@ -367,10 +395,14 @@ function InvoiceForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
   );
 }
 
+/** GİB vergi türü kodları (yalnız görünüm). */
+const TAX_CODE: Record<string, string> = { '4080': 'ÖİV', '4081': 'ÖİV (5035)', '0071': 'ÖTV (I sayılı liste)', '0073': 'ÖTV (III sayılı liste)', '0074': 'ÖTV (IV sayılı liste)', '0075': 'ÖTV (III sayılı liste)', '0076': 'ÖTV (II sayılı liste)', '0077': 'ÖTV (II sayılı liste)', '1047': 'Damga vergisi', '9021': 'Konaklama vergisi' };
+
 interface InvDetail {
   invoice: { id: string; kind: keyof typeof KIND; invoiceNo: string; ettn: string | null; issueDate: string; currency: string; supplierId: string; supplierName: string; supplierStatus: string;
     legalStatus: string; paymentStatus: string; documentVersionId: string | null; declaredTaxTotal: string | null; declaredWithholding: string | null; declaredPayable: string | null; originalInvoiceId: string | null; advanceInvoiceId: string | null; advanceOffset: string; createdByMe: boolean; createdBy: string; createdAt: string };
-  lines: { lineNo: number; description: string; quantity: string; unit: string; unitPrice: string; netAmount: string; taxRate: string; taxAmount: string | null }[];
+  lines: { lineNo: number; description: string; quantity: string; unit: string; unitPrice: string; netAmount: string; taxRate: string; taxAmount: string | null;
+    otherTax: string | null; otherTaxes: { code: string | null; name: string | null; rate: string | null; amount: string }[] | null }[];
   allocations: { lineNo: number; poLineId: string | null; contractVersionId: string | null; quantity: string; amount: string; poId: string | null; poCode: string | null; poLineDescription: string | null; contractTitle: string | null }[];
   decisions: { kind: string; reason: string | null; decidedAt: string; decidedBy: string }[];
   intake: { source: string; duplicate: boolean; receivedAt: string }[];
@@ -415,7 +447,10 @@ export function InvoicePage() {
                 <div key={l.lineNo} className="grid gap-1.5 border-b border-[#ebe6da] pb-3 last:border-b-0 last:pb-0">
                   <div className="flex flex-wrap justify-between gap-2"><span className="font-semibold">{l.lineNo}. {l.description}</span>
                     <span className="tabular">{num(l.quantity)} {l.unit} × {fmtMoney(l.unitPrice, d.invoice.currency)} = <span className="font-semibold">{fmtMoney(l.netAmount, d.invoice.currency)}</span>
-                      <span className="block text-right text-sm text-ink-subtle">KDV %{num(l.taxRate)}{l.taxAmount ? ` · belgede ${fmtMoney(l.taxAmount, d.invoice.currency)}` : ''}</span></span></div>
+                      <span className="block text-right text-sm text-ink-subtle">KDV %{num(l.taxRate)}{l.taxAmount ? ` · belgede ${fmtMoney(l.taxAmount, d.invoice.currency)}` : ''}</span>
+                      {l.otherTaxes?.length ? l.otherTaxes.map((t, i) => (
+                        <span key={i} className="block text-right text-sm text-ink-subtle">{t.name || TAX_CODE[t.code ?? ''] || t.code || 'KDV dışı vergi'} {t.rate ? `%${num(t.rate)}` : '(oransız, beyan)'} · {fmtMoney(t.amount, d.invoice.currency)}</span>))
+                        : Number(l.otherTax) > 0 && <span className="block text-right text-sm text-ink-subtle">KDV dışı vergiler (kalem ayrımı yok) · {fmtMoney(l.otherTax, d.invoice.currency)}</span>}</span></div>
                   {d.allocations.filter((x) => x.lineNo === l.lineNo).map((x, i) => (
                     <p key={i} className="flex flex-wrap gap-x-2 text-sm text-ink-muted"><Icon name="arrow" size={14} className="mt-0.5" />
                       {x.poCode ? <>Sipariş <Link to={`/siparisler/${x.poId}`}>{x.poCode}</Link> · {x.poLineDescription}</> : x.contractTitle ? <>Sözleşme: {x.contractTitle}</> : 'Bağsız'}
@@ -537,7 +572,7 @@ function AllocationEditor({ d, onDone }: { d: InvDetail; onDone: () => void }) {
 
 // --- Tolerans kuralları -----------------------------------------------------------------------------
 
-interface ToleranceRow { currency: string; absAmount: string | null; percent: string | null; combine: 'LOWER' | 'HIGHER'; updatedAt: string; updatedBy: string | null }
+interface ToleranceRow { currency: string; category: string; absAmount: string | null; percent: string | null; combine: 'LOWER' | 'HIGHER'; updatedAt: string; updatedBy: string | null }
 const combineText = (r: Pick<ToleranceRow, 'absAmount' | 'percent' | 'combine' | 'currency'>) =>
   r.absAmount && r.percent ? `%${num(r.percent)} ve ${fmtMoney(r.absAmount, r.currency)} eşiklerinden ${r.combine === 'LOWER' ? 'düşük olanı' : 'yüksek olanı'}`
     : r.percent ? `Satır tutarının %${num(r.percent)}'i` : `${fmtMoney(r.absAmount, r.currency)}`;
@@ -545,22 +580,28 @@ const combineText = (r: Pick<ToleranceRow, 'absAmount' | 'percent' | 'combine' |
 export function ToleranceRulesPage() {
   const r = useResource<{ items: ToleranceRow[]; can: { manage: boolean } }>('/api/v1/tolerance-rules');
   const a = useAct(r.reload);
-  const empty = { currency: 'TRY', absAmount: '', percent: '', combine: 'LOWER' as 'LOWER' | 'HIGHER' };
+  const empty = { currency: 'TRY', category: '', absAmount: '', percent: '', combine: 'LOWER' as 'LOWER' | 'HIGHER' };
+  const label = (x: { currency: string; category: string }) => x.category.trim() ? `${x.currency} · ${x.category.trim()}` : `${x.currency} genel`;
+  const keyOf = (x: { currency: string; category: string }) => `${x.currency}|${x.category.trim()}`;
+  const del = (x: ToleranceRow) => `/api/v1/tolerance-rules/${x.currency}${x.category ? `?category=${encodeURIComponent(x.category)}` : ''}`;
   const [f, setF] = useState<typeof empty | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
   return (
     <div className="page">
       <p className="text-sm text-ink-subtle"><Link to="/faturalar" className="text-ink-subtle">Faturalar</Link> / Tolerans kuralları</p>
       <PageHeader title="Tolerans kuralları" actions={r.data?.can.manage && !f && <Button onClick={() => setF(empty)}>Kural ekle</Button>}>
-        Fatura birim fiyatı siparişten bu kadar sapabilir; aşan fark istisna onayı ister. Kuralı olmayan para biriminde tolerans sıfırdır; varsayılan evrensel tolerans yoktur.
+        Fatura birim fiyatı siparişten bu kadar sapabilir; aşan fark istisna onayı ister. Siparişin projesindeki kategori için kural varsa o, yoksa para biriminin genel kuralı uygulanır; ikisi de yoksa tolerans sıfırdır. Kimlik ve para birimi farkı hiçbir kuralla geçmez.
       </PageHeader>
       {f && (
         <form className="panel mb-5 max-w-[760px]" onSubmit={(e) => { e.preventDefault(); void a.run(() => api('/api/v1/tolerance-rules', { method: 'PUT',
-          json: { currency: f.currency, absAmount: f.absAmount || null, percent: f.percent || null, combine: f.combine } }), `${f.currency} kuralı kaydedildi.`).then((ok) => ok && setF(null)); }}>
-          <div className="panel-head"><h2>{r.data?.items.some((x) => x.currency === f.currency) ? `${f.currency} kuralını değiştir` : 'Yeni kural'}</h2></div>
+          json: { currency: f.currency, category: f.category.trim(), absAmount: f.absAmount || null, percent: f.percent || null, combine: f.combine } }), `${label(f)} kuralı kaydedildi.`).then((ok) => ok && setF(null)); }}>
+          <div className="panel-head"><h2>{r.data?.items.some((x) => keyOf(x) === keyOf(f)) ? `${label(f)} kuralını değiştir` : 'Yeni kural'}</h2></div>
           <div className="panel-body grid gap-3">
-            <div className="grid grid-cols-4 items-start gap-x-3 max-[900px]:grid-cols-2">
+            <div className="grid grid-cols-[120px_minmax(0,1fr)] items-start gap-x-3 max-[640px]:grid-cols-1">
               <Field label="Para birimi">{(p) => <input className="input" required maxLength={3} pattern="[A-Z]{3}" {...p} value={f.currency} onChange={(e) => setF({ ...f, currency: e.target.value.toUpperCase() })} />}</Field>
+              <Field label="Kategori (isteğe bağlı)" hint="Proje kategorisiyle aynı yazılır (büyük/küçük harf fark etmez). Boş = bu para biriminin genel kuralı.">{(p) => <input className="input" maxLength={200} {...p} value={f.category} onChange={(e) => setF({ ...f, category: e.target.value })} />}</Field>
+            </div>
+            <div className="grid grid-cols-3 items-start gap-x-3 max-[900px]:grid-cols-2">
               <Field label="Tutar eşiği" hint="Satır başına, en fazla 2 ondalık.">{(p) => <input className="input tabular text-right" inputMode="decimal" {...p} value={f.absAmount} onChange={(e) => setF({ ...f, absAmount: e.target.value.replace(',', '.') })} />}</Field>
               <Field label="Yüzde eşiği" hint="Satır tutarına göre, 0–100.">{(p) => <input className="input tabular text-right" inputMode="decimal" {...p} value={f.percent} onChange={(e) => setF({ ...f, percent: e.target.value.replace(',', '.') })} />}</Field>
               <Field label="İkisi de varsa">{(p) => <select className="input" {...p} value={f.combine} onChange={(e) => setF({ ...f, combine: e.target.value as 'LOWER' | 'HIGHER' })}><option value="LOWER">Düşük olan geçerli</option><option value="HIGHER">Yüksek olan geçerli</option></select>}</Field>
@@ -574,24 +615,25 @@ export function ToleranceRulesPage() {
         <div className="rounded-md border border-border bg-surface"><Empty icon="info" title="Tolerans kuralı yok">Tüm para birimlerinde fiyat farkı sıfır toleransla kontrol edilir.</Empty></div>
       ) : (
         <Table>
-          <TableHeader><TableRow className="hover:bg-transparent"><TableHead>Para birimi</TableHead><TableHead>Geçerli tolerans</TableHead><TableHead className="max-[640px]:hidden">Son değişiklik</TableHead><TableHead><span className="sr-only">Eylem</span></TableHead></TableRow></TableHeader>
+          <TableHeader><TableRow className="hover:bg-transparent"><TableHead>Para birimi</TableHead><TableHead>Kategori</TableHead><TableHead>Geçerli tolerans</TableHead><TableHead className="max-[640px]:hidden">Son değişiklik</TableHead><TableHead><span className="sr-only">Eylem</span></TableHead></TableRow></TableHeader>
           <TableBody>{r.data.items.map((x) => (
-            <TableRow key={x.currency}>
+            <TableRow key={keyOf(x)}>
               <TableCell className="font-semibold">{x.currency}</TableCell>
+              <TableCell>{x.category || <span className="text-ink-subtle">Genel (kategori kuralı olmayan alımlar)</span>}</TableCell>
               <TableCell className="tabular">{combineText(x)}</TableCell>
               <TableCell className="text-sm text-ink-subtle max-[640px]:hidden">{x.updatedBy ?? '—'} · {fmtDateTime(x.updatedAt)}</TableCell>
-              <TableCell className="whitespace-nowrap text-right">{r.data!.can.manage && (removing === x.currency ? <>
-                <span className="mr-2 text-sm">{x.currency} toleransı sıfırlansın mı?</span>
-                <Button size="sm" variant="destructive" disabled={a.busy} onClick={() => void a.run(() => api(`/api/v1/tolerance-rules/${x.currency}`, { method: 'DELETE' }), `${x.currency} kuralı kaldırıldı; tolerans sıfır.`).then(() => setRemoving(null))}>Kaldır</Button>
+              <TableCell className="whitespace-nowrap text-right">{r.data!.can.manage && (removing === keyOf(x) ? <>
+                <span className="mr-2 text-sm">{label(x)} kuralı kaldırılsın mı?</span>
+                <Button size="sm" variant="destructive" disabled={a.busy} onClick={() => void a.run(() => api(del(x), { method: 'DELETE' }),
+                  x.category ? `${label(x)} kuralı kaldırıldı; bu kategoride ${x.currency} genel kuralı geçerli.` : `${label(x)} kuralı kaldırıldı; kategori kuralı olmayan alımlarda tolerans sıfır.`).then(() => setRemoving(null))}>Kaldır</Button>
                 <Button size="sm" variant="ghost" onClick={() => setRemoving(null)}>Vazgeç</Button></> : <>
-                <Button size="sm" variant="outline" onClick={() => setF({ currency: x.currency, absAmount: x.absAmount ?? '', percent: x.percent ?? '', combine: x.combine })}>Değiştir</Button>
-                <Button size="sm" variant="ghost" onClick={() => setRemoving(x.currency)}>Kaldır</Button></>)}</TableCell>
+                <Button size="sm" variant="outline" onClick={() => setF({ currency: x.currency, category: x.category, absAmount: x.absAmount ?? '', percent: x.percent ?? '', combine: x.combine })}>Değiştir</Button>
+                <Button size="sm" variant="ghost" onClick={() => setRemoving(keyOf(x))}>Kaldır</Button></>)}</TableCell>
             </TableRow>
           ))}</TableBody>
         </Table>
       )}
       <div className="mt-4">{a.feedback}</div>
-      <p className="mt-2 text-sm text-ink-subtle">Kategori bazında tolerans henüz yok; kural para birimi düzeyindedir.</p>
     </div>
   );
 }

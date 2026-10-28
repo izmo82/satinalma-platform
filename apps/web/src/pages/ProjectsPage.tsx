@@ -4,6 +4,7 @@ import { fmtDateTime, fmtMoney, relative } from '../lib/format.ts';
 import { projectStatus } from '../lib/labels.ts';
 import { hasRole, useSession } from '../lib/session.tsx';
 import { Empty, ErrorState, FilterChip, Loading, PageHeader, Tag } from '../ui/kit.tsx';
+import { SavedViews } from '../ui/SavedViews.tsx';
 import { Icon } from '../ui/icons.tsx';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
@@ -11,7 +12,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 interface Row { id: string; code: string; title: string; category: string; status: string; currency: string; budget: string | null; budgetVerified: boolean;
   updatedAt: string; companyName: string; ownerName: string; closesAt: string | null; bidCount: number }
 
-const FILTERS = [['', 'Tümü'], ['DRAFT', 'Taslak'], ['IN_APPROVAL', 'Onayda'], ['OPEN', 'Teklife açık'], ['EVALUATION', 'Değerlendirmede'], ['AWARD_APPROVAL', 'Seçim onayında']] as const;
+const FILTERS = [['', 'Tümü'], ['DRAFT', 'Taslak'], ['IN_APPROVAL', 'Onayda'], ['OPEN', 'Teklife açık'], ['EVALUATION', 'Değerlendirmede'], ['AWARD_APPROVAL', 'Seçim onayında'],
+  ['CONTRACTING', 'Sözleşme aşamasında'], ['CANCELLED', 'İptal'], ['NO_AWARD', 'Sonuçsuz']] as const;
 
 export function ProjectsPage() {
   const { me } = useSession();
@@ -22,9 +24,11 @@ export function ProjectsPage() {
   const canCreate = hasRole(me, 'REQUESTER', 'BUYER', 'PROCUREMENT_MANAGER');
   return (
     <div className="page">
-      <PageHeader title="Projeler" actions={canCreate && <Button asChild><Link to="/projeler/yeni"><Icon name="folder" />Yeni proje</Link></Button>}>
+      <PageHeader title="Projeler" actions={<><Button asChild variant="outline"><Link to="/projeler/onay-politikasi">Onay politikası</Link></Button>
+        {canCreate && <Button asChild><Link to="/projeler/yeni"><Icon name="folder" />Yeni proje</Link></Button>}</>}>
         İhtiyaçtan kazanan tahsisine kadar satınalma projeleri. Teklifler kapanışa kadar mühürlüdür; kapanış sunucu saatidir.
       </PageHeader>
+      <SavedViews page="projects" />
       <div className="mb-3 flex flex-wrap gap-2" role="group" aria-label="Aşama filtresi">
         {FILTERS.map(([k, l]) => <FilterChip key={k} pressed={f === k} count={k ? r.data?.items.filter((x) => x.status === k).length : r.data?.items.length}
           onClick={() => { const p = new URLSearchParams(params); k ? p.set('durum', k) : p.delete('durum'); setParams(p, { replace: true }); }}>{l}</FilterChip>)}

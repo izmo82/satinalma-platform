@@ -9,6 +9,7 @@ import {
 import { useSession } from '../lib/session.tsx';
 import { Banner, Drawer, Empty, ErrorState, Field, Loading, Tag } from '../ui/kit.tsx';
 import { Icon } from '../ui/icons.tsx';
+import { SplitPanes } from '../ui/SplitPanes.tsx';
 import { DocumentViewer, type Region } from '../ui/DocumentViewer.tsx';
 
 interface Blocker { code: string; requirementId?: string; partyName?: string; action: string }
@@ -77,13 +78,11 @@ export function SignatureWorkspace() {
   const reqResult = (rid: string) => s.status.requirements.find((x) => x.id === rid);
 
   return (
-    <div className="workspace">
-      <section aria-label="Kaynak belge" style={{ borderRight: '1px solid var(--border)' }}>
+    <>
+    <SplitPanes docLabel="Belge" sideLabel="Taraflar ve kararlar" docSignal={targetPage} doc={<>
         <DocumentViewer versionId={cv.documentVersionId} mimeType="application/pdf" regions={regions} targetPage={targetPage}
           selectedRegion={selectedDetection} onSelectRegion={(rid) => { setSelectedDetection(rid); setTargetPage(regions.find((x) => x.id === rid)?.page ?? null); }} />
-      </section>
-
-      <aside aria-label="İmza kontrolü" style={{ background: 'var(--surface)' }}>
+      </>} side={<>
         <div className="section">
           <p className="subtle"><Link to="/sozlesmeler">Sözleşmeler</Link> / İmza kontrolü</p>
           <h1 style={{ fontSize: 18, marginTop: 4, overflowWrap: 'anywhere' }}>{cv.title}</h1>
@@ -242,13 +241,13 @@ export function SignatureWorkspace() {
           </div>
           {s.can.finalize && !readOnly && !s.status.canFinalize && <p id="finalize-hint" className="subtle" style={{ marginTop: 6 }}>Kesinleştirme için yukarıdaki eksikler giderilmeli veya yetkili istisna onaylanmalı.</p>}
         </div>
-      </aside>
+      </>} />
 
       {drawer === 'exception' && <ExceptionDrawer s={s} onClose={() => setDrawer(null)} onSubmit={(b) => act(() => api(`/api/v1/contract-versions/${cv.id}/signature-exceptions`, { method: 'POST', json: b }), 'İstisna talebi kaydedildi; başka bir hukuk yetkilisinin kararı gerekir.').then((ok) => { if (ok) setDrawer(null); })} />}
       {drawer === 'custody' && <CustodyDrawer onClose={() => setDrawer(null)} onSubmit={(b) => act(() => api(`/api/v1/contract-versions/${cv.id}/original-custody-events`, { method: 'POST', json: b }), 'Fiziksel asıl kaydı eklendi.').then((ok) => { if (ok) setDrawer(null); })} />}
       {drawer === 'requirements' && <RequirementsDrawer s={s} etag={r.etag} onClose={() => setDrawer(null)} onDone={async (msg) => { setFeedback({ tone: 'info', title: msg }); await r.reload(); setDrawer(null); }} />}
       {drawer === 'version' && <VersionDrawer s={s} etag={r.etag} onClose={() => setDrawer(null)} />}
-    </div>
+    </>
   );
 }
 

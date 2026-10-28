@@ -6,6 +6,7 @@ import { fmtDateTime, shortHash } from '../lib/format.ts';
 import { originLabel, supplierStatus } from '../lib/labels.ts';
 import { hasRole, useSession } from '../lib/session.tsx';
 import { Banner, ErrorState, Field, Loading, Tag } from '../ui/kit.tsx';
+import { SplitPanes } from '../ui/SplitPanes.tsx';
 import { DocumentViewer } from '../ui/DocumentViewer.tsx';
 
 interface Doc {
@@ -33,14 +34,12 @@ export function DocumentPage() {
   const canEnter = d.kind === 'INVOICE' && d.basicCheckStatus === 'PASSED' && d.suppliers.length === 0 && hasRole(me, 'FINANCE', 'BUYER', 'MASTER_DATA', 'REQUESTER', 'LEGAL', 'PROCUREMENT_MANAGER');
 
   return (
-    <div className="workspace">
-      <section aria-label="Kaynak belge" style={{ borderRight: '1px solid var(--border)' }}>
+    <SplitPanes docLabel="Belge" sideLabel="Alanlar" docSignal={targetPage} doc={<>
         {d.disposedAt ? <div className="page"><Banner tone="neutral" icon="archive" title={`Belge saklama süresi sonunda imha edildi (${fmtDateTime(d.disposedAt)})`}>
             Baytlar silindi; görüntülenemez. Kayıt, SHA-256 değeri ({d.sha256.slice(0, 12)}…) ve denetim izi korunur.</Banner></div>
           : d.basicCheckStatus === 'PASSED' ? <DocumentViewer versionId={d.id} mimeType={d.mimeType} targetPage={targetPage} />
           : <div className="page"><Banner tone="danger" icon="shield" title="Belge karantinada">{d.basicCheckReason}</Banner></div>}
-      </section>
-      <aside style={{ background: 'var(--surface)' }}>
+      </>} side={<>
         <div className="section">
           <h1 style={{ fontSize: 18, overflowWrap: 'anywhere' }}>{d.title}</h1>
           <div className="kv-inline" style={{ marginTop: 6 }}><span>Sürüm {d.versionNo}</span><span>{d.filename}</span><span className="mono" title={d.sha256}>SHA-256 {shortHash(d.sha256)}</span><span>{fmtDateTime(d.createdAt)}</span></div>
@@ -69,8 +68,7 @@ export function DocumentPage() {
           )}
         </div>
         {canEnter && <SellerForm id={d.id} onDone={r.reload} />}
-      </aside>
-    </div>
+      </>} />
   );
 }
 

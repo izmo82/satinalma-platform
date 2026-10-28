@@ -59,6 +59,18 @@ test('hukuk: sözleşme imza çalışma alanı', async ({ page }) => {
   await page.getByRole('link', { name: 'Nakliye Hizmet Sözleşmesi' }).first().click();
   await expect(page.getByRole('heading', { name: 'Nakliye Hizmet Sözleşmesi' })).toBeVisible();
   await audit(page, 'İmza çalışma alanı');
+  await page.getByRole('tablist', { name: 'Sözleşme' }).getByRole('tab', { name: 'Fiyat, SLA ve teminat' }).click();
+  await expect(page.getByRole('heading', { name: 'Fiyat revizyonu', exact: true })).toBeVisible();
+  await audit(page, 'Fiyat, SLA ve teminat');
+});
+
+test('onay politikası ve proje istisnaları (Faz 2)', async ({ page }) => {
+  await login(page, 'kerem.hukuk@example.test');
+  await page.goto('/projeler/onay-politikasi');
+  await expect(page.getByRole('heading', { name: 'Onay politikası' })).toBeVisible();
+  await page.getByRole('button', { name: 'Yeni sürüm hazırla' }).click();
+  await expect(page.getByRole('heading', { name: 'Yeni sürüm taslağı' })).toBeVisible();
+  await audit(page, 'Onay politikası');
 });
 
 test('veri yönetimi ve ERP mutabakatı (Faz 7)', async ({ page }) => {

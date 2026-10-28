@@ -16,7 +16,7 @@ test('sipariş → kabul → fatura → tahsis → ikinci finans onayı; tekrar 
   await login(page, 'alper.satinalma@example.test');
   await page.goto('/siparisler');
   await page.getByRole('button', { name: 'Sipariş ver' }).click();
-  await page.getByLabel('Tedarikçi').selectOption({ label: 'Anadolu Bilişim Hizmetleri A.Ş. (SENTETİK)' });
+  await page.getByLabel('Tedarikçi', { exact: true }).selectOption({ label: 'Anadolu Bilişim Hizmetleri A.Ş. (SENTETİK)' });
   await page.getByLabel('Kalem 1', { exact: true }).fill(`Etiket yazıcı ${tag}`);
   await page.getByLabel('Miktar').fill('5');
   await page.getByLabel('Birim', { exact: true }).fill('adet');
@@ -37,7 +37,7 @@ test('sipariş → kabul → fatura → tahsis → ikinci finans onayı; tekrar 
   await page.goto('/faturalar');
   const enter = async () => {
     await page.getByRole('button', { name: 'Fatura gir' }).click();
-    await page.getByLabel('Tedarikçi').selectOption({ label: 'Anadolu Bilişim Hizmetleri A.Ş. (SENTETİK)' });
+    await page.getByLabel('Tedarikçi', { exact: true }).selectOption({ label: 'Anadolu Bilişim Hizmetleri A.Ş. (SENTETİK)' });
     await page.getByLabel('Fatura no').fill(`E2E${tag}`);
     await page.getByLabel('Fatura tarihi').fill('2026-10-21');
     await page.getByLabel('Satır 1', { exact: true }).fill('Etiket yazıcı');
@@ -145,7 +145,7 @@ test('sipariş değişikliği gerekçeyle kaydedilir; kısmi kabul sonrası kapa
   await login(page, 'alper.satinalma@example.test');
   await page.goto('/siparisler');
   await page.getByRole('button', { name: 'Sipariş ver' }).click();
-  await page.getByLabel('Tedarikçi').selectOption({ label: 'Anadolu Bilişim Hizmetleri A.Ş. (SENTETİK)' });
+  await page.getByLabel('Tedarikçi', { exact: true }).selectOption({ label: 'Anadolu Bilişim Hizmetleri A.Ş. (SENTETİK)' });
   await page.getByLabel('Kalem 1', { exact: true }).fill(`Toner ${tag}`);
   await page.getByLabel('Miktar').fill('10');
   await page.getByLabel('Birim', { exact: true }).fill('adet');
@@ -185,11 +185,11 @@ test('tolerans kuralı: finans ekler, geçerli eşik açıkça yazılır, kaldı
   await page.getByLabel('Yüzde eşiği').fill('1');
   await expect(page.getByText(/Geçerli tolerans: %1 ve .*100,00 eşiklerinden düşük olanı/)).toBeVisible();
   await page.getByRole('button', { name: 'Kaydet' }).click();
-  await expect(page.getByText('GBP kuralı kaydedildi.')).toBeVisible();
+  await expect(page.getByText('GBP genel kuralı kaydedildi.')).toBeVisible();
   const row = page.getByRole('row', { name: /GBP/ });
   await row.getByRole('button', { name: 'Kaldır' }).click();
   await row.getByRole('button', { name: 'Kaldır' }).click();
-  await expect(page.getByText('GBP kuralı kaldırıldı; tolerans sıfır.')).toBeVisible();
+  await expect(page.getByText('GBP genel kuralı kaldırıldı; kategori kuralı olmayan alımlarda tolerans sıfır.')).toBeVisible();
   await expect(page.getByRole('row', { name: /GBP/ })).toHaveCount(0);
 });
 

@@ -7,7 +7,7 @@ async function login(page: Page, email: string) {
   await expect(page.getByRole('heading', { name: 'İşlerim' })).toBeVisible();
 }
 
-test('hukuk kullanıcısı eksik tarafı tek yerde görür; eksik kanıtla kesinleştiremez (UI + klavye)', async ({ page }) => {
+test('hukuk kullanıcısı eksik tarafı tek yerde görür; eksik kanıtla kesinleştiremez (UI + klavye)', async ({ page }, info) => {
   await login(page, 'leyla.hukuk@example.test');
   await page.getByRole('link', { name: 'Sözleşmeler' }).click();
   await page.getByRole('button', { name: /Tarafı eksik/ }).click();
@@ -21,7 +21,8 @@ test('hukuk kullanıcısı eksik tarafı tek yerde görür; eksik kanıtla kesin
   // Görsel tespit, insan kararı ve fiziksel asıl ayrı katmanlar.
   await expect(page.getByText('Otomatik tarama', { exact: true }).first()).toBeVisible();
   await expect(page.getByText('Fiziksel asıl', { exact: true }).first()).toBeVisible();
-  // Doküman görüntüleyici gerçekten sayfa çizer.
+  // Doküman görüntüleyici gerçekten sayfa çizer. Dar ekranda belge ayrı sekmededir (belge/alanlar alt alta uzun kaydırma yerine).
+  if (info.project.name === 'narrow-390') await page.getByRole('tablist', { name: 'Görünüm' }).getByRole('tab', { name: 'Belge' }).click();
   await expect(page.getByRole('group', { name: 'Sayfa 1' })).toBeVisible();
 });
 

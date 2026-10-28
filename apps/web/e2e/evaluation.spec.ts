@@ -24,7 +24,7 @@ test('olay: bildirim iddiadır; bildiren doğrulayamaz; doğrulanınca puan etki
   await page.getByLabel('Şiddet (bildirene göre)').selectOption('HIGH');
   await page.getByLabel('Başlık').fill(`Teslim gecikmesi ${tag}`);
   await page.getByLabel('Ne oldu').fill('Kurulum ekibi iki gün geç geldi (e2e sentetik).');
-  await page.getByRole('button', { name: 'Bildir' }).click();
+  await page.getByRole('button', { name: 'Bildir', exact: true }).click();
   // Aynı tedarikçi/kategoride yakın tarihli olay varsa önce olası mükerrer uyarısı gelir (otomatik birleştirilmez).
   const openNew = page.getByRole('button', { name: 'Olayı aç' });
   await expect(page.getByRole('heading', { level: 1, name: new RegExp(tag) }).or(openNew)).toBeVisible();

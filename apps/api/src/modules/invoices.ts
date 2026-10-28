@@ -44,8 +44,10 @@ async function contractState(tx: Tx, cvId: string, excludeInvoiceId: string | nu
     `SELECT cv.id, f.title, cv.stage, cv.signature_method, cv.signature_finalized_at FROM contract_versions cv JOIN contract_families f ON f.id = cv.family_id WHERE cv.id = $1`, [cvId])).rows[0];
   if (!cv) return null;
   const t = (await tx.query<{ currency: string; value_type: string; amount: string | null; verified_by: string | null; limit_basis: 'NET' | 'GROSS' }>(
-    `SELECT currency, value_type, amount::text, verified_by, limit_basis FROM contract_terms WHERE contract_version_id = $1 ORDER BY revision DESC LIMIT 1`, [cvId])).rows[0];
-  const ceiling = t && t.verified_by && t.value_type !== 'UNPRICED' ? t.amount : null;
+    `SELECT currency, value_type, amount::text, verified_by, limit_basis FROM contract_terms WHERE contract_version_id = $1 AND verified_by IS NOT NULL ORDER BY revision DESC LIMIT 1`, [cvId])).rows[0];
+  // Tavan ve limit yöntemi son DOĞRULANMIŞ revizyondan: doğrulanmamış yeni revizyon (ör. satınalmacının girdiği) tavanı kaldıramaz
+  // veya gevşetemez; doğrulanana kadar önceki doğrulanmış koşullar geçerlidir.
+  const ceiling = t && t.value_type !== 'UNPRICED' ? t.amount : null;
   const gross = t?.limit_basis === 'GROSS';
   // Net tüketim: onaylı fatura tahsisleri (doğrudan sözleşmeye veya sözleşmeye bağlı siparişe), iadeler negatif.
   // Vergi dahil limitte tahsis, faturanın o satırının vergileriyle brütleşir (domain ile aynı yuvarlama).
@@ -96,6 +98,12 @@ export async function createPo(tx: Tx, ctx: TenantContext, b: PoInput) {
   for (const l of b.lines) if (!isDecimal(l.quantity) || !isDecimal(l.unitPrice) || Number(l.quantity) <= 0) throw unprocessable('invalid_number', 'Miktar ve birim fiyat ondalık sayı olmalı.');
   let total = add(...b.lines.map((l) => amount(l.quantity, l.unitPrice)));
   requireTaxRates(b.lines, false);
+  if (b.projectId) {
+    // Proje bağı kategori toleransını belirler: yalnız aynı şirketin, seçim kararı onaylanmış projesi bağlanabilir.
+    const pr = (await tx.query<{ company_id: string; status: string }>(`SELECT company_id, status FROM projects WHERE id = $1`, [b.projectId])).rows[0];
+    if (!pr) throw notFound();
+    if (pr.company_id !== b.companyId || pr.status !== 'CONTRACTING') throw unprocessable('project_not_awarded', 'Sipariş yalnız aynı şirketin, seçim kararı onaylanmış projesine bağlanabilir.');
+  }
   if (b.contractVersionId) {
     await lockContracts(tx, [b.contractVersionId]);
     const c = await contractState(tx, b.contractVersionId, null);
@@ -546,7 +554,7 @@ export async function getInvoice(tx: Tx, ctx: TenantContext, id: string) {
     FROM invoices i JOIN suppliers s ON s.id = i.supplier_id JOIN users u ON u.id = i.created_by WHERE i.id = $1`, [id, ctx.userId])).rows[0];
   if (!inv) throw notFound();
   const lines = (await tx.query(`SELECT line_no AS "lineNo", description, trim_scale(quantity)::text AS quantity, unit, trim_scale(unit_price)::text AS "unitPrice", net_amount::text AS "netAmount", trim_scale(tax_rate)::text AS "taxRate",
-      tax_amount::text AS "taxAmount", other_tax_amount::text AS "otherTax" FROM invoice_lines WHERE invoice_id = $1 ORDER BY line_no`, [id])).rows;
+      tax_amount::text AS "taxAmount", other_tax_amount::text AS "otherTax", other_taxes AS "otherTaxes" FROM invoice_lines WHERE invoice_id = $1 ORDER BY line_no`, [id])).rows;
   const allocations = (await tx.query(`SELECT a.line_no AS "lineNo", a.po_line_id AS "poLineId", a.contract_version_id AS "contractVersionId", trim_scale(a.quantity)::text AS quantity,
       a.amount::text, po.id AS "poId", po.code AS "poCode", pl.description AS "poLineDescription", f.title AS "contractTitle"
     FROM invoice_allocations a LEFT JOIN po_lines pl ON pl.id = a.po_line_id LEFT JOIN purchase_orders po ON po.id = pl.po_id
@@ -693,7 +701,8 @@ export interface EInvoiceIntake { created: boolean; invoiceId: string | null; du
 export async function invoiceFromEInvoice(tx: Tx, ctx: TenantContext, o: {
   companyId: string; documentVersionId: string; supplierId: string;
   ubl: { invoiceNumber: string | null; ettn: string | null; issueDate: string | null; currency: string | null; typeCode: string | null; billingReference: string | null;
-    buyer: { taxId: string | null }; lines: { description: string; quantity: string | null; unitCode: string | null; unitPrice: string | null; netAmount: string | null; taxRate: string | null; taxAmount: string | null; otherTax: string | null }[];
+    buyer: { taxId: string | null }; lines: { description: string; quantity: string | null; unitCode: string | null; unitPrice: string | null; netAmount: string | null; taxRate: string | null; taxAmount: string | null; otherTax: string | null;
+      otherTaxes?: { code: string; name: string | null; rate: string | null; amount: string }[] }[];
     totals: { taxTotal: string | null; otherTaxTotal: string | null; withholding: string | null; payable: string | null } };
 }): Promise<EInvoiceIntake> {
   const u = o.ubl;
@@ -714,11 +723,14 @@ export async function invoiceFromEInvoice(tx: Tx, ctx: TenantContext, o: {
   for (const [i, l] of u.lines.entries()) {
     if (!l.quantity || !l.netAmount || !isDecimal(l.quantity) || !isDecimal(l.netAmount) || dec(l.quantity) <= 0n || dec(l.netAmount) < 0n) return skip(`Satır ${i + 1}: miktar veya tutar okunamadı.`);
     if (!nonNeg(l.taxAmount) || !nonNeg(l.otherTax) || (l.taxRate !== null && !nonNeg(l.taxRate))) return skip(`Satır ${i + 1}: vergi oranı veya tutarı okunamadı.`);
+    if ((l.otherTaxes ?? []).some((t) => !nonNeg(t.amount) || !nonNeg(t.rate))) return skip(`Satır ${i + 1}: KDV dışı vergi oranı veya tutarı okunamadı.`);
     // Satır indirimi varsa birim fiyat net/miktar olarak alınır (sipariş fiyatıyla karşılaştırılan değer budur).
     const listed = l.unitPrice && isDecimal(l.unitPrice) ? l.unitPrice : null;
     const effective = listed && cmp(absDec(amount(l.quantity, listed) - dec(l.netAmount)), dec('0.01')) <= 0 ? listed : str(div(dec(l.netAmount), dec(l.quantity)), 6);
     lines.push({ description: l.description || `Satır ${i + 1}`, quantity: str(dec(l.quantity), 6), unit: UNIT_CODES[l.unitCode ?? ''] ?? l.unitCode ?? 'adet',
-      unitPrice: effective, netAmount: str(dec(l.netAmount)), taxRate: l.taxRate && isDecimal(l.taxRate) ? l.taxRate : '0', taxAmount: l.taxAmount ? str(dec(l.taxAmount)) : null, otherTax: l.otherTax ? str(dec(l.otherTax)) : null });
+      unitPrice: effective, netAmount: str(dec(l.netAmount)), taxRate: l.taxRate && isDecimal(l.taxRate) ? l.taxRate : '0', taxAmount: l.taxAmount ? str(dec(l.taxAmount)) : null, otherTax: l.otherTax ? str(dec(l.otherTax)) : null,
+      // Vergi kalemleri: okunamayan oran "maktu" sayılmaz, kayıt açılmaz (yukarıda kontrol edilir).
+      otherTaxes: l.otherTaxes?.length ? l.otherTaxes.map((t) => ({ code: t.code, name: t.name, rate: t.rate, amount: str(dec(t.amount)) })) : null });
   }
   let kind: InvoiceInput['kind'] = 'INVOICE';
   let originalInvoiceId: string | null = null;

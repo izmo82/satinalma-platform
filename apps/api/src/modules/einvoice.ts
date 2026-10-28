@@ -29,7 +29,9 @@ export interface EInvoiceExtraction {
   /** Belgede beyan edilen toplamlar; kontrol bunlarla satırları karşılaştırır, kendisi doğru kabul etmez. */
   totals: { lineExtension: string | null; taxExclusive: string | null; taxInclusive: string | null; taxTotal: string | null; otherTaxTotal: string | null; withholding: string | null; payable: string | null };
 }
-export interface EInvoiceLine { description: string; quantity: string | null; unitCode: string | null; unitPrice: string | null; netAmount: string | null; taxRate: string | null; taxAmount: string | null; otherTax: string | null }
+export interface EInvoiceLine { description: string; quantity: string | null; unitCode: string | null; unitPrice: string | null; netAmount: string | null; taxRate: string | null; taxAmount: string | null; otherTax: string | null;
+  /** KDV dışı vergiler tek tek (kod, ad, oran, tutar); oran yoksa maktu. */
+  otherTaxes: { code: string; name: string | null; rate: string | null; amount: string }[] }
 
 const parser = new XMLParser({
   ignoreAttributes: false,
@@ -70,16 +72,21 @@ function party(p: Node | undefined, path: string): ExtractedParty {
 
 /**
  * Satır vergileri: KDV (TaxTypeCode 0015) oranı ve tutarı; KDV dışı vergiler (ÖTV, ÖİV…) toplamı ayrı.
- * KDV dışı vergiler KDV matrahına girer ve ödenecek tutara eklenir; tutarları beyandır, oranları bu sürümde kontrol edilmez.
+ * KDV dışı vergiler KDV matrahına girer ve ödenecek tutara eklenir; her biri kod, ad ve (varsa) oranıyla ayrı alınır, oranlı olanlar
+ * eşleştirme kontrolünde net × oran ile denetlenir.
  */
-function lineTaxes(totals: Node[] | undefined): { rate: string | null; amount: string | null; other: string | null } {
+function lineTaxes(totals: Node[] | undefined): { rate: string | null; amount: string | null; other: string | null; others: EInvoiceLine['otherTaxes'] } {
   let rate: string | null = null; let amount: string | null = null; const other: string[] = [];
+  const others: EInvoiceLine['otherTaxes'] = [];
   for (const t of totals ?? []) for (const st of (t?.TaxSubtotal ?? []) as Node[]) {
     const code = text(st?.TaxCategory?.TaxScheme?.TaxTypeCode);
     if ((code === '0015' || code === null) && amount === null) { rate = text(st?.Percent) ?? text(st?.TaxCategory?.Percent); amount = text(st?.TaxAmount); }
-    else if (code !== '0015' && code !== null) { const a = text(st?.TaxAmount); if (a) other.push(a); }
+    else if (code !== '0015' && code !== null) {
+      const a = text(st?.TaxAmount);
+      if (a) { other.push(a); others.push({ code, name: text(st?.TaxCategory?.TaxScheme?.Name), rate: text(st?.Percent) ?? text(st?.TaxCategory?.Percent), amount: a }); }
+    }
   }
-  return { rate, amount, other: other.length ? sumDec(other) ?? 'INVALID' : null };
+  return { rate, amount, other: other.length ? sumDec(other) ?? 'INVALID' : null, others };
 }
 /** Belge düzeyi toplam: KDV alt toplamları, KDV dışı vergiler veya (tevkifat için) tümü. Ondalık dizge toplamı (float yok). */
 function sumTax(totals: Node[] | undefined, which: 'VAT' | 'OTHER' | 'ALL'): string | null {
@@ -125,7 +132,7 @@ export function parseUblInvoice(xml: Buffer): EInvoiceExtraction | null {
       return {
         description: text(l.Item?.Name) ?? text(l.Item?.Description) ?? text(l.Note) ?? '',
         quantity: text(l.InvoicedQuantity), unitCode: l.InvoicedQuantity?.['@unitCode'] ?? null,
-        unitPrice: text(l.Price?.PriceAmount), netAmount: text(l.LineExtensionAmount), taxRate: v.rate, taxAmount: v.amount, otherTax: v.other,
+        unitPrice: text(l.Price?.PriceAmount), netAmount: text(l.LineExtensionAmount), taxRate: v.rate, taxAmount: v.amount, otherTax: v.other, otherTaxes: v.others,
       };
     }),
     totals: {

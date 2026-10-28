@@ -11,6 +11,7 @@ import { closeTasks, openTask } from '../tasks.ts';
 import { ApiError, conflict, forbidden, notFound, unprocessable } from '../errors.ts';
 import { inspectUpload } from '../files.ts';
 import { objectKey, type ObjectStore } from '../storage.ts';
+import * as approvals from './approvals.ts';
 
 /**
  * Faz 2: proje → RFQ turu (görev ayrılıklı yayın onayı) → tedarikçi portalı (mühürlü teklif, sunucu saati)
@@ -161,34 +162,56 @@ export async function requestPublish(tx: Tx, ctx: TenantContext, id: string, ifM
   if (sup.rowCount !== ids.length) throw unprocessable('unknown_supplier', 'Davet listesinde bulunamayan tedarikçi var.');
   const bad = sup.rows.filter((s) => !['ACTIVE', 'CONDITIONAL', 'CANDIDATE'].includes(s.status));
   if (bad.length) throw unprocessable('supplier_not_eligible', `Davet edilemez: ${bad.map((s) => s.legal_name).join(', ')} (askıda, reddedilmiş veya arşivde).`);
+  // Kurum politikası (onay motoru): onay adımları, en az davetli ve en az teklif süresi. Altında kalmak onaylı istisna ister.
+  const { policyId, plan } = await approvals.planFor(tx, { action: 'RFQ_PUBLISH', companyId: p.company_id, category: p.category, currency: p.currency, amount: p.budget });
+  const usable = (kind: string) => tx.query<{ id: string; details: { supplierId?: string } }>(`SELECT id, details FROM sourcing_exceptions WHERE project_id = $1 AND kind = $2 AND status = 'APPROVED' FOR UPDATE`, [id, kind]).then((x) => x.rows[0] ?? null);
+  const used: string[] = [];
+  if (plan.minInvitees && ids.length < plan.minInvitees) {
+    const ex = await usable('SINGLE_SOURCE');
+    // Tek kaynak istisnası onaylandığı tedarikçiye bağlıdır: davet listesi yalnız o tedarikçi olmalı.
+    if (ex && !(ids.length === 1 && ids[0] === ex.details.supplierId)) throw unprocessable('single_source_mismatch', 'Onaylı tek kaynak istisnası başka bir tedarikçi için verildi; davet yalnız o tedarikçiye yapılabilir.');
+    if (!ex) throw unprocessable('min_invitees', `Kurum politikası en az ${plan.minInvitees} tedarikçi daveti istiyor (${ids.length} seçildi). Daha az davet için onaylı tek kaynak istisnası gerekir.`, { minInvitees: plan.minInvitees, explanation: plan.explanation });
+    used.push(ex.id);
+  }
+  const days = (closesAt.getTime() - Date.now()) / 86_400_000;
+  if (plan.minResponseDays && days < plan.minResponseDays) {
+    const ex = await usable('URGENT');
+    if (!ex) throw unprocessable('min_response_days', `Kurum politikası teklif için en az ${plan.minResponseDays} gün istiyor. Daha kısa süre için onaylı acil alım istisnası gerekir.`, { minResponseDays: plan.minResponseDays, explanation: plan.explanation });
+    used.push(ex.id);
+  }
   const roundNo = (await tx.query<{ n: number }>(`SELECT coalesce(max(round_no), 0) + 1 AS n FROM rfq_rounds WHERE project_id = $1`, [id])).rows[0]!.n;
   const round = (await tx.query<{ id: string }>(`INSERT INTO rfq_rounds (tenant_id, company_id, project_id, round_no, closes_at, requested_by)
     VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`, [ctx.tenantId, p.company_id, id, roundNo, closesAt, ctx.userId])).rows[0]!;
+  for (const ex of used) await tx.query(`UPDATE sourcing_exceptions SET status = 'USED', used_round_id = $2 WHERE id = $1`, [ex, round.id]);
   for (const s of ids) {
     await tx.query(`INSERT INTO rfq_invitations (tenant_id, company_id, project_id, round_id, supplier_id, invited_by) VALUES ($1,$2,$3,$4,$5,$6)`,
       [ctx.tenantId, p.company_id, id, round.id, s, ctx.userId]);
   }
   await bump(tx, id, 'IN_APPROVAL');
-  await openTask(tx, ctx, {
-    companyId: p.company_id, kind: 'rfq_publish_approval', entityType: 'project', entityId: id,
-    title: `Yayın onayı: ${p.title}`, reason: `${roundNo}. teklif turu ${ids.length} tedarikçiyle yayına hazır; görev ayrılığı gereği başlatan onaylayamaz.`,
-    nextAction: 'Kalemleri, bütçeyi ve kriterleri inceleyip yayını onaylayın veya geri gönderin.', assigneeRole: 'PROCUREMENT_MANAGER',
-    dueAt: closesAt, dedupeKey: `rfq-publish:${round.id}`,
-  });
-  await audit(tx, ctx, 'rfq.publish_requested', 'rfq_round', round.id, { projectId: id, roundNo, suppliers: ids.length, closesAt });
-  return { roundId: round.id, roundNo };
+  await approvals.openRequest(tx, ctx, { companyId: p.company_id, entityType: 'rfq_round', entityId: round.id, action: 'RFQ_PUBLISH', policyId, plan,
+    title: `Yayın onayı: ${p.title} (${roundNo}. tur, ${ids.length} tedarikçi)`, projectId: id });
+  await audit(tx, ctx, 'rfq.publish_requested', 'rfq_round', round.id, { projectId: id, roundNo, suppliers: ids.length, closesAt, policyVersion: plan.policyVersion, steps: plan.steps.length, exceptions: used });
+  return { roundId: round.id, roundNo, approval: { steps: plan.steps, explanation: plan.explanation } };
 }
 
 export async function decidePublish(tx: Tx, ctx: TenantContext, roundId: string, body: { approve: boolean; note?: string }) {
-  const r = (await tx.query<{ id: string; project_id: string; status: string; requested_by: string; closes_at: Date }>(
-    `SELECT id, project_id, status, requested_by, closes_at FROM rfq_rounds WHERE id = $1 FOR UPDATE`, [roundId])).rows[0];
+  const r = (await tx.query<{ id: string; project_id: string; company_id: string; status: string; requested_by: string; closes_at: Date; round_no: number }>(
+    `SELECT id, project_id, company_id, status, requested_by, closes_at, round_no FROM rfq_rounds WHERE id = $1 FOR UPDATE`, [roundId])).rows[0];
   if (!r) throw notFound();
   if (r.status !== 'PENDING_APPROVAL') throw conflict('already_decided', 'Bu tur için karar zaten verildi.');
-  if (r.requested_by === ctx.userId) throw new ApiError(403, 'segregation_of_duties', 'Yayını başlatan kişi tek başına onaylayamaz (görev ayrılığı).');
-  if (!body.approve && (body.note ?? '').trim().length < 5) throw unprocessable('note_required', 'Geri gönderme nedeni gerekli.');
   if (body.approve && r.closes_at.getTime() <= Date.now()) throw unprocessable('closes_at_passed', 'Kapanış zamanı geçmiş; yeni kapanışla tekrar gönderilmeli.');
   const p = await loadProject(tx, r.project_id, true);
+  // Politika adımları: talep eden onaylayamaz, aynı kişi iki adımı onaylayamaz, adım rolü zorunlu.
+  const step = await approvals.decideStep(tx, ctx, { entityType: 'rfq_round', entityId: roundId, action: 'RFQ_PUBLISH', companyId: r.company_id, requestedBy: r.requested_by,
+    title: `Yayın onayı: ${p.title} (${r.round_no}. tur)`, projectId: p.id }, body.approve, body.note);
+  if (step === 'PENDING') return { status: 'PENDING_APPROVAL' };
   if (body.approve) {
+    // Teklif süresi tedarikçi için yayın anında başlar: onay gecikmesi politikadaki en az süreyi kısaltmamalı.
+    const minDays = (await tx.query<{ d: number | null }>(`SELECT (plan->>'minResponseDays')::int AS d FROM approval_requests WHERE entity_type = 'rfq_round' AND entity_id = $1`, [roundId])).rows[0]?.d ?? null;
+    const urgent = (await tx.query(`SELECT 1 FROM sourcing_exceptions WHERE used_round_id = $1 AND kind = 'URGENT'`, [roundId])).rowCount;
+    if (minDays && !urgent && (r.closes_at.getTime() - Date.now()) / 86_400_000 < minDays) {
+      throw unprocessable('closes_at_too_short', `Onay sürecinde kalan teklif süresi politikadaki en az ${minDays} günün altına düştü; geri gönderip yeni kapanışla yayına gönderin veya acil alım istisnası alın.`);
+    }
     await tx.query(`UPDATE rfq_rounds SET status = 'OPEN', approved_by = $2, approved_at = now() WHERE id = $1`, [roundId, ctx.userId]);
     await bump(tx, p.id, 'OPEN');
   } else {
@@ -199,6 +222,74 @@ export async function decidePublish(tx: Tx, ctx: TenantContext, roundId: string,
   await closeTasks(tx, `rfq-publish:${roundId}`);
   await audit(tx, ctx, body.approve ? 'rfq.published' : 'rfq.publish_rejected', 'rfq_round', roundId, { projectId: p.id }, body.note);
   return { status: body.approve ? 'OPEN' : 'CANCELLED' };
+}
+
+// --- Kaynak bulma istisnaları (02 §5): tek kaynak, acil alım, iptal, sonuçsuz kapanış; onay motoruyla karara bağlanır ---
+
+const EX_TEXT = { SINGLE_SOURCE: 'Tek kaynak', URGENT: 'Acil alım', CANCEL: 'Projeyi iptal', NO_AWARD: 'Sonuçsuz kapanış' } as const;
+type ExKind = keyof typeof EX_TEXT;
+const EX_STATES: Record<ExKind, string[]> = {
+  SINGLE_SOURCE: ['DRAFT', 'EVALUATION'], URGENT: ['DRAFT', 'EVALUATION'],
+  CANCEL: ['DRAFT', 'IN_APPROVAL', 'OPEN', 'EVALUATION', 'AWARD_APPROVAL'], NO_AWARD: ['EVALUATION'],
+};
+
+export async function requestException(tx: Tx, ctx: TenantContext, projectId: string, b: { kind: ExKind; reason: string; supplierId?: string | null }) {
+  const p = await loadProject(tx, projectId, true);
+  if (!EX_STATES[b.kind].includes(p.status)) throw conflict('invalid_state', `${EX_TEXT[b.kind]} istisnası bu aşamada istenemez.`);
+  if (b.reason.trim().length < 20) throw unprocessable('reason_required', 'Gerekçe en az 20 karakter olmalı (neden, kapsam, alternatifler).');
+  if (b.kind === 'SINGLE_SOURCE') {
+    if (!b.supplierId) throw unprocessable('supplier_required', 'Tek kaynak istisnasında tedarikçi seçilmeli.');
+    const sup = (await tx.query<{ status: string }>(`SELECT status FROM suppliers WHERE id = $1`, [b.supplierId])).rows[0];
+    if (!sup) throw notFound();
+  }
+  const ex = (await tx.query<{ id: string }>(`INSERT INTO sourcing_exceptions (tenant_id, company_id, project_id, kind, reason, details, requested_by) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+    [ctx.tenantId, p.company_id, projectId, b.kind, b.reason.trim(), b.supplierId ? { supplierId: b.supplierId } : {}, ctx.userId])).rows[0]!;
+  const { policyId, plan } = await approvals.planFor(tx, { action: 'SOURCING_EXCEPTION', companyId: p.company_id, category: p.category, currency: p.currency, amount: p.budget });
+  await approvals.openRequest(tx, ctx, { companyId: p.company_id, entityType: 'sourcing_exception', entityId: ex.id, action: 'SOURCING_EXCEPTION', policyId, plan,
+    title: `${EX_TEXT[b.kind]} istisnası: ${p.title}`, projectId });
+  await audit(tx, ctx, 'sourcing.exception_requested', 'project', projectId, { exceptionId: ex.id, kind: b.kind }, b.reason.trim());
+  return { id: ex.id, approval: { steps: plan.steps, explanation: plan.explanation } };
+}
+
+export async function decideException(tx: Tx, ctx: TenantContext, exceptionId: string, b: { approve: boolean; note?: string }) {
+  const ex = (await tx.query<{ project_id: string; company_id: string; kind: ExKind; status: string; requested_by: string }>(
+    `SELECT project_id, company_id, kind, status, requested_by FROM sourcing_exceptions WHERE id = $1 FOR UPDATE`, [exceptionId])).rows[0];
+  if (!ex) throw notFound();
+  if (ex.status !== 'REQUESTED') throw conflict('already_decided', 'Bu istisna için karar verildi.');
+  const p = await loadProject(tx, ex.project_id, true);
+  if (b.approve && !EX_STATES[ex.kind].includes(p.status)) throw conflict('invalid_state', `Proje aşaması değişti (${p.status}); istisna artık uygulanamaz, geri gönderin.`);
+  const step = await approvals.decideStep(tx, ctx, { entityType: 'sourcing_exception', entityId: exceptionId, action: 'SOURCING_EXCEPTION', companyId: ex.company_id,
+    requestedBy: ex.requested_by, title: `${EX_TEXT[ex.kind]} istisnası: ${p.title}`, projectId: p.id }, b.approve, b.note);
+  if (step === 'PENDING') return { status: 'REQUESTED' };
+  if (step === 'REJECTED') {
+    await tx.query(`UPDATE sourcing_exceptions SET status = 'REJECTED', decided_at = now() WHERE id = $1`, [exceptionId]);
+    await audit(tx, ctx, 'sourcing.exception_rejected', 'project', p.id, { exceptionId, kind: ex.kind }, b.note);
+    return { status: 'REJECTED' };
+  }
+  await tx.query(`UPDATE sourcing_exceptions SET status = 'APPROVED', decided_at = now() WHERE id = $1`, [exceptionId]);
+  if (ex.kind === 'CANCEL' || ex.kind === 'NO_AWARD') {
+    // Proje kapanır: bekleyen/açık turlar ve karar bekleyen seçim önerisi kapanır (tedarikçi portalında tur kapalı görünür).
+    const reason = ex.kind === 'CANCEL' ? 'Proje iptal edildi (onaylı istisna).' : 'Proje sonuçsuz kapandı (onaylı istisna).';
+    const rounds = (await tx.query<{ id: string }>(`UPDATE rfq_rounds SET status = 'CANCELLED', close_reason = $2 WHERE project_id = $1 AND status IN ('PENDING_APPROVAL','OPEN') RETURNING id`, [p.id, reason])).rows;
+    for (const r of rounds) { await approvals.cancelRequest(tx, 'rfq_round', r.id); await closeTasks(tx, `rfq-publish:${r.id}`); }
+    const awards = (await tx.query<{ id: string }>(`UPDATE awards SET status = 'REJECTED', decided_by = $2, decided_at = now(), decision_note = $3 WHERE project_id = $1 AND status = 'PROPOSED' RETURNING id`, [p.id, ctx.userId, reason])).rows;
+    for (const a of awards) { await approvals.cancelRequest(tx, 'award', a.id); await closeTasks(tx, `award:${a.id}`); }
+    // Bu projenin kullanılmamış diğer istisnaları da düşer (onay kayıtları ve görevleriyle).
+    const siblings = (await tx.query<{ id: string }>(`UPDATE sourcing_exceptions SET status = 'REJECTED', decided_at = now() WHERE project_id = $1 AND id <> $2 AND status IN ('REQUESTED','APPROVED') RETURNING id`, [p.id, exceptionId])).rows;
+    for (const x of siblings) await approvals.cancelRequest(tx, 'sourcing_exception', x.id);
+    await bump(tx, p.id, ex.kind === 'CANCEL' ? 'CANCELLED' : 'NO_AWARD');
+  }
+  await audit(tx, ctx, 'sourcing.exception_approved', 'project', p.id, { exceptionId, kind: ex.kind });
+  return { status: 'APPROVED' };
+}
+
+export async function listExceptions(tx: Tx, ctx: TenantContext, projectId: string) {
+  const rows = (await tx.query<{ id: string }>(`SELECT x.id, x.kind, x.reason, x.details, x.status, x.requested_at AS "requestedAt", u.display_name AS "requestedBy", x.requested_by = $2 AS "requestedByMe",
+      x.decided_at AS "decidedAt", s.legal_name AS "supplierName"
+    FROM sourcing_exceptions x JOIN users u ON u.id = x.requested_by LEFT JOIN suppliers s ON s.id = (x.details->>'supplierId')::uuid
+    WHERE x.project_id = $1 ORDER BY x.requested_at DESC`, [projectId, ctx.userId])).rows;
+  for (const r of rows as any[]) r.approval = await approvals.stateFor(tx, ctx, 'sourcing_exception', r.id);
+  return rows;
 }
 
 /** Yetkili erken kapanış: gerekçe zorunlu (02 §5 durum tablosu). */
@@ -299,7 +390,11 @@ export async function getProject(tx: Tx, ctx: TenantContext, id: string) {
     a.lines = (await tx.query(`SELECT al.project_line_id AS "projectLineId", al.supplier_id AS "supplierId", s.legal_name AS "supplierName",
         trim_scale(al.quantity)::text AS quantity, trim_scale(al.unit_price)::text AS "unitPrice", al.amount::text FROM award_lines al JOIN suppliers s ON s.id = al.supplier_id WHERE al.award_id = $1`, [a.id])).rows;
     a.evaluationCurrent = evaluations.find((e) => e.id === a.evaluationId)?.current ?? false;
+    a.approval = await approvals.stateFor(tx, ctx, 'award', a.id);
   }
+  const roundApproval = round ? await approvals.stateFor(tx, ctx, 'rfq_round', round.id) : null;
+  // Yeni tur için geçerli politika (davet ve süre kuralları ekranda önceden görünür).
+  const publishPolicy = (await approvals.planFor(tx, { action: 'RFQ_PUBLISH', companyId: p.company_id, category: p.category, currency: p.currency, amount: p.budget })).plan;
   const criteriaHistory = (await tx.query(`SELECT DISTINCT revision, reason, created_at AS "createdAt" FROM evaluation_criteria WHERE project_id = $1 ORDER BY revision`, [id])).rows;
   return {
     project: {
@@ -308,8 +403,10 @@ export async function getProject(tx: Tx, ctx: TenantContext, id: string) {
       ownedByMe: p.owner_user_id === ctx.userId, etag: projectEtag(p), updatedAt: p.updated_at,
     },
     lines: await currentLines(tx, id), criteria: await currentCriteria(tx, id), criteriaHistory,
-    round: round && { id: round.id, roundNo: round.round_no, closesAt: round.closes_at, status: round.status, requestedByMe: round.requested_by === ctx.userId, closeReason: round.close_reason },
-    invitations, questions, evaluations, awards, serverTime: new Date(),
+    round: round && { id: round.id, roundNo: round.round_no, closesAt: round.closes_at, status: round.status, requestedByMe: round.requested_by === ctx.userId, closeReason: round.close_reason, approval: roundApproval },
+    invitations, questions, evaluations, awards, exceptions: await listExceptions(tx, ctx, id),
+    publishPolicy: { minInvitees: publishPolicy.minInvitees, minResponseDays: publishPolicy.minResponseDays, steps: publishPolicy.steps, explanation: publishPolicy.explanation },
+    serverTime: new Date(),
   };
 }
 
@@ -396,24 +493,22 @@ export async function proposeAward(tx: Tx, ctx: TenantContext, id: string, body:
   }
   await bump(tx, id, 'AWARD_APPROVAL');
   const notActive = comparison.bids.filter((b) => body.allocations.some((x) => x.supplierId === b.supplierId) && b.supplierStatus !== 'ACTIVE');
-  await openTask(tx, ctx, {
-    companyId: p.company_id, kind: 'award_approval', entityType: 'project', entityId: id, title: `Seçim onayı: ${p.title}`,
-    reason: `Değerlendirme v${ev.versionNo} üzerinden ${body.allocations.length} satırlık tahsis önerildi.${notActive.length ? ` Aktif olmayan tedarikçi: ${notActive.map((b) => b.supplierName).join(', ')}.` : ''}`,
-    nextAction: 'Tahsisi, gerekçeyi ve karşılaştırmayı inceleyip onaylayın veya geri gönderin.', assigneeRole: 'PROCUREMENT_MANAGER',
-    severity: notActive.length ? 'HIGH' : 'NORMAL', dedupeKey: `award:${a.id}`,
-  });
+  const { policyId, plan } = await approvals.planFor(tx, { action: 'AWARD', companyId: p.company_id, category: p.category, currency: p.currency, amount: v.total });
+  await approvals.openRequest(tx, ctx, { companyId: p.company_id, entityType: 'award', entityId: a.id, action: 'AWARD', policyId, plan,
+    title: `Seçim onayı: ${p.title}${notActive.length ? ` (aktif olmayan tedarikçi: ${notActive.map((b) => b.supplierName).join(', ')})` : ''}`, projectId: id });
   await audit(tx, ctx, 'award.proposed', 'award', a.id, { projectId: id, evaluationId: ev.id, total: v.total, lines: body.allocations.length });
   return { id: a.id, versionNo, total: v.total, warnings: notActive.map((b) => `${b.supplierName} aktif değil; onay için aktivasyon gerekir.`) };
 }
 
 export async function decideAward(tx: Tx, ctx: TenantContext, awardId: string, body: { approve: boolean; note?: string }) {
-  const a = (await tx.query<{ id: string; project_id: string; evaluation_id: string; status: string; proposed_by: string }>(
-    `SELECT id, project_id, evaluation_id, status, proposed_by FROM awards WHERE id = $1 FOR UPDATE`, [awardId])).rows[0];
+  const a = (await tx.query<{ id: string; project_id: string; company_id: string; evaluation_id: string; status: string; proposed_by: string }>(
+    `SELECT id, project_id, company_id, evaluation_id, status, proposed_by FROM awards WHERE id = $1 FOR UPDATE`, [awardId])).rows[0];
   if (!a) throw notFound();
   if (a.status !== 'PROPOSED') throw conflict('already_decided', 'Bu öneri için karar verildi.');
   if (a.proposed_by === ctx.userId) throw new ApiError(403, 'segregation_of_duties', 'Öneriyi yapan kişi tek başına onaylayamaz (görev ayrılığı).');
   if (!body.approve && (body.note ?? '').trim().length < 5) throw unprocessable('note_required', 'Geri gönderme nedeni gerekli.');
   if (body.approve) {
+    // Engel varsa adım kaydedilmeden önce söylenir (geçersiz karara onay adımı yazılmaz).
     const ev = await getEvaluation(tx, a.evaluation_id);
     if (!ev.current) throw conflict('evaluation_stale', 'Öneri yapıldıktan sonra değerlendirme dayanağı değişti; güncel olmayan karar onaylanamaz.');
     const allocations: AwardAllocation[] = (await tx.query(`SELECT project_line_id AS "projectLineId", supplier_id AS "supplierId", trim_scale(quantity)::text AS quantity FROM award_lines WHERE award_id = $1`, [awardId])).rows;
@@ -425,6 +520,10 @@ export async function decideAward(tx: Tx, ctx: TenantContext, awardId: string, b
     if (v.issues.length) throw unprocessable('award_blocked', v.issues[0]!.message, { issues: v.issues });
     await assertNoCriticalBlock(tx, allocations.map((x) => x.supplierId));
   }
+  const p = await loadProject(tx, a.project_id);
+  const step = await approvals.decideStep(tx, ctx, { entityType: 'award', entityId: awardId, action: 'AWARD', companyId: a.company_id, requestedBy: a.proposed_by,
+    title: `Seçim onayı: ${p.title}`, projectId: a.project_id }, body.approve, body.note);
+  if (step === 'PENDING') return { status: 'PROPOSED' };
   await tx.query(`UPDATE awards SET status = $2, decided_by = $3, decided_at = now(), decision_note = $4 WHERE id = $1`,
     [awardId, body.approve ? 'APPROVED' : 'REJECTED', ctx.userId, body.note?.trim() || null]);
   await bump(tx, a.project_id, body.approve ? 'CONTRACTING' : 'EVALUATION');
