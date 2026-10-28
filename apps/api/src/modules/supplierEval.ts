@@ -502,7 +502,7 @@ export async function setWeightPolicy(tx: Tx, ctx: TenantContext, b: { category:
   const err = validateWeights(b.weights);
   if (err) throw unprocessable('invalid_weights', err);
   if (b.reason.trim().length < 10) throw unprocessable('reason_required', 'Gerekçe gerekli (en az 10 karakter).');
-  await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`weights:${ctx.tenantId}:${b.category.trim().toLocaleLowerCase('tr-TR')}`]);
+  await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`weights:${ctx.tenantId}:${b.category.trim().toLowerCase()}`]);
   await tx.query(`UPDATE performance_weight_policies SET retired_at = now() WHERE retired_at IS NULL AND lower(btrim(category)) = lower(btrim($1))`, [b.category]);
   const r = (await tx.query<{ id: string }>(`INSERT INTO performance_weight_policies (tenant_id, category, weights, reason, set_by) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
     [ctx.tenantId, b.category.trim(), b.weights, b.reason.trim(), ctx.userId])).rows[0]!;

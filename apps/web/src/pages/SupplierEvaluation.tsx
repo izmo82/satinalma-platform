@@ -263,8 +263,9 @@ function PerformanceForm({ supplierId, year, onDone }: { supplierId: string; yea
   const [scores, setScores] = useState<Record<string, string>>({});
   const [err, setErr] = useState<string | null>(null);
   const policies = useResource<{ items: WeightPolicy[] }>('/api/v1/performance-weights');
-  const key = f.category.trim().toLocaleLowerCase('tr-TR');
-  const applied = key ? policies.data?.items.find((x) => !x.retiredAt && x.category.trim().toLocaleLowerCase('tr-TR') === key) : undefined;
+  // Sunucu kategoriyi PostgreSQL lower() ile eşler; ekran aynı (dil bağımsız) küçültmeyi kullanır, yoksa "I"/"ı" farkı yanıltır.
+  const key = f.category.trim().toLowerCase();
+  const applied = key ? policies.data?.items.find((x) => !x.retiredAt && x.category.trim().toLowerCase() === key) : undefined;
   return (
     <form className="panel" onSubmit={(e) => { e.preventDefault(); setErr(null);
       void api(`/api/v1/suppliers/${supplierId}/performance-reviews`, { method: 'POST', json: { ...f, scores: Object.fromEntries(Object.entries(scores).filter(([, v]) => v !== '').map(([k, v]) => [k, Number(v)])) } })

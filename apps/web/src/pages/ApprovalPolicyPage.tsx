@@ -122,7 +122,7 @@ function DraftEditor({ draft, setDraft, busy, onSave }: { draft: { rules: Rule[]
           </fieldset>
         ))}
         <div><Button type="button" variant="outline" onClick={() => setDraft({ ...draft, rules: [...draft.rules, blankRule(draft.rules.length + 1)] })}>Kural ekle</Button></div>
-        <Field label="Değişiklik notu" hint="Neden değişti; denetim kaydına ve sürüm kartına yazılır.">{(p) => <textarea className="input" rows={2} required minLength={10} {...p} value={draft.note} onChange={(e) => setDraft({ ...draft, note: e.target.value })} />}</Field>
+        <Field label="Değişiklik notu" hint="Zorunlu (en az 10 karakter): neden değişti; denetim kaydına ve sürüm kartına yazılır.">{(p) => <textarea className="input" rows={2} required minLength={10} {...p} value={draft.note} onChange={(e) => setDraft({ ...draft, note: e.target.value })} />}</Field>
         <div className="flex gap-2"><Button type="submit" disabled={busy || draft.note.trim().length < 10}>Taslağı kaydet</Button><Button type="button" variant="ghost" onClick={() => setDraft(null)}>Vazgeç</Button></div>
       </div>
     </form>

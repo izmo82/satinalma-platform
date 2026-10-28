@@ -721,9 +721,13 @@ export async function buildApp(deps: AppDeps) {
       minAmount: amount2, maxAmount: { anyOf: [amount2, { type: 'null' }] },
       steps: { type: 'array', minItems: 1, maxItems: 6, items: { type: 'object', additionalProperties: false, required: ['role', 'label'],
         properties: { role: { type: 'string', enum: ['PROCUREMENT_MANAGER', 'FINANCE', 'LEGAL', 'SECURITY'] }, label: { type: 'string', minLength: 1, maxLength: 80 } } } },
-      minInvitees: { anyOf: [{ type: 'integer' }, { type: 'null' }] }, minResponseDays: { anyOf: [{ type: 'integer' }, { type: 'null' }] } } } as const;
-  app.get('/api/v1/approval-policies', { schema: { tags: ['approvals'] } }, async (req) => scoped(req, 'project.read', async (tx, ctx) =>
-    ({ items: await approvals.listPolicies(tx, ctx), can: { manage: can(ctx.roles, 'approval.policy.manage') } })));
+      // Tip dizisi: ajv tür zorlaması null'ı yalnız hiçbir tür tutmazsa dönüştürür (anyOf'ta null 0'a çevriliyordu).
+      minInvitees: { type: ['integer', 'null'] }, minResponseDays: { type: ['integer', 'null'] } } } as const;
+  // Politikayı proje kullanıcıları okur (simülasyon); kiracı yöneticisi de yönetir (ikinci kişi olarak yayınlayabilsin).
+  app.get('/api/v1/approval-policies', { schema: { tags: ['approvals'] } }, async (req) => scoped(req, null, async (tx, ctx) => {
+    if (!can(ctx.roles, 'project.read') && !can(ctx.roles, 'approval.policy.manage')) throw forbidden('project.read');
+    return { items: await approvals.listPolicies(tx, ctx), can: { manage: can(ctx.roles, 'approval.policy.manage') } };
+  }));
   app.post('/api/v1/approval-policies', { schema: { tags: ['approvals'], body: { type: 'object', additionalProperties: false, required: ['rules', 'note'],
     properties: { rules: { type: 'array', maxItems: 200, items: ruleSchema }, note: text(2000) } } } }, async (req, reply) =>
     reply.status(201).send(await scoped(req, 'approval.policy.manage', (tx, ctx) => approvals.createDraft(tx, ctx, req.body as any))));

@@ -115,7 +115,12 @@ describe('inceleme bulguları (regresyon)', () => {
     expect(open.rows[0].n).toBe(0);
     const pol = (rules: unknown[]) => h.call('legal2', 'POST', '/api/v1/approval-policies', { body: { note: 'Sürüm denemesi (sentetik).', rules } });
     const old = await pol([]);
-    const newer = await pol([{ id: 'S', action: 'AWARD', currency: 'TRY', minAmount: '0', maxAmount: null, steps: [PM] }]);
+    // Arayüz boş alanları null gönderir; null tür zorlamasıyla 0'a dönmemeli (persona testinde bulunan hata).
+    const newer = await pol([{ id: 'S', action: 'AWARD', currency: 'TRY', minAmount: '0', maxAmount: null, steps: [PM], minInvitees: null, minResponseDays: null }]);
+    expect(newer.status).toBe(201);
+    expect((await pol([{ id: 'Y', action: 'RFQ_PUBLISH', currency: 'TRY', minAmount: '0', maxAmount: null, steps: [PM], minInvitees: null, minResponseDays: 0 }])).status).toBe(201);
+    // Kiracı yöneticisi (politika yöneticisi, proje okuma yok) politikaları görür; ikinci kişi olarak yayınlayabilir.
+    expect((await h.call('tenantAdmin', 'GET', '/api/v1/approval-policies')).body.can.manage).toBe(true);
     expect((await h.call('tenantAdmin', 'POST', `/api/v1/approval-policies/${newer.body.id}/activate`)).status).toBe(200);
     expect((await h.call('tenantAdmin', 'POST', `/api/v1/approval-policies/${old.body.id}/activate`)).body.error.code).toBe('stale_draft');
   });

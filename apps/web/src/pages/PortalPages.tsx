@@ -291,12 +291,12 @@ export function PortalAssessments() {
         <div className="rounded-md border border-border bg-surface"><Empty icon="inbox" title="Yanıt bekleyen anket yok">Kurum bir anket gönderdiğinde burada görünür.</Empty></div>
       ) : (
         <Table>
-          <TableHeader><TableRow className="hover:bg-transparent"><TableHead>Anket</TableHead><TableHead>Son tarih</TableHead><TableHead>Durum</TableHead><TableHead><span className="sr-only">Eylem</span></TableHead></TableRow></TableHeader>
+          <TableHeader><TableRow className="hover:bg-transparent"><TableHead>Anket</TableHead><TableHead>Durum</TableHead><TableHead><span className="sr-only">Eylem</span></TableHead></TableRow></TableHeader>
           <TableBody>{r.data.items.map((x) => (
             <TableRow key={x.id}>
-              <TableCell className="min-w-[220px]"><span className="block font-semibold">{x.scope}</span><span className="text-sm text-ink-subtle">{x.templateName} v{x.version} · gönderim {fmtDate(x.sentAt)}</span></TableCell>
-              <TableCell className="whitespace-nowrap">{x.due ? fmtDate(x.due) : '—'}</TableCell>
-              <TableCell className="whitespace-nowrap">{x.portalStatus === 'SUBMITTED' ? `Gönderildi · ${fmtDateTime(x.submittedAt!)}` : <span className="tabular">{x.answered}/{x.questions} yanıtlandı</span>}</TableCell>
+              <TableCell className="min-w-[160px]"><span className="block font-semibold">{x.scope}</span><span className="text-sm text-ink-subtle">{x.templateName} v{x.version} · gönderim {fmtDate(x.sentAt)}</span></TableCell>
+              <TableCell className="text-sm">{x.portalStatus === 'SUBMITTED' ? `Gönderildi · ${fmtDateTime(x.submittedAt!)}` : <span className="tabular">{x.answered}/{x.questions} yanıtlandı</span>}
+                {x.due && x.portalStatus === 'SENT' && <span className="block text-ink-subtle">Son tarih {fmtDate(x.due)}</span>}</TableCell>
               <TableCell><Button asChild size="sm" variant={x.portalStatus === 'SENT' ? 'default' : 'outline'}><Link to={`/portal/anketler/${x.id}`}>{x.portalStatus === 'SENT' ? 'Yanıtla' : 'Görüntüle'}</Link></Button></TableCell>
             </TableRow>
           ))}</TableBody>

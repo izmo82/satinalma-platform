@@ -347,7 +347,8 @@ export function TemplatesPage() {
   const STATUS = { DRAFT: { text: 'Taslak', tone: 'neutral', icon: 'pen' }, PUBLISHED: { text: 'Yayında', tone: 'ok', icon: 'check' }, RETIRED: { text: 'Eski sürüm', tone: 'neutral', icon: 'archive' } } as const;
   return (
     <div className="page">
-      <PageHeader title="Anket şablonları" actions={r.data?.can.manage && !creating && <Button onClick={() => setCreating(true)}>Yeni şablon / sürüm</Button>}>
+      <PageHeader title="Anket şablonları" actions={<>{r.data?.can.manage && !creating && <Button onClick={() => setCreating(true)}>Yeni şablon / sürüm</Button>}
+        <Button asChild variant="outline"><Link to="/performans-agirliklari">Performans ağırlıkları</Link></Button></>}>
         Hizmet kategorisine göre kontrol soruları. Standart metni kopyalanmaz; referans ve eşleme uzman onayına tabidir. Yayımlanan sürüm değişmez; değişiklik yeni sürümdür.
       </PageHeader>
       {creating && <TemplateForm onDone={() => { setCreating(false); void r.reload(); }} />}
@@ -584,13 +585,13 @@ export function PerformanceWeightsPage() {
         <div aria-live="polite" className="mb-3">{a.feedback}</div>
         {!active.length ? <div className="rounded-md border border-border bg-surface"><Empty icon="info" title="Kategori kuralı yok">Tüm incelemelerde örnek ağırlık uygulanır.</Empty></div> : (
           <Table>
-            <TableHeader><TableRow className="hover:bg-transparent"><TableHead>Kategori</TableHead>{DIMS.map(([k, l]) => <TableHead key={k} className="text-right">{l}</TableHead>)}<TableHead>Gerekçe</TableHead><TableHead><span className="sr-only">Eylem</span></TableHead></TableRow></TableHeader>
+            <TableHeader><TableRow className="hover:bg-transparent"><TableHead>Kategori</TableHead>{DIMS.map(([k, l]) => <TableHead key={k} className="text-right">{l}</TableHead>)}<TableHead>Gerekçe</TableHead></TableRow></TableHeader>
             <TableBody>{active.map((x) => (
               <TableRow key={x.id}>
-                <TableCell className="font-semibold">{x.category}<span className="block text-sm font-normal text-ink-subtle">{x.setBy} · {fmtDate(x.createdAt)}</span></TableCell>
+                <TableCell className="min-w-[180px] font-semibold">{x.category}<span className="block text-sm font-normal text-ink-subtle">{x.setBy} · {fmtDate(x.createdAt)}</span>
+                  {r.data!.can.manage && <Button size="sm" variant="outline" className="mt-1.5" onClick={() => start(x.category, x.weights)}>Değiştir<span className="sr-only"> ({x.category})</span></Button>}</TableCell>
                 {DIMS.map(([k]) => <TableCell key={k} className="tabular text-right">%{x.weights[k]}</TableCell>)}
                 <TableCell className="min-w-[200px] text-sm">{x.reason}</TableCell>
-                <TableCell>{r.data!.can.manage && <Button size="sm" variant="outline" onClick={() => start(x.category, x.weights)}>Değiştir</Button>}</TableCell>
               </TableRow>
             ))}</TableBody>
           </Table>

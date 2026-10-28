@@ -1,6 +1,6 @@
 import { can, type Permission } from '@sp/domain';
 import type { TenantContext, Tx } from '../db.ts';
-import { unprocessable } from '../errors.ts';
+import { notFound, unprocessable } from '../errors.ts';
 
 // Üst çubuk araması (04 §Bilgi mimarisi, 03 FR13 "kaynaklı arama"): yalnız kullanıcının okuma izni olan türler, satırlar RLS ile
 // süzülür (şirket kapsamı dışı kayıt hiç dönmez). Her sonuç neyle eşleştiğini söyler. Sayılar yalnız görünen sonuçlardır.
@@ -78,6 +78,7 @@ export async function saveView(tx: Tx, ctx: TenantContext, b: { page: string; na
   return { id: r.id };
 }
 export async function deleteView(tx: Tx, id: string) {
-  await tx.query(`DELETE FROM saved_views WHERE id = $1`, [id]);
+  // RLS: başkasının görünümü görünmez; silinecek satır yoksa 404 (sessiz "başarılı" değil).
+  if (!(await tx.query(`DELETE FROM saved_views WHERE id = $1`, [id])).rowCount) throw notFound();
   return { ok: true };
 }

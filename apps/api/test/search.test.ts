@@ -44,7 +44,7 @@ describe('bildirim ve kayıtlı görünüm', () => {
     expect((await h.call('buyer', 'POST', '/api/v1/saved-views', { body: { page: 'invoices', name: 'Onay bekleyen TRY', params: {} } })).body.error.code).toBe('duplicate_name');
     expect((await h.call('buyer', 'GET', '/api/v1/saved-views?page=invoices')).body.items.map((x: any) => x.name)).toEqual(['Onay bekleyen TRY']);
     expect((await h.call('finance', 'GET', '/api/v1/saved-views?page=invoices')).body.items).toEqual([]);
-    await h.call('finance', 'DELETE', `/api/v1/saved-views/${v.body.id}`); // başkasının görünümü silinemez (RLS: etkisiz)
+    expect((await h.call('finance', 'DELETE', `/api/v1/saved-views/${v.body.id}`)).status).toBe(404); // başkasının görünümü görünmez, silinemez
     expect((await h.call('buyer', 'GET', '/api/v1/saved-views?page=invoices')).body.items).toHaveLength(1);
   });
 });
