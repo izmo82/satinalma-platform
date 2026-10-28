@@ -103,3 +103,6 @@ export const lineState: Record<string, Label> = {
 };
 export const scopeLabel: Record<string, string> = { INCLUDED: 'Dahil', EXCLUDED: 'Kapsam dışı', ALTERNATIVE: 'Alternatif' };
 export const costKindLabel: Record<string, string> = { SHIPPING: 'Nakliye', INSTALLATION: 'Kurulum', MAINTENANCE: 'Bakım', RENEWAL: 'Yenileme', OTHER: 'Diğer' };
+
+/** Tedarikçi anketi yanıtı (kurum ekranı ve tedarikçi portalı aynı metni kullanır). */
+export const ANSWER_RESPONSE = { YES: 'Evet', PARTIAL: 'Kısmen', NO: 'Hayır', NOT_APPLICABLE: 'Uygulanamaz', UNKNOWN: 'Bilinmiyor' } as const;

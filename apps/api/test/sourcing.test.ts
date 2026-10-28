@@ -197,6 +197,9 @@ describe('T10–T12 karşılaştırma, eskime ve bölünmüş tahsis', () => {
   beforeAll(async () => {
     projectId = (await newProject()).id;
     roundId = await publish(projectId, [h.world.suppliers.s1, h.world.suppliers.s2, h.world.suppliers.s3]);
+    // Tasarruf bazı teklifler açılmadan önerilir ve ikinci kişi (finans) onaylar; rapor yalnız onaylı bazla seçim tutarını karşılaştırır.
+    const base = await h.call('buyer', 'POST', `/api/v1/projects/${projectId}/savings-baselines`, { body: { basis: 'PREVIOUS_PRICE', amount: '1100000.00', source: 'Önceki dönem sözleşme bedeli (sentetik).' } });
+    expect((await h.call('finance', 'POST', `/api/v1/savings-baselines/${base.body.id}/decision`, { body: { approve: true } })).body.status).toBe('APPROVED');
     lineIds = (await project(projectId)).lines.map((l: any) => l.id);
     bidOf.s1 = (await submit('supplier1', roundId, bidBody(lineIds, ['42000', '450', '1250']))).body.bidId;
     // En ucuz görünen ama lisansı "paket" biriminde veren teklif (T10).
@@ -283,13 +286,18 @@ describe('T10–T12 karşılaştırma, eskime ve bölünmüş tahsis', () => {
     expect(blocked.status).toBe(422);
     expect(blocked.body.error.code).toBe('award_blocked');
     await h.owner.query(`UPDATE suppliers SET status = 'ACTIVE', activated_by = $2, activated_at = now() WHERE id = $1`, [h.world.suppliers.s3, h.world.users.masterData.id]);
+    // Seçim önerisi verildikten sonra (teklif tutarı biliniyor) baz önerilemez.
+    expect((await h.call('buyer', 'POST', `/api/v1/projects/${projectId}/savings-baselines`, { body: { basis: 'MARKET', amount: '1.00', source: 'Öneri sonrası baz denemesi.' } })).status).toBe(409);
     expect((await h.call('buyer', 'POST', `/api/v1/awards/${award.body.id}/decision`, { body: { approve: true } })).status).toBe(403);
     const ok = await h.call('legal2', 'POST', `/api/v1/awards/${award.body.id}/decision`, { body: { approve: true, note: 'Kurul onayı (sentetik).' } });
     expect(ok.status).toBe(200);
     const final = await project(projectId);
     expect(final.project.status).toBe('CONTRACTING');
     expect(final.awards[0].lines).toHaveLength(4);
-    
+    expect((await h.call('buyer', 'POST', `/api/v1/projects/${projectId}/savings-baselines`, { body: { basis: 'MARKET', amount: '1.00', source: 'Karar sonrası baz denemesi.' } })).status).toBe(409);
+    const year = new Date().getFullYear();
+    const rep = await h.call('auditor', 'GET', `/api/v1/reports/summary?from=${year}-01-01&to=${year}-12-31&fresh=true`);
+    expect(rep.body.indicators.find((i: any) => i.key === 'savings')).toMatchObject({ status: 'OK', values: [{ currency: 'TRY', numerator: '81800.00', denominator: '1100000.00' }] });
   });
 
   it('XLSX raporu deterministik: kaynak teklif sürümü, formül, kur varsayımı; metin hücreleri formül olarak çalışmaz', async () => {

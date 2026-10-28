@@ -1,7 +1,7 @@
 import { noticeDeadline } from '@sp/domain';
 import type { TenantContext, Tx } from '../db.ts';
 import { audit } from '../audit.ts';
-import { unprocessable } from '../errors.ts';
+import { ApiError, conflict, notFound, unprocessable } from '../errors.ts';
 import { unapprovedInvoicesWithIssues } from './invoices.ts';
 
 /**
@@ -114,8 +114,18 @@ async function indicators(tx: Tx, q: { from: string; to: string }): Promise<Comp
     status: ai.reviewed ? 'OK' : 'NO_DATA', values: [{ currency: null, numerator: String(ai.confirmed), denominator: String(ai.reviewed), ratio: pct(ai.confirmed, ai.reviewed) }],
     note: ai.reviewed ? null : 'İncelenmiş AI önerisi yok (izinli AI sağlayıcısı bağlı değil).', source: 'extracted_fields (origin AI)' });
 
-  out.push({ key: 'savings', label: 'Tasarruf', definition: 'Önceden onaylı karşılaştırılabilir baz ile gerçekleşen maliyet farkı.', status: 'NOT_AVAILABLE', values: [],
-    note: 'Onaylı tasarruf bazı (bütçe, önceki fiyat veya piyasa) kaydı yok; en pahalı teklif farkı tasarruf diye raporlanmaz.', source: '—' });
+  // Tasarruf: yalnız ikinci kişinin onayladığı karşılaştırılabilir baz (bütçe, önceki fiyat, piyasa) ile dönemde onaylanan seçim tutarı farkı.
+  // Baz yoksa proje sayılmaz (en pahalı teklif farkı tasarruf diye raporlanmaz). Para birimleri dönüştürülmez.
+  const sav = (await tx.query<{ currency: string; saved: string; base: string; n: number }>(`SELECT b.currency, sum(b.amount - a.total)::numeric(20,2)::text AS saved,
+      sum(b.amount)::numeric(20,2)::text AS base, count(*)::int AS n
+    FROM savings_baselines b JOIN projects p ON p.id = b.project_id
+    JOIN awards a ON a.project_id = b.project_id AND a.status = 'APPROVED'
+    WHERE b.status = 'APPROVED' AND b.decided_at < a.decided_at AND b.currency = p.currency AND a.decided_at >= $1::date AND a.decided_at < ($2::date + 1)
+    GROUP BY b.currency ORDER BY b.currency`, [q.from, q.to])).rows;
+  out.push({ key: 'savings', label: 'Tasarruf', definition: 'Onaylı karşılaştırılabilir baz ile dönemde onaylanan seçim tutarı arasındaki fark (yalnız bazı onaylanmış projeler).',
+    status: sav.length ? 'OK' : 'NO_DATA', values: sav.map((r) => ({ currency: r.currency, numerator: r.saved, denominator: r.base, ratio: Number(r.base) ? pct(Number(r.saved), Number(r.base)) : null })),
+    note: sav.length ? `${sav.reduce((x, r) => x + r.n, 0)} proje; negatif değer bazın üstünde karar demektir. Para birimleri dönüştürülmedi.` : 'Dönemde onaylı tasarruf bazı olan seçim kararı yok; en pahalı teklif farkı tasarruf diye raporlanmaz.',
+    source: 'savings_baselines (iki kişi onaylı), awards' });
 
   return { indicators: out, dataAsOf };
 }
@@ -141,4 +151,36 @@ export async function summaryCsv(tx: Tx, ctx: TenantContext, q: { from: string; 
   }
   await audit(tx, ctx, 'report.exported', 'tenant', ctx.tenantId, { report: 'summary', format: 'csv', from: q.from, to: q.to });
   return '﻿' + rows.map((r) => r.map(csvCell).join(';')).join('\r\n');
+}
+
+// --- Tasarruf bazı kaydı (öneri → ikinci kişi onayı) ---
+export async function proposeBaseline(tx: Tx, ctx: TenantContext, projectId: string, b: { basis: 'BUDGET' | 'PREVIOUS_PRICE' | 'MARKET'; amount: string; source: string }) {
+  const p = (await tx.query<{ company_id: string; currency: string; status: string }>(`SELECT company_id, currency, status FROM projects WHERE id = $1 FOR UPDATE`, [projectId])).rows[0];
+  if (!p) throw notFound();
+  // Baz teklifler görülmeden önerilir: değerlendirmeye geçildikten sonra teklif tutarına bakıp baz seçmek tasarrufu uydurmaktır.
+  if (!['DRAFT', 'IN_APPROVAL', 'OPEN'].includes(p.status)) throw conflict('project_closed', 'Baz, teklifler açılmadan (taslak, onay veya teklife açık aşamada) önerilir; sonradan tasarruf göstermek için uydurulamaz.');
+  if (!/^\d{1,18}(\.\d{1,2})?$/.test(b.amount) || Number(b.amount) <= 0) throw unprocessable('invalid_number', 'Baz tutarı pozitif, en fazla 2 ondalık olmalı.');
+  if (b.source.trim().length < 10) throw unprocessable('reason_required', 'Bazın kaynağı gerekli (ör. önceki sözleşme no ve birim fiyat, piyasa araştırması; en az 10 karakter).');
+  const r = (await tx.query<{ id: string }>(`INSERT INTO savings_baselines (tenant_id, company_id, project_id, basis, amount, currency, source, proposed_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`,
+    [ctx.tenantId, p.company_id, projectId, b.basis, b.amount, p.currency, b.source.trim(), ctx.userId])).rows[0]!;
+  await audit(tx, ctx, 'savings.baseline_proposed', 'project', projectId, { baselineId: r.id, basis: b.basis, amount: b.amount });
+  return { id: r.id };
+}
+export async function decideBaseline(tx: Tx, ctx: TenantContext, id: string, b: { approve: boolean; note?: string }) {
+  const x = (await tx.query<{ status: string; proposed_by: string; project_id: string }>(`SELECT status, proposed_by, project_id FROM savings_baselines WHERE id = $1 FOR UPDATE`, [id])).rows[0];
+  if (!x) throw notFound();
+  // Onay da seçim kararından önce: karar sonrası onaylanan baz rapora girmez, o yüzden reddedilir.
+  const ps = (await tx.query<{ status: string }>(`SELECT status FROM projects WHERE id = $1 FOR UPDATE`, [x.project_id])).rows[0]!.status;
+  if (['AWARD_APPROVAL', 'CONTRACTING', 'CANCELLED', 'NO_AWARD'].includes(ps)) throw conflict('project_closed', 'Seçim kararı aşamasına geçen projede baz onaylanmaz.');
+  if (x.status !== 'PROPOSED') throw conflict('already_decided', 'Bu baz için karar verildi.');
+  if (x.proposed_by === ctx.userId) throw new ApiError(403, 'segregation_of_duties', 'Bazı öneren onaylayamaz (görev ayrılığı).');
+  if (!b.approve && (b.note ?? '').trim().length < 5) throw unprocessable('note_required', 'Ret gerekçesi gerekli.');
+  await tx.query(`UPDATE savings_baselines SET status = $2, decided_by = $3, decided_at = now(), decision_note = $4 WHERE id = $1`, [id, b.approve ? 'APPROVED' : 'REJECTED', ctx.userId, b.note?.trim() || null]);
+  await audit(tx, ctx, b.approve ? 'savings.baseline_approved' : 'savings.baseline_rejected', 'project', x.project_id, { baselineId: id }, b.note);
+  return { status: b.approve ? 'APPROVED' : 'REJECTED' };
+}
+export async function projectBaselines(tx: Tx, ctx: TenantContext, projectId: string) {
+  return (await tx.query(`SELECT b.id, b.basis, b.amount::text, b.currency, b.source, b.status, pu.display_name AS "proposedBy", b.proposed_by = $2 AS "proposedByMe", b.proposed_at AS "proposedAt",
+      du.display_name AS "decidedBy", b.decided_at AS "decidedAt", b.decision_note AS "decisionNote"
+    FROM savings_baselines b JOIN users pu ON pu.id = b.proposed_by LEFT JOIN users du ON du.id = b.decided_by WHERE b.project_id = $1 ORDER BY b.proposed_at DESC`, [projectId, ctx.userId])).rows;
 }

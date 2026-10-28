@@ -126,6 +126,14 @@ DAST (ZAP) yalnız izole kopyaya karşı çalıştırılır (aktif tarama veri y
 - Worker iki şeritte çalışır: kiracı dışa aktarımı tek tek ayrı şeritte, diğer işler birlikte (uzun dışa aktarım ihbar/imza işlerini bekletmez).
 - İş türleri: `signature.detect`, `contract.notice_reminder`, `contract.obligation_due`, `erp.export` (yalnız `ERP_ADAPTER` tanımlıysa), `ai.run` (yalnız AI sağlayıcısı varsa), `retention.purge`, `tenant.export`.
 
+## Onay politikası, istisnalar ve tasarruf bazı
+
+- Onay politikası: Projeler → Onay politikası (`/projeler/onay-politikasi`). Satınalma yöneticisi taslak hazırlar, başka bir yönetici yayınlar. Yeni sürüm yalnız yeni işlere uygulanır; başlamış onaylar kopyaladıkları planla sürer. Kural yoksa tek adım: satınalma yöneticisi.
+- Tek kaynak / acil alım / iptal / sonuçsuz kapanış: proje Özet → "İstisna iste"; politika adımlarıyla onaylanır. Tek kaynak istisnası yalnız seçilen tedarikçiyle yayında kullanılır.
+- Tasarruf bazı: proje Özet → "Baz öner" (teklifler açılmadan: taslak, onay veya teklife açık aşamada); satınalma yöneticisi veya finans seçim önerisinden önce onaylar. Raporlar → Tasarruf yalnız onaylı bazlı ve dönemde onaylanan seçimleri sayar.
+- Performans ağırlığı: `/performans-agirliklari` (satınalma yöneticisi). Kategori adı incelemedeki kategoriyle aynı yazılmalı.
+- Tedarikçi anketi: değerlendirme sayfası → "Tedarikçiye gönder"; tedarikçi Portal → Anketler'den yanıtlar ve gönderir. Gönderilen ankette kurum yanıt yazamaz, yalnız inceler/bulgu yazar; tedarikçi gönderdikten sonra yanıt değişmez. İnceleme tedarikçi gönderince tamamlanır. Farklı beyan gerekiyorsa yeni değerlendirme açılır.
+
 ## Sık hatalar
 | Belirti | Neden | Çözüm |
 |---|---|---|

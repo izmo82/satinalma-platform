@@ -4,13 +4,13 @@ import { api, apiBlob, ApiError } from '../lib/api.ts';
 import { useResource } from '../lib/useApi.ts';
 import { fmtDate, fmtDateTime, fmtMoney } from '../lib/format.ts';
 import { todayLocal } from '../lib/format.ts';
-import { roleLabel } from '../lib/labels.ts';
+import { ANSWER_RESPONSE as RESPONSE, roleLabel } from '../lib/labels.ts';
 import { Banner, Empty, ErrorState, Field, Loading, PageHeader, Tag } from '../ui/kit.tsx';
 import { Icon } from '../ui/icons.tsx';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { cn } from '@/lib/utils';
-import { CATEGORY, FACTORS, INCIDENT_STATUS, IncidentTable, LEVEL, OUTCOME } from './SupplierEvaluation.tsx';
+import { CATEGORY, DEFAULT_W, DIMS, FACTORS, INCIDENT_STATUS, IncidentTable, LEVEL, OUTCOME, weightText, type WeightPolicy } from './SupplierEvaluation.tsx';
 
 function useAct(reload: () => Promise<void>) {
   const [busy, setBusy] = useState(false);
@@ -23,7 +23,6 @@ function useAct(reload: () => Promise<void>) {
   };
   return { busy, run, clear: () => setMsg(null), feedback: msg && <Banner tone={msg.tone} icon={msg.tone === 'info' ? 'check' : undefined} title={msg.text} /> };
 }
-const RESPONSE = { YES: 'Evet', PARTIAL: 'Kısmen', NO: 'Hayır', NOT_APPLICABLE: 'Uygulanamaz', UNKNOWN: 'Bilinmiyor' } as const;
 const ITEM_KIND = { BLOCKER: 'Engel', FINDING: 'Bulgu', UNKNOWN: 'Bilinmiyor', EVIDENCE: 'Kanıt' } as const;
 
 // --- Değerlendirme (anket, kanıt, inceleme, kalan risk) ---------------------------------------------
@@ -33,6 +32,7 @@ interface AssessmentDetail {
     createdBy: string; createdByMe: boolean; createdAt: string; reviewedBy: string | null; reviewedAt: string | null;
     residual: null | { level: string; reason: string; acceptedBy: string; acceptedAt: string } };
   template: { name: string; version: number; category: string };
+  portal: { status: 'NONE' | 'SENT' | 'SUBMITTED'; sentAt: string | null; due: string | null; submittedAt: string | null };
   questions: { id: string; ordinal: number; controlId: string; reference: string; text: string; critical: boolean; evidenceRequired: boolean }[];
   answers: { questionId: string; response: keyof typeof RESPONSE; naReason: string | null; note: string | null; evidenceDocumentVersionId: string | null; evidenceTitle: string | null;
     evidenceDate: string | null; evidenceExpires: string | null; answeredBy: string; answeredByMe: boolean; review: 'ACCEPTED' | 'FINDING' | null; findingSeverity: string | null;
@@ -80,7 +80,7 @@ export function AssessmentPage() {
                   ) : <p className="text-sm text-warn">Yanıt yok: bilinmiyor sayılır.</p>}
                   {items.map((x, i) => <p key={i} className={cn('rounded-sm px-2 py-1 text-sm', x.kind === 'BLOCKER' ? 'bg-danger-soft' : 'bg-warn-soft')}><strong>{ITEM_KIND[x.kind]}:</strong> {x.message}</p>)}
                   {open && editing !== q.id && <div className="flex flex-wrap gap-2">
-                    {d.can.answer && <Button size="sm" variant="outline" onClick={() => { a.clear(); setEditing(q.id); }}>{ans ? 'Yanıtı değiştir' : 'Yanıt gir'}</Button>}
+                    {d.can.answer && d.portal.status === 'NONE' && <Button size="sm" variant="outline" onClick={() => { a.clear(); setEditing(q.id); }}>{ans ? 'Yanıtı değiştir' : 'Yanıt gir'}</Button>}
                     {d.can.review && ans && !ans.answeredByMe && <ReviewButtons onReview={(b) => void a.run(() => api(`/api/v1/assessments/${d.assessment.id}/answers/${q.id}/review`, { method: 'POST', json: b }), 'İnceleme kaydedildi.')} />}
                     {d.can.review && ans?.answeredByMe && <span className="text-sm text-ink-subtle">Yanıtı siz girdiniz; inceleme başka bir yetkilinin.</span>}
                   </div>}
@@ -92,6 +92,7 @@ export function AssessmentPage() {
           {a.feedback}
         </div>
         <aside className="grid content-start gap-4">
+          <PortalPanel d={d} run={a.run} busy={a.busy} />
           <section className="panel"><div className="panel-head"><h2>İçsel risk</h2><Tag label={LEVEL[d.inherent.level]} /></div>
             <div className="panel-body"><dl className="facts">{FACTORS.map(([k, l]) => <Fragment key={k}><dt>{l}</dt><dd>{LEVEL[d.assessment.inherentFactors[k] ?? 'LOW']!.text}</dd></Fragment>)}</dl>
               <p className="mt-2 text-sm text-ink-subtle">Kontrollerden önceki risk; kurala göre hesaplanır.</p></div></section>
@@ -106,11 +107,37 @@ export function AssessmentPage() {
               {d.items.length > 0 && <ul className="grid list-disc gap-1 pl-5 text-sm">{d.items.map((x, n) => <li key={n}><strong>{ITEM_KIND[x.kind]}:</strong> {x.message}</li>)}</ul>}
               <p className="text-sm text-ink-subtle">{d.outcome === 'BLOCKED' ? 'İnceleme tamamlanınca bu tedarikçiye yeni seçim önerisi, seçim onayı ve sipariş engellenir.'
                 : d.outcome === 'INCOMPLETE' ? 'Bilinmeyen yanıt veya eksik/süresi geçmiş kanıt var; sonuç kesinleşmez.' : d.outcome === 'CONDITIONAL' ? 'Bulgular düzeltici faaliyetle izlenmeli.' : 'Engel ve açık bulgu yok.'}</p>
-              {open && d.can.review && <Button disabled={a.busy || !d.reviewedAll} onClick={() => void a.run(() => api(`/api/v1/assessments/${d.assessment.id}/complete`, { method: 'POST' }), 'Değerlendirme tamamlandı.')}><Icon name="stamp" />İncelemeyi tamamla</Button>}
+              {open && d.can.review && <Button disabled={a.busy || !d.reviewedAll || d.portal.status === 'SENT'} onClick={() => void a.run(() => api(`/api/v1/assessments/${d.assessment.id}/complete`, { method: 'POST' }), 'Değerlendirme tamamlandı.')}><Icon name="stamp" />İncelemeyi tamamla</Button>}
               {open && !d.reviewedAll && <p className="text-sm text-ink-muted">Tüm sorular yanıtlanıp incelenince tamamlanır.</p>}</div></section>
         </aside>
       </div>
     </div>
+  );
+}
+
+/** Tedarikçi portalı: anket tedarikçiye gönderilir, tedarikçi soruları yanıtlayıp gönderir; inceleme ve risk kararı kurumda kalır. */
+function PortalPanel({ d, run, busy }: { d: AssessmentDetail; run: (fn: () => Promise<unknown>, ok: string) => Promise<boolean>; busy: boolean }) {
+  const [due, setDue] = useState('');
+  const p = d.portal;
+  const open = d.assessment.status === 'OPEN';
+  if (p.status === 'NONE' && !(open && d.can.answer && !d.answers.length)) return null;
+  return (
+    <section className="panel"><div className="panel-head"><h2>Tedarikçi portalı</h2>
+      {p.status !== 'NONE' && <Tag label={p.status === 'SENT' ? { text: 'Tedarikçide', tone: 'warn', icon: 'clock' } : { text: 'Tedarikçi gönderdi', tone: 'human', icon: 'check' }} />}</div>
+      <div className="panel-body grid gap-2">
+        {p.status === 'NONE' ? (
+          <form className="grid gap-2" onSubmit={(e) => { e.preventDefault(); void run(() => api(`/api/v1/assessments/${d.assessment.id}/send-to-supplier`, { method: 'POST', json: { due: due || null } }), 'Anket tedarikçiye gönderildi.'); }}>
+            <p className="text-sm text-ink-muted">Tedarikçi kullanıcıları soruları portaldan yanıtlar. Kurum incelemesi, bulgular ve risk kararı tedarikçiye gösterilmez; kanıt belgesini kurum bağlar.</p>
+            <Field label="Tedarikçi için son tarih" hint="İsteğe bağlı">{(fp) => <input type="date" className="input" min={todayLocal()} {...fp} value={due} onChange={(e) => setDue(e.target.value)} />}</Field>
+            <Button type="submit" variant="outline" disabled={busy}>Tedarikçiye gönder</Button>
+          </form>
+        ) : (
+          <p className="text-sm">Gönderildi {fmtDateTime(p.sentAt!)}{p.due ? ` · son tarih ${fmtDate(p.due)}` : ''}
+            {p.submittedAt ? <span className="block">Tedarikçi yanıtları gönderdi: {fmtDateTime(p.submittedAt)}. Yanıtlar artık tedarikçi tarafından değiştirilemez.</span>
+              : <span className="block text-ink-muted">Tedarikçi yanıtlıyor; yanıtları tedarikçi verir. İnceleme, tedarikçi gönderdikten sonra tamamlanır.</span>}</p>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -515,5 +542,62 @@ function PolicyForm({ p, onSubmit, onCancel }: { p: AiOverview['policy']; onSubm
       <Field label="Günlük çağrı sınırı">{(x) => <input className="input tabular text-right" inputMode="numeric" {...x} value={f.daily} onChange={(e) => setF({ ...f, daily: e.target.value.replace(/\D/g, '') })} />}</Field>
       <div className="flex gap-2"><Button type="submit" size="sm">Kaydet</Button><Button type="button" size="sm" variant="ghost" onClick={onCancel}>Vazgeç</Button></div>
     </form>
+  );
+}
+
+// --- Kategori bazında performans ağırlığı (kurum politikası) -----------------------------------------
+
+/** Kategori başına tek yürürlükteki ağırlık; yeni kural öncekini emekliye ayırır. İnceleme kaydı o anki ağırlığı kopyalar, geçmiş puan değişmez. */
+export function PerformanceWeightsPage() {
+  const r = useResource<{ items: WeightPolicy[]; can: { manage: boolean } }>('/api/v1/performance-weights');
+  const a = useAct(r.reload);
+  const [f, setF] = useState<{ category: string; weights: Record<string, string>; reason: string } | null>(null);
+  const sum = f ? DIMS.reduce((n, [k]) => n + (Number(f.weights[k]) || 0), 0) : 0;
+  const start = (category = '', w: Record<string, number> = DEFAULT_W) => { a.clear(); setF({ category, weights: Object.fromEntries(DIMS.map(([k]) => [k, String(w[k] ?? 0)])), reason: '' }); };
+  const active = r.data?.items.filter((x) => !x.retiredAt) ?? [];
+  const retired = r.data?.items.filter((x) => x.retiredAt) ?? [];
+  return (
+    <div className="page">
+      <PageHeader title="Performans ağırlıkları">Tedarikçi performans puanında boyut ağırlıkları kategoriye göre belirlenir. Kural yoksa örnek ağırlık uygulanır: {weightText(DEFAULT_W)}.
+        Yeni kural yalnız sonraki incelemelere uygulanır; kayıtlı incelemeler kendi ağırlığıyla kalır.</PageHeader>
+      {r.loading && !r.data ? <Loading /> : r.error ? <ErrorState error={r.error} onRetry={r.reload} /> : <>
+        {r.data!.can.manage && !f && <div className="mb-3"><Button onClick={() => start()}>Kategori kuralı ekle</Button></div>}
+        {f && (
+          <form className="panel mb-4" onSubmit={(e) => { e.preventDefault();
+            void a.run(() => api('/api/v1/performance-weights', { method: 'PUT', json: { category: f.category, reason: f.reason, weights: Object.fromEntries(DIMS.map(([k]) => [k, Number(f.weights[k]) || 0])) } }),
+              `"${f.category.trim()}" ağırlığı yürürlüğe girdi.`).then((ok) => { if (ok) setF(null); }); }}>
+            <div className="panel-head"><h2>Kategori ağırlığı</h2><span className={cn('tabular text-sm', sum === 100 ? 'text-ink-subtle' : 'text-danger')}>Toplam %{sum}{sum !== 100 ? ' · 100 olmalı' : ''}</span></div>
+            <div className="panel-body grid gap-3">
+              <Field label="Kategori" hint="İncelemedeki kategoriyle aynı yazılır (büyük/küçük harf ve baştaki/sondaki boşluk önemsiz).">{(p) =>
+                <input className="input" required maxLength={200} {...p} value={f.category} onChange={(e) => setF({ ...f, category: e.target.value })} />}</Field>
+              <div className="grid grid-cols-5 items-start gap-3 max-[1100px]:grid-cols-2">
+                {DIMS.map(([k, l]) => <Field key={k} label={`${l} (%)`}>{(p) => <input className="input tabular text-right" inputMode="numeric" required {...p} value={f.weights[k] ?? ''}
+                  onChange={(e) => setF({ ...f, weights: { ...f.weights, [k]: e.target.value.replace(/\D/g, '').slice(0, 3) } })} />}</Field>)}
+              </div>
+              <Field label="Gerekçe" hint="Neden bu kategoride farklı ağırlık (en az 10 karakter); denetim kaydına yazılır.">{(p) =>
+                <textarea className="input" rows={2} required minLength={10} {...p} value={f.reason} onChange={(e) => setF({ ...f, reason: e.target.value })} />}</Field>
+              <div className="flex gap-2"><Button type="submit" disabled={a.busy || sum !== 100 || f.reason.trim().length < 10 || !f.category.trim()}>Yürürlüğe al</Button>
+                <Button type="button" variant="ghost" onClick={() => setF(null)}>Vazgeç</Button></div>
+            </div>
+          </form>
+        )}
+        <div aria-live="polite" className="mb-3">{a.feedback}</div>
+        {!active.length ? <div className="rounded-md border border-border bg-surface"><Empty icon="info" title="Kategori kuralı yok">Tüm incelemelerde örnek ağırlık uygulanır.</Empty></div> : (
+          <Table>
+            <TableHeader><TableRow className="hover:bg-transparent"><TableHead>Kategori</TableHead>{DIMS.map(([k, l]) => <TableHead key={k} className="text-right">{l}</TableHead>)}<TableHead>Gerekçe</TableHead><TableHead><span className="sr-only">Eylem</span></TableHead></TableRow></TableHeader>
+            <TableBody>{active.map((x) => (
+              <TableRow key={x.id}>
+                <TableCell className="font-semibold">{x.category}<span className="block text-sm font-normal text-ink-subtle">{x.setBy} · {fmtDate(x.createdAt)}</span></TableCell>
+                {DIMS.map(([k]) => <TableCell key={k} className="tabular text-right">%{x.weights[k]}</TableCell>)}
+                <TableCell className="min-w-[200px] text-sm">{x.reason}</TableCell>
+                <TableCell>{r.data!.can.manage && <Button size="sm" variant="outline" onClick={() => start(x.category, x.weights)}>Değiştir</Button>}</TableCell>
+              </TableRow>
+            ))}</TableBody>
+          </Table>
+        )}
+        {retired.length > 0 && <details className="mt-4"><summary className="cursor-pointer text-sm text-ink-muted">Emekli kurallar ({retired.length})</summary>
+          <ul className="mt-2 grid gap-1 text-sm">{retired.map((x) => <li key={x.id}><strong>{x.category}</strong>: {weightText(x.weights)} · {x.setBy}, {fmtDate(x.createdAt)}–{fmtDate(x.retiredAt!)}</li>)}</ul></details>}
+      </>}
+    </div>
   );
 }

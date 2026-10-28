@@ -7,7 +7,7 @@ import {
 import type { TenantContext, Tx } from '../db.ts';
 import { audit } from '../audit.ts';
 import { closeTasks, openTask } from '../tasks.ts';
-import { ApiError, conflict, notFound, unprocessable } from '../errors.ts';
+import { ApiError, conflict, forbidden, notFound, unprocessable } from '../errors.ts';
 
 /**
  * Faz 5: tedarikçi değerlendirmesi (02 §8–9, UX12, T19–T20). Sonuçlar saklanmaz; yanıt, bulgu ve olaylardan her okumada
@@ -115,6 +115,7 @@ export async function getAssessment(tx: Tx, ctx: TenantContext, id: string) {
       createdBy: a.created_by_name, createdByMe: a.created_by === ctx.userId, createdAt: a.created_at, reviewedBy: a.reviewed_by_name, reviewedAt: a.reviewed_at,
       residual: a.residual_level ? { level: a.residual_level, reason: a.residual_reason, acceptedBy: a.accepted_by_name, acceptedAt: a.residual_accepted_at } : null },
     template: (await tx.query(`SELECT id, code, version, name, category FROM questionnaire_templates WHERE id = $1`, [a.template_id])).rows[0],
+    portal: (await tx.query(`SELECT portal_status AS status, portal_sent_at AS "sentAt", portal_due::text AS due, portal_submitted_at AS "submittedAt" FROM supplier_assessments WHERE id = $1`, [id])).rows[0],
     questions, answers: answers.map(({ answeredById, ...x }) => ({ ...x, answeredByMe: answeredById === ctx.userId })), inherent, ...result,
   };
 }
@@ -122,8 +123,13 @@ export async function getAssessment(tx: Tx, ctx: TenantContext, id: string) {
 export interface AnswerInput { response: AnswerState['response']; naReason?: string | null; note?: string | null; evidenceDocumentVersionId?: string | null; evidenceDate?: string | null; evidenceExpires?: string | null }
 
 /** Yanıt kaydı (tedarikçinin beyanı, kurum kullanıcısı girer). Yanıt değişirse önceki inceleme geçersizleşir. */
-export async function saveAnswer(tx: Tx, ctx: TenantContext, assessmentId: string, questionId: string, b: AnswerInput) {
+export async function saveAnswer(tx: Tx, ctx: TenantContext, assessmentId: string, questionId: string, b: AnswerInput, via: 'internal' | 'portal' = 'internal') {
   const a = await loadAssessment(tx, assessmentId);
+  // Tedarikçiye gönderilen ankette beyan yalnız tedarikçinindir; kurum yanıtın üzerine yazamaz (düzeltme inceleme/bulgu ile).
+  if (via === 'internal') {
+    const p = (await tx.query<{ portal_status: string }>(`SELECT portal_status FROM supplier_assessments WHERE id = $1 FOR UPDATE`, [assessmentId])).rows[0]!;
+    if (p.portal_status !== 'NONE') throw conflict('supplier_answers', 'Anket tedarikçiye gönderildi; yanıtları tedarikçi verir. Kurum yanıtı inceler veya bulgu yazar.');
+  }
   if (a.status !== 'OPEN') throw conflict('assessment_closed', 'İncelemesi tamamlanmış değerlendirme değişmez; yeni değerlendirme başlatın.');
   if (!(await tx.query(`SELECT 1 FROM questionnaire_questions WHERE id = $1 AND template_id = $2`, [questionId, a.template_id])).rowCount) throw unprocessable('question_not_in_template', 'Soru bu şablona ait değil.');
   if (b.response === 'NOT_APPLICABLE' && (b.naReason ?? '').trim().length < 10) throw unprocessable('na_reason_required', '"Uygulanamaz" yanıtı gerekçe ister (en az 10 karakter).');
@@ -156,6 +162,9 @@ export async function reviewAnswer(tx: Tx, ctx: TenantContext, assessmentId: str
 
 /** İnceleme tamamlanır: her soru yanıtlanmış ve incelenmiş olmalı. Kritik engel varsa sorumlulara görev düşer. */
 export async function completeReview(tx: Tx, ctx: TenantContext, id: string) {
+  // Kilit: eşzamanlı yanıt değişikliği (incelemeyi sıfırlar) tamamlamayla yarışmasın.
+  const p = (await tx.query<{ portal_status: string }>(`SELECT portal_status FROM supplier_assessments WHERE id = $1 FOR UPDATE`, [id])).rows[0];
+  if (p?.portal_status === 'SENT') throw conflict('awaiting_supplier', 'Tedarikçi yanıtlarını henüz göndermedi; inceleme gönderimden sonra tamamlanır.');
   const { a, result } = await evaluateAssessment(tx, id);
   if (a.status !== 'OPEN') throw conflict('assessment_closed', 'Değerlendirme zaten tamamlandı.');
   if (!result.reviewedAll) throw unprocessable('review_incomplete', 'Tüm sorular yanıtlanmadan ve incelenmeden değerlendirme tamamlanamaz.');
@@ -407,7 +416,10 @@ export async function listIncidents(tx: Tx, filter: { supplierId?: string }) {
 
 export async function addPerformanceReview(tx: Tx, ctx: TenantContext, supplierId: string, b: { periodStart: string; periodEnd: string; category: string; weights?: Record<Dimension, number>;
   scores: Partial<Record<Dimension, number>>; basis: string }) {
-  const weights = b.weights ?? DEFAULT_WEIGHTS;
+  // Ağırlık: açıkça verilen (kurum özel) > kategorinin yürürlükteki politikası > örnek varsayılan. Kullanılan kural incelemeye kopyalanır.
+  const catPolicy = b.weights ? null : (await tx.query<{ id: string; weights: Record<Dimension, number> }>(
+    `SELECT id, weights FROM performance_weight_policies WHERE retired_at IS NULL AND lower(btrim(category)) = lower(btrim($1))`, [b.category])).rows[0] ?? null;
+  const weights = b.weights ?? catPolicy?.weights ?? DEFAULT_WEIGHTS;
   const err = validateWeights(weights);
   if (err) throw unprocessable('invalid_weights', err);
   for (const [k, v] of Object.entries(b.scores)) if (!(PERFORMANCE_DIMENSIONS as readonly string[]).includes(k) || !Number.isInteger(v) || v < 0 || v > 100) throw unprocessable('invalid_score', 'Puanlar 0–100 tam sayı olmalı.');
@@ -415,7 +427,7 @@ export async function addPerformanceReview(tx: Tx, ctx: TenantContext, supplierI
   if (b.periodEnd > today()) throw unprocessable('invalid_period', 'Dönem sonu bugünden sonra olamaz; tamamlanmış dönem değerlendirilir.');
   if (!(await tx.query(`SELECT 1 FROM suppliers WHERE id = $1`, [supplierId])).rowCount) throw notFound();
   const r = (await tx.query<{ id: string }>(`INSERT INTO performance_reviews (tenant_id, supplier_id, period_start, period_end, category, policy_version, weights, scores, basis, reviewed_by)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`, [ctx.tenantId, supplierId, b.periodStart, b.periodEnd, b.category.trim(), b.weights ? 'kurum-ozel' : 'ornek-2026-1', weights, b.scores, b.basis.trim(), ctx.userId])).rows[0]!;
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`, [ctx.tenantId, supplierId, b.periodStart, b.periodEnd, b.category.trim(), b.weights ? 'kurum-ozel' : catPolicy ? `kategori:${catPolicy.id}` : 'ornek-2026-1', weights, b.scores, b.basis.trim(), ctx.userId])).rows[0]!;
   await audit(tx, ctx, 'performance.reviewed', 'supplier', supplierId, { reviewId: r.id, period: [b.periodStart, b.periodEnd], scores: b.scores });
   return { id: r.id };
 }
@@ -476,4 +488,82 @@ export async function scorecard(tx: Tx, ctx: TenantContext, supplierId: string, 
     openActions, assessments: current, narrative,
     sources: [`Kabul kayıtları ${cur.from}–${cur.to} (yalnız erişiminiz olan şirketlerin siparişleri)`, cur.review ? `Performans incelemesi (${cur.review.reviewer})` : 'Performans incelemesi yok', `Olay politikası ${DEFAULT_INCIDENT_POLICY.version}`],
   };
+}
+
+// --- Kategori bazında performans ağırlığı politikası (02 §9: kategori ağırlıkları ve örneklem görünür) ---
+
+export async function listWeightPolicies(tx: Tx) {
+  return (await tx.query(`SELECT p.id, p.category, p.weights, p.reason, u.display_name AS "setBy", p.created_at AS "createdAt", p.retired_at AS "retiredAt"
+    FROM performance_weight_policies p JOIN users u ON u.id = p.set_by ORDER BY p.retired_at NULLS FIRST, lower(p.category), p.created_at DESC`)).rows;
+}
+
+/** Yeni kural kategorinin öncekini emekliye ayırır; geçmiş incelemeler kendi kopyaladıkları ağırlıkla kalır. */
+export async function setWeightPolicy(tx: Tx, ctx: TenantContext, b: { category: string; weights: Record<Dimension, number>; reason: string }) {
+  const err = validateWeights(b.weights);
+  if (err) throw unprocessable('invalid_weights', err);
+  if (b.reason.trim().length < 10) throw unprocessable('reason_required', 'Gerekçe gerekli (en az 10 karakter).');
+  await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`weights:${ctx.tenantId}:${b.category.trim().toLocaleLowerCase('tr-TR')}`]);
+  await tx.query(`UPDATE performance_weight_policies SET retired_at = now() WHERE retired_at IS NULL AND lower(btrim(category)) = lower(btrim($1))`, [b.category]);
+  const r = (await tx.query<{ id: string }>(`INSERT INTO performance_weight_policies (tenant_id, category, weights, reason, set_by) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+    [ctx.tenantId, b.category.trim(), b.weights, b.reason.trim(), ctx.userId])).rows[0]!;
+  await audit(tx, ctx, 'performance.weights_set', 'tenant', ctx.tenantId, { policyId: r.id, category: b.category.trim(), weights: b.weights }, b.reason.trim());
+  return { id: r.id };
+}
+
+// --- Tedarikçi portalı: anket yanıtlama ---
+
+/** Kurum, açık değerlendirmeyi tedarikçinin portalına gönderir (tedarikçi yalnız soruları ve kendi yanıtlarını görür). */
+export async function sendToSupplier(tx: Tx, ctx: TenantContext, id: string, due: string | null) {
+  const a = await loadAssessment(tx, id);
+  if (a.status !== 'OPEN') throw conflict('assessment_closed', 'İncelemesi tamamlanmış değerlendirme gönderilmez.');
+  const cur = (await tx.query<{ portal_status: string }>(`SELECT portal_status FROM supplier_assessments WHERE id = $1 FOR UPDATE`, [id])).rows[0]!;
+  if (cur.portal_status !== 'NONE') throw conflict('already_sent', 'Bu anket tedarikçiye gönderildi.');
+  if ((await tx.query(`SELECT 1 FROM assessment_answers WHERE assessment_id = $1 LIMIT 1`, [id])).rowCount) {
+    throw conflict('answers_exist', 'Kurumca yanıt girilmiş anket tedarikçiye gönderilmez (beyanlar karışır); tedarikçi yanıtı için yeni değerlendirme başlatın.');
+  }
+  await tx.query(`UPDATE supplier_assessments SET portal_status = 'SENT', portal_sent_at = now(), portal_due = $2 WHERE id = $1`, [id, due]);
+  await audit(tx, ctx, 'assessment.sent_to_supplier', 'supplier_assessment', id, { supplierId: a.supplier_id, due });
+  return { ok: true };
+}
+
+export async function portalAssessments(tx: Tx, ctx: TenantContext) {
+  if (!ctx.supplierId) throw forbidden('portal');
+  return (await tx.query(`SELECT a.id, t.name AS "templateName", t.version, a.scope, a.portal_status AS "portalStatus", a.portal_sent_at AS "sentAt", a.portal_due::text AS due,
+      a.portal_submitted_at AS "submittedAt", (SELECT count(*)::int FROM questionnaire_questions q WHERE q.template_id = a.template_id) AS questions,
+      (SELECT count(*)::int FROM assessment_answers x WHERE x.assessment_id = a.id) AS answered
+    FROM supplier_assessments a JOIN questionnaire_templates t ON t.id = a.template_id WHERE a.supplier_id = $1 AND a.portal_status <> 'NONE' ORDER BY a.portal_sent_at DESC`, [ctx.supplierId])).rows;
+}
+
+/** Tedarikçi görünümü: sorular ve kendi beyanı; kurumun bulgusu, risk seviyesi ve kalan risk kararı gösterilmez. */
+export async function portalAssessment(tx: Tx, ctx: TenantContext, id: string) {
+  if (!ctx.supplierId) throw forbidden('portal');
+  const a = (await tx.query<{ id: string; template_id: string; scope: string; portal_status: string; portal_due: string | null; supplier_id: string }>(
+    `SELECT id, template_id, scope, portal_status, portal_due::text, supplier_id FROM supplier_assessments WHERE id = $1`, [id])).rows[0];
+  if (!a || a.supplier_id !== ctx.supplierId || a.portal_status === 'NONE') throw notFound();
+  const questions = (await tx.query(`SELECT q.id, q.control_id AS "controlId", q.text, q.evidence_required AS "evidenceRequired" FROM questionnaire_questions q WHERE q.template_id = $1 ORDER BY q.ordinal`, [a.template_id])).rows;
+  const answers = (await tx.query(`SELECT question_id AS "questionId", response, na_reason AS "naReason", note, evidence_date::text AS "evidenceDate", evidence_expires::text AS "evidenceExpires"
+    FROM assessment_answers WHERE assessment_id = $1`, [id])).rows;
+  return { id: a.id, scope: a.scope, status: a.portal_status, due: a.portal_due, questions, answers };
+}
+
+export async function portalAnswer(tx: Tx, ctx: TenantContext, id: string, questionId: string, b: AnswerInput) {
+  if (!ctx.supplierId) throw forbidden('portal');
+  const a = (await tx.query<{ portal_status: string; supplier_id: string; status: string }>(`SELECT portal_status, supplier_id, status FROM supplier_assessments WHERE id = $1 FOR UPDATE`, [id])).rows[0];
+  if (!a || a.supplier_id !== ctx.supplierId || a.portal_status === 'NONE') throw notFound();
+  if (a.portal_status !== 'SENT' || a.status !== 'OPEN') throw conflict('portal_locked', 'Anket gönderildi; yanıt değiştirilemez. Değişiklik için kurumla iletişime geçin.');
+  // Tedarikçi portalı belge kanıtı bağlamaz (kanıt dosyası kurum tarafından alınır ve bağlanır).
+  return saveAnswer(tx, ctx, id, questionId, { ...b, evidenceDocumentVersionId: null }, 'portal');
+}
+
+export async function portalSubmit(tx: Tx, ctx: TenantContext, id: string) {
+  if (!ctx.supplierId) throw forbidden('portal');
+  const a = (await tx.query<{ portal_status: string; supplier_id: string; template_id: string; status: string }>(`SELECT portal_status, supplier_id, template_id, status FROM supplier_assessments WHERE id = $1 FOR UPDATE`, [id])).rows[0];
+  if (!a || a.supplier_id !== ctx.supplierId || a.portal_status === 'NONE') throw notFound();
+  if (a.portal_status !== 'SENT' || a.status !== 'OPEN') throw conflict('already_submitted', 'Anket zaten gönderildi veya kapandı.');
+  const missing = (await tx.query<{ n: number }>(`SELECT count(*)::int AS n FROM questionnaire_questions q WHERE q.template_id = $1
+    AND NOT EXISTS (SELECT 1 FROM assessment_answers x WHERE x.assessment_id = $2 AND x.question_id = q.id)`, [a.template_id, id])).rows[0]!.n;
+  if (missing) throw unprocessable('unanswered', `${missing} soru yanıtsız; tüm sorular yanıtlanmadan gönderilemez ("uygulanamaz" gerekçeyle seçilebilir).`);
+  await tx.query(`UPDATE supplier_assessments SET portal_status = 'SUBMITTED', portal_submitted_at = now() WHERE id = $1`, [id]);
+  await audit(tx, ctx, 'assessment.submitted_by_supplier', 'supplier_assessment', id, {});
+  return { ok: true };
 }

@@ -25,9 +25,11 @@ interface Detail {
     lines: { projectLineId: string; supplierId: string; supplierName: string; quantity: string; unitPrice: string; amount: string }[]; approval: Approval | null }[];
   exceptions: { id: string; kind: keyof typeof EX_KIND; reason: string; status: 'REQUESTED' | 'APPROVED' | 'REJECTED' | 'USED'; requestedAt: string; requestedBy: string; requestedByMe: boolean;
     decidedAt: string | null; supplierName: string | null; approval: Approval | null }[];
+  savingsBaselines: { id: string; basis: keyof typeof BASIS; amount: string; currency: string; source: string; status: 'PROPOSED' | 'APPROVED' | 'REJECTED'; proposedBy: string; proposedByMe: boolean;
+    proposedAt: string; decidedBy: string | null; decidedAt: string | null; decisionNote: string | null }[];
   publishPolicy: { minInvitees: number | null; minResponseDays: number | null; steps: { role: string; label: string }[]; explanation: string };
   serverTime: string;
-  can: { manage: boolean; requestException: boolean; approvePublish: boolean; score: boolean; evaluate: boolean; propose: boolean; decide: boolean; answer: boolean };
+  can: { manage: boolean; approveBaseline: boolean; requestException: boolean; approvePublish: boolean; score: boolean; evaluate: boolean; propose: boolean; decide: boolean; answer: boolean };
 }
 
 /** Onay motoru durumu: hangi politika sürümü/kural, adımlar, verilen kararlar ve bu kullanıcının karar yetkisi (sunucu hesaplar). */
@@ -74,6 +76,64 @@ function ApprovalSteps({ ap, onDecide, busy, approveText }: { ap: Approval; busy
   );
 }
 
+const BASIS = { BUDGET: 'Bütçe', PREVIOUS_PRICE: 'Önceki fiyat', MARKET: 'Piyasa araştırması' } as const;
+const BASE_STATUS = { PROPOSED: 'Onay bekliyor', APPROVED: 'Onaylandı', REJECTED: 'Reddedildi' } as const;
+
+/** Tasarruf bazı: karar öncesi önerilir, ikinci kişi onaylar. Rapor yalnız onaylı bazla seçim tutarını karşılaştırır. */
+function SavingsPanel({ d, reload }: { d: Detail; reload: () => Promise<void> }) {
+  const a = useAction(reload);
+  const [f, setF] = useState<{ basis: keyof typeof BASIS; amount: string; source: string } | null>(null);
+  const [rejecting, setRejecting] = useState<{ id: string; note: string } | null>(null);
+  // Baz teklifler açılmadan önerilir, seçim kararı aşamasından önce onaylanır (sunucu da aynı kuralı uygular).
+  const closed = !['DRAFT', 'IN_APPROVAL', 'OPEN'].includes(d.project.status);
+  const decidable = !['AWARD_APPROVAL', 'CONTRACTING', 'CANCELLED', 'NO_AWARD'].includes(d.project.status);
+  const active = d.savingsBaselines.find((b) => b.status !== 'REJECTED');
+  if (!d.savingsBaselines.length && !(d.can.manage && !closed)) return null;
+  return (
+    <section className="panel self-start">
+      <div className="panel-head"><h2>Tasarruf bazı</h2>
+        {d.can.manage && !closed && !active && !f && <Button size="sm" variant="outline" className="ml-auto"
+          onClick={() => setF({ basis: d.project.budget ? 'BUDGET' : 'PREVIOUS_PRICE', amount: d.project.budget ?? '', source: '' })}>Baz öner</Button>}</div>
+      <div className="panel-body grid gap-3">
+        {!d.savingsBaselines.length && !f && <p className="text-sm text-ink-muted">Baz yoksa bu proje tasarruf raporuna girmez. Baz teklifler açılmadan önerilir ve seçim kararından önce başka bir yetkili onaylar.</p>}
+        {f && (
+          <form className="grid gap-2" onSubmit={(e) => { e.preventDefault(); void a.run(() => api(`/api/v1/projects/${d.project.id}/savings-baselines`, { method: 'POST', json: f }), 'Baz onaya gönderildi.').then(() => setF(null)); }}>
+            <Field label="Baz türü">{(p) => <select className="input" {...p} value={f.basis} onChange={(e) => setF({ ...f, basis: e.target.value as keyof typeof BASIS })}>
+              {Object.entries(BASIS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>}</Field>
+            <Field label={`Baz tutarı (${d.project.currency}, vergi hariç)`} hint="Karşılaştırılabilir kapsamın toplam bedeli; en fazla 2 ondalık, nokta ile.">{(p) =>
+              <input className="input tabular" inputMode="decimal" required pattern="\d{1,18}(\.\d{1,2})?" {...p} value={f.amount} onChange={(e) => setF({ ...f, amount: e.target.value.trim() })} />}</Field>
+            <Field label="Kaynak" hint="Ör. önceki sözleşme numarası ve birim fiyat, piyasa araştırması tarihi (en az 10 karakter).">{(p) =>
+              <textarea className="input" rows={2} required minLength={10} {...p} value={f.source} onChange={(e) => setF({ ...f, source: e.target.value })} />}</Field>
+            <div className="flex gap-2"><Button type="submit" disabled={a.busy || f.source.trim().length < 10 || !f.amount}>Onaya gönder</Button><Button type="button" variant="ghost" onClick={() => setF(null)}>Vazgeç</Button></div>
+          </form>
+        )}
+        {d.savingsBaselines.map((b) => (
+          <div key={b.id} className="grid gap-1 border-b border-border pb-3 last:border-b-0 last:pb-0">
+            <div className="flex flex-wrap items-baseline justify-between gap-2"><span className="font-semibold">{BASIS[b.basis]} · <span className="tabular">{fmtMoney(b.amount, b.currency)}</span></span>
+              <span className="text-sm text-ink-subtle">{BASE_STATUS[b.status]}</span></div>
+            <p className="text-sm">{b.source}</p>
+            <p className="text-sm text-ink-subtle">Öneren {b.proposedBy} · {fmtDateTime(b.proposedAt)}{b.decidedBy ? ` · karar ${b.decidedBy}, ${fmtDateTime(b.decidedAt!)}` : ''}{b.decisionNote ? ` · ${b.decisionNote}` : ''}</p>
+            {b.status === 'PROPOSED' && !decidable && <p className="text-sm text-ink-subtle">Seçim kararı aşamasına geçildi; bu baz artık onaylanamaz ve rapora girmez.</p>}
+            {b.status === 'PROPOSED' && decidable && d.can.approveBaseline && (b.proposedByMe ? <p className="text-sm text-ink-subtle">Bazı siz önerdiniz; onay başka bir yetkilinin.</p>
+              : rejecting?.id === b.id ? (
+                <form className="grid gap-2" onSubmit={(e) => { e.preventDefault(); void a.run(() => api(`/api/v1/savings-baselines/${b.id}/decision`, { method: 'POST', json: { approve: false, note: rejecting.note } }), 'Baz reddedildi.').then(() => setRejecting(null)); }}>
+                  <Field label="Ret gerekçesi">{(p) => <input className="input" required minLength={5} {...p} value={rejecting.note} onChange={(e) => setRejecting({ ...rejecting, note: e.target.value })} />}</Field>
+                  <div className="flex gap-2"><Button type="submit" variant="outline" disabled={a.busy || rejecting.note.trim().length < 5}>Reddet</Button><Button type="button" variant="ghost" onClick={() => setRejecting(null)}>Vazgeç</Button></div>
+                </form>
+              ) : (
+                <div className="flex gap-2">
+                  <Button size="sm" disabled={a.busy} onClick={() => void a.run(() => api(`/api/v1/savings-baselines/${b.id}/decision`, { method: 'POST', json: { approve: true } }), 'Baz onaylandı.')}>Bazı onayla</Button>
+                  <Button size="sm" variant="outline" onClick={() => setRejecting({ id: b.id, note: '' })}>Reddet</Button>
+                </div>
+              ))}
+          </div>
+        ))}
+        {a.feedback}
+      </div>
+    </section>
+  );
+}
+
 function ExceptionsPanel({ d, reload }: { d: Detail; reload: () => Promise<void> }) {
   const a = useAction(reload);
   const [f, setF] = useState<{ kind: keyof typeof EX_KIND; reason: string; supplierId: string } | null>(null);
@@ -84,6 +144,7 @@ function ExceptionsPanel({ d, reload }: { d: Detail; reload: () => Promise<void>
       <div className="panel-head"><h2>Kaynak bulma istisnaları</h2>
         {d.can.requestException && !f && !['CONTRACTING', 'CANCELLED', 'NO_AWARD'].includes(d.project.status) && <Button size="sm" variant="outline" className="ml-auto" onClick={() => setF({ kind: 'SINGLE_SOURCE', reason: '', supplierId: '' })}>İstisna iste</Button>}</div>
       <div className="panel-body grid gap-3">
+        {!d.exceptions.length && !f && <p className="text-sm text-ink-muted">Tek kaynak, acil alım, iptal veya sonuçsuz kapanış gerekçeyle istenir ve onay politikasına göre onaylanır.</p>}
         {f && (
           <form className="grid gap-2" onSubmit={(e) => { e.preventDefault(); void a.run(() => api(`/api/v1/projects/${d.project.id}/exceptions`, { method: 'POST',
             json: { kind: f.kind, reason: f.reason, supplierId: f.kind === 'SINGLE_SOURCE' ? f.supplierId : null } }), `${EX_KIND[f.kind]} istisnası onaya gönderildi.`).then(() => setF(null)); }}>
@@ -201,6 +262,7 @@ function Summary({ d, reload }: { d: Detail; reload: () => Promise<void> }) {
       <div className="grid content-start gap-6">
         <RoundPanel d={d} reload={reload} />
         <ExceptionsPanel d={d} reload={reload} />
+        <SavingsPanel d={d} reload={reload} />
       </div>
     </div>
   );

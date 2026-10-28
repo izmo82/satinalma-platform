@@ -252,17 +252,25 @@ function ScorecardTab({ supplierId }: { supplierId: string }) {
   );
 }
 
-const DIMS = [['quality', 'Kalite'], ['delivery', 'Zamanında ve tam teslimat'], ['sla', 'SLA'], ['communication', 'İletişim'], ['commercial', 'Ticari uyum']] as const;
+export interface WeightPolicy { id: string; category: string; weights: Record<string, number>; reason: string; setBy: string; createdAt: string; retiredAt: string | null }
+export const DEFAULT_W: Record<string, number> = { quality: 30, delivery: 25, sla: 20, communication: 10, commercial: 15 };
+const SHORT: Record<string, string> = { quality: 'kalite', delivery: 'teslimat', sla: 'SLA', communication: 'iletişim', commercial: 'ticari' };
+export const weightText = (w: Record<string, number>) => DIMS.map(([k]) => `${SHORT[k]} %${w[k] ?? 0}`).join(', ');
+export const DIMS = [['quality', 'Kalite'], ['delivery', 'Zamanında ve tam teslimat'], ['sla', 'SLA'], ['communication', 'İletişim'], ['commercial', 'Ticari uyum']] as const;
 function PerformanceForm({ supplierId, year, onDone }: { supplierId: string; year: number; onDone: () => void }) {
   const end = `${year}-12-31` > todayLocal() ? todayLocal() : `${year}-12-31`;
   const [f, setF] = useState({ periodStart: `${year}-01-01`, periodEnd: end, category: '', basis: '' });
   const [scores, setScores] = useState<Record<string, string>>({});
   const [err, setErr] = useState<string | null>(null);
+  const policies = useResource<{ items: WeightPolicy[] }>('/api/v1/performance-weights');
+  const key = f.category.trim().toLocaleLowerCase('tr-TR');
+  const applied = key ? policies.data?.items.find((x) => !x.retiredAt && x.category.trim().toLocaleLowerCase('tr-TR') === key) : undefined;
   return (
     <form className="panel" onSubmit={(e) => { e.preventDefault(); setErr(null);
       void api(`/api/v1/suppliers/${supplierId}/performance-reviews`, { method: 'POST', json: { ...f, scores: Object.fromEntries(Object.entries(scores).filter(([, v]) => v !== '').map(([k, v]) => [k, Number(v)])) } })
         .then(onDone, (x: ApiError) => setErr(x.message)); }}>
-      <div className="panel-head"><h2>Performans incelemesi</h2><span className="text-sm text-ink-subtle">Örnek ağırlıklar: kalite %30, teslimat %25, SLA %20, iletişim %10, ticari %15.</span></div>
+      <div className="panel-head"><h2>Performans incelemesi</h2><span className="text-sm text-ink-subtle">{applied ? `"${applied.category}" kategori ağırlığı uygulanır: ${weightText(applied.weights)}.`
+        : `Kategori kuralı yok; örnek ağırlık uygulanır: ${weightText(DEFAULT_W)}.`} <Link to="/performans-agirliklari">Ağırlık kuralları</Link></span></div>
       <div className="panel-body grid gap-3">
         <div className="grid grid-cols-3 items-start gap-x-3 max-[900px]:grid-cols-1">
           <Field label="Dönem başı">{(p) => <input className="input" type="date" required {...p} value={f.periodStart} onChange={(e) => setF({ ...f, periodStart: e.target.value })} />}</Field>

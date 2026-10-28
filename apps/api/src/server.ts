@@ -653,7 +653,8 @@ export async function buildApp(deps: AppDeps) {
   });
   app.get('/api/v1/projects/:id', { schema: { tags: ['projects'], params: idParams } }, async (req, reply) => {
     const r = await scoped(req, 'project.read', async (tx, ctx) => ({ ...(await sourcing.getProject(tx, ctx, (req.params as any).id)),
-      can: { manage: can(ctx.roles, 'project.manage'), requestException: can(ctx.roles, 'sourcing.exception.request'), approvePublish: can(ctx.roles, 'project.publish.approve'), score: can(ctx.roles, 'bid.score'),
+      savingsBaselines: await kpi.projectBaselines(tx, ctx, (req.params as any).id),
+      can: { manage: can(ctx.roles, 'project.manage'), approveBaseline: can(ctx.roles, 'savings.approve'), requestException: can(ctx.roles, 'sourcing.exception.request'), approvePublish: can(ctx.roles, 'project.publish.approve'), score: can(ctx.roles, 'bid.score'),
         evaluate: can(ctx.roles, 'evaluation.create'), propose: can(ctx.roles, 'award.propose'), decide: can(ctx.roles, 'award.decide'), answer: can(ctx.roles, 'rfq.answer') } }));
     return reply.header('etag', r.project.etag).send(r);
   });
@@ -764,6 +765,31 @@ export async function buildApp(deps: AppDeps) {
     properties: { response: { type: 'string', enum: ['YES', 'PARTIAL', 'NO', 'NOT_APPLICABLE', 'UNKNOWN'] }, naReason: optText(1000), note: optText(2000),
       evidenceDocumentVersionId: { anyOf: [uuid, { type: 'null' }] }, evidenceDate: optDate, evidenceExpires: optDate } } } }, async (req) =>
     scoped(req, 'assessment.manage', (tx, ctx) => evals.saveAnswer(tx, ctx, (req.params as any).id, (req.params as any).questionId, req.body as any)));
+  // --- Faz 5: tedarikçi portalından anket yanıtlama ---
+  app.post('/api/v1/assessments/:id/send-to-supplier', { schema: { tags: ['evaluation'], params: idParams, body: { type: 'object', additionalProperties: false, properties: { due: optDate } } } }, async (req) =>
+    scoped(req, 'assessment.manage', (tx, ctx) => evals.sendToSupplier(tx, ctx, (req.params as any).id, (req.body as any)?.due ?? null)));
+  app.get('/api/v1/portal/assessments', { schema: { tags: ['portal'] } }, async (req) => scoped(req, 'portal.assessment', async (tx, ctx) => ({ items: await evals.portalAssessments(tx, ctx) })));
+  app.get('/api/v1/portal/assessments/:id', { schema: { tags: ['portal'], params: idParams } }, async (req) => scoped(req, 'portal.assessment', (tx, ctx) => evals.portalAssessment(tx, ctx, (req.params as any).id)));
+  app.put('/api/v1/portal/assessments/:id/answers/:questionId', { schema: { tags: ['portal'], params: qParams, body: { type: 'object', required: ['response'], additionalProperties: false,
+    properties: { response: { type: 'string', enum: ['YES', 'PARTIAL', 'NO', 'NOT_APPLICABLE', 'UNKNOWN'] }, naReason: optText(1000), note: optText(2000), evidenceDate: optDate, evidenceExpires: optDate } } } }, async (req) =>
+    scoped(req, 'portal.assessment', (tx, ctx) => evals.portalAnswer(tx, ctx, (req.params as any).id, (req.params as any).questionId, req.body as any)));
+  app.post('/api/v1/portal/assessments/:id/submit', { schema: { tags: ['portal'], params: idParams } }, async (req) =>
+    scoped(req, 'portal.assessment', (tx, ctx) => evals.portalSubmit(tx, ctx, (req.params as any).id)));
+  // --- Faz 5: kategori bazında performans ağırlığı ---
+  const weightsSchema = { type: 'object', additionalProperties: false, required: ['quality', 'delivery', 'sla', 'communication', 'commercial'],
+    properties: Object.fromEntries(['quality', 'delivery', 'sla', 'communication', 'commercial'].map((k) => [k, { type: 'integer', minimum: 0, maximum: 100 }])) } as const;
+  app.get('/api/v1/performance-weights', { schema: { tags: ['evaluation'] } }, async (req) => scoped(req, 'assessment.read', async (tx, ctx) =>
+    ({ items: await evals.listWeightPolicies(tx), can: { manage: can(ctx.roles, 'performance.weights.manage') } })));
+  app.put('/api/v1/performance-weights', { schema: { tags: ['evaluation'], body: { type: 'object', additionalProperties: false, required: ['category', 'weights', 'reason'],
+    properties: { category: text(200), weights: weightsSchema, reason: text(2000) } } } }, async (req) =>
+    scoped(req, 'performance.weights.manage', (tx, ctx) => evals.setWeightPolicy(tx, ctx, req.body as any)));
+  // --- Faz 5: tasarruf bazı ---
+  app.post('/api/v1/projects/:id/savings-baselines', { schema: { tags: ['reports'], params: idParams, body: { type: 'object', additionalProperties: false, required: ['basis', 'amount', 'source'],
+    properties: { basis: { type: 'string', enum: ['BUDGET', 'PREVIOUS_PRICE', 'MARKET'] }, amount: { type: 'string', maxLength: 22 }, source: text(1000) } } } }, async (req, reply) =>
+    reply.status(201).send(await scoped(req, 'project.manage', (tx, ctx) => kpi.proposeBaseline(tx, ctx, (req.params as any).id, req.body as any))));
+  app.post('/api/v1/savings-baselines/:id/decision', { schema: { tags: ['reports'], params: idParams, body: { type: 'object', additionalProperties: false, required: ['approve'],
+    properties: { approve: { type: 'boolean' }, note: { type: 'string', maxLength: 2000 } } } } }, async (req) =>
+    scoped(req, 'savings.approve', (tx, ctx) => kpi.decideBaseline(tx, ctx, (req.params as any).id, req.body as any)));
   app.post('/api/v1/assessments/:id/answers/:questionId/review', { schema: { tags: ['evaluation'], params: qParams, body: { type: 'object', required: ['review'], additionalProperties: false,
     properties: { review: { type: 'string', enum: ['ACCEPTED', 'FINDING'] }, findingSeverity: { anyOf: [lvl, { type: 'null' }] }, findingNote: optText(2000) } } } }, async (req) =>
     scoped(req, 'assessment.review', (tx, ctx) => evals.reviewAnswer(tx, ctx, (req.params as any).id, (req.params as any).questionId, req.body as any)));

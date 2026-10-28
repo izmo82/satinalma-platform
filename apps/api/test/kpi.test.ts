@@ -17,7 +17,7 @@ describe('yönetim göstergeleri', () => {
     const by = Object.fromEntries(r.body.indicators.map((i: any) => [i.key, i]));
     // Tahsis edilmemiş fatura açık uyumsuzluktur.
     expect(by.invoice_exception_rate).toMatchObject({ status: 'OK', values: [{ numerator: '1', denominator: '1', ratio: '100.0' }] });
-    expect(by.savings).toMatchObject({ status: 'NOT_AVAILABLE' });
+    expect(by.savings).toMatchObject({ status: 'NO_DATA' }); // onaylı baz yok
     expect(by.savings.note).toContain('en pahalı teklif');
     expect(by.automation_reliability.status).toBe('NO_DATA');
     expect(r.body.dataAsOf).toBeTruthy();

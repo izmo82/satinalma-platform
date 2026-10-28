@@ -89,3 +89,25 @@ test('veri yönetimi ve ERP mutabakatı (Faz 7)', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Durum ve toplamlar' })).toBeVisible();
   await audit(page, 'ERP mutabakatı');
 });
+
+test('Faz 5: tedarikçi anket listesi/yanıt ekranı ve performans ağırlıkları', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('radio', { name: /teklif\.anadolu/ }).check();
+  await page.getByRole('button', { name: 'Oturum aç' }).click();
+  await nav(page, 'Anketler');
+  await expect(page.getByRole('heading', { name: 'Anketler' })).toBeVisible();
+  await page.waitForLoadState('networkidle');
+  await audit(page, 'Portal anketler');
+  const open = page.getByRole('table').getByRole('link').first();
+  if (await open.count()) {
+    await open.click();
+    await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+    await audit(page, 'Portal anket yanıtı');
+  }
+  await page.getByRole('button', { name: 'Çıkış' }).click();
+  await login(page, 'kerem.hukuk@example.test');
+  await page.goto('/performans-agirliklari');
+  await expect(page.getByRole('heading', { name: 'Performans ağırlıkları' })).toBeVisible();
+  await page.getByRole('button', { name: 'Kategori kuralı ekle' }).click();
+  await audit(page, 'Performans ağırlıkları');
+});

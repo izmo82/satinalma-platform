@@ -18,7 +18,7 @@ import { NotYetPage } from './pages/NotYetPage.tsx';
 import { ProjectsPage } from './pages/ProjectsPage.tsx';
 import { ProjectWizard } from './pages/ProjectWizard.tsx';
 import { ProjectWorkspace } from './pages/ProjectWorkspace.tsx';
-import { PortalHome, PortalRound } from './pages/PortalPages.tsx';
+import { PortalAssessment, PortalAssessments, PortalHome, PortalRound } from './pages/PortalPages.tsx';
 import { GlobalSearch, NotificationBell } from './ui/TopBar.tsx';
 
 // PDF görüntüleyici içeren ağır ekranlar ayrı paket olarak yüklenir.
@@ -37,6 +37,7 @@ const AssessmentPage = lazy(() => evaluation().then((m) => ({ default: m.Assessm
 const IncidentPage = lazy(() => evaluation().then((m) => ({ default: m.IncidentPage })));
 const IncidentsPage = lazy(() => evaluation().then((m) => ({ default: m.IncidentsPage })));
 const TemplatesPage = lazy(() => evaluation().then((m) => ({ default: m.TemplatesPage })));
+const PerformanceWeightsPage = lazy(() => evaluation().then((m) => ({ default: m.PerformanceWeightsPage })));
 const ReportsPage = lazy(() => evaluation().then((m) => ({ default: m.ReportsPage })));
 const AiPage = lazy(() => evaluation().then((m) => ({ default: m.AiPage })));
 const governance = () => import('./pages/GovernancePages.tsx');
@@ -64,6 +65,7 @@ function Shell() {
   if (!me) return null;
   const nav: { to: string; label: string; icon: string; count?: number; later?: string }[] = me.supplierPortal ? [
     { to: '/portal', label: 'Teklif davetleri', icon: 'inbox' },
+    { to: '/portal/anketler', label: 'Anketler', icon: 'shield' },
   ] : [
     { to: '/islerim', label: 'İşlerim', icon: 'inbox', count: load(null) },
     { to: '/projeler', label: 'Projeler', icon: 'folder', count: load(['project']) },
@@ -95,7 +97,7 @@ function Shell() {
           <ul className="grid gap-0.5 max-[900px]:flex max-[900px]:overflow-x-auto max-[900px]:[mask-image:linear-gradient(to_right,#000_85%,transparent)] max-[900px]:pr-8">
             {nav.map((n) => (
               <li key={n.to}>
-                <NavLink to={n.to} className={({ isActive }) => cn(
+                <NavLink to={n.to} end={n.to === '/portal'} className={({ isActive }) => cn(
                   'flex min-h-9 items-center gap-3 rounded-md px-2.5 font-semibold no-underline transition-colors duration-150 max-[900px]:whitespace-nowrap',
                   isActive ? 'bg-ink text-primary-foreground' : 'text-ink-muted hover:bg-sunken hover:text-ink')}>
                   {({ isActive }) => <>
@@ -124,6 +126,8 @@ function Shell() {
         <Routes>
           <Route path="/" element={<Navigate to={me.supplierPortal ? '/portal' : '/islerim'} replace />} />
           <Route path="/portal" element={<PortalHome />} />
+          <Route path="/portal/anketler" element={<PortalAssessments />} />
+          <Route path="/portal/anketler/:id" element={<PortalAssessment />} />
           <Route path="/portal/:id" element={<PortalRound />} />
           <Route path="/projeler" element={<ProjectsPage />} />
           <Route path="/projeler/yeni" element={<ProjectWizard />} />
@@ -148,6 +152,7 @@ function Shell() {
           <Route path="/olaylar/:id" element={<IncidentPage />} />
           <Route path="/degerlendirmeler/:id" element={<AssessmentPage />} />
           <Route path="/anketler" element={<TemplatesPage />} />
+          <Route path="/performans-agirliklari" element={<PerformanceWeightsPage />} />
           <Route path="/yapay-zeka" element={<AiPage />} />
           <Route path="/veri-yonetimi" element={<DataGovernancePage />} />
           <Route path="/veri-yonetimi/imha/:id" element={<DisposalBatchPage />} />
