@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
   add, availableLimit, checkInvoice, cmp, dec, div, isDecimal, mul, openCommitment, str, type Dec,
-  type AllocationInput, type ContractState, type InvoiceCheckInput, type PoLineState, type ToleranceRule,
+  type AllocationInput, type ContractState, type InvoiceCheckInput, type OtherTax, type PoLineState, type ToleranceRule,
 } from '@sp/domain';
 import type { TenantContext, Tx } from '../db.ts';
 import { audit } from '../audit.ts';
@@ -43,28 +43,48 @@ async function contractState(tx: Tx, cvId: string, excludeInvoiceId: string | nu
   const cv = (await tx.query<{ id: string; title: string; stage: string; signature_method: string; signature_finalized_at: Date | null }>(
     `SELECT cv.id, f.title, cv.stage, cv.signature_method, cv.signature_finalized_at FROM contract_versions cv JOIN contract_families f ON f.id = cv.family_id WHERE cv.id = $1`, [cvId])).rows[0];
   if (!cv) return null;
-  const t = (await tx.query<{ currency: string; value_type: string; amount: string | null; verified_by: string | null }>(
-    `SELECT currency, value_type, amount::text, verified_by FROM contract_terms WHERE contract_version_id = $1 ORDER BY revision DESC LIMIT 1`, [cvId])).rows[0];
+  const t = (await tx.query<{ currency: string; value_type: string; amount: string | null; verified_by: string | null; limit_basis: 'NET' | 'GROSS' }>(
+    `SELECT currency, value_type, amount::text, verified_by, limit_basis FROM contract_terms WHERE contract_version_id = $1 ORDER BY revision DESC LIMIT 1`, [cvId])).rows[0];
   const ceiling = t && t.verified_by && t.value_type !== 'UNPRICED' ? t.amount : null;
+  const gross = t?.limit_basis === 'GROSS';
   // Net tüketim: onaylı fatura tahsisleri (doğrudan sözleşmeye veya sözleşmeye bağlı siparişe), iadeler negatif.
-  const cons = (await tx.query<{ v: string }>(`SELECT coalesce(sum(CASE i.kind WHEN 'CREDIT_NOTE' THEN -a.amount ELSE a.amount END), 0)::numeric(20,2)::text AS v
-    FROM invoice_allocations a JOIN invoices i ON i.id = a.invoice_id LEFT JOIN po_lines pl ON pl.id = a.po_line_id LEFT JOIN purchase_orders po ON po.id = pl.po_id
+  // Vergi dahil limitte tahsis, faturanın o satırının vergileriyle brütleşir (domain ile aynı yuvarlama).
+  const cons = (await tx.query<{ v: string }>(`SELECT coalesce(sum(CASE i.kind WHEN 'CREDIT_NOTE' THEN -1 ELSE 1 END * ${gross ? ALLOC_GROSS : 'a.amount'}), 0)::numeric(20,2)::text AS v
+    FROM invoice_allocations a JOIN invoices i ON i.id = a.invoice_id JOIN invoice_lines il ON il.invoice_id = a.invoice_id AND il.line_no = a.line_no
+    LEFT JOIN po_lines pl ON pl.id = a.po_line_id LEFT JOIN purchase_orders po ON po.id = pl.po_id
     WHERE coalesce(po.contract_version_id, a.contract_version_id) = $1 AND i.kind <> 'ADVANCE' AND ${APPROVED} AND ($2::uuid IS NULL OR i.id <> $2)`, [cvId, excludeInvoiceId])).rows[0]!.v;
-  const lines = (await tx.query<{ ordered: string; invoiced: string }>(`SELECT round(pl.quantity * pl.unit_price, 2)::text AS ordered,
-      coalesce((SELECT sum(CASE i.kind WHEN 'CREDIT_NOTE' THEN -a.amount ELSE a.amount END) FROM invoice_allocations a JOIN invoices i ON i.id = a.invoice_id
-        WHERE a.po_line_id = pl.id AND ${APPROVED} AND ($2::uuid IS NULL OR i.id <> $2)), 0)::numeric(20,2)::text AS invoiced
-    FROM po_lines_current pl JOIN purchase_orders po ON po.id = pl.po_id WHERE po.contract_version_id = $1 AND po.status <> 'CANCELLED'`, [cvId, excludeInvoiceId])).rows;
+  // Açık taahhüt: kalan (faturalanmamış) net; vergi dahil limitte sipariş satırının KDV oranıyla brüt.
+  const lines = (await tx.query<{ remaining: string }>(`SELECT CASE WHEN $3 THEN round(r.remaining * (100 + coalesce(r.tax_rate, 0)) / 100, 2) ELSE r.remaining END::text AS remaining FROM (
+      SELECT pl.tax_rate, greatest(round(pl.quantity * pl.unit_price, 2) - coalesce((SELECT sum(CASE i.kind WHEN 'CREDIT_NOTE' THEN -a.amount ELSE a.amount END) FROM invoice_allocations a JOIN invoices i ON i.id = a.invoice_id
+        WHERE a.po_line_id = pl.id AND ${APPROVED} AND ($2::uuid IS NULL OR i.id <> $2)), 0), 0) AS remaining
+      FROM po_lines_current pl JOIN purchase_orders po ON po.id = pl.po_id WHERE po.contract_version_id = $1 AND po.status <> 'CANCELLED') r`, [cvId, excludeInvoiceId, gross])).rows;
   return {
-    contractVersionId: cvId, title: cv.title, currency: t?.currency ?? 'TRY', ceiling, netConsumption: cons,
-    openCommitment: openCommitment(lines.map((l) => ({ orderedAmount: l.ordered, invoicedAmount: l.invoiced }))),
+    contractVersionId: cvId, title: cv.title, currency: t?.currency ?? 'TRY', ceiling, netConsumption: cons, limitBasis: gross ? 'GROSS' : 'NET',
+    openCommitment: openCommitment(lines.map((l) => ({ orderedAmount: l.remaining, invoicedAmount: '0' }))),
     signatureUnresolved: cv.signature_method !== 'NOT_REQUIRED' && !cv.signature_finalized_at, archiveImport: cv.stage === 'ARCHIVE_IMPORT',
   };
+}
+
+/** Tahsisin vergi dahil karşılığı: tahsis × (satır net + KDV dışı + KDV) / satır net; KDV beyan yoksa (net + diğer) × oran. */
+const ALLOC_GROSS = `coalesce(round(a.amount * (il.net_amount + coalesce(il.other_tax_amount, 0)
+  + coalesce(il.tax_amount, round((il.net_amount + coalesce(il.other_tax_amount, 0)) * il.tax_rate / 100, 2))) / nullif(il.net_amount, 0), 2), a.amount)`;
+/** Sipariş tutarı, vergi dahil limitte satırın KDV oranıyla. */
+const poAmount = (q: string, p: string, rate: string | null | undefined, gross: boolean): Dec => {
+  const net = amount(q, p);
+  return gross ? dec(str(div(mul(net, dec('100') + dec(rate ?? '0')), dec('100')))) : net;
+};
+/** Vergi dahil limitli sözleşmede sipariş satırının KDV oranı zorunludur (açık taahhüt brüt hesaplanır). */
+function requireTaxRates(lines: { description: string; taxRate?: string | null }[], gross: boolean) {
+  for (const l of lines) {
+    if (l.taxRate != null && l.taxRate !== '' && (!isDecimal(l.taxRate) || dec(l.taxRate) < 0n || dec(l.taxRate) > dec('100'))) throw unprocessable('invalid_number', `"${l.description}": KDV oranı 0–100 arasında olmalı.`);
+    if (gross && (l.taxRate == null || l.taxRate === '')) throw unprocessable('tax_rate_required', `"${l.description}": sözleşme limiti vergi dahil; sipariş satırında KDV oranı gerekli.`);
+  }
 }
 
 // --- Sipariş ve kabul -------------------------------------------------------------------------
 
 export interface PoInput { companyId: string; supplierId: string; contractVersionId?: string | null; projectId?: string | null; currency: string;
-  lines: { kind: 'GOODS' | 'SERVICE'; description: string; unit: string; quantity: string; unitPrice: string }[] }
+  lines: { kind: 'GOODS' | 'SERVICE'; description: string; unit: string; quantity: string; unitPrice: string; taxRate?: string | null }[] }
 
 export async function createPo(tx: Tx, ctx: TenantContext, b: PoInput) {
   if (!ctx.companyIds.includes(b.companyId)) throw forbidden('company');
@@ -74,24 +94,29 @@ export async function createPo(tx: Tx, ctx: TenantContext, b: PoInput) {
   const block = (await criticalBlocks(tx, [b.supplierId])).get(b.supplierId);
   if (block) throw unprocessable('critical_blocker', `${s.legal_name}: ${block}`);
   for (const l of b.lines) if (!isDecimal(l.quantity) || !isDecimal(l.unitPrice) || Number(l.quantity) <= 0) throw unprocessable('invalid_number', 'Miktar ve birim fiyat ondalık sayı olmalı.');
-  const total = add(...b.lines.map((l) => amount(l.quantity, l.unitPrice)));
+  let total = add(...b.lines.map((l) => amount(l.quantity, l.unitPrice)));
+  requireTaxRates(b.lines, false);
   if (b.contractVersionId) {
     await lockContracts(tx, [b.contractVersionId]);
     const c = await contractState(tx, b.contractVersionId, null);
     if (!c) throw notFound();
-    // Sipariş açık taahhüttür: tavanı aşan sipariş verilemez (BR07).
+    const gross = c.limitBasis === 'GROSS';
+    requireTaxRates(b.lines, gross);
+    const committed = add(...b.lines.map((l) => poAmount(l.quantity, l.unitPrice, l.taxRate, gross)));
+    // Sipariş açık taahhüttür: tavanı aşan sipariş verilemez (BR07). Vergi dahil limitte KDV dahil tutarla.
     if (c.ceiling !== null) {
       const avail = availableLimit(c.ceiling, c.netConsumption, c.openCommitment);
-      if (cmp(total, dec(avail)) > 0) throw unprocessable('limit_exceeded', `${c.title}: kullanılabilir limit ${avail} ${c.currency}, sipariş ${str(total)}.`, { available: avail });
+      if (cmp(committed, dec(avail)) > 0) throw unprocessable('limit_exceeded', `${c.title}: kullanılabilir limit${gross ? ' (vergi dahil)' : ''} ${avail} ${c.currency}, sipariş ${str(committed)}.`, { available: avail });
     }
   }
+  total = add(...b.lines.map((l) => amount(l.quantity, l.unitPrice)));
   const code = await nextCode(tx, ctx, 'po', 'PO');
   const po = (await tx.query<{ id: string }>(`INSERT INTO purchase_orders (tenant_id, company_id, code, supplier_id, contract_version_id, project_id, currency, issued_by)
     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`, [ctx.tenantId, b.companyId, code, b.supplierId, b.contractVersionId ?? null, b.projectId ?? null, b.currency, ctx.userId])).rows[0]!;
   let n = 0;
   for (const l of b.lines) {
-    await tx.query(`INSERT INTO po_lines (tenant_id, company_id, po_id, line_no, kind, description, unit, quantity, unit_price) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-      [ctx.tenantId, b.companyId, po.id, ++n, l.kind, l.description.trim(), l.unit.trim(), l.quantity, l.unitPrice]);
+    await tx.query(`INSERT INTO po_lines (tenant_id, company_id, po_id, line_no, kind, description, unit, quantity, unit_price, tax_rate) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [ctx.tenantId, b.companyId, po.id, ++n, l.kind, l.description.trim(), l.unit.trim(), l.quantity, l.unitPrice, l.taxRate || null]);
   }
   await audit(tx, ctx, 'po.issued', 'purchase_order', po.id, { code, total: str(total), contractVersionId: b.contractVersionId ?? null });
   return { id: po.id, code };
@@ -100,13 +125,13 @@ export async function createPo(tx: Tx, ctx: TenantContext, b: PoInput) {
 async function poLineStates(tx: Tx, poLineIds: string[], excludeInvoiceId: string | null): Promise<PoLineState[]> {
   if (!poLineIds.length) return [];
   return (await tx.query<PoLineState>(`SELECT pl.id AS "poLineId", pl.description, pl.unit, po.currency, pl.kind, po.status AS "poStatus", trim_scale(pl.quantity)::text AS "orderedQty",
-      trim_scale(pl.unit_price)::text AS "unitPrice", po.contract_version_id AS "contractVersionId",
+      trim_scale(pl.unit_price)::text AS "unitPrice", po.contract_version_id AS "contractVersionId", pr.category, trim_scale(pl.tax_rate)::text AS "taxRate",
       coalesce((SELECT trim_scale(sum(r.quantity)) FROM receipts r WHERE r.po_line_id = pl.id), 0)::text AS "receivedQty",
       coalesce((SELECT trim_scale(sum(CASE i.kind WHEN 'CREDIT_NOTE' THEN -a.quantity ELSE a.quantity END)) FROM invoice_allocations a JOIN invoices i ON i.id = a.invoice_id
         WHERE a.po_line_id = pl.id AND i.kind <> 'ADVANCE' AND ${APPROVED} AND ($2::uuid IS NULL OR i.id <> $2)), 0)::text AS "invoicedQty",
       coalesce((SELECT sum(CASE i.kind WHEN 'CREDIT_NOTE' THEN -a.amount ELSE a.amount END) FROM invoice_allocations a JOIN invoices i ON i.id = a.invoice_id
         WHERE a.po_line_id = pl.id AND i.kind <> 'ADVANCE' AND ${APPROVED} AND ($2::uuid IS NULL OR i.id <> $2)), 0)::numeric(20,2)::text AS "invoicedAmount"
-    FROM po_lines_current pl JOIN purchase_orders po ON po.id = pl.po_id WHERE pl.id = ANY($1::uuid[])`, [poLineIds, excludeInvoiceId])).rows;
+    FROM po_lines_current pl JOIN purchase_orders po ON po.id = pl.po_id LEFT JOIN projects pr ON pr.id = po.project_id WHERE pl.id = ANY($1::uuid[])`, [poLineIds, excludeInvoiceId])).rows;
 }
 
 export async function recordReceipt(tx: Tx, ctx: TenantContext, poLineId: string, b: { quantity: string; periodFrom?: string | null; periodTo?: string | null; note: string }, idempotencyKey?: string) {
@@ -184,6 +209,9 @@ export async function changePo(tx: Tx, ctx: TenantContext, poId: string, b: PoCh
   const added = b.add ?? [];
   for (const x of [...b.lines, ...added]) if (!isDecimal(x.quantity) || !isDecimal(x.unitPrice) || Number(x.quantity) <= 0 || Number(x.unitPrice) < 0) throw unprocessable('invalid_number', 'Miktar pozitif, birim fiyat sıfır veya pozitif ondalık olmalı.');
   const changed: { lineNo: number; poLineId: string; description: string; before: { quantity: string; unitPrice: string }; after: { quantity: string; unitPrice: string } }[] = [];
+  const cs = po.contract_version_id ? await contractState(tx, po.contract_version_id, null) : null;
+  const gross = cs?.limitBasis === 'GROSS';
+  requireTaxRates(added, gross);
   let delta = 0n;
   for (const x of b.lines) {
     const l = lines.find((y) => y.poLineId === x.poLineId);
@@ -193,17 +221,14 @@ export async function changePo(tx: Tx, ctx: TenantContext, poId: string, b: PoCh
     const floor = dec(l.receivedQty) > dec(l.invoicedQty) ? l.receivedQty : l.invoicedQty;
     if (cmp(dec(x.quantity), dec(floor)) < 0) throw unprocessable('below_consumed', `"${l.description}": miktar kabul edilen/faturalanan miktarın (${floor} ${l.unit}) altına inemez.`);
     if (priceChanged && dec(l.invoicedQty) !== 0n) throw unprocessable('price_locked', `"${l.description}" faturalandı; fiyatı değişmez. Yeni fiyat için yeni kalem ekleyin.`);
-    delta += amount(x.quantity, x.unitPrice) - amount(l.orderedQty, l.unitPrice);
+    delta += poAmount(x.quantity, x.unitPrice, l.taxRate, gross) - poAmount(l.orderedQty, l.unitPrice, l.taxRate, gross);
     changed.push({ lineNo: 0, poLineId: l.poLineId, description: l.description, before: { quantity: l.orderedQty, unitPrice: l.unitPrice }, after: { quantity: x.quantity, unitPrice: x.unitPrice } });
   }
-  for (const x of added) delta += amount(x.quantity, x.unitPrice);
+  for (const x of added) delta += poAmount(x.quantity, x.unitPrice, x.taxRate, gross);
   if (!changed.length && !added.length) throw unprocessable('no_change', 'Değişiklik yok.');
-  if (po.contract_version_id && delta > 0n) {
-    const c = await contractState(tx, po.contract_version_id, null);
-    if (c?.ceiling != null) {
-      const avail = availableLimit(c.ceiling, c.netConsumption, c.openCommitment);
-      if (cmp(delta, dec(avail)) > 0) throw unprocessable('limit_exceeded', `${c.title}: kullanılabilir limit ${avail} ${c.currency}, değişiklik +${str(delta)}.`, { available: avail });
-    }
+  if (cs && delta > 0n && cs.ceiling != null) {
+    const avail = availableLimit(cs.ceiling, cs.netConsumption, cs.openCommitment);
+    if (cmp(delta, dec(avail)) > 0) throw unprocessable('limit_exceeded', `${cs.title}: kullanılabilir limit${gross ? ' (vergi dahil)' : ''} ${avail} ${cs.currency}, değişiklik +${str(delta)}.`, { available: avail });
   }
   const no = changeNo + 1;
   const lineNos = (await tx.query<{ id: string; line_no: number }>(`SELECT id, line_no FROM po_lines WHERE po_id = $1`, [poId])).rows;
@@ -217,8 +242,8 @@ export async function changePo(tx: Tx, ctx: TenantContext, poId: string, b: PoCh
   }
   let n = Math.max(0, ...lineNos.map((r) => r.line_no));
   for (const l of added) {
-    await tx.query(`INSERT INTO po_lines (tenant_id, company_id, po_id, line_no, kind, description, unit, quantity, unit_price, added_by_change_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-      [ctx.tenantId, po.company_id, poId, ++n, l.kind, l.description.trim(), l.unit.trim(), l.quantity, l.unitPrice, ch.id]);
+    await tx.query(`INSERT INTO po_lines (tenant_id, company_id, po_id, line_no, kind, description, unit, quantity, unit_price, added_by_change_id, tax_rate) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+      [ctx.tenantId, po.company_id, poId, ++n, l.kind, l.description.trim(), l.unit.trim(), l.quantity, l.unitPrice, ch.id, l.taxRate || null]);
   }
   await audit(tx, ctx, 'po.changed', 'purchase_order', poId, { changeNo: no, ...details }, b.reason);
   return { changeNo: no, delta: str(delta) };
@@ -290,7 +315,7 @@ export async function getPo(tx: Tx, id: string) {
 export interface InvoiceInput {
   companyId: string; supplierId: string; kind: 'INVOICE' | 'CREDIT_NOTE' | 'ADVANCE'; invoiceNo: string; ettn?: string | null; issueDate: string; currency: string;
   documentVersionId?: string | null; originalInvoiceId?: string | null;
-  lines: { description: string; quantity: string; unit: string; unitPrice: string; netAmount: string; taxRate?: string; taxAmount?: string | null; otherTax?: string | null }[];
+  lines: { description: string; quantity: string; unit: string; unitPrice: string; netAmount: string; taxRate?: string; taxAmount?: string | null; otherTax?: string | null; otherTaxes?: OtherTax[] | null }[];
   /** Belgede yazan toplamlar; kontrol satırlardan hesaplananla karşılaştırır. */
   declaredTaxTotal?: string | null; declaredWithholding?: string | null; declaredPayable?: string | null; declaredOtherTaxTotal?: string | null;
 }
@@ -313,6 +338,7 @@ export async function createInvoice(tx: Tx, ctx: TenantContext, b: InvoiceInput,
   }
   for (const l of b.lines) {
     if (![l.quantity, l.unitPrice, l.netAmount, l.taxRate ?? '0', ...(l.taxAmount ? [l.taxAmount] : []), ...(l.otherTax ? [l.otherTax] : [])].every(isDecimal) || [l.taxAmount, l.otherTax].some((x) => x && dec(x) < 0n)) throw unprocessable('invalid_number', 'Satır tutarları ondalık sayı olmalı.');
+    for (const t of l.otherTaxes ?? []) if (!isDecimal(t.amount) || dec(t.amount) < 0n || (t.rate != null && t.rate !== '' && !isDecimal(t.rate))) throw unprocessable('invalid_number', `"${l.description}": KDV dışı vergi oranı/tutarı ondalık sayı olmalı.`);
     if (source !== 'einvoice' && cmp(absDec(mul(dec(l.quantity), dec(l.unitPrice)) - dec(l.netAmount)), dec('0.01')) > 0) throw unprocessable('line_total_mismatch', `"${l.description}": miktar × birim fiyat satır tutarına eşit değil.`);
   }
   for (const v of [b.declaredTaxTotal, b.declaredWithholding, b.declaredPayable, b.declaredOtherTaxTotal]) if (v != null && (!isDecimal(v) || dec(v) < 0n)) throw unprocessable('invalid_number', 'Belge toplamları sıfır veya pozitif ondalık olmalı.');
@@ -322,8 +348,11 @@ export async function createInvoice(tx: Tx, ctx: TenantContext, b: InvoiceInput,
     b.currency, b.documentVersionId ?? null, b.originalInvoiceId ?? null, ctx.userId, b.declaredTaxTotal ?? null, b.declaredWithholding ?? null, b.declaredPayable ?? null, b.declaredOtherTaxTotal ?? null])).rows[0]!;
   let n = 0;
   for (const l of b.lines) {
-    await tx.query(`INSERT INTO invoice_lines (tenant_id, company_id, invoice_id, line_no, description, quantity, unit, unit_price, net_amount, tax_rate, tax_amount, other_tax_amount) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-      [ctx.tenantId, b.companyId, inv.id, ++n, l.description.trim(), l.quantity, l.unit.trim(), l.unitPrice, l.netAmount, l.taxRate ?? '20', l.taxAmount || null, l.otherTax || null]);
+    // Vergi kalemleri verildiyse satırın KDV dışı toplamı onlardan (beyan edilen toplam ayrıca verildiyse kontrol karşılaştırır).
+    const parts = l.otherTaxes?.length ? l.otherTaxes.map((t) => ({ code: t.code ?? null, name: t.name ?? null, rate: t.rate || null, amount: t.amount })) : null;
+    const otherSum = l.otherTax || (parts ? str(add(...parts.map((t) => dec(t.amount)))) : null);
+    await tx.query(`INSERT INTO invoice_lines (tenant_id, company_id, invoice_id, line_no, description, quantity, unit, unit_price, net_amount, tax_rate, tax_amount, other_tax_amount, other_taxes) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+      [ctx.tenantId, b.companyId, inv.id, ++n, l.description.trim(), l.quantity, l.unit.trim(), l.unitPrice, l.netAmount, l.taxRate ?? '20', l.taxAmount || null, otherSum, parts ? JSON.stringify(parts) : null]);
   }
   await tx.query(`INSERT INTO invoice_intake_events (tenant_id, company_id, invoice_id, source, duplicate, received_by) VALUES ($1,$2,$3,$4,false,$5)`, [ctx.tenantId, b.companyId, inv.id, source, ctx.userId]);
   await audit(tx, ctx, 'invoice.received', 'invoice', inv.id, { kind: b.kind, invoiceNo: b.invoiceNo, lines: b.lines.length });
@@ -360,15 +389,16 @@ const INV_SQL = `SELECT i.id, i.kind, i.currency, i.supplier_id, i.advance_offse
   i.declared_tax_total::text AS tax_total, i.declared_withholding::text AS withholding, i.declared_payable::text AS payable, i.declared_other_tax_total::text AS other_tax
   FROM invoices i JOIN suppliers s ON s.id = i.supplier_id WHERE i.id = ANY($1::uuid[])`;
 const LINES_SQL = `SELECT invoice_id, line_no AS "lineNo", description, trim_scale(quantity)::text AS quantity, unit, trim_scale(unit_price)::text AS "unitPrice", net_amount::text AS "netAmount",
-  trim_scale(tax_rate)::text AS "taxRate", tax_amount::text AS "taxAmount", other_tax_amount::text AS "otherTax" FROM invoice_lines WHERE invoice_id = ANY($1::uuid[]) ORDER BY invoice_id, line_no`;
+  trim_scale(tax_rate)::text AS "taxRate", tax_amount::text AS "taxAmount", other_tax_amount::text AS "otherTax", other_taxes AS "otherTaxes" FROM invoice_lines WHERE invoice_id = ANY($1::uuid[]) ORDER BY invoice_id, line_no`;
+const TOLERANCE_SQL = `SELECT currency, category, abs_amount::text AS "absAmount", percent::text, combine FROM tolerance_rules`;
 const ALLOC_SQL = `SELECT invoice_id, line_no AS "lineNo", po_line_id AS "poLineId", contract_version_id AS "contractVersionId",
   trim_scale(quantity)::text AS quantity, amount::text FROM invoice_allocations WHERE invoice_id = ANY($1::uuid[]) ORDER BY invoice_id, line_no`;
 const ADVANCE_SQL = `SELECT (a.total - coalesce((SELECT sum(i.advance_offset) FROM invoices i WHERE i.advance_invoice_id = $1 AND i.id <> $2 AND ${APPROVED}), 0))::text AS v
   FROM (SELECT sum(net_amount) AS total FROM invoice_lines WHERE invoice_id = $1) a`;
 
-function checkInput(inv: InvRow, lines: InvoiceCheckInput['lines'], allocations: AllocationInput[], poLines: PoLineState[], contracts: ContractState[], tolerance: ToleranceRule | null, advanceBalance: string): InvoiceCheckInput {
+function checkInput(inv: InvRow, lines: InvoiceCheckInput['lines'], allocations: AllocationInput[], poLines: PoLineState[], contracts: ContractState[], tolerances: ToleranceRule[], advanceBalance: string): InvoiceCheckInput {
   return { kind: inv.kind, currency: inv.currency, supplierActive: inv.supplier_status === 'ACTIVE', lines, allocations, poLines, contracts,
-    tolerance, advanceOffset: inv.advance_offset, advanceBalance, declared: { taxTotal: inv.tax_total, withholding: inv.withholding, payable: inv.payable, otherTaxTotal: inv.other_tax } };
+    tolerances, advanceOffset: inv.advance_offset, advanceBalance, declared: { taxTotal: inv.tax_total, withholding: inv.withholding, payable: inv.payable, otherTaxTotal: inv.other_tax } };
 }
 const strip = <T extends { invoice_id: string }>({ invoice_id: _, ...rest }: T) => rest;
 
@@ -381,12 +411,14 @@ async function evaluate(tx: Tx, invoiceId: string) {
   const cvIds = [...new Set([...poLines.map((p) => p.contractVersionId), ...allocations.map((a) => a.contractVersionId)].filter((x): x is string => !!x))];
   const contracts: ContractState[] = [];
   for (const c of cvIds) { const s = await contractState(tx, c, invoiceId); if (s) contracts.push(s); }
-  const tolerance = (await tx.query<ToleranceRule>(`SELECT currency, abs_amount::text AS "absAmount", percent::text, combine FROM tolerance_rules WHERE currency = $1`, [inv.currency])).rows[0] ?? null;
+  const tolerances = (await tx.query<ToleranceRule>(`${TOLERANCE_SQL} WHERE currency = $1`, [inv.currency])).rows;
   const advanceBalance = inv.advance_invoice_id ? (await tx.query<{ v: string }>(ADVANCE_SQL, [inv.advance_invoice_id, invoiceId])).rows[0]!.v : '0';
-  const check = checkInvoice(checkInput(inv, lines, allocations, poLines, contracts, tolerance, advanceBalance));
+  const check = checkInvoice(checkInput(inv, lines, allocations, poLines, contracts, tolerances, advanceBalance));
   // Parmak izi, istisnanın dayandığı sipariş kalemi durumunu da kapsar: sipariş fiyatı/miktarı veya kabul değişirse istisna eskir.
   const fingerprint = sha(JSON.stringify({ a: allocations, o: inv.advance_offset, i: check.issues.map((x) => [x.code, x.lineNo ?? null]),
-    p: [...poLines].sort((x, y) => x.poLineId.localeCompare(y.poLineId)).map((x) => [x.poLineId, x.orderedQty, x.unitPrice, x.receivedQty, x.invoicedQty, x.poStatus]) }));
+    p: [...poLines].sort((x, y) => x.poLineId.localeCompare(y.poLineId)).map((x) => [x.poLineId, x.orderedQty, x.unitPrice, x.receivedQty, x.invoicedQty, x.poStatus]),
+    // Uygulanan tolerans kuralı ve limit yöntemi değişirse istisna eskir.
+    t: tolerances.map((t) => [t.category ?? '', t.absAmount, t.percent, t.combine]).sort(), c: contracts.map((c) => [c.contractVersionId, c.limitBasis ?? 'NET']).sort() }));
   return { check, fingerprint, contracts, poLines };
 }
 
@@ -412,7 +444,7 @@ export async function unapprovedInvoicesWithIssues(tx: Tx, ids: string[]): Promi
   const cvIds = [...new Set([...allPoLines.map((p) => p.contractVersionId), ...[...allocs.values()].flat().map((a: any) => a.contractVersionId)].filter((x): x is string => !!x))];
   const cvById = new Map<string, ContractState>();
   for (const c of cvIds) { const s = await contractState(tx, c, null); if (s) cvById.set(c, s); }
-  const tolerances = new Map((await tx.query<ToleranceRule>(`SELECT currency, abs_amount::text AS "absAmount", percent::text, combine FROM tolerance_rules`)).rows.map((t) => [t.currency, t]));
+  const tolerances = (await tx.query<ToleranceRule>(TOLERANCE_SQL)).rows;
   // Avans bakiyesi avans faturası başına bir kez (ADVANCE_SQL ile aynı ifade; hariç tutulan fatura onaysız olduğundan etkisiz).
   const advIds = [...new Set(invs.map((i) => i.advance_invoice_id).filter((x): x is string => !!x))];
   const advBalance = new Map((await tx.query<{ id: string; v: string }>(`SELECT a.id, ((SELECT sum(net_amount) FROM invoice_lines WHERE invoice_id = a.id)
@@ -424,7 +456,7 @@ export async function unapprovedInvoicesWithIssues(tx: Tx, ids: string[]): Promi
     const cv = [...new Set([...poLines.map((p) => p.contractVersionId), ...allocations.map((a) => a.contractVersionId)].filter((x): x is string => !!x))];
     const advanceBalance = inv.advance_invoice_id ? advBalance.get(inv.advance_invoice_id)! : '0';
     const check = checkInvoice(checkInput(inv, (lines.get(inv.id) ?? []) as InvoiceCheckInput['lines'], allocations, poLines,
-      cv.map((c) => cvById.get(c)).filter((x): x is ContractState => !!x), tolerances.get(inv.currency) ?? null, advanceBalance));
+      cv.map((c) => cvById.get(c)).filter((x): x is ContractState => !!x), tolerances, advanceBalance));
     if (check.issues.length) out.add(inv.id);
   }
   return out;
@@ -547,26 +579,27 @@ export async function listInvoices(tx: Tx) {
 }
 
 export async function listTolerance(tx: Tx) {
-  return (await tx.query(`SELECT t.currency, t.abs_amount::text AS "absAmount", trim_scale(t.percent)::text AS percent, t.combine, t.created_at AS "updatedAt", u.display_name AS "updatedBy"
-    FROM tolerance_rules t LEFT JOIN users u ON u.id = t.created_by ORDER BY t.currency`)).rows;
+  return (await tx.query(`SELECT t.currency, t.category, t.abs_amount::text AS "absAmount", trim_scale(t.percent)::text AS percent, t.combine, t.created_at AS "updatedAt", u.display_name AS "updatedBy"
+    FROM tolerance_rules t LEFT JOIN users u ON u.id = t.created_by ORDER BY t.currency, t.category`)).rows;
 }
 
 /** Kural kaldırılınca o para biriminde tolerans sıfırdır (varsayılan evrensel tolerans yok). */
-export async function deleteTolerance(tx: Tx, ctx: TenantContext, currency: string) {
-  const r = await tx.query(`DELETE FROM tolerance_rules WHERE currency = $1 RETURNING currency`, [currency]);
+export async function deleteTolerance(tx: Tx, ctx: TenantContext, currency: string, category = '') {
+  const r = await tx.query(`DELETE FROM tolerance_rules WHERE currency = $1 AND category = $2 RETURNING currency`, [currency, category.trim()]);
   if (!r.rowCount) throw notFound();
-  await audit(tx, ctx, 'tolerance.deleted', 'tenant', ctx.tenantId, { currency });
+  await audit(tx, ctx, 'tolerance.deleted', 'tenant', ctx.tenantId, { currency, category: category.trim() });
   return { ok: true };
 }
 
-export async function setTolerance(tx: Tx, ctx: TenantContext, b: { currency: string; absAmount: string | null; percent: string | null; combine: 'LOWER' | 'HIGHER' }) {
+export async function setTolerance(tx: Tx, ctx: TenantContext, b: { currency: string; category?: string; absAmount: string | null; percent: string | null; combine: 'LOWER' | 'HIGHER' }) {
+  const category = (b.category ?? '').trim();
   if (b.absAmount === null && b.percent === null) throw unprocessable('invalid_rule', 'Tutar veya yüzde eşiği girilmeli.');
   if (b.absAmount !== null && !/^\d{1,18}(\.\d{1,2})?$/.test(b.absAmount)) throw unprocessable('invalid_rule', 'Tutar eşiği en fazla 2 ondalık olmalı.');
   if (b.percent !== null && (!isDecimal(b.percent) || cmp(dec(b.percent), dec('100')) > 0)) throw unprocessable('invalid_rule', 'Yüzde eşiği 0–100 arasında olmalı.');
-  await tx.query(`INSERT INTO tolerance_rules (tenant_id, currency, abs_amount, percent, combine, created_by) VALUES ($1,$2,$3,$4,$5,$6)
-    ON CONFLICT (tenant_id, currency) DO UPDATE SET abs_amount = EXCLUDED.abs_amount, percent = EXCLUDED.percent, combine = EXCLUDED.combine, created_by = EXCLUDED.created_by, created_at = now()`,
-    [ctx.tenantId, b.currency, b.absAmount, b.percent, b.combine, ctx.userId]);
-  await audit(tx, ctx, 'tolerance.set', 'tenant', ctx.tenantId, b);
+  await tx.query(`INSERT INTO tolerance_rules (tenant_id, currency, category, abs_amount, percent, combine, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7)
+    ON CONFLICT (tenant_id, currency, category) DO UPDATE SET abs_amount = EXCLUDED.abs_amount, percent = EXCLUDED.percent, combine = EXCLUDED.combine, created_by = EXCLUDED.created_by, created_at = now()`,
+    [ctx.tenantId, b.currency, category, b.absAmount, b.percent, b.combine, ctx.userId]);
+  await audit(tx, ctx, 'tolerance.set', 'tenant', ctx.tenantId, { ...b, category });
   return { ok: true };
 }
 

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { syntheticPdf } from '../src/devdata.ts';
 import { processJobs } from '../src/worker.ts';
 import { readZip } from '../src/zip.ts';
@@ -142,9 +142,19 @@ describe('kiracı dışa aktarımı (T48)', () => {
     expect(dl.body.url).toContain('exports');
 
     const key = (await h.owner.query(`SELECT storage_key FROM tenant_exports WHERE id = $1`, [req.body.id])).rows[0].storage_key;
-    const zip = await readZip(await h.store.get(key));
+    const packed = await h.store.get(key);
+    const rec = (await h.owner.query(`SELECT size_bytes::text, sha256 FROM tenant_exports WHERE id = $1`, [req.body.id])).rows[0];
+    // Akışlı üretim: kaydedilen boyut ve özet, depodaki nesnenin kendisiyle aynı.
+    expect(rec.size_bytes).toBe(String(packed.length));
+    expect(rec.sha256).toBe(createHash('sha256').update(packed).digest('hex'));
+    const zip = readZip(packed);
     const manifest = JSON.parse(zip.get('manifest.json')!.toString());
     expect(manifest).toMatchObject({ format: 'sp-tenant-export/1', tenantId: h.world.tenantA });
+    for (const [t, m] of Object.entries(manifest.tables as Record<string, { rows: number; sha256: string }>)) {
+      const body = zip.get(`data/${t}.jsonl`)!;
+      expect(createHash('sha256').update(body).digest('hex')).toBe(m.sha256);
+      expect(body.toString().split('\n').filter(Boolean).length).toBe(m.rows);
+    }
     // Başka kiracının hiçbir satırı yok: kiracı sütunu olan her kayıt A'ya ait.
     let rows = 0;
     for (const [name, body] of zip) {
@@ -158,7 +168,6 @@ describe('kiracı dışa aktarımı (T48)', () => {
     // Tüm şirketlerin belgeleri (talep edenin şirket kapsamı boş olsa da) ve bayt bütünlüğü.
     expect(zip.has(`files/${mine.body.sha256}`)).toBe(true);
     expect(zip.has(`files/${other.body.sha256}`)).toBe(false);
-    const { createHash } = await import('node:crypto');
     for (const f of manifest.files) expect(createHash('sha256').update(zip.get(f.path)!).digest('hex')).toBe(f.sha256);
     expect(manifest.tables.audit_events.rows).toBeGreaterThan(0);
     const trail = await h.owner.query(`SELECT action FROM audit_events WHERE entity_id = $1 ORDER BY id`, [req.body.id]);

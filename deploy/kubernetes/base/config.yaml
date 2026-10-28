@@ -12,6 +12,8 @@ data:
   OIDC_JWKS_URL: https://sso.example.test/realms/satinalma/protocol/openid-connect/certs
   OIDC_AUDIENCE: sp-api
   OIDC_CLIENT_ID: sp-web
+  # iOS public istemcisi (yönlendirme: <bundle id>:/oauth/callback); boş = mobil giriş kapalı
+  OIDC_NATIVE_CLIENT_ID: sp-ios
   # Kurumsal dizin farkları (deploy/IDP.md): boş = standart OIDC varsayılanı
   OIDC_SCOPE: ""
   OIDC_RESOURCE: ""
@@ -27,6 +29,8 @@ data:
   OBJECT_STORE_FORCE_PATH_STYLE: "true"
   SIGNATURE_DETECTOR_PROVIDER: ""
   ESIGN_VALIDATOR_PROVIDER: ""
+  # Güvenilen vekiller (ingress + web nginx): kümenin pod CIDR'ı. Kurum kümesine göre değiştirin (docs/runbook.md "İstek sınırlama").
+  TRUST_PROXY: 10.244.0.0/16
 ---
 apiVersion: v1
 kind: ConfigMap

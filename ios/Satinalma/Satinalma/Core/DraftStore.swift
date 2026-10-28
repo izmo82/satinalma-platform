@@ -145,7 +145,7 @@ final class DraftStore {
         do {
             let data = try payload(d)
             let res: UploadResult = try await session.api.upload("/api/v1/documents", fields: ["companyId": d.companyId, "kind": d.kind, "title": d.title],
-                                                                 fileName: "\(d.title).pdf", mimeType: "application/pdf", file: data, token: session.token, tenantId: session.tenantId)
+                                                                 fileName: "\(d.title).pdf", mimeType: "application/pdf", file: data, token: try await session.accessToken(), tenantId: session.tenantId)
             update(id) { $0.state = .uploaded; $0.documentVersionId = res.documentVersionId; $0.serverMessage = res.processing.message; $0.duplicate = res.duplicate }
             try? FileManager.default.removeItem(at: fileURL(id))
         } catch let e as APIError {

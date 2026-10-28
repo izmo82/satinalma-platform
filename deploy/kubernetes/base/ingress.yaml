@@ -6,6 +6,10 @@ metadata:
   name: satinalma
   annotations:
     nginx.ingress.kubernetes.io/proxy-body-size: 26m
+    # Paylaşılan ilk katman (istemci adresi başına); oturum bazlı sınır API'dedir. NAT arkasındaki ofisler için geniş tutulur.
+    nginx.ingress.kubernetes.io/limit-rps: "100"
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "5"
+    nginx.ingress.kubernetes.io/limit-connections: "100"
 spec:
   tls:
     - hosts: [satinalma.example.test]

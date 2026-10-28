@@ -14,9 +14,30 @@
   "refreshTokenMaxReuse": 0,
   "otpPolicyType": "totp",
   "requiredActions": [
-    { "alias": "CONFIGURE_TOTP", "name": "Configure OTP", "providerId": "CONFIGURE_TOTP", "enabled": true, "defaultAction": true, "priority": 10 },
-    { "alias": "VERIFY_EMAIL", "name": "Verify Email", "providerId": "VERIFY_EMAIL", "enabled": true, "defaultAction": false, "priority": 50 },
-    { "alias": "UPDATE_PASSWORD", "name": "Update Password", "providerId": "UPDATE_PASSWORD", "enabled": true, "defaultAction": false, "priority": 30 }
+    {
+      "alias": "CONFIGURE_TOTP",
+      "name": "Configure OTP",
+      "providerId": "CONFIGURE_TOTP",
+      "enabled": true,
+      "defaultAction": true,
+      "priority": 10
+    },
+    {
+      "alias": "VERIFY_EMAIL",
+      "name": "Verify Email",
+      "providerId": "VERIFY_EMAIL",
+      "enabled": true,
+      "defaultAction": false,
+      "priority": 50
+    },
+    {
+      "alias": "UPDATE_PASSWORD",
+      "name": "Update Password",
+      "providerId": "UPDATE_PASSWORD",
+      "enabled": true,
+      "defaultAction": false,
+      "priority": 30
+    }
   ],
   "clients": [
     {
@@ -27,8 +48,12 @@
       "directAccessGrantsEnabled": false,
       "implicitFlowEnabled": false,
       "serviceAccountsEnabled": false,
-      "redirectUris": ["${SP_PUBLIC_URL}/auth/callback"],
-      "webOrigins": ["${SP_PUBLIC_URL}"],
+      "redirectUris": [
+        "${SP_PUBLIC_URL}/auth/callback"
+      ],
+      "webOrigins": [
+        "${SP_PUBLIC_URL}"
+      ],
       "attributes": {
         "pkce.code.challenge.method": "S256",
         "post.logout.redirect.uris": "${SP_PUBLIC_URL}/"
@@ -38,7 +63,40 @@
           "name": "sp-api audience",
           "protocol": "openid-connect",
           "protocolMapper": "oidc-audience-mapper",
-          "config": { "included.custom.audience": "sp-api", "access.token.claim": "true", "id.token.claim": "false" }
+          "config": {
+            "included.custom.audience": "sp-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "sp-ios",
+      "name": "Satınalma iOS",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "${SP_IOS_REDIRECT_URI}"
+      ],
+      "webOrigins": [],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "${SP_IOS_REDIRECT_URI}"
+      },
+      "protocolMappers": [
+        {
+          "name": "sp-api audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "sp-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
         }
       ]
     }

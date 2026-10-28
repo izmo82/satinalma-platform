@@ -77,8 +77,9 @@ describe('OIDC (sağlayıcıdan bağımsız)', () => {
   it('oturum yapılandırması IdP keşif belgesinden gelir, sır içermez', async () => {
     const r = await app.inject({ method: 'GET', url: '/api/v1/auth/config' });
     expect(r.statusCode).toBe(200);
-    expect(r.json()).toEqual({ mode: 'oidc', issuer, clientId: 'sp-web', scope: 'openid profile email', resource: null,
-      authorizationEndpoint: `${issuer}/auth`, tokenEndpoint: `${issuer}/token`, endSessionEndpoint: null });
+    // Mobil istemci tanımsızsa null (iOS "yapılandırılmadı" der); iptal uç noktası keşif belgesinde yoksa null.
+    expect(r.json()).toEqual({ mode: 'oidc', issuer, clientId: 'sp-web', nativeClientId: null, scope: 'openid profile email', resource: null,
+      authorizationEndpoint: `${issuer}/auth`, tokenEndpoint: `${issuer}/token`, endSessionEndpoint: null, revocationEndpoint: null });
   });
 
   it('davetli kullanıcı, IdP e-postayı doğruladıysa ilk girişte bağlanır ve denetim kaydı oluşur', async () => {

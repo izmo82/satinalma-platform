@@ -1,6 +1,6 @@
 // Okuma ağırlıklı yük ölçümü (Faz 7). Bağımlılıksız: sabit eşzamanlılıkla süre boyunca istek atar, gecikme yüzdeliklerini yazar.
 // Yalnız geliştirme oturumuyla (AUTH_MODE=dev) ve ölçüm kopyasına bağlı bir API'ye karşı çalıştırılır; bkz. docs/runbook.md "Performans".
-//   PERF_BASE=http://localhost:4200 PERF_SECONDS=20 PERF_CONCURRENCY=10 npx tsx apps/api/src/perf.ts
+//   (API RATE_LIMIT_ENABLED=false ile) PERF_BASE=http://localhost:4200 PERF_SECONDS=20 PERF_CONCURRENCY=10 npx tsx apps/api/src/perf.ts
 const base = process.env.PERF_BASE ?? 'http://localhost:4200';
 const seconds = Number(process.env.PERF_SECONDS ?? 20);
 const concurrency = Number(process.env.PERF_CONCURRENCY ?? 10);
@@ -49,7 +49,9 @@ const results = [
   await run('Fatura detayı (kontrol + limit)', finance.headers, invs.items.slice(0, 20).map((i) => `/api/v1/invoices/${i.id}`)),
   await run('Sipariş detayı', buyer.headers, pos.items.slice(0, 20).map((p) => `/api/v1/purchase-orders/${p.id}`)),
   await run('İmza durumu', legal.headers, cvs.slice(0, 10).map((id) => `/api/v1/contract-versions/${id}/signature-status`)),
-  await run('Yönetim raporu (yıl)', auditor.headers, [`/api/v1/reports/summary?from=2026-01-01&to=${today}`]),
+  await run('Yönetim raporu (yıl, önbellekli)', auditor.headers, [`/api/v1/reports/summary?from=2026-01-01&to=${today}`]),
+  // En kötü durum: her istek yeniden hesaplar (farklı kapsamdaki kullanıcıların ilk açılışı).
+  await run('Yönetim raporu (yıl, her istekte hesap)', auditor.headers, [`/api/v1/reports/summary?from=2026-01-01&to=${today}&fresh=true`]),
   await run('ERP mutabakatı (yıl)', finance.headers, [`/api/v1/integration/erp/reconciliation?from=2026-01-01&to=${today}`]),
   await run('İmha adayları', legal.headers, ['/api/v1/retention/candidates']),
 ];

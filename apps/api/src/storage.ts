@@ -1,4 +1,5 @@
-import { DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { AbortMultipartUploadCommand, CompleteMultipartUploadCommand, CreateMultipartUploadCommand, DeleteObjectCommand, GetObjectCommand,
+  HeadObjectCommand, PutObjectCommand, S3Client, UploadPartCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import type { Config } from './config.ts';
 
@@ -10,7 +11,18 @@ export interface ObjectStore {
   signedGetUrl(key: string, ttlSeconds: number, downloadName: string): Promise<string>;
   /** Yalnız onaylı imha ve süresi dolan dışa aktarım için. Sürümlü bucket'ta silme işareti bırakır; yedeklerden silinme ayrıca belgelenir. */
   delete(key: string): Promise<void>;
+  /** Büyük nesne: parça parça yükleme; bellekte en çok bir parça tutulur. `abort` yarım nesneyi bırakmaz. */
+  putStream(key: string, contentType: string): Promise<ObjectUpload>;
 }
+
+export interface ObjectUpload {
+  write(chunk: Buffer): Promise<void>;
+  finish(): Promise<void>;
+  abort(): Promise<void>;
+}
+
+/** S3 parça sınırı: en az 5 MB (son parça hariç), en çok 10 000 parça → 16 MB ile ~160 GB. */
+export const UPLOAD_PART_BYTES = 16 * 1024 * 1024;
 
 export class S3ObjectStore implements ObjectStore {
   private s3: S3Client;
@@ -39,6 +51,34 @@ export class S3ObjectStore implements ObjectStore {
   }
   async delete(key: string) {
     await this.s3.send(new DeleteObjectCommand({ Bucket: this.cfg.bucket, Key: key }));
+  }
+  async putStream(key: string, contentType: string): Promise<ObjectUpload> {
+    const { Bucket } = { Bucket: this.cfg.bucket };
+    const sse = this.cfg.endpoint ? undefined : ('AES256' as const);
+    const { UploadId } = await this.s3.send(new CreateMultipartUploadCommand({ Bucket, Key: key, ContentType: contentType, ServerSideEncryption: sse }));
+    const parts: { ETag: string; PartNumber: number }[] = [];
+    let pending: Buffer[] = []; let pendingBytes = 0;
+    const flush = async () => {
+      if (!pendingBytes && parts.length) return;
+      const PartNumber = parts.length + 1;
+      const r = await this.s3.send(new UploadPartCommand({ Bucket, Key: key, UploadId, PartNumber, Body: Buffer.concat(pending) }));
+      parts.push({ ETag: r.ETag!, PartNumber });
+      pending = []; pendingBytes = 0;
+    };
+    return {
+      write: async (chunk) => {
+        pending.push(chunk); pendingBytes += chunk.length;
+        if (pendingBytes >= UPLOAD_PART_BYTES) await flush();
+      },
+      finish: async () => {
+        await flush();
+        await this.s3.send(new CompleteMultipartUploadCommand({ Bucket, Key: key, UploadId, MultipartUpload: { Parts: parts } }));
+      },
+      abort: async () => {
+        pending = [];
+        await this.s3.send(new AbortMultipartUploadCommand({ Bucket, Key: key, UploadId })).catch(() => undefined);
+      },
+    };
   }
   async signedGetUrl(key: string, ttlSeconds: number, downloadName: string) {
     return getSignedUrl(this.s3, new GetObjectCommand({

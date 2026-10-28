@@ -13,10 +13,14 @@ import { hasAiProviders } from './ai/provider.ts';
  * Durumsuz worker: kuyruktan iş çeker (SKIP LOCKED), işi isteyen kullanıcının GÜNCEL üyeliğiyle kiracı bağlamı kurar.
  * Kiracı kimliği tek başına yetki sayılmaz; üyelik iptal edildiyse iş BLOCKED olur.
  */
-export async function processJobs(pool: pg.Pool, store: ObjectStore, detectorProvider: string | null, limit = 10, erpAdapterName: string | null = process.env.ERP_ADAPTER || null): Promise<number> {
+export async function processJobs(pool: pg.Pool, store: ObjectStore, detectorProvider: string | null, limit = 10, erpAdapterName: string | null = process.env.ERP_ADAPTER || null,
+  lane: 'all' | 'short' | 'export' = 'all'): Promise<number> {
+  // Kiracı dışa aktarımı saatler sürebilir: ayrı şeritte tek tek çalışır, ihbar/imza/silme işlerini bekletmez.
+  const short = ['signature.detect', 'contract.notice_reminder', 'contract.obligation_due', 'retention.purge', ...(erpAdapterName ? ['erp.export'] : []), ...(hasAiProviders() ? ['ai.run'] : [])];
+  const kinds = lane === 'export' ? ['tenant.export'] : lane === 'short' ? short : [...short, 'tenant.export'];
   const claimed = await withoutTenant(pool, async (c) =>
     (await c.query<{ id: string; tenant_id: string; company_id: string | null; kind: string; requested_by: string | null }>(
-      'SELECT * FROM claim_jobs($1, $2)', [['signature.detect', 'contract.notice_reminder', 'contract.obligation_due', 'retention.purge', 'tenant.export', ...(erpAdapterName ? ['erp.export'] : []), ...(hasAiProviders() ? ['ai.run'] : [])], limit])).rows);
+      'SELECT * FROM claim_jobs($1, $2)', [kinds, lane === 'export' ? 1 : limit])).rows);
   for (const job of claimed) {
     const m = await withoutTenant(pool, async (c) => (await c.query<{ tenant_id: string; roles: string[]; company_ids: string[] }>(
       'SELECT * FROM auth_memberships($1)', [job.requested_by])).rows.find((r) => r.tenant_id === job.tenant_id));
@@ -54,9 +58,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const store = new S3ObjectStore(config.objectStore);
   let stopping = false;
   process.on('SIGTERM', () => { stopping = true; });
-  while (!stopping) {
-    const n = await processJobs(pool, store, config.signatureDetectorProvider);
-    if (n === 0) await new Promise((r) => setTimeout(r, 2000));
-  }
+  const loop = async (lane: 'short' | 'export') => {
+    while (!stopping) {
+      const n = await processJobs(pool, store, config.signatureDetectorProvider, 10, config.erpAdapter ?? null, lane);
+      if (n === 0) await new Promise((r) => setTimeout(r, 2000));
+    }
+  };
+  await Promise.all([loop('short'), loop('export')]);
   await pool.end();
 }

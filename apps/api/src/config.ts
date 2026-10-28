@@ -1,3 +1,5 @@
+import { DEFAULT_RATE_LIMIT, type RateLimitConfig } from './rateLimit.ts';
+
 // 12-factor yapılandırma: tüm bağlantılar ortamdan gelir; bulutta secret manager doldurur.
 export interface Config {
   env: 'development' | 'test' | 'production';
@@ -15,6 +17,15 @@ export interface Config {
   /** Yapılandırılmış ERP bağdaştırıcısı adı; yoksa ERP aktarımı NOT_CONFIGURED kalır. */
   erpAdapter?: string | null;
   webOrigin: string;
+  /**
+   * Güvenilen vekillerin adres/CIDR listesi (web nginx, ingress). `X-Forwarded-For` yalnız bunlardan gelirse okunur;
+   * aksi halde istemci adresini sahteleyip sınırı aşabilir. Fastify atlama sayısıyla güveni kapalı tutar; liste şarttır.
+   * Tanımsızsa yalnız loopback: kapsayıcıda bütün istemciler vekilin adresiyle görünür (yalnız adres kovası paylaşılır).
+   */
+  trustProxy?: string[] | false;
+  rateLimit?: RateLimitConfig;
+  /** Yönetim raporu sonuç önbelleği (saniye); 0 = kapalı. Veri anı yanıtta görünür. */
+  reportCacheSeconds?: number;
 }
 
 export interface OidcConfig {
@@ -26,6 +37,8 @@ export interface OidcConfig {
   jwksUrl: string;
   discoveryUrl: string;
   clientId: string;
+  /** Mobil (iOS) public istemci kimliği; yoksa mobil giriş "yapılandırılmadı" der. Yönlendirme: <bundle id>:/oauth/callback (RFC 8252). */
+  nativeClientId?: string | null;
   scope: string;
   /** ADFS: yetkilendirme isteğinde `resource` parametresi (Web API tanımlayıcısı). Diğer IdP'lerde boş. */
   resource: string | null;
@@ -58,6 +71,7 @@ export function loadConfig(): Config {
         // Sunucu içi ağdan erişim adresi farklı olabilir (ör. kurum içi IdP); varsayılan issuer'ın keşif belgesi.
         discoveryUrl: process.env.OIDC_DISCOVERY_URL || `${req('OIDC_ISSUER').replace(/\/$/, '')}/.well-known/openid-configuration`,
         clientId: req('OIDC_CLIENT_ID'),
+        nativeClientId: process.env.OIDC_NATIVE_CLIENT_ID || null,
         scope: process.env.OIDC_SCOPE || 'openid profile email',
         resource: process.env.OIDC_RESOURCE || null,
         tokenIssuer: process.env.OIDC_TOKEN_ISSUER || req('OIDC_ISSUER'),
@@ -67,6 +81,8 @@ export function loadConfig(): Config {
         clockToleranceSeconds: Number(process.env.OIDC_CLOCK_TOLERANCE_SECONDS ?? 30),
       }
     : null;
+  // Üretimde varsayılan açık; geliştirmede ölçüm/E2E aynı adresten yoğun istek attığı için kapalı.
+  const rateLimitEnabled = (process.env.RATE_LIMIT_ENABLED ?? (env === 'production' ? 'true' : 'false')) === 'true';
   return {
     env,
     port: Number(process.env.API_PORT ?? process.env.PORT ?? 4100),
@@ -87,5 +103,20 @@ export function loadConfig(): Config {
     esignValidatorProvider: process.env.ESIGN_VALIDATOR_PROVIDER || null,
     erpAdapter: process.env.ERP_ADAPTER || null,
     webOrigin: process.env.WEB_ORIGIN ?? 'http://localhost:5174',
+    trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
+    reportCacheSeconds: Number(process.env.REPORT_CACHE_SECONDS ?? 120),
+    rateLimit: {
+      enabled: rateLimitEnabled,
+      perMinute: Number(process.env.RATE_LIMIT_PER_MINUTE ?? DEFAULT_RATE_LIMIT.perMinute),
+      heavyPerMinute: Number(process.env.RATE_LIMIT_HEAVY_PER_MINUTE ?? DEFAULT_RATE_LIMIT.heavyPerMinute),
+      authPerMinute: Number(process.env.RATE_LIMIT_AUTH_PER_MINUTE ?? DEFAULT_RATE_LIMIT.authPerMinute),
+    },
   };
+}
+
+function parseTrustProxy(v: string | undefined): string[] | false {
+  if (v === 'none') return false; // API doğrudan istemciye açık, önünde vekil yok
+  if (!v) return ['loopback'];
+  if (v === 'true' || /^\d+$/.test(v)) throw new Error('TRUST_PROXY: atlama sayısı veya "true" kabul edilmez; vekil adres/CIDR listesi verin (ör. 10.244.0.0/16)');
+  return v.split(',').map((x) => x.trim()).filter(Boolean);
 }

@@ -391,7 +391,9 @@ export function ReportsPage() {
   const y = new Date().getFullYear();
   const [p, setP] = useState({ from: `${y}-01-01`, to: todayLocal() });
   const [q, setQ] = useState(p);
-  const r = useResource<Summary>(`/api/v1/reports/summary?from=${q.from}&to=${q.to}`);
+  // Sunucu sonucu en çok 2 dakika saklar (veri anı görünür); "Yeniden hesapla" güncel veriyle hesaplatır.
+  const [fresh, setFresh] = useState(false);
+  const r = useResource<Summary>(`/api/v1/reports/summary?from=${q.from}&to=${q.to}${fresh ? '&fresh=true' : ''}`);
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
   async function csv() {
@@ -408,7 +410,7 @@ export function ReportsPage() {
       <PageHeader title="Raporlar" actions={<Button variant="outline" onClick={() => void csv()}><Icon name="file" />CSV indir</Button>}>
         Yönetim göstergeleri: her birinin tanımı, payı/paydası ve kaynağı. Kapsam yalnız erişiminiz olan şirketlerdir; dışa aktarma aynı yetkiyle yapılır ve kaydedilir.
       </PageHeader>
-      <form className="mb-4 flex flex-wrap items-end gap-3" onSubmit={(e) => { e.preventDefault(); setQ(p); }}>
+      <form className="mb-4 flex flex-wrap items-end gap-3" onSubmit={(e) => { e.preventDefault(); setFresh(false); setQ(p); }}>
         <Field label="Dönem başı">{(x) => <input className="input" type="date" required {...x} value={p.from} onChange={(e) => setP({ ...p, from: e.target.value })} />}</Field>
         <Field label="Dönem sonu">{(x) => <input className="input" type="date" required {...x} value={p.to} onChange={(e) => setP({ ...p, to: e.target.value })} />}</Field>
         <Button type="submit" variant="outline" className="mb-4">Uygula</Button>
@@ -416,7 +418,10 @@ export function ReportsPage() {
       {err && <Banner tone="danger" title={err} />}
       {done && <Banner tone="info" icon="check" title={done} />}
       {r.loading && !r.data ? <Loading /> : r.error ? <ErrorState error={r.error} onRetry={r.reload} /> : r.data && <>
-        <p className="mb-3 text-sm text-ink-subtle">{fmtDate(r.data.period.from)}–{fmtDate(r.data.period.to)} · veri anı {fmtDateTime(r.data.dataAsOf)} · {r.data.scope.note} Para birimleri dönüştürülmez.</p>
+        <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1">
+          <p className="text-sm text-ink-subtle">{fmtDate(r.data.period.from)}–{fmtDate(r.data.period.to)} · veri anı {fmtDateTime(r.data.dataAsOf)} · {r.data.scope.note} Para birimleri dönüştürülmez.</p>
+          <Button variant="ghost" size="sm" disabled={r.loading} onClick={() => (fresh ? r.reload() : setFresh(true))}>Yeniden hesapla</Button>
+        </div>
         <Table>
           <TableHeader><TableRow className="hover:bg-transparent"><TableHead>Gösterge</TableHead><TableHead className="text-right">Değer</TableHead><TableHead className="max-[900px]:hidden">Pay / payda</TableHead><TableHead className="max-[1100px]:hidden">Kaynak</TableHead></TableRow></TableHeader>
           <TableBody>{r.data.indicators.map((i) => (

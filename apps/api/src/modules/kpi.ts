@@ -16,16 +16,48 @@ export interface Indicator {
 const MAX_INVOICES = 20_000; // istek yolunda üst sınır; aşılırsa not düşülür, dönem daraltılır
 const pct = (n: number, d: number) => (d ? (Math.round((n / d) * 1000) / 10).toFixed(1) : null);
 
-export async function summary(tx: Tx, ctx: TenantContext, q: { from: string; to: string }) {
+/**
+ * Kısa ömürlü sonuç önbelleği (Faz 7 performans): aynı kiracı, aynı şirket kapsamı ve dönem için hesap bir kez yapılır; aynı anda
+ * gelen istekler aynı hesabı bekler. Rapor tabloları yalnız kiracı/şirket kapsamıyla (RLS) süzülür, kullanıcıya göre değişmez;
+ * anahtar bu kapsamı birebir içerir. Veri anı yanıtta görünür; "fresh" ile yeniden hesaplanır. Süreç içidir (kopya başına).
+ */
+export class ReportCache {
+  private m = new Map<string, { at: number; p: Promise<Computed> }>();
+  constructor(private ttlMs: number, private max = 500) {}
+  get(key: string, fresh: boolean, compute: () => Promise<Computed>): Promise<Computed> {
+    const hit = this.m.get(key);
+    if (hit && !fresh && Date.now() - hit.at < this.ttlMs) return hit.p;
+    const p = compute();
+    if (this.ttlMs <= 0) return p;
+    this.m.delete(key);
+    if (this.m.size >= this.max) this.m.delete(this.m.keys().next().value!);
+    this.m.set(key, { at: Date.now(), p });
+    p.catch(() => { if (this.m.get(key)?.p === p) this.m.delete(key); });
+    return p;
+  }
+}
+interface Computed { indicators: Indicator[]; dataAsOf: string }
+
+export async function summary(tx: Tx, ctx: TenantContext, q: { from: string; to: string; fresh?: boolean }, cache?: ReportCache) {
   if (q.to < q.from) throw unprocessable('invalid_period', 'Dönem sonu başlangıçtan önce olamaz.');
+  const key = [ctx.tenantId, ctx.supplierId ?? '', [...ctx.companyIds].sort().join(','), q.from, q.to].join('|');
+  const r = cache ? await cache.get(key, !!q.fresh, () => indicators(tx, q)) : await indicators(tx, q);
+  await audit(tx, ctx, 'report.viewed', 'tenant', ctx.tenantId, { report: 'summary', from: q.from, to: q.to });
+  return { period: { from: q.from, to: q.to }, scope: { companyIds: ctx.companyIds, note: 'Yalnız erişiminiz olan şirketlerin verisi.' }, dataAsOf: r.dataAsOf, indicators: r.indicators };
+}
+
+async function indicators(tx: Tx, q: { from: string; to: string }): Promise<Computed> {
+  const dataAsOf = new Date().toISOString();
   const out: Indicator[] = [];
 
   // Fatura istisna oranı: dönemde tarihli faturalardan kontrolde en az bir bulgusu olan (karar verilmişse karar anındaki bulgular).
-  const inv = (await tx.query<{ id: string; issues: unknown[] | null }>(`SELECT i.id, (SELECT d.issues FROM invoice_decisions d WHERE d.invoice_id = i.id AND d.kind = 'APPROVAL') AS issues
-    FROM invoices i WHERE i.issue_date BETWEEN $1 AND $2 AND i.kind <> 'ADVANCE' ORDER BY i.issue_date LIMIT ${MAX_INVOICES}`, [q.from, q.to])).rows;
-  // Onaylananlar onay anındaki bulgularla; onaylanmamışlar güncel kontrolle, toplu ve fatura sayısından bağımsız sorgu sayısıyla.
-  const flagged = await unapprovedInvoicesWithIssues(tx, inv.filter((r) => !r.issues).map((r) => r.id));
-  const withIssue = inv.filter((r) => (r.issues ? r.issues.length > 0 : flagged.has(r.id))).length;
+  // Onaylananlar onay anındaki bulgularla (SQL'de yalnız var/yok); onaylanmamışlar güncel kontrolle, toplu ve fatura sayısından
+  // bağımsız sorgu sayısıyla.
+  const inv = (await tx.query<{ id: string; decided: boolean; has_issue: boolean }>(`SELECT i.id, d.issues IS NOT NULL AS decided, coalesce(jsonb_array_length(d.issues) > 0, false) AS has_issue
+    FROM invoices i LEFT JOIN invoice_decisions d ON d.invoice_id = i.id AND d.kind = 'APPROVAL'
+    WHERE i.issue_date BETWEEN $1 AND $2 AND i.kind <> 'ADVANCE' ORDER BY i.issue_date LIMIT ${MAX_INVOICES}`, [q.from, q.to])).rows;
+  const flagged = await unapprovedInvoicesWithIssues(tx, inv.filter((r) => !r.decided).map((r) => r.id));
+  const withIssue = inv.filter((r) => (r.decided ? r.has_issue : flagged.has(r.id))).length;
   out.push({ key: 'invoice_exception_rate', label: 'Fatura istisna oranı', definition: 'Kontrole giren faturalardan en az bir açık uyumsuzluğu olanların oranı (onaylananlarda onay anındaki bulgular).',
     status: inv.length ? 'OK' : 'NO_DATA', values: [{ currency: null, numerator: String(withIssue), denominator: String(inv.length), ratio: pct(withIssue, inv.length) }],
     note: inv.length >= MAX_INVOICES ? `Dönemin ilk ${MAX_INVOICES} faturası hesaplandı; dönemi daraltın.` : null, source: 'invoices, invoice_decisions, eşleştirme kontrolü' });
@@ -85,8 +117,7 @@ export async function summary(tx: Tx, ctx: TenantContext, q: { from: string; to:
   out.push({ key: 'savings', label: 'Tasarruf', definition: 'Önceden onaylı karşılaştırılabilir baz ile gerçekleşen maliyet farkı.', status: 'NOT_AVAILABLE', values: [],
     note: 'Onaylı tasarruf bazı (bütçe, önceki fiyat veya piyasa) kaydı yok; en pahalı teklif farkı tasarruf diye raporlanmaz.', source: '—' });
 
-  await audit(tx, ctx, 'report.viewed', 'tenant', ctx.tenantId, { report: 'summary', from: q.from, to: q.to });
-  return { period: q, scope: { companyIds: ctx.companyIds, note: 'Yalnız erişiminiz olan şirketlerin verisi.' }, dataAsOf: new Date().toISOString(), indicators: out };
+  return { indicators: out, dataAsOf };
 }
 
 export const csvCell = (v: string | null) => {
@@ -98,8 +129,8 @@ export const csvCell = (v: string | null) => {
 };
 
 /** CSV dışa aktarma: ekranla aynı yetki ve kapsam; dışa aktarım denetim kaydına yazılır. */
-export async function summaryCsv(tx: Tx, ctx: TenantContext, q: { from: string; to: string }) {
-  const s = await summary(tx, ctx, q);
+export async function summaryCsv(tx: Tx, ctx: TenantContext, q: { from: string; to: string; fresh?: boolean }, cache?: ReportCache) {
+  const s = await summary(tx, ctx, q, cache);
   const rows = [['Gösterge', 'Para birimi', 'Pay', 'Payda', 'Oran (%)', 'Durum', 'Not', 'Kaynak', 'Dönem', 'Veri anı']];
   const STATUS_TR = { OK: 'Hesaplandı', NO_DATA: 'Veri yok', NOT_AVAILABLE: 'Hesaplanmıyor' } as const;
   // Türkçe tablo programları ";" ayırıcıyla ondalık virgül bekler.

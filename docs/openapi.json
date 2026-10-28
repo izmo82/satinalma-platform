@@ -1293,6 +1293,11 @@
                         "unitPrice": {
                           "type": "string",
                           "pattern": "^\\d{1,18}(\\.\\d{1,6})?$"
+                        },
+                        "taxRate": {
+                          "type": "string",
+                          "pattern": "^\\d{1,18}(\\.\\d{1,6})?$",
+                          "nullable": true
                         }
                       }
                     }
@@ -1423,6 +1428,11 @@
                         "unitPrice": {
                           "type": "string",
                           "pattern": "^\\d{1,18}(\\.\\d{1,6})?$"
+                        },
+                        "taxRate": {
+                          "type": "string",
+                          "pattern": "^\\d{1,18}(\\.\\d{1,6})?$",
+                          "nullable": true
                         }
                       }
                     }
@@ -1751,6 +1761,39 @@
                           "type": "string",
                           "pattern": "^\\d{1,18}(\\.\\d{1,6})?$",
                           "nullable": true
+                        },
+                        "otherTaxes": {
+                          "type": "array",
+                          "maxItems": 10,
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "amount"
+                            ],
+                            "additionalProperties": false,
+                            "properties": {
+                              "code": {
+                                "type": "string",
+                                "maxLength": 10,
+                                "nullable": true
+                              },
+                              "name": {
+                                "type": "string",
+                                "maxLength": 60,
+                                "nullable": true
+                              },
+                              "rate": {
+                                "type": "string",
+                                "pattern": "^\\d{1,18}(\\.\\d{1,6})?$",
+                                "nullable": true
+                              },
+                              "amount": {
+                                "type": "string",
+                                "pattern": "^\\d{1,18}(\\.\\d{1,6})?$"
+                              }
+                            }
+                          },
+                          "nullable": true
                         }
                       }
                     }
@@ -2026,6 +2069,10 @@
                     "type": "string",
                     "pattern": "^[A-Z]{3}$"
                   },
+                  "category": {
+                    "type": "string",
+                    "maxLength": 200
+                  },
                   "absAmount": {
                     "type": "string",
                     "pattern": "^\\d{1,18}(\\.\\d{1,6})?$",
@@ -2071,6 +2118,15 @@
           "invoices"
         ],
         "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "maxLength": 200
+            },
+            "in": "query",
+            "name": "category",
+            "required": false
+          },
           {
             "schema": {
               "type": "string",
@@ -4733,6 +4789,14 @@
             "in": "query",
             "name": "to",
             "required": true
+          },
+          {
+            "schema": {
+              "type": "boolean"
+            },
+            "in": "query",
+            "name": "fresh",
+            "required": false
           }
         ],
         "responses": {
@@ -4765,6 +4829,14 @@
             "in": "query",
             "name": "to",
             "required": true
+          },
+          {
+            "schema": {
+              "type": "boolean"
+            },
+            "in": "query",
+            "name": "fresh",
+            "required": false
           }
         ],
         "responses": {
@@ -5233,6 +5305,14 @@
             "in": "query",
             "name": "to",
             "required": true
+          },
+          {
+            "schema": {
+              "type": "boolean"
+            },
+            "in": "query",
+            "name": "fresh",
+            "required": false
           }
         ],
         "responses": {
@@ -5308,6 +5388,14 @@
             "in": "query",
             "name": "to",
             "required": true
+          },
+          {
+            "schema": {
+              "type": "boolean"
+            },
+            "in": "query",
+            "name": "fresh",
+            "required": false
           }
         ],
         "responses": {

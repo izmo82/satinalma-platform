@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { allowedVariance, availableLimit, checkInvoice, checkTax, netConsumption, openCommitment, type InvoiceCheckInput, type PoLineState } from '../src/invoiceMatch.ts';
+import { allowedVariance, availableLimit, checkInvoice, checkTax, netConsumption, openCommitment, pickTolerance, type InvoiceCheckInput, type PoLineState } from '../src/invoiceMatch.ts';
 
 describe('T14 limit: tavan − net tüketim − tüketilmemiş açık taahhüt', () => {
   it('1M tavan, 400 bin tüketim, 300 bin kalan açık sipariş → 300 bin; faturalanan sipariş tekrar düşülmez', () => {
@@ -124,5 +124,71 @@ describe('KDV dışı vergiler (ÖTV/ÖİV)', () => {
     const ok = checkTax(l, { taxTotal: '220.00', otherTaxTotal: '100.00', withholding: null, payable: '1320.00' }, 'TRY');
     expect(ok).toMatchObject({ issues: [], taxTotal: '220.00', otherTaxTotal: '100.00', grossAmount: '1320.00' });
     expect(checkTax(l, { taxTotal: '220.00', otherTaxTotal: '90.00', withholding: null, payable: '1320.00' }, 'TRY').issues.map((x) => x.code)).toEqual(['OTHER_TAX_MISMATCH']);
+  });
+});
+
+describe('Faz 4: kategori bazında tolerans', () => {
+  const genel = { currency: 'TRY', absAmount: '100', percent: null, combine: 'LOWER' as const };
+  const it_ = { currency: 'TRY', absAmount: '5000', percent: null, combine: 'LOWER' as const, category: 'BT donanımı' };
+  it('kategori kuralı varsa o, yoksa para biriminin genel kuralı, o da yoksa sıfır; büyük/küçük harf ve boşluk farkı yok sayılır', () => {
+    expect(pickTolerance([genel, it_], 'TRY', ' bt DONANIMI ')).toBe(it_);
+    expect(pickTolerance([genel, it_], 'TRY', 'Temizlik')).toBe(genel);
+    expect(pickTolerance([genel, it_], 'TRY', null)).toBe(genel);
+    expect(pickTolerance([it_], 'TRY', 'Temizlik')).toBeNull();
+    expect(pickTolerance([genel, it_], 'EUR', 'BT donanımı')).toBeNull();
+  });
+  it('aynı fatura farklı kategorideki iki sipariş satırına kendi kuralıyla bakılır', () => {
+    const r = checkInvoice(base({
+      tolerances: [genel, it_],
+      poLines: [po({ poLineId: 'P1', receivedQty: '100', category: 'BT donanımı' }), po({ poLineId: 'P2', receivedQty: '100', category: 'Temizlik' })],
+      lines: [{ lineNo: 1, description: 'Yedek parça', quantity: '100', unit: 'adet', unitPrice: '1020', netAmount: '102000.00' },
+        { lineNo: 2, description: 'Yedek parça', quantity: '100', unit: 'adet', unitPrice: '1020', netAmount: '102000.00' }],
+      allocations: [{ lineNo: 1, poLineId: 'P1', contractVersionId: null, quantity: '100', amount: '102000.00' },
+        { lineNo: 2, poLineId: 'P2', contractVersionId: null, quantity: '100', amount: '102000.00' }],
+    }));
+    const price = r.issues.filter((x) => x.code === 'PRICE_MISMATCH');
+    // 2.000 TL fark: BT kuralı (5.000) içinde, genel kural (100) dışında.
+    expect(price.map((x) => x.lineNo)).toEqual([2]);
+    expect(price[0]!.message).toContain('TRY genel kuralı');
+  });
+});
+
+describe('Faz 4: KDV dışı vergilerin oran kontrolü', () => {
+  const line = (otherTaxes: any[], otherTax?: string) => ({ lineNo: 1, description: 'Haberleşme', quantity: '1', unit: 'ay', unitPrice: '1000', netAmount: '1000.00', taxRate: '20', otherTax, otherTaxes });
+  it('oranlı vergi net × oran tutmalı; tutmazsa düzeltme istenir', () => {
+    expect(checkTax([line([{ code: '4080', name: 'ÖİV', rate: '7.5', amount: '75.00' }])], undefined, 'TRY').issues).toEqual([]);
+    const bad = checkTax([line([{ code: '4080', name: 'ÖİV', rate: '7.5', amount: '80.00' }])], undefined, 'TRY');
+    expect(bad.issues.map((x) => x.code)).toEqual(['OTHER_TAX_RATE_MISMATCH']);
+    expect(bad.issues[0]!.message).toContain('1000.00 × %7.50 = 75.00');
+  });
+  it('maktu (oransız) vergi beyan olarak kalır; kalem toplamı satır toplamıyla tutmalı; KDV matrahına girer', () => {
+    const r = checkTax([line([{ code: '0071', name: 'ÖTV', rate: null, amount: '150.00' }, { code: '4080', name: 'ÖİV', rate: '10', amount: '100.00' }], '250.00')], undefined, 'TRY');
+    expect(r.issues).toEqual([]);
+    expect(r.otherTaxTotal).toBe('250.00');
+    expect(r.taxTotal).toBe('250.00'); // (1000 + 250) × %20
+    expect(checkTax([line([{ code: '0071', rate: null, amount: '150.00' }], '200.00')], undefined, 'TRY').issues.map((x) => x.code)).toEqual(['OTHER_TAX_MISMATCH']);
+    expect(checkTax([line([{ code: '4080', rate: '150', amount: '1.00' }])], undefined, 'TRY').issues.map((x) => x.code)).toEqual(['OTHER_TAX_RATE_INVALID']);
+  });
+});
+
+describe('Faz 4: sözleşme limiti vergi dahil (GROSS)', () => {
+  const contract = (over: any = {}) => ({ contractVersionId: 'C1', title: 'Hizmet', currency: 'TRY', ceiling: '120000.00', netConsumption: '0.00', openCommitment: '0.00',
+    signatureUnresolved: false, archiveImport: false, limitBasis: 'GROSS' as const, ...over });
+  const direct = (net: string) => base({ poLines: [], contracts: [contract()], lines: [{ lineNo: 1, description: 'Hizmet', quantity: '1', unit: 'ay', unitPrice: net, netAmount: net, taxRate: '20' }],
+    allocations: [{ lineNo: 1, poLineId: null, contractVersionId: 'C1', quantity: '1', amount: net }] });
+  it('doğrudan sözleşme tahsisi KDV dahil tutarla limiti tüketir', () => {
+    expect(checkInvoice(direct('100000.00')).limitImpact).toEqual({ C1: '120000.00' });
+    expect(checkInvoice(direct('100000.00')).issues.some((x) => x.code === 'LIMIT_EXCEEDED')).toBe(false);
+    const over = checkInvoice(direct('100001.00'));
+    expect(over.issues.find((x) => x.code === 'LIMIT_EXCEEDED')!.message).toContain('kullanılabilir limit (vergi dahil) 120000.00');
+    // Aynı tutar NET limitte sığar.
+    expect(checkInvoice({ ...direct('100001.00'), contracts: [contract({ limitBasis: 'NET' })] }).issues.some((x) => x.code === 'LIMIT_EXCEEDED')).toBe(false);
+  });
+  it('siparişe bağlı faturada sipariş taahhüdü sipariş KDV oranıyla brüt; yalnız aşan kısım limite gider', () => {
+    // Sipariş 100 × 1000 = 100.000 net, %20 → 120.000 brüt açık taahhüt. Fatura 100 × 1010 = 101.000 net → 121.200 brüt; aşan 1.200.
+    const r = checkInvoice(base({ contracts: [contract({ ceiling: '200000.00', openCommitment: '120000.00' })], poLines: [po({ receivedQty: '100', taxRate: '20' })],
+      lines: [{ lineNo: 1, description: 'Yedek parça', quantity: '100', unit: 'adet', unitPrice: '1010', netAmount: '101000.00', taxRate: '20' }],
+      allocations: [{ lineNo: 1, poLineId: 'P1', contractVersionId: null, quantity: '100', amount: '101000.00' }] }));
+    expect(r.limitImpact).toEqual({ C1: '1200.00' });
   });
 });

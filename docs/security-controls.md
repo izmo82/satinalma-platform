@@ -30,7 +30,7 @@ Durum anahtarı `implementation-status.md` ile aynıdır: **PASS** yalnız çal�
 | V9 İletişim | TLS ingress/yük dengeleyicide; HSTS; iç ağda HTTP | PASS (yapılandırma) / NOT_RUN (kurum ortamında TLS) | `infra/web/default.conf.template` |
 | V10 Kötü niyetli kod | Bağımlılık taraması; SAST | PASS | yukarıdaki tablo |
 | V11 İş mantığı | Sürüme bağlı onay (If-Match), tekrar anahtarı, belirsiz sonucun "başarısız" sayılmaması, para için ondalık | PASS | T44, `invoiceIntake.test.ts`, `money.ts` |
-| V11/V13 Otomasyon kötüye kullanımı | İstek sınırlama (rate limiting) | **GAP** | Uygulamada ve örnek ingress yapılandırmasında yok. Kurum ingress'inde (kullanıcı/IP bazında, `X-Forwarded-For` güvenilir vekil ayarıyla) tanımlanmalı |
+| V11/V13 Otomasyon kötüye kullanımı | İstek sınırlama: oturum başına (600/dk, pahalı uçlar 30/dk), adres başına başarısız kimlik doğrulaması (60/dk; geçerli token etkilenmez), `429` + `Retry-After`; sınıf rota kalıbından; `X-Forwarded-For` yalnız `TRUST_PROXY` CIDR'larından okunur; ingress'te paylaşılan ilk katman | PASS (API testi) / NOT_RUN (kurum ingress'i) | `apps/api/src/rateLimit.ts`, `rateLimit.test.ts` (6 test); `deploy/kubernetes/base/ingress.yaml`. Sınır kopya başınadır |
 | V12 Dosya | Karantina, aktif içerikli PDF reddi, özgün bayt değişmez, önizleme ayrı | PASS / **GAP** (AV) | Gerçek virüs taraması bağlı değil (BLOCKED); `av_scan_status = NOT_AVAILABLE` açıkça gösterilir |
 | V13 API | CORS yalnız web kökeni; ETag/If-Match; OpenAPI (`docs/openapi.json`) | PASS | |
 | V14 Yapılandırma | Sırlar ortamdan/sır yöneticisinden; uygulama rolü en dar GRANT; CSP, HSTS, Permissions-Policy, COOP/CORP her yanıtta, `server_tokens off` | PASS (ZAP ile doğrulandı) | `docs/runbook.md` "Sır gereksinimleri"; geliştirme konteynerinde `sp_owner` süper kullanıcıdır — üretimde migration rolü süper kullanıcı olmamalı |
@@ -41,7 +41,7 @@ Durum anahtarı `implementation-status.md` ile aynıdır: **PASS** yalnız çal�
 |---|---|---|---|
 | STORAGE | Oturum token'ı Keychain (`WhenUnlockedThisDeviceOnly`); taslaklar AES-GCM, anahtar Keychain'de, dosya koruması `complete`; taslak kullanıcı ve kiracıya bağlı | PASS (simülatörde elle) | `Core/Keychain.swift`, `Core/DraftStore.swift`; düz metin taraması 0 |
 | CRYPTO | Platform kriptosu (CryptoKit), kendi algoritma yok | PASS | |
-| AUTH | Kurumsal OIDC (ASWebAuthenticationSession + PKCE) | **GAP** (NOT_RUN) | iOS hâlâ geliştirme girişi; üretim derlemesi bu haliyle dağıtılamaz |
+| AUTH | Kurumsal OIDC (ASWebAuthenticationSession geçici oturum + PKCE S256, nonce, state), ayrı public istemci, belirteçler Keychain'de, sessiz yenileme, çıkışta iptal (RFC 7009); geliştirme girişi yayın derlemesinde yok | PASS (simülatör + Keycloak) / NOT_RUN (kurum IdP'si) | `Core/OIDC.swift`, `Core/SessionStore.swift`; yayın ikilisinde `dev/token` ifadesi 0. Geçici oturum + iptal sürümünün girişi simülatörde metin girişi sınırı yüzünden yeniden yürütülemedi; iptal protokol düzeyinde (curl) doğrulandı |
 | NETWORK | ATS varsayılan (yalnız `NSAllowsLocalNetworking` geliştirme için); sertifika sabitleme | PASS / N/A | Sabitleme kurum PKI'sı ve MDM politikasına göre karar verilmeli |
 | PLATFORM | WebView yok; derin bağlantı yok; panoya hassas veri yazılmaz | PASS | |
 | CODE | Swift 6 katı eşzamanlılık, uyarısız derleme | PASS | |
@@ -50,7 +50,7 @@ Durum anahtarı `implementation-status.md` ile aynıdır: **PASS** yalnız çal�
 
 ## Yayın öncesi açık kalanlar (kritik/yüksek olarak sınıflanmadı, karar gerektirir)
 
-1. İstek sınırlama (ingress) — GAP.
-2. iOS kurumsal OIDC — GAP; iOS uygulaması üretime bu haliyle çıkamaz.
+1. İstek sınırlama — uygulamada PASS; kurum ingress'inde ve çok kopyada ölçüm NOT_RUN.
+2. iOS kurumsal OIDC — Keycloak ile PASS; kurumun IdP'si (ADFS/Entra) ve gerçek cihaz NOT_RUN.
 3. Gerçek virüs taraması — BLOCKED (sağlayıcı seçimi).
 4. Token'ın `sessionStorage`'da tutulması — CSP ile azaltılmış risk; kurum güvenliğinin risk kabulü veya BFF modeli.

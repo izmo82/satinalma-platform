@@ -34,30 +34,54 @@ struct MainTabs: View {
 
 struct LoginView: View {
     @Environment(SessionStore.self) private var session
+    #if DEBUG
     private let users: [(String, String)] = [
         ("alper.satinalma@example.test", "Satınalmacı + talep sahibi"), ("leyla.hukuk@example.test", "Hukuk"),
         ("kerem.hukuk@example.test", "Hukuk + satınalma yöneticisi"), ("ferda.finans@example.test", "Finans (fatura girişi)"),
         ("nur.finansonay@example.test", "Finans (fatura onayı)"), ("selin.guvenlik@example.test", "Bilgi güvenliği"), ("mine.anaveri@example.test", "Ana veri"),
     ]
+    #endif
 
     var body: some View {
         NavigationStack {
             List {
-                Section {
-                    Label("Geliştirme oturumu — sentetik kullanıcılar. Üretimde kurumsal kimlik sağlayıcısı kullanılır.", systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.orange)
-                }
-                Section("Kullanıcı") {
-                    ForEach(users, id: \.0) { email, role in
-                        Button { Task { await session.devLogin(email: email) } } label: {
-                            VStack(alignment: .leading) { Text(email); Text(role).font(.footnote).foregroundStyle(.secondary) }
+                switch session.authConfig?.mode {
+                case "oidc":
+                    Section {
+                        Button { Task { await session.login() } } label: {
+                            Label(session.isLoading ? "Giriş yapılıyor…" : "Kurumsal hesapla giriş yap", systemImage: "person.badge.key")
                         }
                         .disabled(session.isLoading)
+                    } footer: {
+                        Text("Giriş kurumunuzun kimlik sağlayıcısında yapılır; parolanız bu uygulamaya girilmez. Oturum belirteci yalnız bu cihazın anahtar zincirinde tutulur.")
+                    }
+                case "dev":
+                    #if DEBUG
+                    Section {
+                        Label("Geliştirme oturumu — sentetik kullanıcılar. Üretimde kurumsal kimlik sağlayıcısı kullanılır.", systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.orange)
+                    }
+                    Section("Kullanıcı") {
+                        ForEach(users, id: \.0) { email, role in
+                            Button { Task { await session.devLogin(email: email) } } label: {
+                                VStack(alignment: .leading) { Text(email); Text(role).font(.footnote).foregroundStyle(.secondary) }
+                            }
+                            .disabled(session.isLoading)
+                        }
+                    }
+                    #else
+                    Section { Text("Bu sunucu geliştirme modunda; yayın derlemesi yalnız kurumsal girişle çalışır.").foregroundStyle(.secondary) }
+                    #endif
+                default:
+                    Section {
+                        if session.lastError == nil { ProgressView("Oturum ayarları alınıyor…") }
+                        Button("Tekrar dene") { Task { await session.loadAuthConfig() } }
                     }
                 }
                 if let err = session.lastError { Section { Text(err).foregroundStyle(.red) } }
             }
             .navigationTitle("Satınalma")
+            .task { if session.authConfig == nil { await session.loadAuthConfig() } }
         }
     }
 }

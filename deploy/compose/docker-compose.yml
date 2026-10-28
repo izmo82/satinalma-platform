@@ -13,6 +13,7 @@ x-app-env: &app-env
   OIDC_JWKS_URL: ${OIDC_JWKS_URL:?}
   OIDC_DISCOVERY_URL: ${OIDC_DISCOVERY_URL:-}
   OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-sp-web}
+  OIDC_NATIVE_CLIENT_ID: ${OIDC_NATIVE_CLIENT_ID:-sp-ios}
   OIDC_SCOPE: ${OIDC_SCOPE:-}
   OIDC_RESOURCE: ${OIDC_RESOURCE:-}
   OIDC_TOKEN_ISSUER: ${OIDC_TOKEN_ISSUER:-}
@@ -29,6 +30,8 @@ x-app-env: &app-env
   AWS_SECRET_ACCESS_KEY: ${OBJECT_STORE_SECRET_KEY:?}
   SIGNATURE_DETECTOR_PROVIDER: ${SIGNATURE_DETECTOR_PROVIDER:-}
   ESIGN_VALIDATOR_PROVIDER: ${ESIGN_VALIDATOR_PROVIDER:-}
+  # Güvenilen vekiller: bu yığının ağı (web nginx) + kurum TLS ters vekilinin adresi. Bkz. docs/runbook.md "İstek sınırlama".
+  TRUST_PROXY: ${TRUST_PROXY:-172.30.0.0/24}
 
 x-hardening: &hardening
   read_only: true
@@ -147,12 +150,18 @@ services:
       KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USER:-kc-admin}
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?KEYCLOAK_ADMIN_PASSWORD gerekli (idp profili)}
       SP_PUBLIC_URL: ${SP_PUBLIC_URL:?}
+      SP_IOS_REDIRECT_URI: ${SP_IOS_REDIRECT_URI:-com.example.satinalma:/oauth/callback}
     volumes:
       - ./keycloak:/opt/keycloak/data/import:ro
     ports:
       - "${IDP_BIND:-127.0.0.1}:${IDP_PORT:-8180}:8080"
     depends_on: { db: { condition: service_healthy } }
     restart: unless-stopped
+
+networks:
+  default:
+    ipam:
+      config: [{ subnet: 172.30.0.0/24 }]
 
 volumes:
   db_data:

@@ -15,6 +15,8 @@ Uygulama standart OpenID Connect (yetkilendirme kodu + PKCE) kullanır; IdP'ye �
 | CSP | Web'de `CSP_IDP_ORIGIN` = IdP kökeni (ör. `https://sso.kurum.com.tr`) |
 | Sertifika | IdP iç CA ile imzalıysa `components/internal-ca` (Kubernetes) veya `NODE_EXTRA_CA_CERTS` |
 
+**iOS istemcisi (ayrı public client):** PKCE S256 zorunlu; yönlendirme ve çıkış dönüş adresi `<paket kimliği>:/oauth/callback` (varsayılan `com.example.satinalma:/oauth/callback`, paket kimliği değişirse ikisi birlikte değişir); erişim token'ına web istemcisiyle aynı `aud` eklenir; yenileme belirteci verilir ve iptal uç noktası (`revocation_endpoint`, RFC 7009) public istemciye açıktır. Uygulama giriş için sistem tarayıcı oturumunu (`ASWebAuthenticationSession`, çerez tutmayan geçici oturum) kullanır; parola uygulamaya girilmez, MDM ile dağıtılan kurumsal SSO uzantısı bu oturumda da çalışır. Çıkışta yenileme belirteci IdP'de iptal edilir. Keycloak 26.8.1 ile simülatörde denendi (giriş, süresi dolan belirtecin sessiz yenilenmesi); ADFS ve Entra ID ile NOT_RUN.
+
 ## Ayarlar
 | Değişken | Varsayılan | Ne zaman değişir |
 |---|---|---|
@@ -23,6 +25,7 @@ Uygulama standart OpenID Connect (yetkilendirme kodu + PKCE) kullanır; IdP'ye �
 | `OIDC_JWKS_URL` | — | Keşif belgesindeki `jwks_uri` (iç adres olabilir) |
 | `OIDC_AUDIENCE` | — | Erişim token'ının `aud` değeri |
 | `OIDC_CLIENT_ID` | — | Web için açılan public client |
+| `OIDC_NATIVE_CLIENT_ID` | boş | iOS için açılan ayrı public client; boşsa uygulama "mobil giriş yapılandırılmadı" der |
 | `OIDC_SCOPE` | `openid profile email` | Entra ID'de API kapsamı eklenir |
 | `OIDC_RESOURCE` | boş | ADFS: Web API tanımlayıcısı; istekte `resource` parametresi olarak gider |
 | `OIDC_TOKEN_ISSUER` | `OIDC_ISSUER` | Erişim token'ının `iss` değeri farklıysa (ADFS) |
@@ -34,10 +37,10 @@ Uygulama standart OpenID Connect (yetkilendirme kodu + PKCE) kullanır; IdP'ye �
 **E-posta güveni:** `email_verified: true` ise e-posta kullanılır. Claim hiç yoksa e-posta yalnız `OIDC_TRUSTED_EMAIL_DOMAINS` listesindeki bir alan adındaysa doğrulanmış sayılır. Bu, e-postayı yalnız kurumun kendi dizininin atadığı durumlar içindir. Kullanıcının kendi e-postasını yazabildiği bir IdP'de bu listeyi kullanmayın. `email_verified: false` her durumda reddedilir.
 
 ## Keycloak (Active Directory / LDAP federasyonuyla)
-1. Realm içe aktarma şablonu: `deploy/compose/keycloak/realm-satinalma.json` (public client `sp-web`, PKCE S256, `sp-api` audience eşleyicisi, kayıt kapalı).
+1. Realm içe aktarma şablonu: `deploy/compose/keycloak/realm-satinalma.json` (public client `sp-web` ve iOS için `sp-ios`, PKCE S256, `sp-api` audience eşleyicisi, kayıt kapalı). iOS yönlendirmesi `SP_IOS_REDIRECT_URI` (varsayılan `com.example.satinalma:/oauth/callback`; uygulama paket kimliği değişirse ikisi birlikte değişir).
 2. User Federation → LDAP: AD bağlantısı, `Edit mode: READ_ONLY`, **Trust Email: açık** (e-posta dizinden gelir, `email_verified=true`).
 3. Kullanıcı anahtarı varsayılan `sub` (Keycloak kullanıcı kimliği); LDAP'tan içe aktarılan kullanıcıda değişmez.
-4. Ayarlar: `OIDC_ISSUER=https://sso.kurum/realms/satinalma`, `OIDC_JWKS_URL=<issuer>/protocol/openid-connect/certs`, `OIDC_AUDIENCE=sp-api`, `OIDC_CLIENT_ID=sp-web`.
+4. Ayarlar: `OIDC_ISSUER=https://sso.kurum/realms/satinalma`, `OIDC_JWKS_URL=<issuer>/protocol/openid-connect/certs`, `OIDC_AUDIENCE=sp-api`, `OIDC_CLIENT_ID=sp-web`, `OIDC_NATIVE_CLIENT_ID=sp-ios`.
 
 Durum: Keycloak 26.8.1 ile tek sunucu ve Kubernetes (kind) kurulumlarında uçtan uca denendi. LDAP federasyonu denenmedi.
 

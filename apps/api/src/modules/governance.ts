@@ -6,7 +6,7 @@ import { audit } from '../audit.ts';
 import { closeTasks, openTask } from '../tasks.ts';
 import { ApiError, conflict, forbidden, notFound, unprocessable } from '../errors.ts';
 import type { ObjectStore } from '../storage.ts';
-import { ZipWriter } from '../zip.ts';
+import { ZipStreamWriter } from '../zip.ts';
 
 /**
  * Faz 7 / T48: saklama politikası, hukuki saklama, iki kişi onaylı imha ve kiracı dışa aktarımı.
@@ -18,7 +18,9 @@ import { ZipWriter } from '../zip.ts';
 const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' }).format(new Date()); // diğer modüllerle aynı iş günü
 const KINDS = ['INVOICE', 'CONTRACT', 'QUOTE', 'OTHER'] as const;
 // Paket bellekte üretilir (en çok ~2× boyut): sınır, normal boyutlu bir worker'ı taşırmayacak şekilde tutulur. Akışlı üretim sonraki iş.
-export const MAX_EXPORT_BYTES = 512 * 1024 * 1024;
+/** Paket üst sınırı (akışlı üretim; bellek değil, işlem süresi ve indirme için). Üstü kurum yedeğinden geri yükleme yoludur. */
+export const MAX_EXPORT_BYTES = 50 * 1024 ** 3;
+const EXPORT_FETCH_ROWS = 2000;
 const EXPORT_TTL_DAYS = 7;
 
 // --- Saklama politikası ---------------------------------------------------------------------------
@@ -300,10 +302,21 @@ export async function processTenantExport(pool: pg.Pool, ctx: TenantContext, sto
   // Kapsam: kiracının tüm şirketleri (iki kişi onayıyla). Kiracı sınırı yine RLS'tedir.
   const companyIds = await withTenant(pool, ctx, async (tx) => (await tx.query<{ id: string }>(`SELECT id FROM legal_entities`)).rows.map((r) => r.id));
   const scope: TenantContext = { ...ctx, companyIds };
-  const zip = new ZipWriter();
   const generatedAt = new Date();
+  // Ayrı üst önek: bucket yaşam döngüsü kuralı (`exports/`) yalnız dışa aktarım paketlerini siler, belgelere dokunmaz.
+  const key = `exports/${ctx.tenantId}/${exportId}.zip`;
+  // Akışlı üretim: satırlar imleçle parça parça okunur, paket nesne deposuna parçalı yüklenir; bellekte en çok bir parça.
+  const upload = await store.putStream(key, 'application/zip');
+  const zipHash = createHash('sha256');
+  const tooLarge = () => new ApiError(413, 'export_too_large', `Dışa aktarım ${Math.round(MAX_EXPORT_BYTES / 1024 ** 3)} GB sınırını aşıyor; kurum yedeğinden geri yükleme yolunu kullanın.`);
+  const zip = new ZipStreamWriter({ write: async (b) => {
+    zipHash.update(b);
+    await upload.write(b);
+  } }, generatedAt);
+  // Uzun süren paket "durdu" sayılmasın: iş kaydı ayrı bağlantıdan dakikada bir güncellenir.
+  const beat = setInterval(() => { void withTenant(pool, ctx, (tx) => tx.query(`UPDATE jobs SET updated_at = now() WHERE id = $1`, [jobId])).catch(() => undefined); }, 60_000);
   try {
-    const { counts, tableHashes, files, missingFiles, tenantName } = await withTenant(pool, scope, async (tx) => {
+    const { counts, tableHashes, objs, tenantName } = await withTenant(pool, scope, async (tx) => {
       // Uygulama rolünün okuyabildiği, kiracı sütunu olan bütün tablolar; yalnız okuma izni olan sütunlar.
       const cols = (await tx.query<{ table_name: string; column_name: string }>(`
         SELECT c.table_name, c.column_name FROM information_schema.columns c
@@ -315,58 +328,79 @@ export async function processTenantExport(pool: pg.Pool, ctx: TenantContext, sto
       for (const c of cols) byTable.set(c.table_name, [...(byTable.get(c.table_name) ?? []), c.column_name]);
       const counts: Record<string, number> = {};
       const tableHashes: Record<string, string> = {};
-      const addTable = (name: string, rows: unknown[]) => {
-        const body = Buffer.from(rows.map((r) => JSON.stringify(r)).join('\n') + (rows.length ? '\n' : ''), 'utf8');
-        zip.add(`data/${name}.jsonl`, body, { compress: true, date: generatedAt });
-        counts[name] = rows.length; tableHashes[name] = createHash('sha256').update(body).digest('hex');
-        if (zip.size > MAX_EXPORT_BYTES) throw new ApiError(413, 'export_too_large', 'Dışa aktarım 512 MB sınırını aşıyor; parçalı dışa aktarım gerekir.');
+      const addTable = async (name: string, sql: string) => {
+        const entry = await zip.entry(`data/${name}.jsonl`);
+        const hash = createHash('sha256');
+        let n = 0;
+        await tx.query(`DECLARE export_rows NO SCROLL CURSOR FOR ${sql}`);
+        for (;;) {
+          const rows = (await tx.query(`FETCH ${EXPORT_FETCH_ROWS} FROM export_rows`)).rows;
+          if (!rows.length) break;
+          const body = Buffer.from(rows.map((r) => JSON.stringify(r) + '\n').join(''), 'utf8');
+          hash.update(body); n += rows.length;
+          await entry.write(body);
+          if (zip.size > MAX_EXPORT_BYTES) throw tooLarge();
+        }
+        await tx.query(`CLOSE export_rows`);
+        await entry.close();
+        counts[name] = n; tableHashes[name] = hash.digest('hex');
       };
       const tenantName = (await tx.query<{ name: string }>(`SELECT name FROM tenants`)).rows[0]!.name;
-      addTable('tenants', (await tx.query(`SELECT id, name, data_region, created_at FROM tenants`)).rows);
-      addTable('users', (await tx.query(`SELECT u.id, u.email, u.display_name FROM users u WHERE EXISTS (SELECT 1 FROM memberships m WHERE m.user_id = u.id) ORDER BY u.email`)).rows);
+      await addTable('tenants', `SELECT id, name, data_region, created_at FROM tenants`);
+      await addTable('users', `SELECT u.id, u.email, u.display_name FROM users u WHERE EXISTS (SELECT 1 FROM memberships m WHERE m.user_id = u.id) ORDER BY u.email`);
       for (const [t, cs] of byTable) {
         const order = cs.includes('id') ? 'id' : cs[0]!;
-        addTable(t, (await tx.query(`SELECT ${cs.map((c) => `"${c}"`).join(', ')} FROM "${t}" ORDER BY "${order}"`)).rows);
+        await addTable(t, `SELECT ${cs.map((c) => `"${c}"`).join(', ')} FROM "${t}" ORDER BY "${order}"`);
       }
-      const objs = (await tx.query<{ storage_key: string; sha256: string; mime_type: string }>(`
-        SELECT DISTINCT ON (storage_key) storage_key, sha256, mime_type FROM (
-          SELECT dv.storage_key, dv.sha256, dv.mime_type FROM document_versions dv WHERE NOT EXISTS (SELECT 1 FROM document_disposals x WHERE x.document_id = dv.document_id)
-          UNION ALL SELECT b.storage_key, b.sha256, b.mime_type FROM bid_files b) f ORDER BY storage_key`)).rows;
-      const files: { path: string; sha256: string; sizeBytes: number }[] = [];
-      const missingFiles: string[] = [];
-      for (const o of objs) {
-        let bytes: Buffer;
-        try { bytes = await store.get(o.storage_key); } catch { missingFiles.push(o.sha256); continue; }
-        const sha = createHash('sha256').update(bytes).digest('hex');
-        if (sha !== o.sha256) { missingFiles.push(o.sha256); continue; } // bozulmuş nesne pakete "sağlam" diye girmez
-        zip.add(`files/${o.sha256}`, bytes, { date: generatedAt });
-        files.push({ path: `files/${o.sha256}`, sha256: o.sha256, sizeBytes: bytes.length });
-        if (zip.size > MAX_EXPORT_BYTES) throw new ApiError(413, 'export_too_large', 'Dışa aktarım 512 MB sınırını aşıyor; parçalı dışa aktarım gerekir.');
-      }
-      return { counts, tableHashes, files, missingFiles, tenantName };
+      // Dosya listesi anlık görüntüden; baytlar görüntü kapandıktan sonra çekilir (uzun transaction temizliği bekletmesin).
+      const objs = (await tx.query<{ storage_key: string; sha256: string; document_id: string | null }>(`
+        SELECT DISTINCT ON (storage_key) storage_key, sha256, document_id FROM (
+          SELECT dv.storage_key, dv.sha256, dv.document_id FROM document_versions dv WHERE NOT EXISTS (SELECT 1 FROM document_disposals x WHERE x.document_id = dv.document_id)
+          UNION ALL SELECT b.storage_key, b.sha256, NULL FROM bid_files b) f ORDER BY storage_key`)).rows;
+      return { counts, tableHashes, objs, tenantName };
     }, { snapshot: true });
+    // Görüntüden sonra imha edilen belgenin baytı pakete girmez.
+    const disposedNow = new Set(await withTenant(pool, scope, async (tx) => (await tx.query<{ document_id: string }>(
+      `SELECT document_id FROM document_disposals WHERE document_id = ANY($1::uuid[])`, [objs.map((o) => o.document_id).filter(Boolean)])).rows.map((r) => r.document_id)));
+    const files: { path: string; sha256: string; sizeBytes: number }[] = [];
+    const missingFiles: string[] = [];
+    for (const o of objs) {
+      if (o.document_id && disposedNow.has(o.document_id)) continue;
+      // Tek dosya yükleme sınırıyla (25 MB) sınırlıdır; özet doğrulanmadan pakete girmez.
+      let bytes: Buffer;
+      try { bytes = await store.get(o.storage_key); } catch { missingFiles.push(o.sha256); continue; }
+      const sha = createHash('sha256').update(bytes).digest('hex');
+      if (sha !== o.sha256) { missingFiles.push(o.sha256); continue; } // bozulmuş nesne pakete "sağlam" diye girmez
+      await zip.addFile(`files/${o.sha256}`, bytes);
+      files.push({ path: `files/${o.sha256}`, sha256: o.sha256, sizeBytes: bytes.length });
+      if (zip.size > MAX_EXPORT_BYTES) throw tooLarge();
+    }
     const manifest = {
       format: 'sp-tenant-export/1', tenantId: ctx.tenantId, tenantName, generatedAt: generatedAt.toISOString(), exportId,
       requestedBy: row.requested_by, approvedBy: row.decided_by, reason: row.reason,
       tables: Object.fromEntries(Object.keys(counts).map((k) => [k, { rows: counts[k], sha256: tableHashes[k] }])), files, missingFiles,
     };
-    zip.add('manifest.json', Buffer.from(JSON.stringify(manifest, null, 2)), { compress: true, date: generatedAt });
-    zip.add('README.txt', Buffer.from(README), { compress: true, date: generatedAt });
-    const buf = zip.finish();
-    const sha256 = createHash('sha256').update(buf).digest('hex');
-    // Ayrı üst önek: bucket yaşam döngüsü kuralı (`exports/`) yalnız dışa aktarım paketlerini siler, belgelere dokunmaz.
-    const key = `exports/${ctx.tenantId}/${exportId}.zip`;
-    await store.put(key, buf, 'application/zip');
+    for (const [name, body] of [['manifest.json', JSON.stringify(manifest, null, 2)], ['README.txt', README]] as const) {
+      const e = await zip.entry(name);
+      await e.write(Buffer.from(body));
+      await e.close();
+    }
+    const sizeBytes = await zip.finish();
+    await upload.finish();
+    const sha256 = zipHash.digest('hex');
     await withTenant(pool, ctx, async (tx) => {
       await tx.query(`UPDATE tenant_exports SET status = 'READY', storage_key = $2, size_bytes = $3, sha256 = $4, manifest = $5, ready_at = now(),
         expires_at = now() + make_interval(days => $6) WHERE id = $1`,
-        [exportId, key, buf.length, sha256, { counts, files: files.length, missingFiles: missingFiles.length }, EXPORT_TTL_DAYS]);
-      await tx.query(`UPDATE jobs SET status = 'SUCCEEDED', result = $2, updated_at = now() WHERE id = $1`, [jobId, { sizeBytes: buf.length }]);
-      await audit(tx, ctx, 'tenant.export.ready', 'tenant_export', exportId, { sizeBytes: buf.length, sha256, files: files.length, missingFiles: missingFiles.length });
+        [exportId, key, sizeBytes, sha256, { counts, files: files.length, missingFiles: missingFiles.length }, EXPORT_TTL_DAYS]);
+      await tx.query(`UPDATE jobs SET status = 'SUCCEEDED', result = $2, updated_at = now() WHERE id = $1`, [jobId, { sizeBytes }]);
+      await audit(tx, ctx, 'tenant.export.ready', 'tenant_export', exportId, { sizeBytes, sha256, files: files.length, missingFiles: missingFiles.length });
     });
   } catch (err) {
+    await upload.abort();
     if (err instanceof ApiError) return fail(err.code, err.message);
     throw err;
+  } finally {
+    clearInterval(beat);
   }
 }
 
