@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api, ApiError, session } from '../lib/api.ts';
-import { useSession } from '../lib/session.tsx';
+import { announceSessionChange, loginReturnPath, useSession } from '../lib/session.tsx';
 import { beginLogin, completeLogin, loadAuthConfig, type AuthConfig } from '../lib/oidc.ts';
 import { Banner, Loading, Tag } from '../ui/kit.tsx';
 import { Button } from '@/components/ui/button';
@@ -26,7 +26,7 @@ const DEMO = [
 ] as const;
 
 export function LoginPage() {
-  const { authError } = useSession();
+  const { authError, notice } = useSession();
   const [cfg, setCfg] = useState<AuthConfig | null>(null);
   const [cfgError, setCfgError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -48,6 +48,7 @@ export function LoginPage() {
         </section>
         <section className="p-8 max-[860px]:p-5">
           {authError && <Banner tone="danger" title="Erişim verilmedi">{authError}</Banner>}
+          {notice && !authError && <Banner tone="info" title="Yeniden giriş gerekiyor">{notice}</Banner>}
           {cfgError ? (
             <Banner tone="danger" title="Oturum hizmetine ulaşılamadı"
               action={<Button variant="outline" size="sm" onClick={() => setAttempt((n) => n + 1)}>Tekrar dene</Button>}>{cfgError}</Banner>
@@ -67,7 +68,7 @@ function EnterpriseLogin({ cfg }: { cfg: Extract<AuthConfig, { mode: 'oidc' }> }
       <h2 className="text-lg">Oturum açın</h2>
       <p className="text-ink-muted">Kurumunuzun kimlik sağlayıcısına yönlendirileceksiniz. Erişim, kurum yöneticinizin verdiği davet ve rollerle sınırlıdır.</p>
       <Button size="lg" disabled={busy}
-        onClick={() => { setBusy(true); void beginLogin(cfg, location.pathname + location.search); }}>
+        onClick={() => { setBusy(true); beginLogin(loginReturnPath()); }}>
         {busy ? 'Yönlendiriliyor…' : 'Kurumsal hesapla giriş yap'}
       </Button>
       <p className="text-sm text-ink-subtle">Kimlik sağlayıcı: <span className="mono">{host}</span></p>
@@ -106,9 +107,15 @@ function DevLogin() {
     e.preventDefault();
     setBusy(true); setError(null);
     try {
-      const r = await api<{ token: string }>('/api/v1/dev/token', { method: 'POST', json: { email } });
-      session.token = r.data.token; session.tenant = null;
+      // Geliştirme girişi de çerezli oturum açar (üretimdeki BFF ile aynı yol); token tarayıcıya gelmez.
+      session.tenant = null;
+      await api('/api/v1/dev/session', { method: 'POST', json: { email } });
+      const to = loginReturnPath();
+      if (to !== location.pathname + location.search) window.history.replaceState(null, '', to);
+      announceSessionChange();
       await refresh();
+      // Yönlendirici replaceState'i duymaz.
+      window.dispatchEvent(new PopStateEvent('popstate'));
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Oturum açılamadı.');
     } finally { setBusy(false); }

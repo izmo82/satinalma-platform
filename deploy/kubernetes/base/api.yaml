@@ -35,6 +35,8 @@ spec:
             - { name: DATABASE_URL, valueFrom: { secretKeyRef: { name: satinalma-secrets, key: DATABASE_URL } } }
             - { name: AWS_ACCESS_KEY_ID, valueFrom: { secretKeyRef: { name: satinalma-secrets, key: OBJECT_STORE_ACCESS_KEY } } }
             - { name: AWS_SECRET_ACCESS_KEY, valueFrom: { secretKeyRef: { name: satinalma-secrets, key: OBJECT_STORE_SECRET_KEY } } }
+            # Web oturumu sunucuda (BFF): token şifreleme anahtarı.
+            - { name: SESSION_SECRET, valueFrom: { secretKeyRef: { name: satinalma-secrets, key: SESSION_SECRET } } }
           readinessProbe:
             httpGet: { path: /health, port: http }
             periodSeconds: 5

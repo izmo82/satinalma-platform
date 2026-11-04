@@ -35,7 +35,9 @@ const HEAVY: [string, RegExp][] = [
   ['POST', /^\/api\/v1\/ai\/runs\/[^/]+\/retry$/],
 ];
 // /auth/config herkese açık ve önbellekli; her açılışta çağrılır, sınırlanmaz (oturum kovası yoksa default sınıf adres kovasına girmez).
-const AUTH = /^\/api\/v1\/dev\/token$/;
+// Geliştirme girişleri adres başına sınırlı. Kurumsal giriş uçları (auth/login, auth/session) bilinçli olarak dışarıda:
+// sabah aynı NAT arkasından yüzlerce kişi girer; kodu IdP üretir ve tek kullanımlıktır, akış çerezi olmadan işe yaramaz.
+const AUTH = /^\/api\/v1\/dev\/(token|session)$/;
 
 export function rateClass(method: string, path: string): RateClass {
   if (AUTH.test(path)) return 'auth';
@@ -86,17 +88,34 @@ export class RateLimiter {
     return this.take(`${cls === 'heavy' ? 'h' : 's'}|${session}`, lim) || null;
   }
 
+  /** Adresin başarısız kimlik doğrulama kovası boş mu (jeton harcamadan). Boşsa Retry-After saniyesi. */
+  authFailuresExhausted(ip: string): number | null {
+    if (!this.cfg.enabled) return null;
+    const b = this.bucket(`fail|${ip}`, this.cfg.authPerMinute);
+    return b.tokens >= 1 ? null : this.wait(b, this.cfg.authPerMinute);
+  }
+
   /** Kimlik doğrulaması başarısız oldu: adres kovasından düşer; kova boşsa Retry-After (401 yerine 429). */
   authFailure(ip: string): number | null {
     if (!this.cfg.enabled) return null;
     return this.take(`fail|${ip}`, this.cfg.authPerMinute) || null;
   }
 
-  onRequest() {
+  /** `cookieKey`: Bearer yoksa web oturum çerezinden kova anahtarı (BFF) ve bu süreçte yakın zamanda doğrulanıp doğrulanmadığı. */
+  onRequest(cookieKey?: (req: FastifyRequest) => { key: string; known: boolean } | null) {
     return async (req: FastifyRequest, reply: FastifyReply) => {
       if (!req.url.startsWith('/api/')) return;
       const route = req.routeOptions?.url ?? req.url.split('?')[0]!;
-      const session = RateLimiter.sessionKey(typeof req.headers.authorization === 'string' ? req.headers.authorization : undefined);
+      const bearer = RateLimiter.sessionKey(typeof req.headers.authorization === 'string' ? req.headers.authorization : undefined);
+      const cookie = bearer ? null : cookieKey?.(req) ?? null;
+      // Rastgele çerez değerleri her seferinde yeni kova açar; bu adres zaten çok sayıda başarısız kimlik denemesi yaptıysa
+      // tanınmayan çerezli istek veritabanına (oturum araması) gitmeden reddedilir. Yakın zamanda doğrulanmış oturum (aynı NAT
+      // arkasındaki gerçek kullanıcı) etkilenmez.
+      if (cookie && !cookie.known) {
+        const blocked = this.authFailuresExhausted(req.ip);
+        if (blocked !== null) return reply.header('Retry-After', String(blocked)).status(429).send(rateLimited(blocked));
+      }
+      const session = bearer ?? cookie?.key ?? null;
       const wait = this.check(rateClass(req.method, route), req.ip, session);
       if (wait === null) return;
       return reply.header('Retry-After', String(wait)).status(429).send(rateLimited(wait));

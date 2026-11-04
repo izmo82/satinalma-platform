@@ -54,6 +54,27 @@ describe('İstek sınırlama', () => {
     expect((await get('/api/v1/me', { authorization: 'Bearer sahte-x', 'x-forwarded-for': '203.0.113.31' })).statusCode).toBe(401);
   });
 
+  it('rastgele oturum çerezleriyle deneme: adres kovası boşalınca çerezli istek oturum aranmadan 429 alır; geçerli çerez kullanıcısı da Bearer kullanıcısı da etkilenmez', async () => {
+    const ip = '203.0.113.40';
+    const codes: number[] = [];
+    for (let i = 0; i < 6; i++) codes.push((await get('/api/v1/me', { cookie: `sp_sid=uydurma-${i}`, 'x-forwarded-for': ip })).statusCode);
+    expect(codes).toEqual([401, 401, 401, 401, 429, 429]);
+    // Kova boşken bile oturum tablosuna gidilmediğini doğrulamak için: geçersiz çerezle POST da CSRF'ten önce 429.
+    expect((await h.app.inject({ method: 'POST', url: '/api/v1/saved-views', headers: { cookie: 'sp_sid=yeni', 'x-forwarded-for': ip }, payload: {} })).statusCode).toBe(429);
+    expect((await h.call('legal', 'GET', '/api/v1/me', { headers: { 'x-forwarded-for': ip } })).status).toBe(200);
+  });
+
+  it('aynı NAT adresinde, kova boşken bile yakın zamanda doğrulanmış çerezli oturum kilitlenmez', async () => {
+    const ip = '203.0.113.41';
+    const login = await h.app.inject({ method: 'POST', url: '/api/v1/dev/session', headers: { 'x-sp-csrf': '1', 'x-forwarded-for': '203.0.113.99' },
+      payload: { email: h.world.users.legal.email } });
+    const sid = String([login.headers['set-cookie']].flat()[0]).split(';')[0]!;
+    expect((await get('/api/v1/me', { cookie: sid, 'x-forwarded-for': ip })).statusCode).toBe(200);
+    for (let i = 0; i < 6; i++) await get('/api/v1/me', { cookie: `sp_sid=uydurma2-${i}`, 'x-forwarded-for': ip });
+    expect((await get('/api/v1/me', { cookie: 'sp_sid=uydurma2-x', 'x-forwarded-for': ip })).statusCode).toBe(429);
+    expect((await get('/api/v1/me', { cookie: sid, 'x-forwarded-for': ip })).statusCode).toBe(200);
+  });
+
   it('geliştirme girişi adres başına sınırlı; oturum yapılandırması ve sağlık kontrolü sınırsız', async () => {
     expect(rateClass('POST', '/api/v1/dev/token')).toBe('auth');
     expect(rateClass('GET', '/api/v1/auth/config')).toBe('default');

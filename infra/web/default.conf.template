@@ -6,7 +6,7 @@ server {
   server_tokens off;
   client_max_body_size 26m;
 
-  set $csp "default-src 'self'; img-src 'self' blob: data:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' ${CSP_IDP_ORIGIN}; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self' ${CSP_IDP_ORIGIN}";
+  set $csp "default-src 'self'; img-src 'self' blob: data:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
   include /etc/nginx/security-headers.conf;
 
   location = /healthz { access_log off; return 200 "ok\n"; }

@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: { alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) } },
-  server: { proxy: { '/api': 'http://localhost:4100' } },
+  // SP_API_PROXY: aynı web'i başka bir API kopyasına bağlamak için (ör. OIDC modunda ikinci API).
+  server: { proxy: { '/api': process.env.SP_API_PROXY ?? 'http://localhost:4100' } },
   build: { target: 'es2022', sourcemap: true },
 });

@@ -1,14 +1,11 @@
-// Standart OIDC yetkilendirme kodu + PKCE (S256). Herhangi bir uyumlu IdP ile çalışır; IdP adresleri çalışma anında
-// API'nin /auth/config ucundan gelir, böylece aynı web imajı bulutta da kurum içinde de kullanılır.
-import { session } from './api.ts';
+// Kurumsal giriş sunucu tarafında (BFF, D78): PKCE, state/nonce ve token'lar API'de kalır; tarayıcı yalnız HttpOnly oturum
+// çerezi taşır. IdP yönlendirme adresi değişmedi (`/auth/callback`): bu sayfa kodu API'ye iletir, API token'a çevirir.
+import { api } from './api.ts';
 
 export type AuthConfig =
   | { mode: 'dev' }
   | { mode: 'oidc'; issuer: string; clientId: string; scope: string; resource: string | null; authorizationEndpoint: string; tokenEndpoint: string; endSessionEndpoint: string | null };
 
-const FLOW_KEY = 'sp.oidc.flow';
-const REFRESH_KEY = 'sp.oidc.refresh';
-const ID_TOKEN_KEY = 'sp.oidc.id';
 const CALLBACK_PATH = '/auth/callback';
 
 let cached: Promise<AuthConfig> | null = null;
@@ -20,88 +17,39 @@ export function loadAuthConfig(): Promise<AuthConfig> {
   return cached;
 }
 
-const store = {
-  get(k: string) { try { return sessionStorage.getItem(k); } catch { return null; } },
-  set(k: string, v: string | null) { try { v ? sessionStorage.setItem(k, v) : sessionStorage.removeItem(k); } catch { /* yok */ } },
-};
-
-function b64url(bytes: Uint8Array) {
-  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-const random = (n = 32) => b64url(crypto.getRandomValues(new Uint8Array(n)));
-const redirectUri = () => `${location.origin}${CALLBACK_PATH}`;
-
-export async function beginLogin(cfg: Extract<AuthConfig, { mode: 'oidc' }>, returnTo: string) {
-  const verifier = random(48);
-  const challenge = b64url(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier))));
-  const state = random();
-  const nonce = random();
-  store.set(FLOW_KEY, JSON.stringify({ verifier, state, nonce, returnTo }));
-  const u = new URL(cfg.authorizationEndpoint);
-  u.search = new URLSearchParams({
-    response_type: 'code', client_id: cfg.clientId, redirect_uri: redirectUri(), scope: cfg.scope,
-    state, nonce, code_challenge: challenge, code_challenge_method: 'S256',
-    ...(cfg.resource ? { resource: cfg.resource } : {}),
-  }).toString();
-  location.assign(u.toString());
+/** Sunucu PKCE akışını başlatır ve tarayıcıyı IdP'ye yönlendirir. */
+export function beginLogin(returnTo: string) {
+  location.assign(`/api/v1/auth/login?returnTo=${encodeURIComponent(returnTo)}`);
 }
 
 export const isCallback = () => location.pathname === CALLBACK_PATH;
 
-/** Geri dönüşte kodu token'a çevirir. Başarıda dönülecek yolu verir. */
-export async function completeLogin(): Promise<string> {
-  const cfg = await loadAuthConfig();
-  if (cfg.mode !== 'oidc') throw new Error('Kurumsal oturum etkin değil.');
+/**
+ * IdP dönüşü: kod ve state sunucuya gider; sunucu doğrular, oturum çerezini yazar ve dönülecek yolu verir.
+ * Kod tek kullanımlıktır: aynı sayfada ikinci çağrı (ör. StrictMode'da çift efekt) aynı sonucu paylaşır.
+ */
+let completing: Promise<string> | null = null;
+export function completeLogin(): Promise<string> {
+  completing ??= exchange();
+  return completing;
+}
+async function exchange(): Promise<string> {
   const params = new URLSearchParams(location.search);
-  const flow = JSON.parse(store.get(FLOW_KEY) ?? 'null') as { verifier: string; state: string; returnTo: string } | null;
-  store.set(FLOW_KEY, null);
   if (params.get('error')) throw new Error(params.get('error_description') ?? 'Kimlik sağlayıcısı girişi reddetti.');
-  if (!flow || params.get('state') !== flow.state) throw new Error('Oturum isteği eşleşmedi. Lütfen yeniden giriş yapın.');
-  const tokens = await tokenRequest(cfg, {
-    grant_type: 'authorization_code', code: params.get('code') ?? '', redirect_uri: redirectUri(), code_verifier: flow.verifier,
-  });
-  accept(tokens);
-  return flow.returnTo.startsWith('/') && !flow.returnTo.startsWith('//') ? flow.returnTo : '/';
+  const code = params.get('code');
+  const state = params.get('state');
+  if (!code || !state) throw new Error('Oturum isteği eşleşmedi. Lütfen yeniden giriş yapın.');
+  // Kod adres çubuğunda ve geçmişte kalmasın.
+  history.replaceState(null, '', CALLBACK_PATH);
+  const r = await api<{ returnTo: string }>('/api/v1/auth/session', { method: 'POST', json: { code, state } });
+  return r.data.returnTo;
 }
 
-/** Erişim token'ının süresi dolduğunda bir kez sessiz yenileme; başarısızsa yeniden giriş gerekir. */
-export async function refreshSession(): Promise<boolean> {
-  const rt = store.get(REFRESH_KEY);
-  if (!rt) return false;
-  try {
-    const cfg = await loadAuthConfig();
-    if (cfg.mode !== 'oidc') return false;
-    accept(await tokenRequest(cfg, { grant_type: 'refresh_token', refresh_token: rt }));
-    return true;
-  } catch {
-    store.set(REFRESH_KEY, null);
-    return false;
-  }
-}
-
+/**
+ * Çıkış: sunucu oturumu siler ve yenileme token'ını iptal eder; IdP oturumu da varsa onu kapatmaya yönlenir.
+ * Çerez HttpOnly olduğu için tarayıcı oturumu kendisi silemez: istek başarısızsa hata fırlatılır, ekran "çıkıldı" göstermez.
+ */
 export async function endSession() {
-  const idToken = store.get(ID_TOKEN_KEY);
-  store.set(REFRESH_KEY, null); store.set(ID_TOKEN_KEY, null);
-  const cfg = await loadAuthConfig().catch(() => null);
-  if (cfg?.mode === 'oidc' && cfg.endSessionEndpoint) {
-    const u = new URL(cfg.endSessionEndpoint);
-    u.search = new URLSearchParams({ client_id: cfg.clientId, post_logout_redirect_uri: location.origin + '/',
-      ...(idToken ? { id_token_hint: idToken } : {}) }).toString();
-    location.assign(u.toString());
-  }
-}
-
-async function tokenRequest(cfg: Extract<AuthConfig, { mode: 'oidc' }>, body: Record<string, string>) {
-  const r = await fetch(cfg.tokenEndpoint, {
-    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ client_id: cfg.clientId, ...(cfg.resource ? { resource: cfg.resource } : {}), ...body }),
-  });
-  if (!r.ok) throw new Error('Kimlik sağlayıcısı token vermedi.');
-  return r.json() as Promise<{ access_token: string; refresh_token?: string; id_token?: string }>;
-}
-
-function accept(t: { access_token: string; refresh_token?: string; id_token?: string }) {
-  session.token = t.access_token;
-  if (t.refresh_token) store.set(REFRESH_KEY, t.refresh_token);
-  if (t.id_token) store.set(ID_TOKEN_KEY, t.id_token);
+  const r = await api<{ endSessionUrl: string | null }>('/api/v1/auth/logout', { method: 'POST' });
+  if (r.data.endSessionUrl) location.assign(r.data.endSessionUrl);
 }

@@ -18,7 +18,7 @@ docker compose --profile idp up -d     # kurumun IdP'si varsa: docker compose up
 ```
 - Web `127.0.0.1:8080` üzerinde dinler; TLS kurumun ters vekilinde sonlanır (`WEB_BIND`, `WEB_PORT`).
 - Harici PostgreSQL veya S3 kullanmak için ilgili servisi kaldırıp `DATABASE_URL`/`OBJECT_STORE_ENDPOINT` değerlerini değiştirin.
-- Kurumun IdP'si için: public client (PKCE S256), yönlendirme `https://<alan>/auth/callback`, access token'da `aud=sp-api` ve doğrulanmış `email` claim'i. `CSP_IDP_ORIGIN` IdP kökeni olmalı.
+- Kurumun IdP'si için: public client (PKCE S256), yönlendirme `https://<alan>/auth/callback`, access token'da `aud=sp-api` ve doğrulanmış `email` claim'i. API, IdP'nin token uç noktasına sunucudan erişebilmeli (web oturumu sunucuda, BFF).
 
 İlk kiracı ve ilk yönetici:
 ```bash
@@ -55,7 +55,8 @@ cp -r deploy/kubernetes/overlays/example deploy/kubernetes/overlays/kurum
 kubectl apply -f deploy/kubernetes/overlays/kurum/namespace.yaml
 kubectl -n satinalma create secret generic satinalma-secrets \
   --from-literal=DATABASE_URL='postgres://sp_app:...@pg.kurum.local:5432/satinalma' \
-  --from-literal=OBJECT_STORE_ACCESS_KEY=... --from-literal=OBJECT_STORE_SECRET_KEY=...
+  --from-literal=OBJECT_STORE_ACCESS_KEY=... --from-literal=OBJECT_STORE_SECRET_KEY=... \
+  --from-literal=SESSION_SECRET="$(openssl rand -hex 32)"   # web oturum token'larını şifreler (BFF)
 kubectl -n satinalma create secret generic satinalma-migrate-secrets \
   --from-literal=DATABASE_OWNER_URL='postgres://sp_owner:...@pg.kurum.local:5432/satinalma'
 kubectl -n satinalma create configmap satinalma-ca --from-file=ca.crt=kurum-kok-ca.pem   # iç CA varsa

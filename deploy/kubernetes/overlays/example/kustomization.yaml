@@ -23,9 +23,6 @@ patches:
       - { op: replace, path: /data/OIDC_JWKS_URL, value: "https://sso.kurum.example.test/realms/satinalma/protocol/openid-connect/certs" }
       - { op: replace, path: /data/WEB_ORIGIN, value: "https://satinalma.kurum.example.test" }
       - { op: replace, path: /data/OBJECT_STORE_ENDPOINT, value: "https://s3.kurum.example.test" }
-  - target: { kind: ConfigMap, name: satinalma-web-config }
-    patch: |-
-      - { op: replace, path: /data/CSP_IDP_ORIGIN, value: "https://sso.kurum.example.test" }
   - target: { kind: Ingress, name: satinalma }
     patch: |-
       - { op: replace, path: /spec/tls/0/hosts/0, value: satinalma.kurum.example.test }

@@ -38,4 +38,3 @@ metadata:
   name: satinalma-web-config
 data:
   API_UPSTREAM: http://satinalma-api:4100
-  CSP_IDP_ORIGIN: https://sso.example.test

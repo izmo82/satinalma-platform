@@ -8,8 +8,8 @@ COPY apps/web ./apps/web
 RUN npm run build -w @sp/web
 
 FROM nginxinc/nginx-unprivileged:1.27-alpine
-# API_UPSTREAM: API servis adresi. CSP_IDP_ORIGIN: tarayıcının token aldığı IdP kökeni (ör. https://sso.kurum.com.tr).
-ENV API_UPSTREAM=http://api:4100 CSP_IDP_ORIGIN=""
+# API_UPSTREAM: API servis adresi. Tarayıcı IdP'ye fetch yapmaz (token sunucuda, BFF); CSP connect-src yalnız 'self'.
+ENV API_UPSTREAM=http://api:4100
 COPY --from=build /app/apps/web/dist /usr/share/nginx/html
 COPY infra/web/default.conf.template /etc/nginx/templates/default.conf.template
 COPY infra/web/security-headers.conf /etc/nginx/security-headers.conf

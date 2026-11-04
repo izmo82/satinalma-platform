@@ -54,7 +54,7 @@ export function App() {
 }
 
 function Shell() {
-  const { me, switchTenant, logout } = useSession();
+  const { me, switchTenant, logout, logoutError } = useSession();
   const online = useOnline();
   const loc = useLocation();
   const mainRef = useRef<HTMLElement>(null);
@@ -121,6 +121,8 @@ function Shell() {
           <span className="whitespace-nowrap text-ink-subtle">Şirket kapsamı</span><span className="truncate font-semibold text-ink max-[640px]:whitespace-normal">{companies}</span>
           {!me.supplierPortal && <><GlobalSearch /><NotificationBell /></>}
         </div>
+        {logoutError && <div className="bg-danger-soft px-4 py-2 text-sm text-ink" role="alert"><strong>Çıkış tamamlanamadı; oturumunuz hâlâ açık.</strong> {logoutError}{' '}
+          <button type="button" className="underline" onClick={logout}>Tekrar dene</button></div>}
         {!online && <div className="bg-ink px-4 py-1.5 text-center text-sm text-primary-foreground" role="status"><Icon name="wifiOff" size={14} className="mr-1.5 inline" />Çevrimdışısınız. Görüntülenen veri güncel olmayabilir; kaydetme ve onay işlemleri bağlantı gelince yapılabilir.</div>}
         <Suspense fallback={<Loading label="Sayfa yükleniyor" />}>
         <Routes>

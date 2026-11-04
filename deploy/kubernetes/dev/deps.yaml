@@ -109,6 +109,7 @@ spec:
             - { name: KC_DB_USERNAME, value: keycloak }
             - { name: KC_DB_PASSWORD, valueFrom: { secretKeyRef: { name: deps-secrets, key: KEYCLOAK_DB_PASSWORD } } }
             - { name: KC_HOSTNAME, value: "http://localhost:8180" }
+            - { name: KC_HOSTNAME_BACKCHANNEL_DYNAMIC, value: "true" }
             - { name: KC_HTTP_ENABLED, value: "true" }
             - { name: KC_HEALTH_ENABLED, value: "true" }
             - { name: KC_BOOTSTRAP_ADMIN_USERNAME, value: kc-admin }

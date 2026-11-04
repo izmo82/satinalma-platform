@@ -16,8 +16,8 @@ kind load docker-image --name "$CLUSTER" satinalma/api:local satinalma/web:local
 S="$K/dev/.env"
 if [ ! -f "$S" ]; then
   r() { openssl rand -hex 24; }
-  printf 'OWNER_DB_PASSWORD=%s\nAPP_DB_PASSWORD=%s\nKEYCLOAK_DB_PASSWORD=%s\nKEYCLOAK_ADMIN_PASSWORD=%s\nOBJECT_STORE_ACCESS_KEY=%s\nOBJECT_STORE_SECRET_KEY=%s\n' \
-    "$(r)" "$(r)" "$(r)" "$(r)" "sp$(openssl rand -hex 8)" "$(r)" > "$S"; chmod 600 "$S"
+  printf 'OWNER_DB_PASSWORD=%s\nAPP_DB_PASSWORD=%s\nKEYCLOAK_DB_PASSWORD=%s\nKEYCLOAK_ADMIN_PASSWORD=%s\nOBJECT_STORE_ACCESS_KEY=%s\nOBJECT_STORE_SECRET_KEY=%s\nSESSION_SECRET=%s\n' \
+    "$(r)" "$(r)" "$(r)" "$(r)" "sp$(openssl rand -hex 8)" "$(r)" "$(openssl rand -hex 32)" > "$S"; chmod 600 "$S"
 fi
 set -a; . "$S"; set +a
 apply_secret() { kc -n "$1" create "${@:2}" --dry-run=client -o yaml | kc apply -f - >/dev/null; }
@@ -35,7 +35,8 @@ kc -n satinalma-deps rollout status deployment/keycloak --timeout=300s
 PG=postgres.satinalma-deps.svc:5432/satinalma
 kc apply -f "$K/overlays/kind/namespace.yaml" >/dev/null
 apply_secret satinalma secret generic satinalma-secrets --from-literal=DATABASE_URL="postgres://sp_app:$APP_DB_PASSWORD@$PG" \
-  --from-literal=OBJECT_STORE_ACCESS_KEY="$OBJECT_STORE_ACCESS_KEY" --from-literal=OBJECT_STORE_SECRET_KEY="$OBJECT_STORE_SECRET_KEY"
+  --from-literal=OBJECT_STORE_ACCESS_KEY="$OBJECT_STORE_ACCESS_KEY" --from-literal=OBJECT_STORE_SECRET_KEY="$OBJECT_STORE_SECRET_KEY" \
+  --from-literal=SESSION_SECRET="${SESSION_SECRET:=$(openssl rand -hex 32)}"
 apply_secret satinalma secret generic satinalma-migrate-secrets --from-literal=DATABASE_OWNER_URL="postgres://sp_owner:$OWNER_DB_PASSWORD@$PG"
 
 # Belgelenen sıra: önce ağ politikaları ve migration, sonra uygulama.

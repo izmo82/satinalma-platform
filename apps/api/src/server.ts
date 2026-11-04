@@ -6,7 +6,8 @@ import type pg from 'pg';
 import { can, type Permission } from '@sp/domain';
 import type { Config } from './config.ts';
 import { withTenant, type TenantContext, type Tx } from './db.ts';
-import { DevAuthProvider, resolveIdentity, tenantContext, type AuthProvider } from './auth.ts';
+import { DevAuthProvider, identityFor, resolveIdentity, tenantContext, type AuthProvider } from './auth.ts';
+import { DEFAULT_SESSION, WebSessions } from './webSession.ts';
 import { ApiError, forbidden, notFound } from './errors.ts';
 import type { ObjectStore } from './storage.ts';
 import { MAX_UPLOAD_BYTES } from './files.ts';
@@ -62,10 +63,11 @@ export async function buildApp(deps: AppDeps) {
   });
   await app.register(cors, {
     origin: [deps.config.webOrigin], credentials: false,
-    exposedHeaders: ['ETag', 'X-Correlation-Id', 'Retry-After'], allowedHeaders: ['Authorization', 'Content-Type', 'If-Match', 'X-Tenant-Id', 'X-Correlation-Id'],
+    exposedHeaders: ['ETag', 'X-Correlation-Id', 'Retry-After', 'X-SP-User'], allowedHeaders: ['Authorization', 'Content-Type', 'If-Match', 'X-Tenant-Id', 'X-Correlation-Id', 'X-SP-CSRF', 'X-SP-Expect-User'],
   });
   await app.register(multipart, { limits: { fileSize: MAX_UPLOAD_BYTES, files: 1, fields: 10 } });
 
+  const sessions = new WebSessions(deps.pool, deps.config.session ?? DEFAULT_SESSION, deps.config.webOrigin, deps.config.oidc, deps.auth);
   const limiter = deps.config.rateLimit?.enabled ? new RateLimiter(deps.config.rateLimit) : null;
   app.setErrorHandler((err: any, req, reply) => {
     if (err instanceof ApiError) {
@@ -92,14 +94,33 @@ export async function buildApp(deps: AppDeps) {
     return reply.status(500).send({ error: { code: 'internal', message: 'Beklenmeyen bir hata oluştu. İşlem kaydedilmedi.' } });
   });
 
-  if (limiter) app.addHook('onRequest', limiter.onRequest());
+  if (limiter) app.addHook('onRequest', limiter.onRequest((req) => sessions.rateKey(req)));
 
   // API doğrudan erişildiğinde de (ters vekil olmadan) içerik türü tahmin edilmez.
-  app.addHook('onSend', async (_req, reply) => { reply.header('X-Content-Type-Options', 'nosniff'); });
+  // X-SP-User: yanıtı üreten oturumun kullanıcısı. Web oturumu sekmeler arasında ortak çerezdir; başka sekmede kullanıcı
+  // değişirse istemci bunu görür ve eski kullanıcının ekranında yeni kullanıcı adına işlem yapılmaz.
+  app.addHook('onSend', async (req, reply) => {
+    reply.header('X-Content-Type-Options', 'nosniff');
+    const uid = (req as FastifyRequest & { spUserId?: string }).spUserId;
+    if (uid) reply.header('X-SP-User', uid);
+  });
 
+  /**
+   * Yanıtı üreten kullanıcıyı işaretler; istemci beklediği kullanıcıyı bildirdiyse (`X-SP-Expect-User`) ve oturum başka
+   * kullanıcıya geçmişse (ortak çerez, başka sekmede giriş) istek yürütülmeden 409 döner: eski kullanıcının ekranından yeni
+   * kullanıcı adına karar verilemez.
+   */
+  function bindUser(req: FastifyRequest, userId: string) {
+    (req as FastifyRequest & { spUserId?: string }).spUserId = userId;
+    const expect = req.headers['x-sp-expect-user'];
+    if (typeof expect === 'string' && expect !== userId) {
+      throw new ApiError(409, 'identity_changed', 'Bu tarayıcıda oturum başka bir kullanıcıya geçti; sayfa yeniden yükleniyor. İşlem yapılmadı.');
+    }
+  }
   /** Kimlik → üyelik → kiracı bağlamı → izin → RLS'li transaction. */
   async function scoped<T>(req: FastifyRequest, perm: Permission | null, fn: (tx: Tx, ctx: TenantContext) => Promise<T>): Promise<T> {
-    const identity = await resolveIdentity(deps.pool, deps.auth, req);
+    const identity = await resolveIdentity(deps.pool, deps.auth, req, sessions);
+    bindUser(req, identity.userId);
     const ctx = tenantContext(identity, req);
     if (perm && !can(ctx.roles, perm)) throw forbidden(perm);
     return withTenant(deps.pool, ctx, (tx) => fn(tx, ctx));
@@ -115,27 +136,32 @@ export async function buildApp(deps: AppDeps) {
   app.get('/api/openapi.json', { schema: { hide: true } }, async () => app.swagger());
 
   // --- Oturum yapılandırması (herkese açık; sır içermez) -------------------------
-  // Web aynı imajla her ortamda çalışsın diye IdP bilgisi derleme anında değil çalışma anında okunur.
-  let discovery: { at: number; doc: Record<string, unknown> } | null = null;
+  // Web aynı imajla her ortamda çalışsın diye IdP bilgisi derleme anında değil çalışma anında okunur. Web artık token görmez
+  // (BFF, D78); uç noktalar iOS istemcisi (Bearer + PKCE) içindir.
   app.get('/api/v1/auth/config', { schema: { tags: ['auth'] } }, async () => {
     const oidc = deps.config.oidc;
     if (!oidc) return { mode: 'dev' as const };
-    if (!discovery || Date.now() - discovery.at > 300_000) {
-      try {
-        const r = await fetch(oidc.discoveryUrl, { signal: AbortSignal.timeout(5000) });
-        if (!r.ok) throw new Error(String(r.status));
-        discovery = { at: Date.now(), doc: (await r.json()) as Record<string, unknown> };
-      } catch {
-        throw new ApiError(503, 'idp_unavailable', 'Kimlik sağlayıcısına ulaşılamadı. Kısa süre sonra tekrar deneyin.');
-      }
-    }
-    const d = discovery.doc;
+    const d = await sessions.discoveryDoc();
     return {
       mode: 'oidc' as const, issuer: oidc.issuer, clientId: oidc.clientId, nativeClientId: oidc.nativeClientId ?? null, scope: oidc.scope, resource: oidc.resource,
       authorizationEndpoint: d.authorization_endpoint, tokenEndpoint: d.token_endpoint,
       endSessionEndpoint: d.end_session_endpoint ?? null, revocationEndpoint: d.revocation_endpoint ?? null,
     };
   });
+
+  // --- Web oturumu (BFF): token sunucuda, tarayıcıda yalnız HttpOnly çerez -----------------------------------------
+  app.get('/api/v1/auth/login', { schema: { tags: ['auth'], querystring: { type: 'object', properties: { returnTo: { type: 'string', maxLength: 2000 } } } } },
+    async (req, reply) => reply.redirect(await sessions.beginLogin(reply, (req.query as { returnTo?: string }).returnTo ?? '/'), 302));
+  app.post('/api/v1/auth/session', { schema: { tags: ['auth'], body: { type: 'object', required: ['code', 'state'], additionalProperties: false,
+    properties: { code: { type: 'string', minLength: 1, maxLength: 4000 }, state: { type: 'string', minLength: 1, maxLength: 200 } } } } }, async (req, reply) => {
+    const b = req.body as { code: string; state: string };
+    const r = await sessions.completeLogin(req, reply, b.code, b.state);
+    // Davetsiz hesap için oturum açılmaz (identityFor 403 not_invited verir); ilk girişte davet burada bağlanır.
+    await identityFor(deps.pool, r.subject);
+    await sessions.create(reply, r.subject.subject, 'oidc', r.tokens, req);
+    return { returnTo: r.returnTo };
+  });
+  app.post('/api/v1/auth/logout', { schema: { tags: ['auth'] } }, async (req, reply) => ({ endSessionUrl: await sessions.logout(req, reply) }));
 
   // --- Yalnız development: sentetik kullanıcı oturumu ---------------------------
   if (deps.auth instanceof DevAuthProvider && deps.config.env !== 'production') {
@@ -149,10 +175,22 @@ export async function buildApp(deps: AppDeps) {
       if (!r.rowCount) throw new ApiError(404, 'unknown_dev_user', 'Sentetik kullanıcı bulunamadı.');
       return { token: await devAuth.issue(subject), synthetic: true };
     });
+    // Web geliştirme girişi de çerezli oturumla (üretimdeki BFF ile aynı yol); token tarayıcıya verilmez.
+    app.post('/api/v1/dev/session', {
+      schema: { tags: ['dev'], body: { type: 'object', required: ['email'], properties: { email: { type: 'string', maxLength: 200 } } } },
+    }, async (req, reply) => {
+      if (req.headers['x-sp-csrf'] !== '1') throw new ApiError(403, 'csrf', 'İstek doğrulanamadı.');
+      const subject = `dev|${(req.body as { email: string }).email.toLowerCase()}`;
+      const r = await deps.pool.query('SELECT id FROM auth_user_by_subject($1)', [subject]);
+      if (!r.rowCount) throw new ApiError(404, 'unknown_dev_user', 'Sentetik kullanıcı bulunamadı.');
+      await sessions.create(reply, subject, 'dev', null, req);
+      return { synthetic: true };
+    });
   }
 
   app.get('/api/v1/me', async (req) => {
-    const identity = await resolveIdentity(deps.pool, deps.auth, req);
+    const identity = await resolveIdentity(deps.pool, deps.auth, req, sessions);
+    bindUser(req, identity.userId);
     let active: TenantContext | null = null;
     try { active = tenantContext(identity, req); } catch { active = null; }
     const companies = active ? await withTenant(deps.pool, active, async (tx) =>

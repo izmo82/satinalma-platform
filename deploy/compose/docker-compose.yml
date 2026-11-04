@@ -20,6 +20,9 @@ x-app-env: &app-env
   OIDC_SUBJECT_CLAIM: ${OIDC_SUBJECT_CLAIM:-}
   OIDC_EMAIL_CLAIM: ${OIDC_EMAIL_CLAIM:-}
   OIDC_TRUSTED_EMAIL_DOMAINS: ${OIDC_TRUSTED_EMAIL_DOMAINS:-}
+  # Web oturumu sunucuda (BFF): token şifreleme anahtarı; gizli istemci tanımlandıysa istemci sırrı.
+  SESSION_SECRET: ${SESSION_SECRET:?}
+  OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
   DATA_REGION: ${DATA_REGION:?}
   WEB_ORIGIN: ${SP_PUBLIC_URL:?}
   OBJECT_STORE_ENDPOINT: ${OBJECT_STORE_ENDPOINT:-http://objectstore:8333}
@@ -122,7 +125,6 @@ services:
     image: ${SP_WEB_IMAGE:-satinalma/web:local}
     environment:
       API_UPSTREAM: http://api:4100
-      CSP_IDP_ORIGIN: ${CSP_IDP_ORIGIN:-}
     ports:
       - "${WEB_BIND:-127.0.0.1}:${WEB_PORT:-8080}:8080"
     depends_on: { api: { condition: service_healthy } }
@@ -144,6 +146,8 @@ services:
       KC_DB_USERNAME: keycloak
       KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?KEYCLOAK_DB_PASSWORD gerekli (idp profili)}
       KC_HOSTNAME: ${IDP_PUBLIC_URL:-http://localhost:8180}
+      # Token/JWKS/iptal uç noktaları isteğin geldiği adresle (API iç ağdan idp:8080 ile ulaşır); tarayıcı uçları KC_HOSTNAME.
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
       KC_HTTP_ENABLED: "true"
       KC_PROXY_HEADERS: xforwarded
       KC_HEALTH_ENABLED: "true"

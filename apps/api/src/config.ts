@@ -1,4 +1,5 @@
 import { DEFAULT_RATE_LIMIT, type RateLimitConfig } from './rateLimit.ts';
+import type { SessionConfig } from './webSession.ts';
 
 // 12-factor yapılandırma: tüm bağlantılar ortamdan gelir; bulutta secret manager doldurur.
 export interface Config {
@@ -24,6 +25,8 @@ export interface Config {
    */
   trustProxy?: string[] | false;
   rateLimit?: RateLimitConfig;
+  /** Web oturumu (BFF): çerez ve süreler; şifreleme anahtarı SESSION_SECRET'ten türetilir. */
+  session?: SessionConfig;
   /** Yönetim raporu sonuç önbelleği (saniye); 0 = kapalı. Veri anı yanıtta görünür. */
   reportCacheSeconds?: number;
 }
@@ -37,6 +40,8 @@ export interface OidcConfig {
   jwksUrl: string;
   discoveryUrl: string;
   clientId: string;
+  /** Web BFF istemcisi gizli (confidential) tanımlandıysa; public istemci + PKCE'de boş. Yalnız sunucuda. */
+  clientSecret?: string | null;
   /** Mobil (iOS) public istemci kimliği; yoksa mobil giriş "yapılandırılmadı" der. Yönlendirme: <bundle id>:/oauth/callback (RFC 8252). */
   nativeClientId?: string | null;
   scope: string;
@@ -71,6 +76,7 @@ export function loadConfig(): Config {
         // Sunucu içi ağdan erişim adresi farklı olabilir (ör. kurum içi IdP); varsayılan issuer'ın keşif belgesi.
         discoveryUrl: process.env.OIDC_DISCOVERY_URL || `${req('OIDC_ISSUER').replace(/\/$/, '')}/.well-known/openid-configuration`,
         clientId: req('OIDC_CLIENT_ID'),
+        clientSecret: process.env.OIDC_CLIENT_SECRET || null,
         nativeClientId: process.env.OIDC_NATIVE_CLIENT_ID || null,
         scope: process.env.OIDC_SCOPE || 'openid profile email',
         resource: process.env.OIDC_RESOURCE || null,
@@ -105,6 +111,13 @@ export function loadConfig(): Config {
     webOrigin: process.env.WEB_ORIGIN ?? 'http://localhost:5174',
     trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
     reportCacheSeconds: Number(process.env.REPORT_CACHE_SECONDS ?? 120),
+    session: {
+      secret: process.env.SESSION_SECRET || null,
+      // Üretimde çerez yalnız HTTPS'te; web kökeni https ise yerelde de Secure.
+      cookieSecure: env === 'production' || (process.env.WEB_ORIGIN ?? '').startsWith('https://'),
+      idleMinutes: Number(process.env.SESSION_IDLE_MINUTES ?? 30),
+      maxHours: Number(process.env.SESSION_MAX_HOURS ?? 12),
+    },
     rateLimit: {
       enabled: rateLimitEnabled,
       perMinute: Number(process.env.RATE_LIMIT_PER_MINUTE ?? DEFAULT_RATE_LIMIT.perMinute),

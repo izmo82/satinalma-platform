@@ -140,7 +140,9 @@ DAST (ZAP) yalnız izole kopyaya karşı çalıştırılır (aktif tarama veri y
 | API 401 `unauthenticated` | Token süresi doldu / IdP ayarı | Yeniden oturum; `OIDC_*` kontrolü |
 | API 403 `not_invited` | Kullanıcı davet edilmemiş veya IdP e-postayı doğrulanmış bildirmiyor | `provision.js user:invite`; IdP'de e-posta doğrulaması ve `email` claim'i |
 | Giriş ekranı "Oturum hizmetine ulaşılamadı" (503 `idp_unavailable`) | API IdP keşif belgesine erişemiyor | `OIDC_DISCOVERY_URL` iç ağ adresi, DNS/güvenlik duvarı |
-| Tarayıcıda token isteği CSP hatası | `CSP_IDP_ORIGIN` boş/yanlış | IdP kökenini web ortam değişkenine yazın |
+| API başlamıyor: `SESSION_SECRET ... zorunlu` | OIDC modunda oturum sırrı yok | Sır yöneticisinden `SESSION_SECRET` (≥32 karakter) verin |
+| Çerezli istekte 403 `csrf` | İstek başka kökenden veya `X-SP-CSRF` başlığı yok | Web'i `WEB_ORIGIN` ile aynı adresten açın; özel istemciler Bearer kullanır |
+| Giriş sonrası sürekli giriş ekranı | Çerez yazılmıyor: HTTPS olmayan adreste `Secure` çerez ya da farklı alan adı | Üretimde HTTPS; `WEB_ORIGIN` = tarayıcıdaki adres |
 | Web konteyneri başlıyor ama 8080 yanıt vermiyor | `/etc/nginx/conf.d` yazılamıyor | Bu dizine yazılabilir tmpfs/emptyDir bağlayın (compose ve manifestlerde hazır) |
 | API 403 `tenant_not_selected` | `X-Tenant-Id` üyelik dışı | Kiracı seçicisinden geçerli kiracı |
 | 409 `version_conflict` | Başkası değiştirdi | Sayfayı yenileyip yeniden karar verin |

@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
-import { api, ApiError, session } from './api.ts';
+import { api, ApiError, session, setExpectedUser } from './api.ts';
 import { endSession } from './oidc.ts';
 
 export interface Me {
@@ -16,16 +16,22 @@ interface SessionCtx {
   me: Me | null; loading: boolean;
   /** Son oturum açma denemesinin kullanıcıya gösterilecek nedeni (ör. davet yok). */
   authError: string | null;
+  /** Çıkış sunucuda tamamlanamadıysa nedeni (oturum açık kalır; kullanıcı tekrar dener). */
+  logoutError: string | null;
+  /** Giriş ekranında gösterilecek bilgi (ör. oturum süresi doldu). */
+  notice: string | null;
   refresh: () => Promise<void>; switchTenant: (id: string) => Promise<void>; logout: () => void;
 }
 const Ctx = createContext<SessionCtx | null>(null);
 
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [me, setMe] = useState<Me | null>(null);
-  const [loading, setLoading] = useState(!!session.token);
+  // Oturum HttpOnly çerezde; tarayıcı varlığını bilemez, bu yüzden açılışta her zaman /me sorulur.
+  const [loading, setLoading] = useState(true);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [logoutError, setLogoutError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const refresh = useCallback(async () => {
-    if (!session.token) { setMe(null); setLoading(false); return; }
     setLoading(true);
     try {
       let r = (await api<Me>('/api/v1/me')).data;
@@ -33,19 +39,65 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         session.tenant = r.memberships[0]!.tenantId;
         r = (await api<Me>('/api/v1/me')).data;
       }
-      setMe(r); setAuthError(null);
+      setExpectedUser(r.user.id); setMe(r); setAuthError(null); setNotice(null);
     } catch (e) {
-      session.token = null; session.tenant = null; setMe(null);
+      session.tenant = null; setExpectedUser(null); setMe(null);
       setAuthError(e instanceof ApiError && e.status !== 401 ? e.message : null);
     } finally { setLoading(false); }
   }, []);
   useEffect(() => { void refresh(); }, [refresh]);
+  // Kullanım sırasında oturum biterse (boşta kalma, IdP reddi) giriş ekranına dönülür.
+  useEffect(() => {
+    const onExpired = () => setMe((cur) => {
+      if (cur) setNotice('Oturumunuzun süresi doldu ya da başka bir sekmede çıkış yapıldı. Kaydedilmemiş değişiklikler kaydedilmedi; yeniden giriş yapın.');
+      setExpectedUser(null);
+      return null;
+    });
+    // Başka sekmede kullanıcı değişti: eski kullanıcının ekranı ve önbelleği tamamen bırakılır.
+    const onChanged = () => { location.assign('/'); };
+    if (channel) channel.onmessage = () => { onChanged(); };
+    window.addEventListener('sp:unauthenticated', onExpired);
+    window.addEventListener('sp:identity-changed', onChanged);
+    return () => { window.removeEventListener('sp:unauthenticated', onExpired); window.removeEventListener('sp:identity-changed', onChanged); if (channel) channel.onmessage = null; };
+  }, []);
   const switchTenant = useCallback(async (id: string) => { session.tenant = id; await refresh(); }, [refresh]);
   // Çıkışta adres köke döner: sonraki kullanıcı önceki kullanıcının (belki yetkisiz olduğu) sayfasına düşmez.
-  const logout = useCallback(() => { session.token = null; session.tenant = null; setMe(null); window.history.replaceState(null, '', '/');
-    // Yönlendirici replaceState'i duymaz; popstate olmadan sonraki kullanıcı önceki kullanıcının son sayfasında açılır.
-    window.dispatchEvent(new PopStateEvent('popstate')); void endSession(); }, []);
-  return <Ctx.Provider value={{ me, loading, authError, refresh, switchTenant, logout }}>{children}</Ctx.Provider>;
+  // Ekran yalnız sunucu oturumu kapattığında (ya da oturum zaten yoksa, 401) sıfırlanır; aksi halde paylaşılan bilgisayarda
+  // sonraki kişi sayfayı yenileyince önceki kullanıcının oturumu açık kalırdı.
+  const logout = useCallback(() => {
+    setLogoutError(null);
+    void endSession().then(() => true, (e: unknown) => {
+      if (e instanceof ApiError && e.status === 401) return true;
+      setLogoutError(e instanceof ApiError && e.status !== 0 ? e.message : 'Sunucuya ulaşılamadı.');
+      return false;
+    }).then((ok) => {
+      if (!ok) return;
+      announceSessionChange();
+      // Çıkıştan sonraki giriş, önceki kullanıcının (Geri ile dönülen) sayfasına değil İşlerim'e iner.
+      try { sessionStorage.setItem(AFTER_LOGOUT, '1'); } catch { /* yok */ }
+      session.tenant = null; setExpectedUser(null); setMe(null); window.history.replaceState(null, '', '/');
+      // Yönlendirici replaceState'i duymaz; popstate olmadan sonraki kullanıcı önceki kullanıcının son sayfasında açılır.
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+  }, []);
+  return <Ctx.Provider value={{ me, loading, authError, logoutError, notice, refresh, switchTenant, logout }}>{children}</Ctx.Provider>;
+}
+
+const AFTER_LOGOUT = 'sp.afterLogout';
+/**
+ * Sekmeler arası tek kanal nesnesi: gönderen nesne kendi mesajını almaz. Ayrı nesneyle gönderilseydi bu sekme de kendi
+ * giriş/çıkış bildirimini alıp kendini yeniden yüklerdi.
+ */
+const channel: BroadcastChannel | null = (() => { try { return new BroadcastChannel('sp-session'); } catch { return null; } })();
+/** Giriş veya çıkış oldu: aynı tarayıcıdaki öteki sekmeler kendini baştan kurar (ortak çerez). */
+export function announceSessionChange() {
+  try { channel?.postMessage('changed'); } catch { /* desteklenmiyor */ }
+}
+/** Girişten sonra dönülecek yol: bu sekmede az önce çıkış yapıldıysa İşlerim (önceki kullanıcının sayfası değil). */
+export function loginReturnPath(): string {
+  let after = false;
+  try { after = sessionStorage.getItem(AFTER_LOGOUT) === '1'; sessionStorage.removeItem(AFTER_LOGOUT); } catch { /* yok */ }
+  return after ? '/' : location.pathname + location.search;
 }
 
 export function useSession() {

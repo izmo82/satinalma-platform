@@ -1,18 +1,18 @@
 # Kurumsal kimlik sağlayıcısı (IdP) bağlantısı
 
-Uygulama standart OpenID Connect (yetkilendirme kodu + PKCE) kullanır; IdP'ye özel kod yoktur. Kullanıcı önce kurulum aracıyla **davet edilir**, IdP'den ilk girişte davet o IdP hesabına bir kez bağlanır. Rol ve şirket yetkileri uygulamada tutulur (IdP grupları henüz role eşlenmez).
+Uygulama standart OpenID Connect (yetkilendirme kodu + PKCE) kullanır; IdP'ye özel kod yoktur. Web girişi sunucu tarafındadır (BFF, `docs/decisions.md` D78): kodu API token'a çevirir, token'lar şifreli olarak sunucuda kalır, tarayıcıda yalnız HttpOnly oturum çerezi bulunur. Kullanıcı önce kurulum aracıyla **davet edilir**, IdP'den ilk girişte davet o IdP hesabına bir kez bağlanır. Rol ve şirket yetkileri uygulamada tutulur (IdP grupları henüz role eşlenmez).
 
 ## Ortak gereksinimler
 | Gereksinim | Değer |
 |---|---|
-| İstemci türü | Public client (istemci sırrı yok), PKCE S256 |
+| İstemci türü | Public client + PKCE S256 (önerilen), ya da gizli istemci: sır yalnız API'de `OIDC_CLIENT_SECRET` |
 | Yönlendirme adresi | `https://<alan>/auth/callback` |
 | Çıkış dönüş adresi | `https://<alan>/` |
 | Erişim token'ı | JWT, RS256/ES256, `aud` = API tanımlayıcısı (`OIDC_AUDIENCE`) |
 | Kalıcı kullanıcı anahtarı | Değişmeyen bir claim (`sub`, `oid` veya objectGUID); e-posta veya UPN anahtar olarak kullanılmaz |
 | E-posta | İlk girişte davetle eşleşmek için; doğrulanmış olmalı (aşağıya bakın) |
-| CORS | Token uç noktası tarayıcıdan çağrılır; IdP web kökenine izin vermeli |
-| CSP | Web'de `CSP_IDP_ORIGIN` = IdP kökeni (ör. `https://sso.kurum.com.tr`) |
+| Sunucudan erişim | API keşif belgesine, JWKS'e, token ve iptal uç noktalarına erişebilmeli (tarayıcı token uç noktasını çağırmaz; CORS gerekmez) |
+| Oturum sırrı | `SESSION_SECRET` (≥32 karakter, `openssl rand -hex 32`): sunucudaki token'ları şifreler; değişirse açık oturumlar biter |
 | Sertifika | IdP iç CA ile imzalıysa `components/internal-ca` (Kubernetes) veya `NODE_EXTRA_CA_CERTS` |
 
 **iOS istemcisi (ayrı public client):** PKCE S256 zorunlu; yönlendirme ve çıkış dönüş adresi `<paket kimliği>:/oauth/callback` (varsayılan `com.example.satinalma:/oauth/callback`, paket kimliği değişirse ikisi birlikte değişir); erişim token'ına web istemcisiyle aynı `aud` eklenir; yenileme belirteci verilir ve iptal uç noktası (`revocation_endpoint`, RFC 7009) public istemciye açıktır. Uygulama giriş için sistem tarayıcı oturumunu (`ASWebAuthenticationSession`, çerez tutmayan geçici oturum) kullanır; parola uygulamaya girilmez, MDM ile dağıtılan kurumsal SSO uzantısı bu oturumda da çalışır. Çıkışta yenileme belirteci IdP'de iptal edilir. Keycloak 26.8.1 ile simülatörde denendi (giriş, süresi dolan belirtecin sessiz yenilenmesi); ADFS ve Entra ID ile NOT_RUN.
@@ -24,7 +24,10 @@ Uygulama standart OpenID Connect (yetkilendirme kodu + PKCE) kullanır; IdP'ye �
 | `OIDC_DISCOVERY_URL` | `<issuer>/.well-known/openid-configuration` | API IdP'ye farklı (iç) adresten erişiyorsa |
 | `OIDC_JWKS_URL` | — | Keşif belgesindeki `jwks_uri` (iç adres olabilir) |
 | `OIDC_AUDIENCE` | — | Erişim token'ının `aud` değeri |
-| `OIDC_CLIENT_ID` | — | Web için açılan public client |
+| `OIDC_CLIENT_ID` | — | Web için açılan istemci |
+| `OIDC_CLIENT_SECRET` | boş | Web istemcisi gizli tanımlandıysa (yalnız API'de) |
+| `SESSION_SECRET` | — | Zorunlu (OIDC modu); sır yöneticisinden |
+| `SESSION_IDLE_MINUTES` / `SESSION_MAX_HOURS` | `30` / `12` | Kurum oturum politikası |
 | `OIDC_NATIVE_CLIENT_ID` | boş | iOS için açılan ayrı public client; boşsa uygulama "mobil giriş yapılandırılmadı" der |
 | `OIDC_SCOPE` | `openid profile email` | Entra ID'de API kapsamı eklenir |
 | `OIDC_RESOURCE` | boş | ADFS: Web API tanımlayıcısı; istekte `resource` parametresi olarak gider |
@@ -92,5 +95,5 @@ Durum: NOT_RUN.
 | Giriş sonrası 401 | `aud`/`iss` uyuşmuyor veya saat farkı | Token'ı çözüp `iss`, `aud` değerlerini `OIDC_TOKEN_ISSUER`, `OIDC_AUDIENCE` ile karşılaştırın |
 | 403 `not_invited` | Davet yok, e-posta doğrulanmamış veya alan adı listede değil | Kurulum aracıyla davet edin; `OIDC_EMAIL_CLAIM` ve `OIDC_TRUSTED_EMAIL_DOMAINS` değerlerini kontrol edin |
 | 503 `idp_unavailable` | API keşif belgesine ulaşamıyor | Giden ağ politikası, DNS, iç CA (`NODE_EXTRA_CA_CERTS`), vekil (`NODE_USE_ENV_PROXY=1`) |
-| Tarayıcıda "token vermedi" | CORS veya yönlendirme adresi | IdP'de web kökenine CORS izni; yönlendirme adresinin birebir eşleşmesi |
-| CSP hatası | `CSP_IDP_ORIGIN` yanlış | IdP kökeni (şema + host + port) |
+| Geri dönüşte "token vermedi" | Yönlendirme adresi, istemci türü veya API'nin token uç noktasına erişimi | Yönlendirme adresinin birebir eşleşmesi; gizli istemcide `OIDC_CLIENT_SECRET`; API'den token uç noktasına ağ erişimi (Keycloak iç ağda: `KC_HOSTNAME_BACKCHANNEL_DYNAMIC=true`) |
+| Geri dönüşte "Oturum isteği eşleşmedi" | Akış çerezi yok/süresi geçti (10 dk) veya farklı kökenden dönüldü | `WEB_ORIGIN` kullanıcıların açtığı adresle aynı olmalı; girişi yeniden başlatın |

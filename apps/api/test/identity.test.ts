@@ -50,6 +50,7 @@ beforeAll(async () => {
     devAuthSecret: null, dataRegion: 'TR',
     objectStore: { endpoint: TEST_S3_ENDPOINT, region: 'us-east-1', bucket: 'sp-documents-test', forcePathStyle: true },
     signedUrlTtlSeconds: 60, signatureDetectorProvider: null, esignValidatorProvider: null, webOrigin: 'http://localhost:5174',
+    session: { secret: 'test-oturum-anahtari-en-az-otuz-iki-karakter', cookieSecure: false, idleMinutes: 30, maxHours: 12 },
   };
   pool = createPool(TEST_APP_URL, 4);
   owner = new pg.Pool({ connectionString: TEST_OWNER_URL, max: 2 });

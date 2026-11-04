@@ -65,15 +65,31 @@ export class DevAuthProvider implements AuthProvider {
 export interface Membership { tenantId: string; tenantName: string; roles: string[]; companyIds: string[]; supplierId: string | null }
 export interface Identity { userId: string; email: string; displayName: string; memberships: Membership[] }
 
-export async function resolveIdentity(pool: pg.Pool, provider: AuthProvider, req: FastifyRequest): Promise<Identity> {
+/** Minimal oturum arayüzü (döngüsel import olmasın): çerez varsa doğrulanmış subject, yoksa null. */
+export interface SessionAuthenticator { authenticate(req: FastifyRequest): Promise<VerifiedToken | null> }
+
+/**
+ * İstek kimliği: `Authorization: Bearer` (iOS, servisler, testler) önce; yoksa web oturum çerezi (BFF). İkisi de yoksa 401.
+ */
+export async function resolveIdentity(pool: pg.Pool, provider: AuthProvider, req: FastifyRequest, sessions?: SessionAuthenticator): Promise<Identity> {
   const h = req.headers.authorization;
-  if (!h?.startsWith('Bearer ')) throw new ApiError(401, 'unauthenticated', 'Oturum gerekli.');
   let token: VerifiedToken;
-  try {
-    token = await provider.verify(h.slice(7));
-  } catch {
-    throw new ApiError(401, 'unauthenticated', 'Oturum geçersiz veya süresi dolmuş.');
+  if (h?.startsWith('Bearer ')) {
+    try {
+      token = await provider.verify(h.slice(7));
+    } catch {
+      throw new ApiError(401, 'unauthenticated', 'Oturum geçersiz veya süresi dolmuş.');
+    }
+  } else {
+    const fromCookie = sessions ? await sessions.authenticate(req) : null;
+    if (!fromCookie) throw new ApiError(401, 'unauthenticated', 'Oturum gerekli.');
+    token = fromCookie;
   }
+  return identityFor(pool, token);
+}
+
+/** Doğrulanmış subject → kullanıcı ve üyelikler. İlk kurumsal girişte davet (doğrulanmış e-postayla) burada bağlanır. */
+export async function identityFor(pool: pg.Pool, token: VerifiedToken): Promise<Identity> {
   return withoutTenant(pool, async (c) => {
     type U = { id: string; email: string; display_name: string };
     let user = (await c.query<U>('SELECT * FROM auth_user_by_subject($1)', [token.subject])).rows[0];
