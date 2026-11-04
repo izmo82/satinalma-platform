@@ -47,4 +47,19 @@ describe('bildirim ve kayıtlı görünüm', () => {
     expect((await h.call('finance', 'DELETE', `/api/v1/saved-views/${v.body.id}`)).status).toBe(404); // başkasının görünümü görünmez, silinemez
     expect((await h.call('buyer', 'GET', '/api/v1/saved-views?page=invoices')).body.items).toHaveLength(1);
   });
+
+  it('tedarikçi iç ekranların görünüm, kullanıcı ve tatil uçlarını kullanamaz; görünüm listenin okuma iznini ister', async () => {
+    for (const page of ['projects', 'invoices', 'purchase_orders', 'tasks', 'suppliers', 'contracts']) {
+      expect((await h.call('supplier1', 'GET', `/api/v1/saved-views?page=${page}`)).status).toBe(403);
+      expect((await h.call('supplier1', 'POST', '/api/v1/saved-views', { body: { page, name: 'Tedarikçi', params: {} } })).status).toBe(403);
+    }
+    const v = await h.call('buyer', 'POST', '/api/v1/saved-views', { body: { page: 'projects', name: `Tedarikçi denemesi ${randomUUID().slice(0, 6)}`, params: {} } });
+    expect((await h.call('supplier1', 'DELETE', `/api/v1/saved-views/${v.body.id}`)).status).toBe(403);
+    expect((await h.call('supplier1', 'GET', '/api/v1/members')).status).toBe(403);
+    expect((await h.call('supplier1', 'GET', '/api/v1/holidays')).status).toBe(403);
+    // Güvenlik rolü fatura okuyamaz: fatura listesinin görünümü de yok. İç kullanıcı için kullanıcı ve tatil uçları açık kalır.
+    expect((await h.call('security', 'GET', '/api/v1/saved-views?page=invoices')).status).toBe(403);
+    expect((await h.call('legal', 'GET', '/api/v1/members')).status).toBe(200);
+    expect((await h.call('legal', 'GET', '/api/v1/holidays')).status).toBe(200);
+  });
 });

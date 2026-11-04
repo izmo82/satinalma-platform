@@ -35,3 +35,35 @@ test('tarayıcıda token yok; çıkış + Geri sonrası başka kullanıcı İşl
   await expect(sidebarUser(other)).toContainText('Nur Aydın');
   await expect(sidebarUser(other)).not.toContainText('Alper Yıldız');
 });
+
+test('kiracı değişince kayıt detayından modül listesine dönülür; tedarikçi iç sayfa adresinde portala döner', async ({ page }) => {
+  await page.goto('/');
+  await login(page, 'ece.cokkiracili@example.test');
+  await expect(page.getByRole('heading', { name: 'İşlerim' })).toBeVisible();
+  await page.goto('/tedarikciler');
+  await page.getByRole('row').nth(1).getByRole('link').first().click();
+  await expect(page).toHaveURL(/\/tedarikciler\/[0-9a-f-]{36}$/);
+  const tenant = page.getByLabel('Aktif kiracı');
+  const before = await tenant.inputValue();
+  const other = await tenant.locator('option').evaluateAll((os, v) => (os as HTMLOptionElement[]).find((o) => o.value !== v)!.value, before);
+  await tenant.selectOption(other);
+  await expect(page).toHaveURL(/\/tedarikciler$/);
+  await expect(page.getByRole('heading', { name: 'Tedarikçiler' })).toBeVisible();
+  await expect(page.getByText('Kayıt bulunamadı')).toHaveCount(0);
+  await tenant.selectOption(before);
+  // Belge detayının kendi listesi yok: belge girişine dönülür ("Sayfa bulunamadı" değil).
+  await expect(page.getByRole('heading', { name: 'Tedarikçiler' })).toBeVisible();
+  await page.goto('/belgeler/00000000-0000-4000-8000-000000000000');
+  await tenant.selectOption(other);
+  await expect(page).toHaveURL(/\/belge-girisi$/);
+  await expect(page.getByText('Sayfa bulunamadı')).toHaveCount(0);
+  await tenant.selectOption(before);
+
+  await page.getByRole('button', { name: 'Çıkış' }).last().click();
+  await login(page, 'teklif.ege@example.test');
+  await expect(page.getByRole('heading', { name: 'Teklif davetleri' })).toBeVisible();
+  await page.goto('/faturalar');
+  await expect(page).toHaveURL(/\/portal$/);
+  await expect(page.getByRole('heading', { name: 'Teklif davetleri' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Faturalar' })).toHaveCount(0);
+});

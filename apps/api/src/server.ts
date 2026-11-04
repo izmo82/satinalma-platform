@@ -205,8 +205,12 @@ export async function buildApp(deps: AppDeps) {
     };
   });
 
-  app.get('/api/v1/members', async (req) => scoped(req, null, async (tx) =>
-    (await tx.query(`SELECT u.id, u.display_name AS "displayName" FROM users u JOIN memberships m ON m.user_id = u.id ORDER BY u.display_name`)).rows));
+  /** Tedarikçi portalı kullanıcısı iç ekranların yardımcı uçlarını (kullanıcı listesi, tatiller, görünümler) kullanamaz. */
+  const internalOnly = (ctx: TenantContext) => { if (ctx.supplierId) throw forbidden('internal'); };
+  app.get('/api/v1/members', async (req) => scoped(req, null, async (tx, ctx) => {
+    internalOnly(ctx);
+    return (await tx.query(`SELECT u.id, u.display_name AS "displayName" FROM users u JOIN memberships m ON m.user_id = u.id ORDER BY u.display_name`)).rows;
+  }));
 
   // --- İşlerim (UX01) -----------------------------------------------------------
   // --- Üst çubuk: arama, bildirim, kayıtlı görünümler (izin türe göre modül içinde) ---
@@ -215,12 +219,17 @@ export async function buildApp(deps: AppDeps) {
   app.get('/api/v1/notifications', { schema: { tags: ['search'] } }, async (req) => scoped(req, 'task.read', (tx, ctx) => search.notifications(tx, ctx)));
   app.post('/api/v1/notifications/seen', { schema: { tags: ['search'] } }, async (req) => scoped(req, 'task.read', (tx, ctx) => search.markSeen(tx, ctx)));
   const viewPage = { type: 'string', enum: ['projects', 'invoices', 'purchase_orders', 'tasks', 'suppliers', 'contracts'] } as const;
+  // Görünüm, ait olduğu listeyi okuma izni gerektirir: listeyi göremeyen (ör. tedarikçi) onun görünümünü de okuyamaz/kaydedemez.
+  const viewPerm = { projects: 'project.read', invoices: 'invoice.read', purchase_orders: 'po.read', tasks: 'task.read', suppliers: 'supplier.read', contracts: 'contract.read' } as const satisfies Record<(typeof viewPage.enum)[number], Permission>;
   app.get('/api/v1/saved-views', { schema: { tags: ['search'], querystring: { type: 'object', required: ['page'], properties: { page: viewPage } } } }, async (req) =>
-    scoped(req, null, async (tx) => ({ items: await search.listViews(tx, (req.query as any).page) })));
+    scoped(req, viewPerm[(req.query as { page: keyof typeof viewPerm }).page], async (tx) => ({ items: await search.listViews(tx, (req.query as any).page) })));
   app.post('/api/v1/saved-views', { schema: { tags: ['search'], body: { type: 'object', additionalProperties: false, required: ['page', 'name', 'params'],
     properties: { page: viewPage, name: text(60), params: { type: 'object' } } } } }, async (req, reply) =>
-    reply.status(201).send(await scoped(req, null, (tx, ctx) => search.saveView(tx, ctx, req.body as any))));
-  app.delete('/api/v1/saved-views/:id', { schema: { tags: ['search'], params: idParams } }, async (req) => scoped(req, null, (tx) => search.deleteView(tx, (req.params as any).id)));
+    reply.status(201).send(await scoped(req, viewPerm[(req.body as { page: keyof typeof viewPerm }).page], (tx, ctx) => search.saveView(tx, ctx, req.body as any))));
+  app.delete('/api/v1/saved-views/:id', { schema: { tags: ['search'], params: idParams } }, async (req) => scoped(req, null, (tx, ctx) => {
+    internalOnly(ctx);
+    return search.deleteView(tx, (req.params as any).id);
+  }));
 
   app.get('/api/v1/tasks', {
     schema: { tags: ['tasks'], querystring: { type: 'object', properties: { view: { type: 'string', enum: ['mine', 'overdue', 'all'] } } } },
@@ -659,8 +668,10 @@ export async function buildApp(deps: AppDeps) {
     reply.status(201).send(await scoped(req, 'contract.obligation.record', (tx, ctx) => lifecycle.recordObligation(tx, ctx, (req.params as any).id, req.body as any))));
   app.post('/api/v1/obligations/:id/retire', { schema: { tags: ['contracts'], params: idParams, body: { type: 'object', required: ['reason'], properties: { reason: { type: 'string', maxLength: 2000 } } } } }, async (req) =>
     scoped(req, 'contract.obligation.manage', (tx, ctx) => lifecycle.retireObligation(tx, ctx, (req.params as any).id, (req.body as any).reason)));
-  app.get('/api/v1/holidays', { schema: { tags: ['contracts'] } }, async (req) => scoped(req, null, async (tx) =>
-    ({ items: (await tx.query(`SELECT day::text, name FROM tenant_holidays ORDER BY day`)).rows })));
+  app.get('/api/v1/holidays', { schema: { tags: ['contracts'] } }, async (req) => scoped(req, null, async (tx, ctx) => {
+    internalOnly(ctx);
+    return { items: (await tx.query(`SELECT day::text, name FROM tenant_holidays ORDER BY day`)).rows };
+  }));
   app.post('/api/v1/holidays', { schema: { tags: ['contracts'], body: { type: 'object', required: ['day', 'name'], properties: { day: date, name: { type: 'string', minLength: 2, maxLength: 120 } } } } }, async (req, reply) =>
     reply.status(201).send(await scoped(req, 'holiday.manage', async (tx, ctx) => {
       const b = req.body as { day: string; name: string };

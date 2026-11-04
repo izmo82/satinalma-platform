@@ -1,4 +1,4 @@
-import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { lazy, Suspense, useEffect, useRef } from 'react';
 import { hasRole, useSession } from './lib/session.tsx';
 import { roleLabel } from './lib/labels.ts';
@@ -45,6 +45,9 @@ const DataGovernancePage = lazy(() => governance().then((m) => ({ default: m.Dat
 const DisposalBatchPage = lazy(() => governance().then((m) => ({ default: m.DisposalBatchPage })));
 const ErpReconciliationPage = lazy(() => governance().then((m) => ({ default: m.ErpReconciliationPage })));
 
+/** Adresin ilk bölümü kendi listesi olmayan detaylar: kiracı değişince dönülecek liste. */
+const LIST_OF: Record<string, string> = { belgeler: '/belge-girisi', degerlendirmeler: '/tedarikciler' };
+
 export function App() {
   const { me, loading } = useSession();
   if (isCallback()) return <OidcCallback />;
@@ -57,7 +60,16 @@ function Shell() {
   const { me, switchTenant, logout, logoutError } = useSession();
   const online = useOnline();
   const loc = useLocation();
+  const navigate = useNavigate();
   const mainRef = useRef<HTMLElement>(null);
+  // Kayıt kimlikleri kiracıya özeldir: detaydayken kiracı değişince aynı adres yeni kiracıda "bulunamadı" olur. Modülün
+  // listesine (adresin ilk bölümü) dönülür; liste sayfasında adres korunur.
+  // Yönlendirme önce yapılır: kiracı yüklenirken bu bileşen kalkar, sonradan çağrılan navigate işlemez.
+  const changeTenant = (id: string) => {
+    const section = loc.pathname.split('/')[1];
+    if (section && loc.pathname !== `/${section}`) navigate(LIST_OF[section] ?? `/${section}`, { replace: true });
+    return switchTenant(id);
+  };
   useEffect(() => { mainRef.current?.focus({ preventScroll: true }); }, [loc.pathname]);
   // Menüde her modülün bekleyen iş yükü; yalnız kullanıcının rolüne atanmış işler sayılır.
   const tasks = useResource<{ items: { entityType: string }[] }>(me?.activeTenantId && !me.supplierPortal ? `/api/v1/tasks?view=mine&t=${me.activeTenantId}` : null);
@@ -87,7 +99,7 @@ function Shell() {
         <div className="px-5 pt-5 pb-4 max-[900px]:flex max-[900px]:items-center max-[900px]:gap-3 max-[900px]:border-b max-[900px]:border-border max-[900px]:bg-rail max-[900px]:px-4 max-[900px]:py-2.5">
           <div className="text-md font-bold tracking-[-0.005em] max-[900px]:hidden">Satınalma ve Sözleşme</div>
           <label className="sr-only" htmlFor="tenant">Aktif kiracı</label>
-          <select id="tenant" value={me.activeTenantId ?? ''} onChange={(e) => void switchTenant(e.target.value)}
+          <select id="tenant" value={me.activeTenantId ?? ''} onChange={(e) => void changeTenant(e.target.value)}
             className="sp-select mt-3 w-full min-w-0 rounded-md border border-input px-2.5 py-1.5 font-semibold text-ink max-[900px]:mt-0 max-[900px]:flex-1">
             {me.memberships.map((m) => <option key={m.tenantId} value={m.tenantId}>{m.tenantName}</option>)}
           </select>
@@ -125,12 +137,17 @@ function Shell() {
           <button type="button" className="underline" onClick={logout}>Tekrar dene</button></div>}
         {!online && <div className="bg-ink px-4 py-1.5 text-center text-sm text-primary-foreground" role="status"><Icon name="wifiOff" size={14} className="mr-1.5 inline" />Çevrimdışısınız. Görüntülenen veri güncel olmayabilir; kaydetme ve onay işlemleri bağlantı gelince yapılabilir.</div>}
         <Suspense fallback={<Loading label="Sayfa yükleniyor" />}>
-        <Routes>
-          <Route path="/" element={<Navigate to={me.supplierPortal ? '/portal' : '/islerim'} replace />} />
+        {/* Tedarikçi yalnız portal yollarını, iç kullanıcı yalnız iç yolları açar; öteki taraftaki adres kendi ana sayfasına döner
+            (iç sayfanın iskeleti tedarikçiye hiç çizilmez). */}
+        {me.supplierPortal ? <Routes>
           <Route path="/portal" element={<PortalHome />} />
           <Route path="/portal/anketler" element={<PortalAssessments />} />
           <Route path="/portal/anketler/:id" element={<PortalAssessment />} />
           <Route path="/portal/:id" element={<PortalRound />} />
+          <Route path="*" element={<Navigate to="/portal" replace />} />
+        </Routes> : <Routes>
+          <Route path="/" element={<Navigate to="/islerim" replace />} />
+          <Route path="/portal/*" element={<Navigate to="/islerim" replace />} />
           <Route path="/projeler" element={<ProjectsPage />} />
           <Route path="/projeler/yeni" element={<ProjectWizard />} />
           <Route path="/projeler/:id" element={<ProjectWorkspace />} />
@@ -159,7 +176,7 @@ function Shell() {
           <Route path="/veri-yonetimi" element={<DataGovernancePage />} />
           <Route path="/veri-yonetimi/imha/:id" element={<DisposalBatchPage />} />
           <Route path="*" element={<NotYetPage title="Sayfa bulunamadı" />} />
-        </Routes>
+        </Routes>}
         </Suspense>
       </main>
     </div>
