@@ -62,12 +62,12 @@ export async function buildApp(deps: AppDeps) {
     },
   });
   await app.register(cors, {
-    origin: [deps.config.webOrigin], credentials: false,
+    origin: [deps.config.webOrigin, ...(deps.config.extraWebOrigins ?? [])], credentials: false,
     exposedHeaders: ['ETag', 'X-Correlation-Id', 'Retry-After', 'X-SP-User'], allowedHeaders: ['Authorization', 'Content-Type', 'If-Match', 'X-Tenant-Id', 'X-Correlation-Id', 'X-SP-CSRF', 'X-SP-Expect-User'],
   });
   await app.register(multipart, { limits: { fileSize: MAX_UPLOAD_BYTES, files: 1, fields: 10 } });
 
-  const sessions = new WebSessions(deps.pool, deps.config.session ?? DEFAULT_SESSION, deps.config.webOrigin, deps.config.oidc, deps.auth);
+  const sessions = new WebSessions(deps.pool, deps.config.session ?? DEFAULT_SESSION, deps.config.webOrigin, deps.config.oidc, deps.auth, deps.config.extraWebOrigins);
   const limiter = deps.config.rateLimit?.enabled ? new RateLimiter(deps.config.rateLimit) : null;
   app.setErrorHandler((err: any, req, reply) => {
     if (err instanceof ApiError) {

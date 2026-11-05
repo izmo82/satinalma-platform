@@ -43,7 +43,7 @@ export async function makeHarness(overrides: Partial<Config> = {}) {
     env: 'test', port: 0, databaseUrl: TEST_APP_URL, databaseOwnerUrl: TEST_OWNER_URL, authMode: 'dev', oidc: null,
     devAuthSecret: secret, dataRegion: 'TR',
     objectStore: { endpoint: TEST_S3_ENDPOINT, region: 'us-east-1', bucket: 'sp-documents-test', forcePathStyle: true },
-    signedUrlTtlSeconds: 60, signatureDetectorProvider: null, esignValidatorProvider: null, erpAdapter: 'test-erp', webOrigin: 'http://localhost:5174',
+    signedUrlTtlSeconds: 60, signatureDetectorProvider: null, esignValidatorProvider: null, erpAdapter: 'test-erp', webOrigin: 'http://localhost:5174', extraWebOrigins: ['http://10.0.0.5:5174'],
     ...overrides,
   };
   process.env.AWS_ACCESS_KEY_ID ??= 'test';

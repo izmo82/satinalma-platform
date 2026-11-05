@@ -18,6 +18,8 @@ export interface Config {
   /** Yapılandırılmış ERP bağdaştırıcısı adı; yoksa ERP aktarımı NOT_CONFIGURED kalır. */
   erpAdapter?: string | null;
   webOrigin: string;
+  /** Aynı web'e başka adresten (ör. yerel ağ IP'si) erişim: CSRF köken kontrolü ve CORS bunları da kabul eder. Yönlendirmeler `webOrigin`'i kullanır. */
+  extraWebOrigins?: string[];
   /**
    * Güvenilen vekillerin adres/CIDR listesi (web nginx, ingress). `X-Forwarded-For` yalnız bunlardan gelirse okunur;
    * aksi halde istemci adresini sahteleyip sınırı aşabilir. Fastify atlama sayısıyla güveni kapalı tutar; liste şarttır.
@@ -109,6 +111,7 @@ export function loadConfig(): Config {
     esignValidatorProvider: process.env.ESIGN_VALIDATOR_PROVIDER || null,
     erpAdapter: process.env.ERP_ADAPTER || null,
     webOrigin: process.env.WEB_ORIGIN ?? 'http://localhost:5174',
+    extraWebOrigins: (process.env.WEB_EXTRA_ORIGINS ?? '').split(',').map((o) => o.trim()).filter(Boolean),
     trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
     reportCacheSeconds: Number(process.env.REPORT_CACHE_SECONDS ?? 120),
     session: {

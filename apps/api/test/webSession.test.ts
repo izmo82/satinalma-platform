@@ -54,6 +54,8 @@ describe('dev oturumu (çerezli)', () => {
     expect((await h.app.inject({ method: 'POST', url: '/api/v1/saved-views', headers: { cookie }, payload: body })).json().error.code).toBe('csrf');
     expect((await h.app.inject({ method: 'POST', url: '/api/v1/saved-views', headers: { cookie, 'x-sp-csrf': '1', origin: 'https://saldirgan.example' }, payload: body })).statusCode).toBe(403);
     expect((await h.app.inject({ method: 'POST', url: '/api/v1/saved-views', headers: { cookie, ...csrf }, payload: body })).statusCode).toBe(201);
+    // Yerel ağ adresi (WEB_EXTRA_ORIGINS) da aynı web sayılır.
+    expect((await h.app.inject({ method: 'POST', url: '/api/v1/saved-views', headers: { cookie, 'x-sp-csrf': '1', origin: 'http://10.0.0.5:5174' }, payload: { ...body, name: `${body.name} ağ` } })).statusCode).toBe(201);
     expect((await h.app.inject({ method: 'GET', url: '/api/v1/saved-views?page=invoices', headers: { cookie } })).statusCode).toBe(200);
     expect((await h.call('buyer', 'GET', '/api/v1/me')).status).toBe(200);
     // Dev oturumu da CSRF başlığı ister (başka siteden form gönderimiyle oturum açtırılamaz).

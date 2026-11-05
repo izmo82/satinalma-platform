@@ -50,7 +50,8 @@ export class WebSessions {
   readonly cookieName: string;
   readonly flowCookieName: string;
 
-  constructor(private pool: pg.Pool, private cfg: SessionConfig, private webOrigin: string, private oidc: OidcConfig | null, private auth: AuthProvider) {
+  constructor(private pool: pg.Pool, private cfg: SessionConfig, private webOrigin: string, private oidc: OidcConfig | null, private auth: AuthProvider,
+    private extraOrigins: string[] = []) {
     if (oidc && (!cfg.secret || cfg.secret.length < 32)) throw new Error('SESSION_SECRET (en az 32 karakter) OIDC modunda zorunlu');
     const ikm = cfg.secret ? Buffer.from(cfg.secret) : randomBytes(32);
     this.key = Buffer.from(hkdfSync('sha256', ikm, Buffer.alloc(0), 'sp-web-session-v1', 32));
@@ -159,7 +160,7 @@ export class WebSessions {
 
   private assertCsrf(req: FastifyRequest) {
     const origin = req.headers.origin;
-    if (req.headers['x-sp-csrf'] !== '1' || (typeof origin === 'string' && origin !== this.webOrigin)) {
+    if (req.headers['x-sp-csrf'] !== '1' || (typeof origin === 'string' && origin !== this.webOrigin && !this.extraOrigins.includes(origin))) {
       throw new ApiError(403, 'csrf', 'İstek doğrulanamadı (kaynak eşleşmedi). Sayfayı yenileyip tekrar deneyin.');
     }
   }
