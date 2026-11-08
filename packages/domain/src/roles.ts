@@ -84,6 +84,11 @@ export const PERMISSIONS = {
   // ERP mutabakatı ve yetkili tekrar gönderim.
   'integration.reconcile': ['FINANCE', 'AUDITOR'],
   'integration.replay': ['FINANCE'],
+  // Lira Defteri (D80): bulgular kuralla hesaplanır; talep ve kapatma satınalma/finans, tahsil kaydı yalnız finans.
+  'recovery.read': ['BUYER', 'PROCUREMENT_MANAGER', 'FINANCE', 'LEGAL', 'AUDITOR'],
+  'recovery.manage': ['BUYER', 'PROCUREMENT_MANAGER', 'FINANCE'],
+  'recovery.settle': ['FINANCE'],
+  'recovery.settings': ['FINANCE'],
   'task.read': ROLES.filter((r) => r !== 'SUPPLIER' && r !== 'PLATFORM_OPS'),
 } as const satisfies Record<string, readonly Role[]>;
 

@@ -16,15 +16,16 @@ interface TermsRow {
   id: string; contract_version_id: string; company_id: string; revision: number; currency: string; value_type: CommercialTerms['valueType'];
   amount: string | null; payment_terms: string; start_date: string | null; end_date: string | null; auto_renewal: boolean; renewal_months: number | null;
   notice_amount: number | null; notice_unit: NoticeUnit | null; non_working_day_rule: NonWorkingDayRule; source_ref: string; change_reason: string | null; limit_basis: 'NET' | 'GROSS';
+  payment_days: number | null; fx_difference: 'ALLOWED' | 'NOT_ALLOWED' | null;
   entered_by: string; entered_at: Date; verified_by: string | null; verified_at: Date | null; entered_by_name?: string; verified_by_name?: string | null;
 }
 const TERMS_COLS = `t.id, t.contract_version_id, t.company_id, t.revision, t.currency, t.value_type, t.amount::text, t.payment_terms,
   t.start_date::text, t.end_date::text, t.auto_renewal, t.renewal_months, t.notice_amount, t.notice_unit, t.non_working_day_rule, t.source_ref,
-  t.change_reason, t.limit_basis, t.entered_by, t.entered_at, t.verified_by, t.verified_at`;
+  t.change_reason, t.limit_basis, t.payment_days, t.fx_difference, t.entered_by, t.entered_at, t.verified_by, t.verified_at`;
 const toTerms = (r: TermsRow): CommercialTerms => ({
   currency: r.currency, valueType: r.value_type, amount: r.amount, paymentTerms: r.payment_terms, startDate: r.start_date, endDate: r.end_date,
   autoRenewal: r.auto_renewal, renewalMonths: r.renewal_months, noticeAmount: r.notice_amount, noticeUnit: r.notice_unit,
-  nonWorkingDay: r.non_working_day_rule, sourceRef: r.source_ref, limitBasis: r.limit_basis,
+  nonWorkingDay: r.non_working_day_rule, sourceRef: r.source_ref, limitBasis: r.limit_basis, paymentDays: r.payment_days, fxDifference: r.fx_difference,
 });
 // Takvim günü İstanbul saatine göre (gece yarısı ile 03:00 arasında UTC farklı güne düşer).
 const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' }).format(new Date());
@@ -60,7 +61,9 @@ export async function saveTerms(tx: Tx, ctx: TenantContext, cvId: string, body: 
   if (cv.superseded_by_id) throw conflict('version_superseded', 'Bu sürümün yerine yeni sürüm geldi; koşullar güncel sürüme girilir.');
   const prev = await latestTerms(tx, cvId);
   // Gönderilmezse önceki revizyonun yöntemi korunur (alan unutulunca vergi dahil limit sessizce net'e dönmesin).
-  body = { ...body, limitBasis: body.limitBasis ?? prev?.limit_basis ?? 'NET' };
+  body = { ...body, limitBasis: body.limitBasis ?? prev?.limit_basis ?? 'NET',
+    paymentDays: body.paymentDays === undefined ? prev?.payment_days ?? null : body.paymentDays,
+    fxDifference: body.fxDifference === undefined ? prev?.fx_difference ?? null : body.fxDifference };
   const err = validateTerms(body);
   if (err) throw unprocessable('invalid_terms', err);
   if (body.limitBasis === 'GROSS' && body.valueType === 'CEILING') await assertRatedOpenLines(tx, cvId);
@@ -69,10 +72,11 @@ export async function saveTerms(tx: Tx, ctx: TenantContext, cvId: string, body: 
   if (decided) throw conflict('renewal_decided', 'Bu koşullar için yenileme/fesih kararı verildi; değişiklik zeyilname (yeni sürüm) ile yapılır.');
   const revision = (prev?.revision ?? 0) + 1;
   const r = (await tx.query<{ id: string }>(`INSERT INTO contract_terms (tenant_id, company_id, contract_version_id, revision, currency, value_type, amount,
-      payment_terms, start_date, end_date, auto_renewal, renewal_months, notice_amount, notice_unit, non_working_day_rule, source_ref, change_reason, entered_by, limit_basis)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING id`,
+      payment_terms, start_date, end_date, auto_renewal, renewal_months, notice_amount, notice_unit, non_working_day_rule, source_ref, change_reason, entered_by, limit_basis, payment_days, fx_difference)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING id`,
     [ctx.tenantId, cv.company_id, cvId, revision, body.currency, body.valueType, body.amount, body.paymentTerms, body.startDate, body.endDate,
-      body.autoRenewal, body.renewalMonths, body.noticeAmount, body.noticeUnit, body.nonWorkingDay, body.sourceRef.trim(), body.changeReason?.trim() || null, ctx.userId, body.limitBasis])).rows[0]!;
+      body.autoRenewal, body.renewalMonths, body.noticeAmount, body.noticeUnit, body.nonWorkingDay, body.sourceRef.trim(), body.changeReason?.trim() || null, ctx.userId, body.limitBasis,
+      body.paymentDays ?? null, body.fxDifference ?? null])).rows[0]!;
   const diff = termsDiff(prev ? toTerms(prev) : null, body);
   // Önceki revizyonun bekleyen uyarıları geçersiz: yeni revizyon doğrulanınca yeniden planlanır.
   await closeTasks(tx, `notice:${cv.family_id}:`);

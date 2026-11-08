@@ -44,6 +44,9 @@ const governance = () => import('./pages/GovernancePages.tsx');
 const DataGovernancePage = lazy(() => governance().then((m) => ({ default: m.DataGovernancePage })));
 const DisposalBatchPage = lazy(() => governance().then((m) => ({ default: m.DisposalBatchPage })));
 const ErpReconciliationPage = lazy(() => governance().then((m) => ({ default: m.ErpReconciliationPage })));
+const ledger = () => import('./pages/LedgerPages.tsx');
+const LedgerPage = lazy(() => ledger().then((m) => ({ default: m.LedgerPage })));
+const RecoveryCasePage = lazy(() => ledger().then((m) => ({ default: m.RecoveryCasePage })));
 
 /** Adresin ilk bölümü kendi listesi olmayan detaylar: kiracı değişince dönülecek liste. */
 const LIST_OF: Record<string, string> = { belgeler: '/belge-girisi', degerlendirmeler: '/tedarikciler' };
@@ -80,6 +83,7 @@ function Shell() {
     { to: '/portal/anketler', label: 'Anketler', icon: 'shield' },
   ] : [
     { to: '/islerim', label: 'İşlerim', icon: 'inbox', count: load(null) },
+    ...(hasRole(me, 'BUYER', 'PROCUREMENT_MANAGER', 'FINANCE', 'LEGAL', 'AUDITOR') ? [{ to: '/lira-defteri', label: 'Lira Defteri', icon: 'wallet', count: load(['recovery_case']) }] : []),
     { to: '/projeler', label: 'Projeler', icon: 'folder', count: load(['project']) },
     { to: '/tedarikciler', label: 'Tedarikçiler', icon: 'users', count: load(['supplier']) },
     { to: '/sozlesmeler', label: 'Sözleşmeler', icon: 'file', count: load(['contract_version']) },
@@ -167,6 +171,8 @@ function Shell() {
           <Route path="/faturalar/erp-mutabakati" element={<ErpReconciliationPage />} />
           <Route path="/faturalar/:id" element={<InvoicePage />} />
           <Route path="/raporlar" element={<ReportsPage />} />
+          <Route path="/lira-defteri" element={<LedgerPage />} />
+          <Route path="/lira-defteri/:id" element={<RecoveryCasePage />} />
           <Route path="/olaylar" element={<IncidentsPage />} />
           <Route path="/olaylar/:id" element={<IncidentPage />} />
           <Route path="/degerlendirmeler/:id" element={<AssessmentPage />} />

@@ -666,7 +666,8 @@ export async function ingestErpEvents(tx: Tx, ctx: TenantContext, events: { even
       out.push({ eventId: e.eventId, result: 'duplicate' });
       continue;
     }
-    if (e.status === 'PAID') await tx.query(`UPDATE invoices SET payment_status = 'PAID' WHERE id = $1`, [e.invoiceId]);
+    // Ödeme tarihi İstanbul takvim günü (Lira Defteri erken ödeme kuralı vadeyle bunu karşılaştırır).
+    if (e.status === 'PAID') await tx.query(`UPDATE invoices SET payment_status = 'PAID', paid_at = ($2::timestamptz AT TIME ZONE 'Europe/Istanbul')::date WHERE id = $1`, [e.invoiceId, e.at]);
     await audit(tx, ctx, 'invoice.erp_status', 'invoice', e.invoiceId, { eventId: e.eventId, status: e.status, at: e.at });
     out.push({ eventId: e.eventId, result: 'applied' });
   }

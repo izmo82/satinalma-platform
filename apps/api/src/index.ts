@@ -8,7 +8,8 @@ const config = loadConfig();
 const pool = createPool(config.databaseUrl);
 const auth = config.authMode === 'oidc' ? new OidcAuthProvider(config.oidc!) : new DevAuthProvider(config.devAuthSecret!);
 const app = await buildApp({ config, pool, auth, store: new S3ObjectStore(config.objectStore) });
-await app.listen({ port: config.port, host: '0.0.0.0' });
+// Konteynerde tüm arayüzler (varsayılan); yerel geliştirmede API_HOST=127.0.0.1 ile yalnız bu makine.
+await app.listen({ port: config.port, host: process.env.API_HOST || '0.0.0.0' });
 
 for (const sig of ['SIGTERM', 'SIGINT'] as const) {
   process.on(sig, async () => {

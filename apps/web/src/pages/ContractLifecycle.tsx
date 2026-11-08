@@ -36,7 +36,7 @@ type Terms = {
   id: string; revision: number; currency: string; valueType: 'FIXED' | 'CEILING' | 'UNPRICED'; amount: string | null; paymentTerms: string;
   startDate: string | null; endDate: string | null; autoRenewal: boolean; renewalMonths: number | null; noticeAmount: number | null; noticeUnit: 'DAY' | 'MONTH' | null;
   nonWorkingDay: 'PREVIOUS_WORKING_DAY' | 'AS_IS'; sourceRef: string; changeReason: string | null; enteredBy: string; enteredAt: string; enteredByMe: boolean;
-  limitBasis: 'NET' | 'GROSS';
+  limitBasis: 'NET' | 'GROSS'; paymentDays: number | null; fxDifference: 'ALLOWED' | 'NOT_ALLOWED' | null;
   verifiedBy: string | null; verifiedAt: string | null;
 };
 interface Lc {
@@ -107,7 +107,8 @@ function TermsTab({ d, reload }: { d: Lc; reload: () => Promise<void> }) {
               <dl className="facts">
                 <dt>{VALUE_TYPE[t.valueType]}</dt><dd className="tabular font-semibold">{t.amount ? fmtMoney(t.amount, t.currency) : '—'}
                   {t.valueType === 'CEILING' && <span className="ml-2 text-sm font-normal text-ink-subtle">{t.limitBasis === 'GROSS' ? 'vergi dahil' : 'vergi hariç'}</span>}</dd>
-                <dt>Ödeme koşulu</dt><dd>{t.paymentTerms || '—'}</dd>
+                <dt>Ödeme koşulu</dt><dd>{t.paymentTerms || '—'}{t.paymentDays !== null && <span className="tabular ml-2 text-sm text-ink-subtle">vade {t.paymentDays} gün</span>}</dd>
+                <dt>Kur farkı</dt><dd>{t.fxDifference === 'ALLOWED' ? 'Uygulanabilir (fatura ve ödeme günü kuru farkı)' : t.fxDifference === 'NOT_ALLOWED' ? 'Uygulanmaz' : 'Girilmedi'}</dd>
                 <dt>Süre</dt><dd className="tabular">{t.startDate ? fmtDate(t.startDate) : '—'} – {t.endDate ? fmtDate(t.endDate) : 'Süresiz'}</dd>
                 <dt>Yenileme</dt><dd>{t.autoRenewal ? `Otomatik, ${t.renewalMonths} ay` : 'Otomatik değil'}</dd>
                 <dt>İhbar</dt><dd>{t.noticeAmount !== null ? `Bitişten ${t.noticeAmount} ${t.noticeUnit === 'DAY' ? 'gün' : 'ay'} önce · ${t.nonWorkingDay === 'PREVIOUS_WORKING_DAY' ? 'tatil/hafta sonunda önceki iş günü' : 'tatil kuralı yok'}` : 'Tanımlı değil'}</dd>
@@ -187,6 +188,7 @@ function TermsForm({ initial, onSave, onCancel, busy }: { initial: Terms | null;
     startDate: initial?.startDate ?? '', endDate: initial?.endDate ?? '', autoRenewal: initial?.autoRenewal ?? false, renewalMonths: String(initial?.renewalMonths ?? ''),
     hasNotice: initial ? initial.noticeAmount !== null : true, noticeAmount: String(initial?.noticeAmount ?? '60'), noticeUnit: initial?.noticeUnit ?? 'DAY',
     nonWorkingDay: initial?.nonWorkingDay ?? 'PREVIOUS_WORKING_DAY', sourceRef: initial?.sourceRef ?? '', changeReason: '', limitBasis: initial?.limitBasis ?? 'NET',
+    paymentDays: initial?.paymentDays != null ? String(initial.paymentDays) : '', fxDifference: initial?.fxDifference ?? '',
   });
   const set = (k: keyof typeof f, v: string | boolean) => setF((x) => ({ ...x, [k]: v }));
   useEffect(() => { if (f.valueType === 'UNPRICED') set('amount', ''); }, [f.valueType]);
@@ -195,6 +197,7 @@ function TermsForm({ initial, onSave, onCancel, busy }: { initial: Terms | null;
       currency: f.currency, valueType: f.valueType, amount: f.valueType === 'UNPRICED' ? null : f.amount.replace(',', '.'), paymentTerms: f.paymentTerms,
       startDate: f.startDate || null, endDate: f.endDate || null, autoRenewal: f.autoRenewal, renewalMonths: f.autoRenewal ? Number(f.renewalMonths) || null : null,
       noticeAmount: f.hasNotice ? Number(f.noticeAmount) : null, noticeUnit: f.hasNotice ? f.noticeUnit : null, nonWorkingDay: f.nonWorkingDay, sourceRef: f.sourceRef, limitBasis: f.limitBasis,
+      paymentDays: f.paymentDays.trim() === '' ? null : Number(f.paymentDays), fxDifference: (f.fxDifference || null) as Terms['fxDifference'],
       changeReason: initial ? f.changeReason : null }); }}>
       <div className="panel-head"><h2>{initial ? `Yeni revizyon (şu an ${initial.revision})` : 'Koşulları gir'}</h2></div>
       <div className="panel-body grid grid-cols-2 gap-x-4 max-[640px]:grid-cols-1">
@@ -209,6 +212,9 @@ function TermsForm({ initial, onSave, onCancel, busy }: { initial: Terms | null;
         <Field label="Başlangıç">{(p) => <input className="input" type="date" {...p} value={f.startDate} onChange={(e) => set('startDate', e.target.value)} />}</Field>
         <Field label="Bitiş" hint="Boş bırakılırsa süresiz.">{(p) => <input className="input" type="date" {...p} value={f.endDate} onChange={(e) => set('endDate', e.target.value)} />}</Field>
         <div className="col-span-full"><Field label="Ödeme koşulu">{(p) => <input className="input" {...p} value={f.paymentTerms} onChange={(e) => set('paymentTerms', e.target.value)} />}</Field></div>
+        <Field label="Vade (gün)" hint="Fatura tarihinden itibaren. Lira Defteri vadeden önce ödemeyi bununla bulur.">{(p) => <input className="input tabular text-right" inputMode="numeric" pattern="\d{1,3}" {...p} value={f.paymentDays} onChange={(e) => set('paymentDays', e.target.value)} />}</Field>
+        <Field label="Kur farkı" hint="Sözleşmede kur farkı hükmü. Girilmezse kur farkı faturaları incelemeye düşer.">{(p) => <select className="input" {...p} value={f.fxDifference} onChange={(e) => set('fxDifference', e.target.value)}>
+          <option value="">Girilmedi</option><option value="ALLOWED">Uygulanabilir</option><option value="NOT_ALLOWED">Uygulanmaz</option></select>}</Field>
         <label className="mb-4 flex items-center gap-2"><input type="checkbox" className="accent-[var(--ink)]" checked={f.autoRenewal} onChange={(e) => set('autoRenewal', e.target.checked)} />Otomatik yenilenir</label>
         {f.autoRenewal ? <Field label="Yenileme süresi (ay)">{(p) => <input className="input tabular text-right" inputMode="numeric" {...p} value={f.renewalMonths} onChange={(e) => set('renewalMonths', e.target.value)} />}</Field> : <span />}
         <label className="mb-4 flex items-center gap-2"><input type="checkbox" className="accent-[var(--ink)]" checked={f.hasNotice} onChange={(e) => set('hasNotice', e.target.checked)} />İhbar şartı var</label>

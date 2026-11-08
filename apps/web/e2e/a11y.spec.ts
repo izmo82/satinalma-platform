@@ -111,3 +111,20 @@ test('Faz 5: tedarikçi anket listesi/yanıt ekranı ve performans ağırlıklar
   await page.getByRole('button', { name: 'Kategori kuralı ekle' }).click();
   await audit(page, 'Performans ağırlıkları');
 });
+
+test('Lira Defteri: özet, bulgular, kanıtsız harcama, ayarlar ve vaka ayrıntısı (D80)', async ({ page }) => {
+  await login(page, 'ferda.finans@example.test');
+  await nav(page, 'Lira Defteri');
+  await expect(page.getByRole('heading', { name: 'Lira Defteri' })).toBeVisible();
+  await page.waitForLoadState('networkidle');
+  await audit(page, 'Lira Defteri');
+  for (const tab of ['Kanıtsız harcama', 'Kur ve ayarlar']) {
+    await page.getByRole('tab', { name: tab }).click();
+    await page.waitForLoadState('networkidle');
+    await audit(page, `Lira Defteri · ${tab}`);
+  }
+  await page.getByRole('tab', { name: 'Geri alınacak para' }).click();
+  await page.getByRole('table').getByRole('link').first().click();
+  await expect(page.getByRole('heading', { level: 1 })).toContainText('GRK-');
+  await audit(page, 'Geri kazanım vakası');
+});

@@ -97,6 +97,10 @@ export interface CommercialTerms {
   noticeAmount: number | null; noticeUnit: NoticeUnit | null; nonWorkingDay: NonWorkingDayRule; sourceRef: string;
   /** Tavanın vergi yöntemi: NET (vergi hariç, varsayılan) veya GROSS (KDV ve KDV dışı vergiler dahil). */
   limitBasis?: 'NET' | 'GROSS';
+  /** Vade (fatura tarihinden itibaren gün). Boş = sözleşmede yapılandırılmış vade girilmemiş. */
+  paymentDays?: number | null;
+  /** Kur farkı hükmü. Boş = girilmemiş (Lira Defteri bu faturaları "incelenmeli" sayar). */
+  fxDifference?: 'ALLOWED' | 'NOT_ALLOWED' | null;
 }
 
 export function validateTerms(t: CommercialTerms): string | null {
@@ -109,6 +113,8 @@ export function validateTerms(t: CommercialTerms): string | null {
   if ((t.noticeAmount === null) !== (t.noticeUnit === null)) return 'İhbar süresi ve birimi birlikte girilir.';
   if (t.noticeAmount !== null && !t.endDate) return 'Süresiz sözleşmede ihbar son günü bitişe göre hesaplanamaz; fesih bildirimi ayrı kuralla izlenir.';
   if (t.autoRenewal && !t.renewalMonths) return 'Otomatik yenilemede yenileme süresi gerekli.';
+  if (t.paymentDays != null && (!Number.isInteger(t.paymentDays) || t.paymentDays < 0 || t.paymentDays > 365)) return 'Vade 0–365 gün arasında tam sayı olmalı.';
+  if (t.fxDifference != null && t.fxDifference !== 'ALLOWED' && t.fxDifference !== 'NOT_ALLOWED') return 'Kur farkı hükmü izin var veya izin yok olmalı.';
   if (t.sourceRef.trim().length < 3) return 'Tarihlerin ve bedelin dayandığı madde/sayfa gerekli (ör. Madde 4.2, s. 3).';
   return null;
 }
@@ -117,6 +123,7 @@ const FIELD_LABEL: Record<keyof CommercialTerms, string> = {
   currency: 'Para birimi', valueType: 'Bedel türü', amount: 'Bedel/tavan', paymentTerms: 'Ödeme koşulu', startDate: 'Başlangıç', endDate: 'Bitiş',
   autoRenewal: 'Otomatik yenileme', renewalMonths: 'Yenileme süresi', noticeAmount: 'İhbar süresi', noticeUnit: 'İhbar birimi',
   nonWorkingDay: 'Tatil kuralı', sourceRef: 'Kaynak madde', limitBasis: 'Limit yöntemi',
+  paymentDays: 'Vade (gün)', fxDifference: 'Kur farkı',
 };
 /** Önemli değişiklik farkı: onay ekranı eski ve yeni değeri birlikte gösterir (02 §11). */
 export function termsDiff(prev: CommercialTerms | null, next: CommercialTerms) {

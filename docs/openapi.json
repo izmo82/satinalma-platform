@@ -3116,6 +3116,21 @@
                     "type": "string",
                     "maxLength": 2000,
                     "nullable": true
+                  },
+                  "paymentDays": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 365,
+                    "nullable": true
+                  },
+                  "fxDifference": {
+                    "type": "string",
+                    "enum": [
+                      "ALLOWED",
+                      "NOT_ALLOWED",
+                      null
+                    ],
+                    "nullable": true
                   }
                 }
               }
@@ -6322,6 +6337,367 @@
             "required": false
           }
         ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/ledger": {
+      "get": {
+        "tags": [
+          "recovery"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "date"
+            },
+            "in": "query",
+            "name": "from",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "date"
+            },
+            "in": "query",
+            "name": "to",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/recovery/scan": {
+      "post": {
+        "tags": [
+          "recovery"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/recovery/cases": {
+      "get": {
+        "tags": [
+          "recovery"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/recovery/cases/{id}": {
+      "get": {
+        "tags": [
+          "recovery"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/recovery/cases/{id}/confirm": {
+      "post": {
+        "tags": [
+          "recovery"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/recovery/cases/{id}/claim": {
+      "post": {
+        "tags": [
+          "recovery"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "note"
+                ],
+                "properties": {
+                  "note": {
+                    "type": "string",
+                    "minLength": 5,
+                    "maxLength": 2000
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/recovery/cases/{id}/recover": {
+      "post": {
+        "tags": [
+          "recovery"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "amount",
+                  "note"
+                ],
+                "properties": {
+                  "amount": {
+                    "type": "string",
+                    "pattern": "^\\d{1,18}(\\.\\d{1,2})?$"
+                  },
+                  "note": {
+                    "type": "string",
+                    "minLength": 5,
+                    "maxLength": 2000
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/recovery/cases/{id}/dismiss": {
+      "post": {
+        "tags": [
+          "recovery"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "reason"
+                ],
+                "properties": {
+                  "reason": {
+                    "type": "string",
+                    "minLength": 10,
+                    "maxLength": 2000
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/fx-rates": {
+      "get": {
+        "tags": [
+          "recovery"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "recovery"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "currency",
+                  "rateDate",
+                  "rate",
+                  "source"
+                ],
+                "properties": {
+                  "currency": {
+                    "type": "string",
+                    "pattern": "^[A-Z]{3}$"
+                  },
+                  "rateDate": {
+                    "type": "string",
+                    "format": "date"
+                  },
+                  "rate": {
+                    "type": "string",
+                    "pattern": "^\\d{1,12}(\\.\\d{1,6})?$"
+                  },
+                  "source": {
+                    "type": "string",
+                    "minLength": 2,
+                    "maxLength": 200
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/fx-rates/{currency}/{rateDate}": {
+      "delete": {
+        "tags": [
+          "recovery"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Z]{3}$"
+            },
+            "in": "path",
+            "name": "currency",
+            "required": true
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "date"
+            },
+            "in": "path",
+            "name": "rateDate",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/recovery/settings": {
+      "put": {
+        "tags": [
+          "recovery"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "capitalCostRate"
+                ],
+                "properties": {
+                  "capitalCostRate": {
+                    "type": "string",
+                    "pattern": "^\\d{1,3}(\\.\\d{1,4})?$"
+                  }
+                }
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "Default Response"

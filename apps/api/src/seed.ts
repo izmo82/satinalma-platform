@@ -11,6 +11,7 @@ import { buildApp } from './server.ts';
 import { createSyntheticWorld, DEMO_TENANT_A, syntheticPdf, ublInvoiceXml } from './devdata.ts';
 import { ensureEvaluationDemo, ensureLifecycleDemo, ensurePurchasingDemo, ensureRetentionDemo, ensureSourcingDemo } from './seedSourcing.ts';
 import { processJobs } from './worker.ts';
+import { ensureRecoveryDemo } from './seedRecovery.ts';
 
 const config = loadConfig();
 if (config.env === 'production' || config.authMode !== 'dev') throw new Error('Seed only runs in development with AUTH_MODE=dev');
@@ -26,6 +27,7 @@ if (exists.rows[0]) {
   await ensurePurchasingDemo(owner, app0, auth0, exists.rows[0].id);
   await ensureEvaluationDemo(owner, app0, auth0, exists.rows[0].id);
   await ensureRetentionDemo(owner, app0, auth0, exists.rows[0].id);
+  await ensureRecoveryDemo(owner, app0, auth0, exists.rows[0].id);
   await app0.close(); await pool0.end(); await owner.end();
   process.exit(0);
 }
@@ -128,6 +130,7 @@ await ensureLifecycleDemo(owner, app, auth, world.tenantA, () => processJobs(poo
 await ensurePurchasingDemo(owner, app, auth, world.tenantA);
 await ensureEvaluationDemo(owner, app, auth, world.tenantA);
 await ensureRetentionDemo(owner, app, auth, world.tenantA);
+await ensureRecoveryDemo(owner, app, auth, world.tenantA);
 console.log('Sentetik demo verisi oluşturuldu. Kullanıcılar (dev oturumu):');
 for (const [k, u] of Object.entries(world.users)) console.log(`  ${k.padEnd(12)} ${u.email}`);
 await app.close();

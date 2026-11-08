@@ -3,12 +3,12 @@ import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import swagger from '@fastify/swagger';
 import type pg from 'pg';
-import { can, type Permission } from '@sp/domain';
+import { can, dec as decimal, type Permission } from '@sp/domain';
 import type { Config } from './config.ts';
 import { withTenant, type TenantContext, type Tx } from './db.ts';
 import { DevAuthProvider, identityFor, resolveIdentity, tenantContext, type AuthProvider } from './auth.ts';
 import { DEFAULT_SESSION, WebSessions } from './webSession.ts';
-import { ApiError, forbidden, notFound } from './errors.ts';
+import { ApiError, forbidden, notFound, unprocessable } from './errors.ts';
 import type { ObjectStore } from './storage.ts';
 import { MAX_UPLOAD_BYTES } from './files.ts';
 import { submitSellerIdentity, uploadDocument } from './modules/documents.ts';
@@ -25,6 +25,7 @@ import * as integration from './modules/integration.ts';
 import * as commercial from './modules/commercial.ts';
 import * as approvals from './modules/approvals.ts';
 import * as search from './modules/search.ts';
+import * as recovery from './modules/recovery.ts';
 import { decisionSummaryPdf, evaluationWorkbook } from './reports.ts';
 import { RateLimiter, rateLimited } from './rateLimit.ts';
 
@@ -90,6 +91,11 @@ export async function buildApp(deps: AppDeps) {
     if (err.code === 'P0001') return reply.status(409).send({ error: { code: 'immutable_record', message: 'Tamamlanmış kayıt değiştirilemez; ters işlem kullanın.' } });
     if (err.code === '42501') return reply.status(404).send({ error: { code: 'not_found', message: 'Kayıt bulunamadı veya erişim yetkiniz yok.' } });
     if (err.code === '22P02') return reply.status(400).send({ error: { code: 'validation_failed', message: 'Geçersiz kimlik biçimi.' } });
+    // Çerçevenin istemci hataları (boş veya bozuk JSON gövdesi vb.): 500 değil, kendi 4xx kodu.
+    if (typeof err.statusCode === 'number' && err.statusCode >= 400 && err.statusCode < 500) {
+      const message = err.statusCode === 413 ? 'İstek gövdesi çok büyük.' : err.statusCode === 415 ? 'İstek içerik türü desteklenmiyor.' : 'İstek okunamadı: gövde boş veya geçersiz.';
+      return reply.status(err.statusCode).send({ error: { code: 'bad_request', message } });
+    }
     req.log.error({ err: { message: err.message, code: err.code } }, 'unhandled');
     return reply.status(500).send({ error: { code: 'internal', message: 'Beklenmeyen bir hata oluştu. İşlem kaydedilmedi.' } });
   });
@@ -247,6 +253,7 @@ export async function buildApp(deps: AppDeps) {
                 WHEN 'supplier' THEN (SELECT s.tax_id_type || ' ' || s.tax_id FROM suppliers s WHERE s.id = t.entity_id)
                 WHEN 'invoice' THEN (SELECT i.invoice_no FROM invoices i WHERE i.id = t.entity_id)
                 WHEN 'incident' THEN (SELECT x.code FROM supplier_incidents x WHERE x.id = t.entity_id)
+                WHEN 'recovery_case' THEN (SELECT x.code FROM recovery_cases x WHERE x.id = t.entity_id)
               END AS "refNo"
        FROM tasks t WHERE t.status = 'OPEN' AND t.assignee_role = ANY($1::text[])
          AND ($2 <> 'overdue' OR (t.due_at IS NOT NULL AND t.due_at < now()))
@@ -650,7 +657,8 @@ export async function buildApp(deps: AppDeps) {
       amount: { anyOf: [{ type: 'string', pattern: '^\\d{1,18}(\\.\\d{1,2})?$' }, { type: 'null' }] }, paymentTerms: { type: 'string', maxLength: 500 },
       startDate: nDate, endDate: nDate, autoRenewal: { type: 'boolean' }, renewalMonths: { type: ['integer', 'null'], minimum: 1, maximum: 120 },
       noticeAmount: { type: ['integer', 'null'], minimum: 0, maximum: 3650 }, noticeUnit: { anyOf: [{ type: 'string', enum: ['DAY', 'MONTH'] }, { type: 'null' }] },
-      nonWorkingDay: { type: 'string', enum: ['PREVIOUS_WORKING_DAY', 'AS_IS'] }, sourceRef: { type: 'string', maxLength: 300 }, changeReason: { type: ['string', 'null'], maxLength: 2000 } } } } }, async (req, reply) =>
+      nonWorkingDay: { type: 'string', enum: ['PREVIOUS_WORKING_DAY', 'AS_IS'] }, sourceRef: { type: 'string', maxLength: 300 }, changeReason: { type: ['string', 'null'], maxLength: 2000 },
+      paymentDays: { type: ['integer', 'null'], minimum: 0, maximum: 365 }, fxDifference: { type: ['string', 'null'], enum: ['ALLOWED', 'NOT_ALLOWED', null] } } } } }, async (req, reply) =>
     reply.status(201).send(await scoped(req, 'contract.terms.edit', (tx, ctx) => lifecycle.saveTerms(tx, ctx, (req.params as any).id, req.body as any))));
   app.post('/api/v1/contract-terms/:id/verify', { schema: { tags: ['contracts'], params: idParams } }, async (req) =>
     scoped(req, 'contract.terms.verify', (tx, ctx) => lifecycle.verifyTerms(tx, ctx, (req.params as any).id)));
@@ -906,6 +914,49 @@ export async function buildApp(deps: AppDeps) {
   });
 
   // --- Faz 7 / T48: saklama, hukuki saklama, imha ve kiracı dışa aktarımı ---------------------------------
+  // --- Lira Defteri (D80): kanıt zinciri ve geri kazanım vakaları ---
+  const ledgerPeriod = { type: 'object', required: ['from', 'to'], properties: { from: date, to: date } } as const;
+  app.get('/api/v1/ledger', { schema: { tags: ['recovery'], querystring: ledgerPeriod } }, async (req) => scoped(req, 'recovery.read', async (tx, ctx) => {
+    const q = req.query as { from: string; to: string };
+    if (q.from > q.to) throw unprocessable('invalid_period', 'Dönem başlangıcı bitişten sonra olamaz.');
+    return { ...(await recovery.ledger(tx, q.from, q.to)),
+      can: { scan: can(ctx.roles, 'recovery.manage'), manage: can(ctx.roles, 'recovery.manage'), settle: can(ctx.roles, 'recovery.settle'), settings: can(ctx.roles, 'recovery.settings') } };
+  }));
+  app.post('/api/v1/recovery/scan', { schema: { tags: ['recovery'] } }, async (req) => scoped(req, 'recovery.manage', (tx, ctx) => recovery.scan(tx, ctx)));
+  app.get('/api/v1/recovery/cases', { schema: { tags: ['recovery'] } }, async (req) => scoped(req, 'recovery.read', async (tx) => ({ items: await recovery.listCases(tx) })));
+  app.get('/api/v1/recovery/cases/:id', { schema: { tags: ['recovery'], params: idParams } }, async (req) => scoped(req, 'recovery.read', async (tx, ctx) =>
+    ({ ...(await recovery.getCase(tx, ctx, (req.params as any).id)),
+      can: { manage: can(ctx.roles, 'recovery.manage'), settle: can(ctx.roles, 'recovery.settle') } })));
+  app.post('/api/v1/recovery/cases/:id/confirm', { schema: { tags: ['recovery'], params: idParams } }, async (req) =>
+    scoped(req, 'recovery.manage', (tx, ctx) => recovery.confirmCase(tx, ctx, (req.params as any).id)));
+  app.post('/api/v1/recovery/cases/:id/claim', { schema: { tags: ['recovery'], params: idParams, body: { type: 'object', additionalProperties: false, required: ['note'],
+    properties: { note: { type: 'string', minLength: 5, maxLength: 2000 } } } } }, async (req) =>
+    scoped(req, 'recovery.manage', (tx, ctx) => recovery.claimCase(tx, ctx, (req.params as any).id, (req.body as any).note)));
+  app.post('/api/v1/recovery/cases/:id/recover', { schema: { tags: ['recovery'], params: idParams, body: { type: 'object', additionalProperties: false, required: ['amount', 'note'],
+    properties: { amount: { type: 'string', pattern: '^\\d{1,18}(\\.\\d{1,2})?$' }, note: { type: 'string', minLength: 5, maxLength: 2000 } } } } }, async (req) =>
+    scoped(req, 'recovery.settle', (tx, ctx) => recovery.recoverCase(tx, ctx, (req.params as any).id, req.body as any)));
+  app.post('/api/v1/recovery/cases/:id/dismiss', { schema: { tags: ['recovery'], params: idParams, body: { type: 'object', additionalProperties: false, required: ['reason'],
+    properties: { reason: { type: 'string', minLength: 10, maxLength: 2000 } } } } }, async (req) =>
+    scoped(req, 'recovery.manage', (tx, ctx) => recovery.dismissCase(tx, ctx, (req.params as any).id, (req.body as any).reason)));
+  app.get('/api/v1/fx-rates', { schema: { tags: ['recovery'] } }, async (req) => scoped(req, 'recovery.read', async (tx) => ({ items: await recovery.listFxRates(tx) })));
+  app.post('/api/v1/fx-rates', { schema: { tags: ['recovery'], body: { type: 'object', additionalProperties: false, required: ['currency', 'rateDate', 'rate', 'source'],
+    properties: { currency: { type: 'string', pattern: '^[A-Z]{3}$' }, rateDate: date, rate: { type: 'string', pattern: '^\\d{1,12}(\\.\\d{1,6})?$' }, source: { type: 'string', minLength: 2, maxLength: 200 } } } } },
+  async (req, reply) => reply.status(201).send(await scoped(req, 'recovery.settings', async (tx, ctx) => {
+    const b = req.body as { currency: string; rateDate: string; rate: string; source: string };
+    if (b.currency === 'TRY') throw unprocessable('invalid_currency', 'TRY için kur girilmez; kur, döviz karşılığı TRY tutarıdır.');
+    if (decimal(b.rate) <= 0n) throw unprocessable('invalid_rate', 'Kur sıfırdan büyük olmalı.');
+    return recovery.addFxRate(tx, ctx, b);
+  })));
+  app.delete('/api/v1/fx-rates/:currency/:rateDate', { schema: { tags: ['recovery'], params: { type: 'object', required: ['currency', 'rateDate'],
+    properties: { currency: { type: 'string', pattern: '^[A-Z]{3}$' }, rateDate: date } } } }, async (req) =>
+    scoped(req, 'recovery.settings', (tx, ctx) => recovery.deleteFxRate(tx, ctx, (req.params as any).currency, (req.params as any).rateDate)));
+  app.put('/api/v1/recovery/settings', { schema: { tags: ['recovery'], body: { type: 'object', additionalProperties: false, required: ['capitalCostRate'],
+    properties: { capitalCostRate: { type: 'string', pattern: '^\\d{1,3}(\\.\\d{1,4})?$' } } } } }, async (req) => scoped(req, 'recovery.settings', async (tx, ctx) => {
+    const r = (req.body as { capitalCostRate: string }).capitalCostRate;
+    if (decimal(r) <= 0n || decimal(r) > decimal('500')) throw unprocessable('invalid_rate', 'Yıllık sermaye maliyeti %0 ile %500 arasında olmalı.');
+    return recovery.setCapitalCost(tx, ctx, r);
+  }));
+
   const decision = { type: 'object', required: ['decision', 'note'], properties: { decision: { type: 'string', enum: ['APPROVE', 'REJECT'] }, note: text(2000) } } as const;
   const kindParams = { type: 'object', required: ['kind'], properties: { kind: { type: 'string', enum: ['INVOICE', 'CONTRACT', 'QUOTE', 'OTHER'] } } } as const;
   app.get('/api/v1/retention', { schema: { tags: ['governance'] } }, async (req) => scoped(req, 'retention.read', async (tx, ctx) => ({

@@ -11,3 +11,4 @@ export * from './retention.ts';
 export * from './erpReconcile.ts';
 export * from './commercial.ts';
 export * from './approvalPolicy.ts';
+export * from './recovery.ts';
