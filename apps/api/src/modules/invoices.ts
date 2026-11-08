@@ -564,12 +564,15 @@ export async function getInvoice(tx: Tx, ctx: TenantContext, id: string) {
     FROM invoice_decisions d JOIN users u ON u.id = d.decided_by WHERE d.invoice_id = $1 ORDER BY d.decided_at`, [id])).rows;
   const intake = (await tx.query(`SELECT source, duplicate, received_at AS "receivedAt" FROM invoice_intake_events WHERE invoice_id = $1 ORDER BY received_at`, [id])).rows;
   const erp = (await tx.query(`SELECT status, external_id AS "externalId", attempts, post_calls AS "postCalls", last_error AS "lastError", updated_at AS "updatedAt" FROM erp_exports WHERE invoice_id = $1`, [id])).rows[0] ?? null;
+  // Kaynak e-Fatura'nın UBL-TR temel kural denetimi (D81); onayı etkilemez, bilgi olarak gösterilir.
+  const ublCheck = inv.documentVersionId ? (await tx.query(`SELECT rule_set AS "ruleSet", error_count AS errors, warning_count AS warnings, findings, bill_refs AS "billingReferences"
+    FROM einvoice_checks WHERE document_version_id = $1`, [inv.documentVersionId])).rows[0] ?? null : null;
   const { check, fingerprint, contracts, poLines } = await evaluate(tx, id);
   const final = decisions.find((d: any) => d.kind === 'APPROVAL' || d.kind === 'REJECTION') ?? null;
   const exception = [...decisions].reverse().find((d: any) => d.kind === 'EXCEPTION_APPROVAL') ?? null;
   if (!final) await syncIssueTasks(tx, ctx, id, inv.invoiceNo, inv.companyId, check.issues);
   return {
-    invoice: inv, lines, allocations, decisions, intake, erp, check, contracts, poLines,
+    invoice: inv, lines, allocations, decisions, intake, erp, check, contracts, poLines, ublCheck,
     status: final ? final.kind : check.canApprove ? (check.needsException ? (exception?.checkHash === fingerprint ? 'EXCEPTION_APPROVED' : 'NEEDS_EXCEPTION') : 'READY') : 'BLOCKED',
     exceptionCurrent: exception ? exception.checkHash === fingerprint : null,
     /** Onay isteği If-Match ile bu değeri gönderir (görülen kontrol sonucu). */

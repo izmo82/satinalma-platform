@@ -8,12 +8,14 @@ import { hasRole, useSession } from '../lib/session.tsx';
 import { Banner, ErrorState, Field, Loading, Tag } from '../ui/kit.tsx';
 import { SplitPanes } from '../ui/SplitPanes.tsx';
 import { DocumentViewer } from '../ui/DocumentViewer.tsx';
+import { fieldHasUblError, UblFindings, ublTitle, type UblCheck } from '../ui/UblCheck.tsx';
 
 interface Doc {
   id: string; title: string; kind: string; versionNo: number; sha256: string; mimeType: string; sizeBytes: string; filename: string; basicCheckStatus: string; disposedAt: string | null;
   basicCheckReason: string | null; avScanStatus: string; pageCount: number | null; createdAt: string;
   fields: { id: string; field: string; value: string | null; origin: string; sourceRef: { kind?: string; path?: string; page?: number | null }; confidence: string; reviewState: string }[];
   suppliers: { supplierId: string; legalName: string; status: string; nameMismatch: boolean; extractedName: string | null }[];
+  ublCheck: UblCheck | null;
 }
 const fieldLabel: Record<string, string> = {
   invoice_number: 'Fatura no', ettn: 'ETTN', issue_date: 'Fatura tarihi', currency: 'Para birimi', payable_amount: 'Ödenecek tutar',
@@ -61,12 +63,19 @@ export function DocumentPage() {
                   <td className="mono" style={{ overflowWrap: 'anywhere' }}>{f.value ?? <span className="muted">Belgede bulunamadı</span>}
                     {f.sourceRef?.page && <button className="btn btn-ghost btn-sm" onClick={() => setTargetPage(f.sourceRef.page!)}>sayfa {f.sourceRef.page}</button>}
                     {f.sourceRef?.path && <div className="subtle" title={f.sourceRef.path}>Kaynak: XML</div>}</td>
-                  <td><Tag label={originLabel[f.origin]} /></td>
+                  <td>{fieldHasUblError(d.ublCheck, f.field) ? <Tag label={{ text: 'Kural hatası', tone: 'danger', icon: 'x' }} title="UBL-TR kontrolü bu alanda hata buldu" />
+                    : f.value == null ? <Tag label={{ text: 'Bulunamadı', tone: 'neutral', icon: 'minus' }} /> : <Tag label={originLabel[f.origin]} />}</td>
                 </tr>))}
               </tbody>
             </table>
           )}
         </div>
+        {d.kind === 'INVOICE' && d.mimeType === 'application/xml' && (
+          <div className="section">
+            <h2 style={{ fontSize: 15, marginBottom: 10 }}>{d.ublCheck ? ublTitle(d.ublCheck) : 'UBL-TR kontrolü'}</h2>
+            {d.ublCheck ? <UblFindings c={d.ublCheck} /> : <p className="muted">Bu belge kural denetimi eklenmeden önce alındı; kontrol kaydı yok.</p>}
+          </div>
+        )}
         {canEnter && <SellerForm id={d.id} onDone={r.reload} />}
       </>} />
   );

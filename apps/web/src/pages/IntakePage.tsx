@@ -5,11 +5,13 @@ import { useSession } from '../lib/session.tsx';
 import { Banner, Field, PageHeader } from '../ui/kit.tsx';
 import { Button } from '@/components/ui/button';
 import { Icon } from '../ui/icons.tsx';
+import { UblFindings, ublTitle, type UblCheck } from '../ui/UblCheck.tsx';
 
 interface Result {
   documentVersionId: string; duplicate: boolean; basicCheckStatus: string; basicCheckReason: string | null; avScanStatus: string;
   processing: { stage: string; message: string };
   invoice?: null | { created: boolean; invoiceId: string | null; duplicate: boolean; reason: string | null };
+  ublCheck?: UblCheck;
   supplier: null | { outcome: string; supplierId: string | null; message: string; nameMismatch: boolean; bankChangeRequestId: string | null; suggestions: { id: string; legalName: string }[] };
 }
 
@@ -82,6 +84,11 @@ function ResultView({ r }: { r: Result }) {
           Tutar ve KDV satırlardan yeniden hesaplanır; belgedeki toplam tutmazsa faturada bulgu olarak görünür.
         </Banner>
       ) : <Banner tone="warn" title="Fatura kaydı açılamadı">{r.invoice.reason} Finans görevine düştü.</Banner>)}
+      {r.ublCheck && (
+        <Banner tone={r.ublCheck.errors ? 'warn' : 'info'} icon={r.ublCheck.errors ? 'alert' : 'check'} title={ublTitle(r.ublCheck)}>
+          <UblFindings c={r.ublCheck} />
+        </Banner>
+      )}
     </>
   );
 }

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { syntheticPdf, ublInvoiceXml } from '../src/devdata.ts';
 import { makeHarness } from './harness.ts';
+import { withTenant } from '../src/db.ts';
 
 // Faz 4 açıkları: e-Fatura XML → fatura, vergi aritmetiği, sipariş değişikliği/kapatma/iptal, tolerans kuralı. Gerçek PostgreSQL + RLS; veri sentetik.
 let h: Awaited<ReturnType<typeof makeHarness>>;
@@ -83,6 +84,61 @@ describe('e-Fatura XML → fatura (deterministik)', () => {
     const ret = await upload(xml({ typeCode: 'IADE', billingRef: no, lines: [goodLines[1]!], taxTotal: '200.00', amount: '1200.00' }));
     const inv = (await call('finance', 'GET', `/api/v1/invoices/${ret.body.invoice.invoiceId}`)).body;
     expect(inv.invoice).toMatchObject({ kind: 'CREDIT_NOTE', originalInvoiceId: orig.body.invoice.invoiceId });
+  });
+
+  it('UBL-TR temel kuralları (D81): uygun belgede bulgu yok; sonuç belge, fatura ve denetim izinde', async () => {
+    const no = `ABC2026${String(Date.now()).slice(-9)}`;
+    const up = await upload(xml({ invoiceNo: no, typeCode: 'SATIS' }));
+    expect(up.status).toBe(201);
+    expect(up.body.ublCheck).toMatchObject({ errors: 0, warnings: 0, findings: [] });
+    const doc = (await call('finance', 'GET', `/api/v1/document-versions/${up.body.documentVersionId}`)).body;
+    expect(doc.ublCheck).toMatchObject({ errors: 0, warnings: 0, profileId: 'TICARIFATURA', typeCode: 'SATIS' });
+    expect((await call('finance', 'GET', `/api/v1/invoices/${up.body.invoice.invoiceId}`)).body.ublCheck).toMatchObject({ errors: 0 });
+    const ev = await h.owner.query(`SELECT data FROM audit_events WHERE action = 'einvoice.checked' AND entity_id = $1`, [up.body.documentVersionId]);
+    expect(ev.rows[0]?.data).toMatchObject({ errors: 0, warnings: 0 });
+  });
+
+  it('UBL-TR kusurlu belge: bulgular kaydedilir ama fatura kaydı yine açılır (onay engeli değil); kayıt değiştirilemez', async () => {
+    const up = await upload(xml({ profileId: null, lineCount: 5, typeCode: 'TEVKIFAT' }));
+    expect(up.body.invoice).toMatchObject({ created: true });
+    const rules = (up.body.ublCheck.findings as { rule: string; severity: string }[]).map((f) => `${f.severity}:${f.rule}`);
+    expect(rules).toEqual(expect.arrayContaining(['ERROR:PROFILE_MISSING', 'ERROR:LINE_COUNT', 'ERROR:INVOICE_NO_FORMAT', 'ERROR:WITHHOLDING_MISSING']));
+    expect(up.body.ublCheck.errors).toBe(rules.filter((r) => r.startsWith('ERROR')).length);
+    const inv = (await call('finance', 'GET', `/api/v1/invoices/${up.body.invoice.invoiceId}`)).body;
+    expect(inv.check.issues.map((x: any) => x.code).some((c: string) => /UBL|PROFILE|LINE_COUNT/.test(c))).toBe(false);
+    // Aynı dosya tekrar gelirse yeni denetim kaydı açılmaz.
+    expect((await h.owner.query(`SELECT count(*)::int AS n FROM einvoice_checks WHERE document_version_id = $1`, [up.body.documentVersionId])).rows[0].n).toBe(1);
+    await expect(withTenant(h.pool, { tenantId: h.world.tenantA, userId: h.world.users.finance.id, roles: [], companyIds: [h.world.companyA1.id], correlationId: 'd81' },
+      (tx) => tx.query(`UPDATE einvoice_checks SET error_count = 0 WHERE document_version_id = $1`, [up.body.documentVersionId]))).rejects.toThrow(/permission denied/);
+    // Şirket kapsamı dışındaki kullanıcı kaydı göremez (RLS).
+    const other = await withTenant(h.pool, { tenantId: h.world.tenantA, userId: h.world.users.finance.id, roles: [], companyIds: [h.world.companyA2.id], correlationId: 'd81' },
+      (tx) => tx.query(`SELECT 1 FROM einvoice_checks WHERE document_version_id = $1`, [up.body.documentVersionId]));
+    expect(other.rowCount).toBe(0);
+  });
+
+  it('UBL-TR: geçersiz tarih yüklemeyi düşürmez (bulgu olur); UBL olmayan XML "e-Fatura değil" kaydı alır ve elle girişe gider', async () => {
+    const bad = await upload(xml({ issueDate: '2026-13-01' }));
+    expect(bad.status).toBe(201);
+    expect((bad.body.ublCheck.findings as { rule: string }[]).map((f) => f.rule)).toContain('ISSUE_DATE');
+    expect(bad.body.invoice).toMatchObject({ created: false });
+    expect(bad.body.invoice.reason).toContain('tarih');
+    const notUbl = await upload({ name: `x-${randomUUID().slice(0, 6)}.xml`, mime: 'application/xml', data: Buffer.from(`<?xml version="1.0"?><Order><ID>${randomUUID()}</ID></Order>`) });
+    expect(notUbl.status).toBe(201);
+    expect(notUbl.body.processing.stage).toBe('MANUAL_EXTRACTION_REQUIRED');
+    expect(notUbl.body.ublCheck).toMatchObject({ errors: 1, findings: [{ rule: 'NOT_UBL' }] });
+    expect((await call('finance', 'GET', `/api/v1/document-versions/${notUbl.body.documentVersionId}`)).body.ublCheck.findings[0].rule).toBe('NOT_UBL');
+    // İyi biçimli olmayan XML "okundu" sayılmaz: aday tedarikçi açılmaz, elle girişe gider.
+    const broken = await upload({ name: `b-${randomUUID().slice(0, 6)}.xml`, mime: 'application/xml', data: Buffer.from(`<?xml version="1.0"?><Invoice><cbc:ID>bozuk-${randomUUID()}`) });
+    expect(broken.status).toBe(201);
+    expect(broken.body).toMatchObject({ supplier: null, processing: { stage: 'MANUAL_EXTRACTION_REQUIRED' }, ublCheck: { findings: [{ rule: 'NOT_UBL' }] } });
+  });
+
+  it('UBL-TR: aynı dosya tekrar yüklenirse önceki denetim sonucu döner', async () => {
+    const f = xml();
+    const a = await upload(f);
+    const b = await upload(f);
+    expect(b.body.duplicate).toBe(true);
+    expect(b.body.ublCheck).toEqual(a.body.ublCheck);
   });
 
   it('elle girişte de belge toplamı satırlarla karşılaştırılır', async () => {

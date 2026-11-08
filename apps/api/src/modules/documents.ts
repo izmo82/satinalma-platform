@@ -10,6 +10,7 @@ import { invoiceFromEInvoice, type EInvoiceIntake } from './invoices.ts';
 import { requestAi } from './ai.ts';
 import { resolveSeller, type ResolveResult } from './suppliers.ts';
 import { nextCode } from '../codes.ts';
+import { checkUblTr, ublSummary, type UblFinding } from '@sp/domain';
 
 export interface UploadInput {
   companyId: string;
@@ -36,6 +37,8 @@ export interface UploadResult {
   invoice?: EInvoiceIntake | null;
   /** AI yönlendirme kararı (çalışmasa da kayıtlı; T23). */
   ai?: { runId: string; status: string; reason: string | null };
+  /** UBL-TR temel kural denetimi (D81; yalnız e-Fatura XML). Onayı engellemez. */
+  ublCheck?: { ruleSet: string; errors: number; warnings: number; findings: UblFinding[] };
 }
 
 /**
@@ -56,10 +59,13 @@ export async function uploadDocument(tx: Tx, ctx: TenantContext, store: ObjectSt
     [inspected.sha256, input.companyId, input.kind, input.documentId]);
   if (dup.rows[0]) {
     const d = dup.rows[0];
+    // Önceki UBL-TR denetimi varsa tekrar yüklemede de gösterilir (yeniden denetlenmez).
+    const prev = (await tx.query<{ ruleSet: string; errors: number; warnings: number; findings: UblFinding[] }>(
+      `SELECT rule_set AS "ruleSet", error_count AS errors, warning_count AS warnings, findings FROM einvoice_checks WHERE document_version_id = $1`, [d.id])).rows[0];
     return {
       documentId: d.document_id, documentVersionId: d.id, versionNo: d.version_no, sha256: inspected.sha256, duplicate: true,
       basicCheckStatus: d.basic_check_status, basicCheckReason: d.basic_check_reason, avScanStatus: 'NOT_AVAILABLE',
-      processing: { stage: 'DUPLICATE', message: 'Bu dosya daha önce yüklenmiş. Yeni kayıt oluşturulmadı.' }, supplier: null,
+      processing: { stage: 'DUPLICATE', message: 'Bu dosya daha önce yüklenmiş. Yeni kayıt oluşturulmadı.' }, supplier: null, ...(prev ? { ublCheck: prev } : {}),
     };
   }
 
@@ -112,10 +118,12 @@ export async function uploadDocument(tx: Tx, ctx: TenantContext, store: ObjectSt
     return { ...base, processing: { stage: 'QUARANTINED', message: 'Belge güvenlik kontrolünden geçmedi ve işlenmeyecek.' }, supplier: null };
   }
 
+  let notUbl: UploadResult['ublCheck'];
   if (input.kind === 'INVOICE' && inspected.mimeType === 'application/xml') {
     const ubl = parseUblInvoice(input.body);
     if (ubl) {
       await saveRuleFields(tx, ctx, input.companyId, dvId, ubl);
+      const ublCheck = await saveUblCheck(tx, ctx, input.companyId, dvId, ubl);
       const supplier = await resolveSeller(tx, ctx, {
         companyId: input.companyId, documentVersionId: dvId, iban: ubl.sellerIban,
         seller: { country: 'TR', taxIdType: ubl.seller.taxIdType, taxId: ubl.seller.taxId, name: ubl.seller.name,
@@ -125,8 +133,10 @@ export async function uploadDocument(tx: Tx, ctx: TenantContext, store: ObjectSt
       const invoice = supplier.supplierId && !['IDENTITY_REVIEW_REQUIRED', 'SELLER_IS_OWN_COMPANY'].includes(supplier.outcome)
         ? await invoiceFromEInvoice(tx, ctx, { companyId: input.companyId, documentVersionId: dvId, supplierId: supplier.supplierId, ubl })
         : null;
-      return { ...base, processing: { stage: 'STRUCTURED_PARSED', message: 'e-Fatura XML okundu; alanlar kural ile çıkarıldı.' }, supplier, invoice };
+      return { ...base, processing: { stage: 'STRUCTURED_PARSED', message: 'e-Fatura XML okundu; alanlar kural ile çıkarıldı.' }, supplier, invoice, ublCheck };
     }
+    // UBL olmayan/okunamayan XML: "geçerli e-Fatura değil" kaydı; akış eskisi gibi elle girişe devam eder.
+    notUbl = await saveUblCheck(tx, ctx, input.companyId, dvId, null);
   }
 
   if (input.kind === 'INVOICE') {
@@ -141,9 +151,31 @@ export async function uploadDocument(tx: Tx, ctx: TenantContext, store: ObjectSt
       workload: { pages: inspected.pageCount ?? 1, inputTokens: 1500 * (inspected.pageCount ?? 1), outputTokens: 500 } });
     return { ...base, processing: { stage: 'MANUAL_EXTRACTION_REQUIRED', message: ai.status === 'QUEUED'
       ? 'AI okuması kuyrukta; sonuç inceleme önerisi olarak gelir. Alanlar onaylanana kadar manuel giriş görevi açık.'
-      : 'Otomatik okuma yapılamadı; manuel alan girişi gerekli.' }, supplier: null, ai };
+      : 'Otomatik okuma yapılamadı; manuel alan girişi gerekli.' }, supplier: null, ai, ...(notUbl ? { ublCheck: notUbl } : {}) };
   }
   return { ...base, processing: { stage: 'STORED', message: 'Belge sürümü kaydedildi.' }, supplier: null };
+}
+
+export const UBL_RULE_SET = 'UBL-TR 1.2 temel kurallar (D81)';
+const istanbulToday = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' }).format(new Date());
+
+/** UBL-TR temel kural denetimi (D81): sonuç kaydedilir, onayı engellemez. Belge sürümü başına bir kez (aynı içerik tekrar denetlenmez). */
+async function saveUblCheck(tx: Tx, ctx: TenantContext, companyId: string, dvId: string, u: NonNullable<ReturnType<typeof parseUblInvoice>> | null) {
+  let findings: UblFinding[];
+  if (!u) findings = [{ rule: 'NOT_UBL', severity: 'ERROR', message: 'Dosya bir UBL e-Fatura (Invoice) belgesi değil ya da XML biçimi bozuk; alanlar okunmadı.', path: '/' }];
+  else {
+    // Denetim girişi asla düşürmez: beklenmeyen bir istisna da bulgu olarak kaydedilir.
+    try { findings = checkUblTr(u.header, istanbulToday()); }
+    catch { findings = [{ rule: 'CHECK_FAILED', severity: 'ERROR', message: 'Kural denetimi bu belgede tamamlanamadı; belgeyi elle inceleyin.', path: '/Invoice' }]; }
+  }
+  const s = ublSummary(findings);
+  await tx.query(
+    `INSERT INTO einvoice_checks (tenant_id, company_id, document_version_id, profile_id, type_code, customization_id, bill_refs, findings, error_count, warning_count, rule_set)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+    [ctx.tenantId, companyId, dvId, u?.header.profileId?.slice(0, 64) ?? null, u?.header.typeCode?.slice(0, 64) ?? null, u?.header.customizationId?.slice(0, 64) ?? null,
+      (u?.header.references ?? []).slice(0, 50).map((r) => r.slice(0, 64)), JSON.stringify(findings), s.errors, s.warnings, UBL_RULE_SET]);
+  await audit(tx, ctx, 'einvoice.checked', 'document_version', dvId, { ruleSet: UBL_RULE_SET, errors: s.errors, warnings: s.warnings, rules: findings.map((f) => f.rule) });
+  return { ruleSet: UBL_RULE_SET, ...s, findings };
 }
 
 async function saveRuleFields(tx: Tx, ctx: TenantContext, companyId: string, dvId: string, u: NonNullable<ReturnType<typeof parseUblInvoice>>) {

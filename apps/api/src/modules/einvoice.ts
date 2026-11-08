@@ -1,5 +1,5 @@
-import { XMLParser } from 'fast-xml-parser';
-import { add, dec, isDecimal, str } from '@sp/domain';
+import { XMLParser, XMLValidator } from 'fast-xml-parser';
+import { add, dec, isDecimal, str, type UblTrHeader } from '@sp/domain';
 
 const sumDec = (xs: string[]) => (xs.every(isDecimal) ? str(add(...xs.map(dec))) : null);
 
@@ -28,6 +28,8 @@ export interface EInvoiceExtraction {
   lines: EInvoiceLine[];
   /** Belgede beyan edilen toplamlar; kontrol bunlarla satırları karşılaştırır, kendisi doğru kabul etmez. */
   totals: { lineExtension: string | null; taxExclusive: string | null; taxInclusive: string | null; taxTotal: string | null; otherTaxTotal: string | null; withholding: string | null; payable: string | null };
+  /** UBL-TR kural denetimi girdisi (D81). `references`: tüm BillingReference fatura numaraları (kur farkı/iade bağı). */
+  header: UblTrHeader;
 }
 export interface EInvoiceLine { description: string; quantity: string | null; unitCode: string | null; unitPrice: string | null; netAmount: string | null; taxRate: string | null; taxAmount: string | null; otherTax: string | null;
   /** KDV dışı vergiler tek tek (kod, ad, oran, tutar); oran yoksa maktu. */
@@ -104,10 +106,24 @@ function sumTax(totals: Node[] | undefined, which: 'VAT' | 'OTHER' | 'ALL'): str
   return xs.length ? sumDec(xs) ?? 'INVALID' : null; // okunamayan tutar "belgede yok" sayılmaz
 }
 
+/** Belgedeki tüm tutar düğümlerinin currencyID değerleri (benzersiz); derinlik sınırlı gezinme. */
+function currencies(n: unknown, out = new Set<string>(), depth = 0): string[] {
+  if (depth > 12 || n == null || typeof n !== 'object') return [...out];
+  if (Array.isArray(n)) { for (const x of n) currencies(x, out, depth + 1); return [...out]; }
+  for (const [k, v] of Object.entries(n as Node)) {
+    if (k === '@currencyID' && typeof v === 'string' && v.trim()) out.add(v.trim().toUpperCase());
+    else if (!k.startsWith('@') && k !== '#text') currencies(v, out, depth + 1);
+  }
+  return [...out];
+}
+
 export function parseUblInvoice(xml: Buffer): EInvoiceExtraction | null {
   let doc: Node;
   try {
-    doc = parser.parse(xml.toString('utf8'));
+    const s = xml.toString('utf8');
+    // İyi biçimli olmayan XML "okundu" sayılmaz (ayrıştırıcı kapanmamış etiketi tolere eder): e-Fatura değil, elle girişe gider (D81).
+    if (XMLValidator.validate(s) !== true) return null;
+    doc = parser.parse(s);
   } catch {
     return null;
   }
@@ -116,18 +132,30 @@ export function parseUblInvoice(xml: Buffer): EInvoiceExtraction | null {
   const pm: Node[] = inv.PaymentMeans ?? [];
   const iban = pm.map((x) => text(x?.PayeeFinancialAccount?.ID)).find(Boolean) ?? null;
   const total = inv.LegalMonetaryTotal?.PayableAmount;
+  const seller = party(inv.AccountingSupplierParty, 'AccountingSupplierParty');
+  const buyer = party(inv.AccountingCustomerParty, 'AccountingCustomerParty');
+  const invLines = (inv.InvoiceLine ?? []) as Node[];
+  const references = [...new Set(((inv.BillingReference ?? []) as Node[]).map((b) => text(b?.InvoiceDocumentReference?.ID)).filter((x): x is string => !!x))];
   return {
+    header: {
+      ublVersion: text(inv.UBLVersionID), customizationId: text(inv.CustomizationID), profileId: text(inv.ProfileID), typeCode: text(inv.InvoiceTypeCode),
+      invoiceNumber: text(inv.ID), ettn: text(inv.UUID), issueDate: text(inv.IssueDate), documentCurrency: text(inv.DocumentCurrencyCode),
+      amountCurrencies: currencies(inv), exchangeRate: text(inv.PricingExchangeRate?.CalculationRate),
+      lineCountNumeric: text(inv.LineCountNumeric), lineCount: invLines.length, linesWithoutUnit: invLines.filter((l) => !l.InvoicedQuantity?.['@unitCode']).length,
+      seller: { taxIdType: seller.taxIdType, taxId: seller.taxId }, buyer: { taxIdType: buyer.taxIdType, taxId: buyer.taxId },
+      references, hasWithholding: ((inv.WithholdingTaxTotal ?? []) as Node[]).length > 0,
+    },
     invoiceNumber: text(inv.ID),
     ettn: text(inv.UUID),
     issueDate: text(inv.IssueDate),
     currency: total?.['@currencyID'] ?? text(inv.DocumentCurrencyCode),
     payableAmount: text(total),
-    seller: party(inv.AccountingSupplierParty, 'AccountingSupplierParty'),
-    buyer: party(inv.AccountingCustomerParty, 'AccountingCustomerParty'),
+    seller,
+    buyer,
     sellerIban: iban,
     typeCode: text(inv.InvoiceTypeCode)?.toUpperCase() ?? null,
-    billingReference: ((inv.BillingReference ?? []) as Node[]).map((b) => text(b?.InvoiceDocumentReference?.ID)).find(Boolean) ?? null,
-    lines: ((inv.InvoiceLine ?? []) as Node[]).map((l) => {
+    billingReference: references[0] ?? null,
+    lines: invLines.map((l) => {
       const v = lineTaxes(l.TaxTotal);
       return {
         description: text(l.Item?.Name) ?? text(l.Item?.Description) ?? text(l.Note) ?? '',

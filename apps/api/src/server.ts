@@ -303,7 +303,10 @@ export async function buildApp(deps: AppDeps) {
       const links = await tx.query(
         `SELECT l.supplier_id AS "supplierId", s.legal_name AS "legalName", s.status, l.name_mismatch AS "nameMismatch", l.extracted_name AS "extractedName"
          FROM supplier_document_links l JOIN suppliers s ON s.id = l.supplier_id WHERE l.document_version_id = $1`, [id]);
-      return { ...v.rows[0], fields: fields.rows, suppliers: links.rows };
+      const ubl = await tx.query(
+        `SELECT rule_set AS "ruleSet", error_count AS errors, warning_count AS warnings, findings, profile_id AS "profileId", type_code AS "typeCode",
+                bill_refs AS "billingReferences", checked_at AS "checkedAt" FROM einvoice_checks WHERE document_version_id = $1`, [id]);
+      return { ...v.rows[0], fields: fields.rows, suppliers: links.rows, ublCheck: ubl.rows[0] ?? null };
     }));
 
   // Orijinal baytlar yetki kontrolünden sonra API üzerinden akıtılır (kısa ömürlü, önbelleklenmez).

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { syntheticPdf } from '../src/devdata.ts';
+import { syntheticPdf, ublInvoiceXml } from '../src/devdata.ts';
 import { makeHarness } from './harness.ts';
 
 // Lira Defteri (D80): kurallı geri kazanım bulguları, vaka yaşam döngüsü ve kanıt zinciri. Gerçek PostgreSQL + RLS; veri sentetik.
@@ -231,6 +231,30 @@ describe('Lira Defteri bulguları', () => {
     await scan();
     // (1.000 + 2.000) × 1 = 3.000 hak edilen; 500 fazla (yalnız ilk fatura eşleşseydi 2.500 fazla görünürdü).
     expect(await caseFor(kfNo)).toMatchObject({ kind: 'FX_DIFF_EXCESS', amount: '500.00' });
+
+    // e-Fatura'da açıklama numara içermese de BillingReference ile döviz faturaya bağlanır (D81); bağın kaynağı dayanakta.
+    const gbpNo = `GBP${randomUUID().slice(0, 6).toUpperCase()}`;
+    const gbp = await invoice({ net: '1000.00', currency: 'GBP', issueDate: '2026-07-01', no: gbpNo });
+    await allocate(gbp, yes, '1000.00');
+    await paid(gbp, '2026-07-15T10:00:00+03:00');
+    await call('finance', 'POST', '/api/v1/fx-rates', { currency: 'GBP', rateDate: '2026-07-01', rate: '50.000000', source: 'TCMB (sentetik)' });
+    await call('finance', 'POST', '/api/v1/fx-rates', { currency: 'GBP', rateDate: '2026-07-15', rate: '51.000000', source: 'TCMB (sentetik)' });
+    const sellerVkn = (await h.owner.query<{ tax_id: string }>(`SELECT tax_id FROM suppliers WHERE id = $1`, [h.world.suppliers.s1])).rows[0]!.tax_id;
+    const ublNo = `KFU2026${String(Date.now()).slice(-9)}`;
+    const up = await h.upload('finance', { name: `kf-${ublNo}.xml`, mime: 'application/xml', data: ublInvoiceXml({ invoiceNo: ublNo, ettn: randomUUID(), sellerVkn,
+      sellerName: 'Anadolu Bilişim (SENTETİK)', buyerVkn: h.world.companyA1.vkn, buyerName: h.world.companyA1.name, typeCode: 'SATIS', billingRef: gbpNo,
+      lines: [{ name: 'Kur farkı', qty: '1', unitCode: 'C62', price: '1500.00', net: '1500.00', rate: '20', tax: '300.00' }], taxTotal: '300.00', amount: '1800.00' }) },
+      { companyId: h.world.companyA1.id, kind: 'INVOICE', title: 'Kur farkı e-Fatura (SENTETİK)' });
+    expect(up.body.invoice, JSON.stringify(up.body)).toMatchObject({ created: true });
+    expect(up.body.ublCheck.findings.map((f: any) => f.rule)).not.toContain('RETURN_REFERENCE');
+    await allocate(up.body.invoice.invoiceId, yes, '1500.00'); await approve(up.body.invoice.invoiceId);
+    await scan();
+    // 1.000 GBP × (51 − 50) = 1.000 hak edilen; 1.500 faturalanmış → 500 fazla.
+    const uc = await caseFor(ublNo);
+    expect(uc).toMatchObject({ kind: 'FX_DIFF_EXCESS', amount: '500.00' });
+    expect((await call('finance', 'GET', `/api/v1/recovery/cases/${uc.id}`)).body.basis).toMatchObject({ originalNo: gbpNo, originalLink: 'e-Fatura belge referansı (BillingReference)' });
+    // Açıklamadan bağlanan eski yol aynen çalışır ve kaynağı söyler.
+    expect((await call('finance', 'GET', `/api/v1/recovery/cases/${(await caseFor(kfNo)).id}`)).body.basis.originalLink).toBe('Fatura satır açıklaması');
 
     // Teminat ele alındı (doğrulandı) → risk toplamından çıkar; uzatılınca (yeni bitiş uzak) vaka kendiliğinden çözülür.
     const gcv = await contract({});

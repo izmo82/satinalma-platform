@@ -57,10 +57,12 @@ async function detect(tx: Tx): Promise<Subject[]> {
 
   // 1) Kur farkı faturaları: onaylı faturada "kur farkı" satırı.
   // Tutar yalnız "kur farkı" satırlarıdır (aynı faturadaki mal/hizmet bedeli dahil edilmez); onaylı iade faturaları düşülür.
-  const fxInv = (await tx.query<{ id: string; no: string; issue_date: string; currency: string; net: string; credited: string; company_id: string; supplier_id: string; text: string; cv: string | null }>(
+  const fxInv = (await tx.query<{ id: string; no: string; issue_date: string; currency: string; net: string; credited: string; company_id: string; supplier_id: string; text: string; cv: string | null; refs: string[] }>(
     `SELECT i.id, i.invoice_no AS no, i.issue_date::text, i.currency,
        (SELECT coalesce(sum(l.net_amount), 0) FROM invoice_lines l WHERE l.invoice_id = i.id AND ${FX_LINE})::text AS net, ${CREDITED} AS credited,
-       i.company_id, i.supplier_id, (SELECT string_agg(description, ' ') FROM invoice_lines l WHERE l.invoice_id = i.id) AS text, ${INVOICE_CONTRACT} AS cv
+       i.company_id, i.supplier_id, (SELECT string_agg(description, ' ') FROM invoice_lines l WHERE l.invoice_id = i.id) AS text, ${INVOICE_CONTRACT} AS cv,
+       -- Kaynak e-Fatura'daki BillingReference numaraları (D81): açıklamada numara geçmese de bağ kurulur.
+       coalesce((SELECT c.bill_refs FROM einvoice_checks c WHERE c.document_version_id = i.document_version_id), '{}') AS refs
      FROM invoices i WHERE i.kind = 'INVOICE' AND ${APPROVED} AND EXISTS (SELECT 1 FROM invoice_lines l WHERE l.invoice_id = i.id AND ${FX_LINE})`)).rows
     .filter((r) => isFxDifferenceText(r.text));
   // 2) Avanslar: onaylı avans faturaları, mahsup toplamı ve son mahsup tarihi.
@@ -82,18 +84,24 @@ async function detect(tx: Tx): Promise<Subject[]> {
 
   const cvIds = [...new Set([...fxInv, ...adv, ...paid, ...guar].map((r) => r.cv).filter((x): x is string => !!x))];
 
-  // Ait olduğu döviz faturalar: açıklamada numarası geçen, aynı tedarikçinin geçerli (iptal/ret edilmemiş) döviz faturalarının tümü.
-  type Orig = { id: string; no: string; currency: string; net: string; issue_date: string; paid_at: string | null; cv: string | null };
+  // Ait olduğu döviz faturalar: açıklamada numarası geçen veya e-Fatura'da BillingReference ile gösterilen, aynı tedarikçinin geçerli
+  // (iptal/ret edilmemiş) döviz faturalarının tümü. Bağın kaynağı dayanağa yazılır.
+  type Orig = { id: string; no: string; currency: string; net: string; issue_date: string; paid_at: string | null; cv: string | null; by_text: boolean; by_ref: boolean };
   const originals = new Map<string, Orig[]>();
   for (const r of fxInv) {
     const os = (await tx.query<Orig>(
-      `SELECT i.id, i.invoice_no AS no, i.currency, ${NET}::text AS net, i.issue_date::text, i.paid_at::text, ${INVOICE_CONTRACT} AS cv FROM invoices i
+      `SELECT * FROM (SELECT i.id, i.invoice_no AS no, i.currency, ${NET}::text AS net, i.issue_date::text, i.paid_at::text, ${INVOICE_CONTRACT} AS cv,
+         position(upper(i.invoice_no) in upper($4)) > 0 AS by_text, upper(i.invoice_no) = ANY ($5::text[]) AS by_ref FROM invoices i
        WHERE i.supplier_id = $1 AND i.id <> $2 AND i.currency <> $3 AND i.kind = 'INVOICE' AND i.legal_status = 'RECEIVED'
-         AND NOT EXISTS (SELECT 1 FROM invoice_decisions d WHERE d.invoice_id = i.id AND d.kind = 'REJECTION')
-         AND position(upper(i.invoice_no) in upper($4)) > 0 ORDER BY i.issue_date`, [r.supplier_id, r.id, r.currency, r.text])).rows;
+         AND NOT EXISTS (SELECT 1 FROM invoice_decisions d WHERE d.invoice_id = i.id AND d.kind = 'REJECTION')) x
+       WHERE by_text OR by_ref ORDER BY issue_date`, [r.supplier_id, r.id, r.currency, r.text, r.refs.map((s) => s.toUpperCase())])).rows;
     for (const o of os) if (o.cv) cvIds.push(o.cv);
     originals.set(r.id, os);
   }
+  const linkOf = (os: Orig[]) => {
+    const ref = os.some((o) => o.by_ref); const txt = os.some((o) => o.by_text);
+    return ref && txt ? 'e-Fatura belge referansı ve satır açıklaması' : ref ? 'e-Fatura belge referansı (BillingReference)' : txt ? 'Fatura satır açıklaması' : null;
+  };
   const cmap = await contracts(tx, [...new Set(cvIds)]);
 
   for (const r of fxInv) {
@@ -104,6 +112,7 @@ async function detect(tx: Tx): Promise<Subject[]> {
       contract: c && { id: c.id, title: c.title, sourceRef: c.sourceRef, rule: c.verified ? c.fxDifference : null },
       originals: await Promise.all(os.map(async (o) => ({ id: o.id, no: o.no, currency: o.currency, net: o.net, issueDate: o.issue_date, paidAt: o.paid_at,
         rateAtIssue: await rateOn(tx, o.currency, o.issue_date), rateAtPayment: o.paid_at ? await rateOn(tx, o.currency, o.paid_at) : null }))),
+      originalLink: linkOf(os),
     });
     if (f) out.push({ finding: f, companyId: r.company_id, supplierId: r.supplier_id, invoiceId: r.id, guaranteeId: null });
   }

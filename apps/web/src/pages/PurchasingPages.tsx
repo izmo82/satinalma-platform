@@ -8,6 +8,7 @@ import { fmtDate, fmtDateTime, fmtMoney } from '../lib/format.ts';
 import { roleLabel } from '../lib/labels.ts';
 import { Banner, Empty, ErrorState, Field, FilterChip, Loading, PageHeader, Tag, toneClass } from '../ui/kit.tsx';
 import { Icon } from '../ui/icons.tsx';
+import { UblFindings, ublTitle, type UblCheck } from '../ui/UblCheck.tsx';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { cn } from '@/lib/utils';
@@ -411,6 +412,7 @@ interface InvDetail {
   contracts: { contractVersionId: string; title: string; currency: string; ceiling: string | null; netConsumption: string; openCommitment: string }[];
   status: string; exceptionCurrent: boolean | null; checkFingerprint: string;
   can: { manage: boolean; approve: boolean; approveException: boolean };
+  ublCheck: UblCheck | null;
 }
 const SEV = { BLOCK: { text: 'Engel', tone: 'danger', icon: 'x' }, EXCEPTION: { text: 'İstisna', tone: 'warn', icon: 'alert' }, REVIEW: { text: 'İnceleme', tone: 'info', icon: 'help' } } as const;
 
@@ -479,6 +481,12 @@ export function InvoicePage() {
             </dl>
             <p className="mt-2 text-sm text-ink-subtle">KDV satırlardan yeniden hesaplanır; belgede yazan tutar ancak bu hesapla tutarsa kabul edilir.{d.invoice.documentVersionId && <> <Link to={`/belgeler/${d.invoice.documentVersionId}`}>Kaynak e-Fatura</Link></>}</p></div>
           </section>
+          {d.ublCheck && (
+            <section className="panel" aria-labelledby="ubl-h">
+              <div className="panel-head"><h2 id="ubl-h">{ublTitle(d.ublCheck)}</h2></div>
+              <div className="panel-body"><UblFindings c={d.ublCheck} /></div>
+            </section>
+          )}
           {d.contracts.filter((c) => c.ceiling).map((c) => (
             <section key={c.contractVersionId} className="panel">
               <div className="panel-head"><h2>Limit · {c.title}</h2></div>

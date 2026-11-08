@@ -50,6 +50,8 @@ export interface FxDiffInput {
   contract: { id: string; title: string; sourceRef: string; rule: 'ALLOWED' | 'NOT_ALLOWED' | null } | null;
   /** Kur farkının ait olduğu döviz faturalar (açıklamada numarası geçenler; birden fazla olabilir). */
   originals: FxOriginal[];
+  /** Döviz faturalarla bağın kaynağı (kanıt): e-Fatura BillingReference ve/veya satır açıklaması (D81). */
+  originalLink?: string | null;
 }
 
 export function fxDifferenceFinding(x: FxDiffInput): Finding | null {
@@ -69,7 +71,7 @@ export function fxDifferenceFinding(x: FxDiffInput): Finding | null {
       summary: `${c.title} sözleşmesi kur farkına izin vermiyor (${c.sourceRef}); ${inv.no} faturasıyla ${fmtAmount(b, inv.currency)} kur farkı faturalandı.`,
       basis: { ...common, contractRule: 'NOT_ALLOWED', sourceRef: c.sourceRef } };
   }
-  if (!x.originals.length) return review('no_original', 'açıklamada ait olduğu döviz faturanın numarası bulunamadı.');
+  if (!x.originals.length) return review('no_original', 'açıklamada veya e-Fatura referansında ait olduğu döviz faturanın numarası bulunamadı.');
   for (const o of x.originals) {
     if (!o.paidAt) return review('not_paid', `${o.no} faturasının ödeme tarihi bilinmiyor.`);
     if (!o.rateAtIssue || !o.rateAtPayment) return review('no_rate', `kur tablosunda ${o.currency} için ${!o.rateAtIssue ? trDate(o.issueDate) : trDate(o.paidAt)} kuru yok.`);
@@ -90,7 +92,7 @@ export function fxDifferenceFinding(x: FxDiffInput): Finding | null {
   return { ...base, kind: 'FX_DIFF_EXCESS', amount: str(excess),
     summary: `${inv.no} kur farkı faturası hak edilen farkı ${fmtAmount(str(excess), inv.currency)} aşıyor (${refs}).`,
     basis: { ...common, contractRule: 'ALLOWED', sourceRef: c.sourceRef, expected: str(expected), formula, note: 'KDV hariç tutarlar üzerinden',
-      originalNo: x.originals.map((o) => o.no).join(', '),
+      originalNo: x.originals.map((o) => o.no).join(', '), ...(x.originalLink ? { originalLink: x.originalLink } : {}),
       ...(one ? { originalNet: one.net, originalCurrency: one.currency, issueDate: one.issueDate, paidAt: one.paidAt, rateAtIssue: one.rateAtIssue, rateAtPayment: one.rateAtPayment }
         : { originals: x.originals.map((o) => ({ no: o.no, net: o.net, currency: o.currency, issueDate: o.issueDate, paidAt: o.paidAt, rateAtIssue: o.rateAtIssue, rateAtPayment: o.rateAtPayment })) }) } };
 }

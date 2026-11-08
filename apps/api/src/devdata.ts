@@ -114,9 +114,14 @@ export function ublInvoiceXml(o: {
   typeCode?: string; billingRef?: string; issueDate?: string;
   lines?: { name: string; qty: string; unitCode: string; price: string; net: string; rate: string; tax: string; oiv?: string }[];
   taxTotal?: string; withholding?: string; oivTotal?: string;
+  /** UBL-TR başlık alanları (D81); null verilirse belgeye yazılmaz (kural denetimi testleri için). */
+  profileId?: string | null; currency?: string; lineCount?: number | null; exchangeRate?: string | null;
 }): Buffer {
+  const cur = o.currency ?? 'TRY';
+  const lineCount = o.lineCount === undefined ? (o.lines ?? []).length : o.lineCount;
+  const profileId = o.profileId === undefined ? 'TICARIFATURA' : o.profileId;
   // Özel iletişim vergisi (ÖİV, 4080): KDV dışı vergi örneği; KDV matrahına girer.
-  const oiv = (amt: string) => `<cac:TaxSubtotal><cbc:TaxAmount currencyID="TRY">${amt}</cbc:TaxAmount><cbc:Percent>10</cbc:Percent><cac:TaxCategory><cac:TaxScheme><cbc:TaxTypeCode>4080</cbc:TaxTypeCode></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal>`;
+  const oiv = (amt: string) => `<cac:TaxSubtotal><cbc:TaxAmount currencyID="${cur}">${amt}</cbc:TaxAmount><cbc:Percent>10</cbc:Percent><cac:TaxCategory><cac:TaxScheme><cbc:TaxTypeCode>4080</cbc:TaxTypeCode></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal>`;
   const sellerId = o.sellerVkn ? `<cac:PartyIdentification><cbc:ID schemeID="VKN">${o.sellerVkn}</cbc:ID></cac:PartyIdentification>` : '';
   return Buffer.from(`<?xml version="1.0" encoding="UTF-8"?>
 <Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2"
@@ -124,10 +129,13 @@ export function ublInvoiceXml(o: {
   xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">
   <cbc:UBLVersionID>2.1</cbc:UBLVersionID>
   <cbc:CustomizationID>TR1.2</cbc:CustomizationID>
+  ${profileId ? `<cbc:ProfileID>${profileId}</cbc:ProfileID>` : ''}
   <cbc:ID>${o.invoiceNo}</cbc:ID>
   <cbc:UUID>${o.ettn}</cbc:UUID>
   <cbc:IssueDate>${o.issueDate ?? '2026-10-20'}</cbc:IssueDate>
   ${o.typeCode ? `<cbc:InvoiceTypeCode>${o.typeCode}</cbc:InvoiceTypeCode>` : ''}
+  <cbc:DocumentCurrencyCode>${cur}</cbc:DocumentCurrencyCode>
+  ${lineCount !== null ? `<cbc:LineCountNumeric>${lineCount}</cbc:LineCountNumeric>` : ''}
   ${o.billingRef ? `<cac:BillingReference><cac:InvoiceDocumentReference><cbc:ID>${o.billingRef}</cbc:ID></cac:InvoiceDocumentReference></cac:BillingReference>` : ''}
   <cbc:Note>SENTETİK TEST FATURASI — gerçek işlem değildir.</cbc:Note>
   <cac:AccountingSupplierParty><cac:Party>
@@ -140,10 +148,11 @@ export function ublInvoiceXml(o: {
     <cac:PartyName><cbc:Name>${o.buyerName}</cbc:Name></cac:PartyName>
   </cac:Party></cac:AccountingCustomerParty>
   ${o.iban ? `<cac:PaymentMeans><cbc:PaymentMeansCode>42</cbc:PaymentMeansCode><cac:PayeeFinancialAccount><cbc:ID>${o.iban}</cbc:ID></cac:PayeeFinancialAccount></cac:PaymentMeans>` : ''}
-  ${o.taxTotal ? `<cac:TaxTotal><cbc:TaxAmount currencyID="TRY">${o.taxTotal}</cbc:TaxAmount><cac:TaxSubtotal><cbc:TaxAmount currencyID="TRY">${o.taxTotal}</cbc:TaxAmount><cac:TaxCategory><cac:TaxScheme><cbc:TaxTypeCode>0015</cbc:TaxTypeCode></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal>${o.oivTotal ? oiv(o.oivTotal) : ''}</cac:TaxTotal>` : ''}
-  ${o.withholding ? `<cac:WithholdingTaxTotal><cbc:TaxAmount currencyID="TRY">${o.withholding}</cbc:TaxAmount><cac:TaxSubtotal><cbc:TaxAmount currencyID="TRY">${o.withholding}</cbc:TaxAmount><cac:TaxCategory><cac:TaxScheme><cbc:TaxTypeCode>9015</cbc:TaxTypeCode></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal></cac:WithholdingTaxTotal>` : ''}
-  <cac:LegalMonetaryTotal><cbc:PayableAmount currencyID="TRY">${o.amount ?? '12000.00'}</cbc:PayableAmount></cac:LegalMonetaryTotal>
-  ${(o.lines ?? []).map((l, i) => `<cac:InvoiceLine><cbc:ID>${i + 1}</cbc:ID><cbc:InvoicedQuantity unitCode="${l.unitCode}">${l.qty}</cbc:InvoicedQuantity><cbc:LineExtensionAmount currencyID="TRY">${l.net}</cbc:LineExtensionAmount><cac:TaxTotal><cbc:TaxAmount currencyID="TRY">${l.tax}</cbc:TaxAmount><cac:TaxSubtotal><cbc:TaxAmount currencyID="TRY">${l.tax}</cbc:TaxAmount><cbc:Percent>${l.rate}</cbc:Percent><cac:TaxCategory><cac:TaxScheme><cbc:TaxTypeCode>0015</cbc:TaxTypeCode></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal>${l.oiv ? oiv(l.oiv) : ''}</cac:TaxTotal><cac:Item><cbc:Name>${l.name}</cbc:Name></cac:Item><cac:Price><cbc:PriceAmount currencyID="TRY">${l.price}</cbc:PriceAmount></cac:Price></cac:InvoiceLine>`).join('\n  ')}
+  ${o.exchangeRate ? `<cac:PricingExchangeRate><cbc:SourceCurrencyCode>${cur}</cbc:SourceCurrencyCode><cbc:TargetCurrencyCode>TRY</cbc:TargetCurrencyCode><cbc:CalculationRate>${o.exchangeRate}</cbc:CalculationRate></cac:PricingExchangeRate>` : ''}
+  ${o.taxTotal ? `<cac:TaxTotal><cbc:TaxAmount currencyID="${cur}">${o.taxTotal}</cbc:TaxAmount><cac:TaxSubtotal><cbc:TaxAmount currencyID="${cur}">${o.taxTotal}</cbc:TaxAmount><cac:TaxCategory><cac:TaxScheme><cbc:TaxTypeCode>0015</cbc:TaxTypeCode></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal>${o.oivTotal ? oiv(o.oivTotal) : ''}</cac:TaxTotal>` : ''}
+  ${o.withholding ? `<cac:WithholdingTaxTotal><cbc:TaxAmount currencyID="${cur}">${o.withholding}</cbc:TaxAmount><cac:TaxSubtotal><cbc:TaxAmount currencyID="${cur}">${o.withholding}</cbc:TaxAmount><cac:TaxCategory><cac:TaxScheme><cbc:TaxTypeCode>9015</cbc:TaxTypeCode></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal></cac:WithholdingTaxTotal>` : ''}
+  <cac:LegalMonetaryTotal><cbc:PayableAmount currencyID="${cur}">${o.amount ?? '12000.00'}</cbc:PayableAmount></cac:LegalMonetaryTotal>
+  ${(o.lines ?? []).map((l, i) => `<cac:InvoiceLine><cbc:ID>${i + 1}</cbc:ID><cbc:InvoicedQuantity unitCode="${l.unitCode}">${l.qty}</cbc:InvoicedQuantity><cbc:LineExtensionAmount currencyID="${cur}">${l.net}</cbc:LineExtensionAmount><cac:TaxTotal><cbc:TaxAmount currencyID="${cur}">${l.tax}</cbc:TaxAmount><cac:TaxSubtotal><cbc:TaxAmount currencyID="${cur}">${l.tax}</cbc:TaxAmount><cbc:Percent>${l.rate}</cbc:Percent><cac:TaxCategory><cac:TaxScheme><cbc:TaxTypeCode>0015</cbc:TaxTypeCode></cac:TaxScheme></cac:TaxCategory></cac:TaxSubtotal>${l.oiv ? oiv(l.oiv) : ''}</cac:TaxTotal><cac:Item><cbc:Name>${l.name}</cbc:Name></cac:Item><cac:Price><cbc:PriceAmount currencyID="${cur}">${l.price}</cbc:PriceAmount></cac:Price></cac:InvoiceLine>`).join('\n  ')}
 </Invoice>`, 'utf8');
 }
 

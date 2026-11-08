@@ -232,7 +232,7 @@ interface CaseDetail extends CaseRow {
   dismissedAt: string | null; dismissedBy: string | null; claimable: boolean; claimDraft: string | null; can: { manage: boolean; settle: boolean };
 }
 const BASIS: Record<string, string> = {
-  invoiceNo: 'Fatura', paymentTerms: 'Ödeme koşulu (sözleşme)', formula: 'Hesap', credited: 'İade faturasıyla düşülen', billed: 'Faturalanan (KDV hariç)', sourceRef: 'Sözleşme maddesi', contractRule: 'Sözleşme hükmü', originalNo: 'Ait olduğu döviz fatura', originalNet: 'Döviz tutar',
+  invoiceNo: 'Fatura', paymentTerms: 'Ödeme koşulu (sözleşme)', formula: 'Hesap', credited: 'İade faturasıyla düşülen', billed: 'Faturalanan (KDV hariç)', sourceRef: 'Sözleşme maddesi', contractRule: 'Sözleşme hükmü', originalNo: 'Ait olduğu döviz fatura', originalLink: 'Döviz fatura bağının kaynağı', originalNet: 'Döviz tutar',
   issueDate: 'Fatura tarihi', paidAt: 'Ödeme tarihi', rateAtIssue: 'Fatura günü kuru', rateAtPayment: 'Ödeme günü kuru', expected: 'Hak edilen kur farkı',
   advanceNo: 'Avans faturası', advanceNet: 'Avans tutarı', offsetTotal: 'Mahsup edilen', balance: 'Kalan bakiye', lastOffsetDate: 'Son mahsup', contractEnd: 'Sözleşme bitişi',
   paymentDays: 'Vade (gün)', due: 'Vade tarihi', daysEarly: 'Erken gün', payable: 'Ödenen tutar', annualRate: 'Yıllık sermaye maliyeti (%)',
@@ -240,7 +240,7 @@ const BASIS: Record<string, string> = {
 };
 const REASON: Record<string, string> = { no_contract: 'Sözleşme bağı yok', no_rule: 'Kur farkı hükmü girilmemiş', no_original: 'Ait olduğu döviz fatura bulunamadı', not_paid: 'Ödeme tarihi bilinmiyor', no_rate: 'Kur yok' };
 // Dayanak okunduğu sırayla: ne faturalandı → sözleşme ne diyor → hesap girdileri → sonuç.
-const ORDER = ['invoiceNo', 'billed', 'credited', 'contractRule', 'sourceRef', 'originalNo', 'originalNet', 'issueDate', 'paidAt', 'rateAtIssue', 'rateAtPayment', 'expected',
+const ORDER = ['invoiceNo', 'billed', 'credited', 'contractRule', 'sourceRef', 'originalNo', 'originalLink', 'originalNet', 'issueDate', 'paidAt', 'rateAtIssue', 'rateAtPayment', 'expected',
   'advanceNo', 'advanceNet', 'offsetTotal', 'balance', 'lastOffsetDate', 'contractEnd', 'paymentTerms', 'paymentDays', 'due', 'daysEarly', 'payable', 'annualRate',
   'guaranteeKind', 'referenceNo', 'issuer', 'validUntil', 'reason', 'formula', 'note'];
 const MONEY = new Set(['credited', 'billed', 'expected', 'advanceNet', 'offsetTotal', 'balance', 'payable']);

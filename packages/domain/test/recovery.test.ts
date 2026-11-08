@@ -31,6 +31,12 @@ describe('kur farkı', () => {
     expect(fxDifferenceFinding(fx({ invoice: { id: 'i1', no: 'KF', issueDate: '2026-05-10', currency: 'TRY', net: '35001.01' } }))?.amount).toBe('1.01');
   });
 
+  it('döviz fatura bağının kaynağı (e-Fatura referansı / açıklama) dayanağa yazılır; verilmezse alan yok', () => {
+    expect(fxDifferenceFinding(fx({ originalLink: 'e-Fatura belge referansı (BillingReference)' }))!.basis).toMatchObject({ originalLink: 'e-Fatura belge referansı (BillingReference)' });
+    expect(fxDifferenceFinding(fx())!.basis).not.toHaveProperty('originalLink');
+    expect(fxDifferenceFinding(fx({ originals: [] }))!.summary).toContain('e-Fatura referansında');
+  });
+
   it('kur düştüyse hak edilen fark sıfır: faturanın tamamı fazla', () => {
     expect(fxDifferenceFinding(fx({ originals: [{ ...orig, rateAtPayment: '37.000000' }] }))).toMatchObject({ kind: 'FX_DIFF_EXCESS', amount: '50000.00' });
   });
