@@ -417,10 +417,12 @@ export async function buildApp(deps: AppDeps) {
     const r = await tx.query<{ id: string }>(
       `SELECT cv.id FROM contract_versions cv WHERE cv.superseded_by_id IS NULL ORDER BY cv.created_at DESC LIMIT 100`);
     const items = [];
+    const supplierRoots = await invoices.contractSupplierRoots(tx, r.rows.map((x) => x.id));
     for (const row of r.rows) {
       const s = await contracts.getSignatureStatus(tx, ctx, row.id);
       items.push({
         ...s.contractVersion,
+        supplierRootIds: supplierRoots.get(row.id) ?? [],
         signature: { overall: s.status.overall, underlying: s.status.underlying, automaticCheck: s.status.automaticCheck,
           automaticAlert: s.status.automaticAlert, custody: s.status.custody,
           missingParties: s.status.blockers.filter((b) => b.code === 'SIGNATURE_MISSING').map((b) => b.partyName),

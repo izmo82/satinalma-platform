@@ -141,6 +141,9 @@ export async function ensurePurchasingDemo(owner: pg.Pool, app: App, auth: DevAu
     if (r.statusCode >= 400) throw new Error(`${method} ${url} → ${r.statusCode} ${r.body}`);
     return r.body ? JSON.parse(r.body) : null;
   }
+  // Demo sipariş bu sözleşmeye bağlıdır; sipariş açma kuralı gereği (D85) tedarikçisi sözleşmenin tarafı olmalı. İmza gereksinimi ayrı kayıttır, etkilenmez.
+  await owner.query(`INSERT INTO contract_parties (tenant_id, company_id, contract_version_id, party_role, supplier_id, display_name)
+    SELECT cv.tenant_id, cv.company_id, cv.id, 'SUPPLIER', s.id, s.legal_name FROM contract_versions cv JOIN suppliers s ON s.id = $2 WHERE cv.id = $1`, [cv.id, s1]);
   const po = await call('alper.satinalma', 'POST', '/api/v1/purchase-orders', { companyId: cv.company_id, supplierId: s1, contractVersionId: cv.id, currency: 'TRY', lines: [
     { kind: 'GOODS', description: 'Yedek disk 2 TB', unit: 'adet', quantity: '10', unitPrice: '4000' },
     { kind: 'SERVICE', description: 'Aylık bakım hizmeti', unit: 'ay', quantity: '12', unitPrice: '50000' }] });

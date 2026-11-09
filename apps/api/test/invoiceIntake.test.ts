@@ -553,3 +553,34 @@ describe('fatura tahsisi: sipariş faturanın tedarikçisine ait olmalı (D84)',
     expect((await allocate(credit, otherLine)).body.error?.code).toBe('allocation_supplier_mismatch');
   });
 });
+
+describe('sipariş açma: sözleşme siparişin tedarikçisine ait olmalı (D85)', () => {
+  const create = (supplierId: string, contractVersionId: string) => call('buyer', 'POST', '/api/v1/purchase-orders', { companyId: h.world.companyA1.id, supplierId, contractVersionId, currency: 'TRY',
+    lines: [{ kind: 'GOODS', description: 'Yedek parça (sentetik)', unit: 'adet', quantity: '1', unitPrice: '100' }] });
+  const poCount = async (cv: string) => Number((await h.owner.query<{ n: string }>(`SELECT count(*) AS n FROM purchase_orders WHERE contract_version_id = $1`, [cv])).rows[0]!.n);
+
+  it('başka tedarikçinin sözleşmesine sipariş açılamaz ve kayıt oluşmaz; kendi tedarikçisi açabilir', async () => {
+    const cv = await contract('50000.00');
+    const r = await create(h.world.suppliers.s2, cv);
+    expect(r.status).toBe(422);
+    expect(r.body.error.code).toBe('contract_supplier_mismatch');
+    expect(await poCount(cv)).toBe(0);
+    expect((await create(h.world.suppliers.s1, cv)).status).toBe(201);
+  });
+
+  it('sözleşmeye SUPPLIER tarafı olarak eklenen tedarikçi sipariş açabilir', async () => {
+    const cv = await contract('50000.00');
+    await h.owner.query(`INSERT INTO contract_parties (tenant_id, company_id, contract_version_id, party_role, supplier_id, display_name)
+      SELECT tenant_id, company_id, id, 'SUPPLIER', $2, 'İkinci tedarikçi (sentetik)' FROM contract_versions WHERE id = $1`, [cv, h.world.suppliers.s2]);
+    expect((await create(h.world.suppliers.s2, cv)).status).toBe(201);
+  });
+
+  it('tedarikçisi kayıtlı olmayan sözleşmeye sipariş açılabilir; sözleşme listesi tedarikçi köklerini döner', async () => {
+    const cv = await contract('50000.00');
+    const listed = async () => ((await call('buyer', 'GET', '/api/v1/contracts')).body.items as { id: string; supplierRootIds: string[] }[]).find((x) => x.id === cv)!;
+    expect((await listed()).supplierRootIds).toEqual([h.world.suppliers.s1]);
+    await h.owner.query(`UPDATE contract_families SET supplier_id = NULL WHERE id = (SELECT family_id FROM contract_versions WHERE id = $1)`, [cv]);
+    expect((await listed()).supplierRootIds).toEqual([]);
+    expect((await create(h.world.suppliers.s2, cv)).status).toBe(201);
+  });
+});

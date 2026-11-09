@@ -24,6 +24,9 @@ const trimNum = (s: string) => (s.includes('.') ? s.replace(/0+$/, '').replace(/
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');
 /** Birleştirilen aday hedef firmayla aynı tüzel kişidir; tahsis kontrolü ada değil bu köke bakar (D84). `s` = suppliers. */
 const SUPPLIER_ROOT_SQL = `coalesce(s.merged_into_id, s.id)`;
+/** Sözleşmenin tedarikçi kökleri: aile tedarikçisi + SUPPLIER tarafları (D84, D85). `cv` = contract_versions, `f` = contract_families. */
+const CONTRACT_SUPPLIER_ROOTS_SQL = `ARRAY(SELECT DISTINCT ${SUPPLIER_ROOT_SQL}::text FROM suppliers s WHERE s.id = f.supplier_id
+       OR s.id IN (SELECT p.supplier_id FROM contract_parties p WHERE p.contract_version_id = cv.id AND p.party_role = 'SUPPLIER'))`;
 const APPROVED = `EXISTS (SELECT 1 FROM invoice_decisions d WHERE d.invoice_id = i.id AND d.kind = 'APPROVAL') AND i.legal_status = 'RECEIVED'`;
 
 /** Sözleşme sürümleri için limit kilidi: sıralı alınır (kilitlenme yok); aynı limiti tüketen işlemler seri işlenir (T15). */
@@ -43,8 +46,7 @@ async function lockContracts(tx: Tx, ids: string[]) {
 
 async function contractState(tx: Tx, cvId: string, excludeInvoiceId: string | null): Promise<ContractState | null> {
   const cv = (await tx.query<{ id: string; title: string; stage: string; signature_method: string; signature_finalized_at: Date | null; supplier_root_ids: string[] }>(
-    `SELECT cv.id, f.title, cv.stage, cv.signature_method, cv.signature_finalized_at, ARRAY(SELECT DISTINCT ${SUPPLIER_ROOT_SQL}::text FROM suppliers s WHERE s.id = f.supplier_id
-       OR s.id IN (SELECT p.supplier_id FROM contract_parties p WHERE p.contract_version_id = cv.id AND p.party_role = 'SUPPLIER')) AS supplier_root_ids
+    `SELECT cv.id, f.title, cv.stage, cv.signature_method, cv.signature_finalized_at, ${CONTRACT_SUPPLIER_ROOTS_SQL} AS supplier_root_ids
      FROM contract_versions cv JOIN contract_families f ON f.id = cv.family_id WHERE cv.id = $1`, [cvId])).rows[0];
   if (!cv) return null;
   const t = (await tx.query<{ currency: string; value_type: string; amount: string | null; verified_by: string | null; limit_basis: 'NET' | 'GROSS' }>(
@@ -92,6 +94,12 @@ function requireTaxRates(lines: { description: string; taxRate?: string | null }
 export interface PoInput { companyId: string; supplierId: string; contractVersionId?: string | null; projectId?: string | null; currency: string;
   lines: { kind: 'GOODS' | 'SERVICE'; description: string; unit: string; quantity: string; unitPrice: string; taxRate?: string | null }[] }
 
+/** Sözleşme listesi için toplu tedarikçi kökleri (N+1 yok). */
+export async function contractSupplierRoots(tx: Tx, contractVersionIds: string[]) {
+  const r = await tx.query<{ id: string; roots: string[] }>(`SELECT cv.id, ${CONTRACT_SUPPLIER_ROOTS_SQL} AS roots FROM contract_versions cv JOIN contract_families f ON f.id = cv.family_id WHERE cv.id = ANY($1::uuid[])`, [contractVersionIds]);
+  return new Map(r.rows.map((x) => [x.id, x.roots]));
+}
+
 export async function createPo(tx: Tx, ctx: TenantContext, b: PoInput) {
   if (!ctx.companyIds.includes(b.companyId)) throw forbidden('company');
   const s = (await tx.query<{ status: string; legal_name: string }>(`SELECT status, legal_name FROM suppliers WHERE id = $1`, [b.supplierId])).rows[0];
@@ -112,6 +120,8 @@ export async function createPo(tx: Tx, ctx: TenantContext, b: PoInput) {
     await lockContracts(tx, [b.contractVersionId]);
     const c = await contractState(tx, b.contractVersionId, null);
     if (!c) throw notFound();
+    // Tedarikçisi kayıtlı olmayan sözleşme denetlenmez. Limit bu sözleşmeden düşeceği için başka firmanın siparişi bağlanamaz.
+    if (c.supplierRootIds?.length && !c.supplierRootIds.includes(b.supplierId)) throw unprocessable('contract_supplier_mismatch', `${c.title} sözleşmesinde ${s.legal_name} tedarikçi tarafı değil; bu sözleşmeye sipariş açılamaz.`);
     const gross = c.limitBasis === 'GROSS';
     requireTaxRates(b.lines, gross);
     const committed = add(...b.lines.map((l) => poAmount(l.quantity, l.unitPrice, l.taxRate, gross)));

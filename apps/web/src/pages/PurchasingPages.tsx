@@ -61,13 +61,24 @@ export function PurchaseOrdersPage() {
 function PoForm({ onCancel, onCreated }: { onCancel: () => void; onCreated: (id: string) => void }) {
   const { me } = useSession();
   const sup = useResource<{ items: SupplierOption[] }>('/api/v1/supplier-options');
-  const cons = useResource<{ items: { id: string; title: string }[] }>('/api/v1/contracts');
+  const cons = useResource<{ items: { id: string; title: string; supplierRootIds?: string[] }[] }>('/api/v1/contracts');
   const [f, setF] = useState({ companyId: me?.companies[0]?.id ?? '', supplierId: '', contractVersionId: '', currency: 'TRY' });
+  const [contractCleared, setContractCleared] = useState(false);
   const blank = { kind: 'GOODS', description: '', unit: '', quantity: '', unitPrice: '', taxRate: '20' };
   const [lines, setLines] = useState([blank]);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const set = (i: number, k: keyof typeof blank, v: string) => setLines(lines.map((x, j) => j === i ? { ...x, [k]: v } : x));
+  // Limit seçilen sözleşmeden düşer: yalnız o tedarikçinin tarafı olduğu veya tedarikçisi kayıtlı olmayan sözleşmeler (D85).
+  const fits = (c: { supplierRootIds?: string[] }, supplierId: string) => !supplierId || !c.supplierRootIds?.length || c.supplierRootIds.includes(supplierId);
+  const pickSupplier = (supplierId: string) => {
+    const keep = !!cons.data?.items.some((c) => c.id === f.contractVersionId && fits(c, supplierId));
+    setContractCleared(!!f.contractVersionId && !keep);
+    setF({ ...f, supplierId, contractVersionId: keep ? f.contractVersionId : '' });
+  };
+  // Sessiz temizleme, limite işlemeyen sözleşmesiz siparişe yol açabilir; neden görünür olmalı.
+  const contractHint = !f.supplierId || !cons.data ? undefined : contractCleared ? 'Seçtiğiniz sözleşme bu tedarikçiye ait değil; kaldırıldı.'
+    : cons.data.items.some((c) => fits(c, f.supplierId)) ? 'Yalnız bu tedarikçinin sözleşmeleri listelenir.' : 'Bu tedarikçinin kayıtlı sözleşmesi yok.';
   return (
     <form className="panel mb-5" onSubmit={(e) => { e.preventDefault(); setBusy(true); setErr(null);
       void api<{ id: string }>('/api/v1/purchase-orders', { method: 'POST', json: { ...f, contractVersionId: f.contractVersionId || null, lines: lines.map((l) => ({ ...l, taxRate: l.taxRate.trim() || null })) } })
@@ -76,8 +87,8 @@ function PoForm({ onCancel, onCreated }: { onCancel: () => void; onCreated: (id:
       <div className="panel-body grid gap-3">
         <div className="grid grid-cols-4 gap-x-3 max-[900px]:grid-cols-2">
           <Field label="Şirket">{(p) => <select className="input" {...p} value={f.companyId} onChange={(e) => setF({ ...f, companyId: e.target.value })}>{me?.companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>}</Field>
-          <Field label="Tedarikçi" hint={supplierPickHint(sup.data?.items.find((s) => s.id === f.supplierId))}>{(p) => <select className="input" required {...p} value={f.supplierId} onChange={(e) => setF({ ...f, supplierId: e.target.value })}><option value="">Seçin</option>{sup.data?.items.filter((s) => s.status === 'ACTIVE').map((s) => <option key={s.id} value={s.id}>{s.label ?? s.legalName}</option>)}</select>}</Field>
-          <Field label="Sözleşme (varsa)">{(p) => <select className="input" {...p} value={f.contractVersionId} onChange={(e) => setF({ ...f, contractVersionId: e.target.value })}><option value="">Sözleşmesiz</option>{cons.data?.items.map((c) => <option key={c.id} value={c.id}>{c.title}</option>)}</select>}</Field>
+          <Field label="Tedarikçi" hint={supplierPickHint(sup.data?.items.find((s) => s.id === f.supplierId))}>{(p) => <select className="input" required {...p} value={f.supplierId} onChange={(e) => pickSupplier(e.target.value)}><option value="">Seçin</option>{sup.data?.items.filter((s) => s.status === 'ACTIVE').map((s) => <option key={s.id} value={s.id}>{s.label ?? s.legalName}</option>)}</select>}</Field>
+          <Field label="Sözleşme (varsa)" hint={contractHint}>{(p) => <select className="input" {...p} value={f.contractVersionId} onChange={(e) => { setContractCleared(false); setF({ ...f, contractVersionId: e.target.value }); }}><option value="">Sözleşmesiz</option>{cons.data?.items.filter((c) => fits(c, f.supplierId)).map((c) => <option key={c.id} value={c.id}>{c.title}</option>)}</select>}</Field>
           <Field label="Para birimi">{(p) => <input className="input" maxLength={3} {...p} value={f.currency} onChange={(e) => setF({ ...f, currency: e.target.value.toUpperCase() })} />}</Field>
         </div>
         {lines.map((l, i) => (
