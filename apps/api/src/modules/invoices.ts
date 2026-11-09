@@ -120,6 +120,9 @@ export async function createPo(tx: Tx, ctx: TenantContext, b: PoInput) {
     await lockContracts(tx, [b.contractVersionId]);
     const c = await contractState(tx, b.contractVersionId, null);
     if (!c) throw notFound();
+    // Şirketler arası sözleşme kullanımı için yetki mekanizması yok; limit yalnız sözleşmenin kendi şirketinden tüketilir (D86).
+    const owner = (await tx.query<{ company_id: string }>(`SELECT company_id FROM contract_versions WHERE id = $1`, [b.contractVersionId])).rows[0]!;
+    if (owner.company_id !== b.companyId) throw unprocessable('contract_company_mismatch', `${c.title} başka bir şirkete ait; bu şirket adına sipariş açılamaz.`);
     // Tedarikçisi kayıtlı olmayan sözleşme denetlenmez. Limit bu sözleşmeden düşeceği için başka firmanın siparişi bağlanamaz.
     if (c.supplierRootIds?.length && !c.supplierRootIds.includes(b.supplierId)) throw unprocessable('contract_supplier_mismatch', `${c.title} sözleşmesinde ${s.legal_name} tedarikçi tarafı değil; bu sözleşmeye sipariş açılamaz.`);
     const gross = c.limitBasis === 'GROSS';

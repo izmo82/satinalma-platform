@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { syntheticPdf, ublInvoiceXml } from '../src/devdata.ts';
 import { makeHarness } from './harness.ts';
 import { withTenant } from '../src/db.ts';
+import { createPo } from '../src/modules/invoices.ts';
 
 // Faz 4 açıkları: e-Fatura XML → fatura, vergi aritmetiği, sipariş değişikliği/kapatma/iptal, tolerans kuralı. Gerçek PostgreSQL + RLS; veri sentetik.
 let h: Awaited<ReturnType<typeof makeHarness>>;
@@ -582,5 +583,17 @@ describe('sipariş açma: sözleşme siparişin tedarikçisine ait olmalı (D85)
     await h.owner.query(`UPDATE contract_families SET supplier_id = NULL WHERE id = (SELECT family_id FROM contract_versions WHERE id = $1)`, [cv]);
     expect((await listed()).supplierRootIds).toEqual([]);
     expect((await create(h.world.suppliers.s2, cv)).status).toBe(201);
+  });
+});
+
+describe('sipariş açma: sözleşme siparişin şirketine ait olmalı (D86)', () => {
+  it('iki şirkete erişen kullanıcı başka şirketin sözleşmesine sipariş açamaz; aynı şirkette açabilir', async () => {
+    const cv = await contract('50000.00');
+    const ctx = { tenantId: h.world.tenantA, userId: h.world.users.buyer.id, roles: ['BUYER'], companyIds: [h.world.companyA1.id, h.world.companyA2.id], correlationId: 'd86' };
+    const open = (companyId: string) => withTenant(h.pool, ctx as never, (tx) => createPo(tx, ctx as never, { companyId, supplierId: h.world.suppliers.s1, contractVersionId: cv, currency: 'TRY',
+      lines: [{ kind: 'GOODS', description: 'Yedek parça (sentetik)', unit: 'adet', quantity: '1', unitPrice: '100' }] } as never));
+    await expect(open(h.world.companyA2.id)).rejects.toMatchObject({ code: 'contract_company_mismatch' });
+    expect(Number((await h.owner.query<{ n: string }>(`SELECT count(*) AS n FROM purchase_orders WHERE contract_version_id = $1`, [cv])).rows[0]!.n)).toBe(0);
+    await expect(open(h.world.companyA1.id)).resolves.toMatchObject({ code: expect.any(String) });
   });
 });
