@@ -22,6 +22,8 @@ const absDec = (x: Dec) => (x < 0n ? -x : x);
 /** numeric(20,6) metnindeki gereksiz sıfırları atar (decimal string 6 basamağı aşmaz). */
 const trimNum = (s: string) => (s.includes('.') ? s.replace(/0+$/, '').replace(/\.$/, '') : s);
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');
+/** Birleştirilen aday hedef firmayla aynı tüzel kişidir; tahsis kontrolü ada değil bu köke bakar (D84). `s` = suppliers. */
+const SUPPLIER_ROOT_SQL = `coalesce(s.merged_into_id, s.id)`;
 const APPROVED = `EXISTS (SELECT 1 FROM invoice_decisions d WHERE d.invoice_id = i.id AND d.kind = 'APPROVAL') AND i.legal_status = 'RECEIVED'`;
 
 /** Sözleşme sürümleri için limit kilidi: sıralı alınır (kilitlenme yok); aynı limiti tüketen işlemler seri işlenir (T15). */
@@ -40,8 +42,10 @@ async function lockContracts(tx: Tx, ids: string[]) {
 }
 
 async function contractState(tx: Tx, cvId: string, excludeInvoiceId: string | null): Promise<ContractState | null> {
-  const cv = (await tx.query<{ id: string; title: string; stage: string; signature_method: string; signature_finalized_at: Date | null }>(
-    `SELECT cv.id, f.title, cv.stage, cv.signature_method, cv.signature_finalized_at FROM contract_versions cv JOIN contract_families f ON f.id = cv.family_id WHERE cv.id = $1`, [cvId])).rows[0];
+  const cv = (await tx.query<{ id: string; title: string; stage: string; signature_method: string; signature_finalized_at: Date | null; supplier_root_ids: string[] }>(
+    `SELECT cv.id, f.title, cv.stage, cv.signature_method, cv.signature_finalized_at, ARRAY(SELECT DISTINCT ${SUPPLIER_ROOT_SQL}::text FROM suppliers s WHERE s.id = f.supplier_id
+       OR s.id IN (SELECT p.supplier_id FROM contract_parties p WHERE p.contract_version_id = cv.id AND p.party_role = 'SUPPLIER')) AS supplier_root_ids
+     FROM contract_versions cv JOIN contract_families f ON f.id = cv.family_id WHERE cv.id = $1`, [cvId])).rows[0];
   if (!cv) return null;
   const t = (await tx.query<{ currency: string; value_type: string; amount: string | null; verified_by: string | null; limit_basis: 'NET' | 'GROSS' }>(
     `SELECT currency, value_type, amount::text, verified_by, limit_basis FROM contract_terms WHERE contract_version_id = $1 AND verified_by IS NOT NULL ORDER BY revision DESC LIMIT 1`, [cvId])).rows[0];
@@ -61,7 +65,7 @@ async function contractState(tx: Tx, cvId: string, excludeInvoiceId: string | nu
         WHERE a.po_line_id = pl.id AND ${APPROVED} AND ($2::uuid IS NULL OR i.id <> $2)), 0), 0) AS remaining
       FROM po_lines_current pl JOIN purchase_orders po ON po.id = pl.po_id WHERE po.contract_version_id = $1 AND po.status <> 'CANCELLED') r`, [cvId, excludeInvoiceId, gross])).rows;
   return {
-    contractVersionId: cvId, title: cv.title, currency: t?.currency ?? 'TRY', ceiling, netConsumption: cons, limitBasis: gross ? 'GROSS' : 'NET',
+    contractVersionId: cvId, title: cv.title, currency: t?.currency ?? 'TRY', ceiling, netConsumption: cons, limitBasis: gross ? 'GROSS' : 'NET', supplierRootIds: cv.supplier_root_ids,
     openCommitment: openCommitment(lines.map((l) => ({ orderedAmount: l.remaining, invoicedAmount: '0' }))),
     signatureUnresolved: cv.signature_method !== 'NOT_REQUIRED' && !cv.signature_finalized_at, archiveImport: cv.stage === 'ARCHIVE_IMPORT',
   };
@@ -133,6 +137,7 @@ export async function createPo(tx: Tx, ctx: TenantContext, b: PoInput) {
 async function poLineStates(tx: Tx, poLineIds: string[], excludeInvoiceId: string | null): Promise<PoLineState[]> {
   if (!poLineIds.length) return [];
   return (await tx.query<PoLineState>(`SELECT pl.id AS "poLineId", pl.description, pl.unit, po.currency, pl.kind, po.status AS "poStatus", trim_scale(pl.quantity)::text AS "orderedQty",
+      (SELECT ${SUPPLIER_ROOT_SQL} FROM suppliers s WHERE s.id = po.supplier_id) AS "supplierRootId",
       trim_scale(pl.unit_price)::text AS "unitPrice", po.contract_version_id AS "contractVersionId", pr.category, trim_scale(pl.tax_rate)::text AS "taxRate",
       coalesce((SELECT trim_scale(sum(r.quantity)) FROM receipts r WHERE r.po_line_id = pl.id), 0)::text AS "receivedQty",
       coalesce((SELECT trim_scale(sum(CASE i.kind WHEN 'CREDIT_NOTE' THEN -a.quantity ELSE a.quantity END)) FROM invoice_allocations a JOIN invoices i ON i.id = a.invoice_id
@@ -290,7 +295,7 @@ export async function closePo(tx: Tx, ctx: TenantContext, poId: string, b: { bas
 }
 
 export async function listPos(tx: Tx) {
-  return (await tx.query(`SELECT po.id, po.code, po.currency, po.status, po.issued_at AS "issuedAt", s.legal_name AS "supplierName", f.title AS "contractTitle",
+  return (await tx.query(`SELECT po.id, po.code, po.currency, po.status, po.issued_at AS "issuedAt", s.legal_name AS "supplierName", ${SUPPLIER_ROOT_SQL} AS "supplierRootId", f.title AS "contractTitle",
       (SELECT round(sum(quantity * unit_price), 2)::text FROM po_lines_current WHERE po_id = po.id) AS total
     FROM purchase_orders po JOIN suppliers s ON s.id = po.supplier_id LEFT JOIN contract_versions cv ON cv.id = po.contract_version_id
     LEFT JOIN contract_families f ON f.id = cv.family_id ORDER BY po.issued_at DESC LIMIT 200`)).rows;
@@ -386,14 +391,19 @@ export async function setAllocations(tx: Tx, ctx: TenantContext, invoiceId: stri
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, [ctx.tenantId, inv.company_id, invoiceId, a.lineNo, a.poLineId, a.contractVersionId, a.quantity, a.amount, ctx.userId]);
   }
   await tx.query(`UPDATE invoices SET advance_offset = $2, advance_invoice_id = $3 WHERE id = $1`, [invoiceId, b.advanceOffset ?? '0', b.advanceInvoiceId ?? null]);
+  const result = await evaluate(tx, invoiceId);
+  // Atılan hata işlemi geri alır; önceki tahsis yerinde kalır.
+  if (result.check.issues.some((x) => x.code === 'SUPPLIER_MISMATCH')) throw unprocessable('allocation_supplier_mismatch', 'Seçilen sipariş veya sözleşme bu faturanın tedarikçisine ait değil; aynı ünvanlı başka bir kayıt olabilir.');
   await audit(tx, ctx, 'invoice.allocated', 'invoice', invoiceId, { allocations: b.allocations.length, advanceOffset: b.advanceOffset ?? '0' });
-  return evaluate(tx, invoiceId);
+  return result;
 }
 
 /** Kontrol girdisini güncel veriden kurar ve domain kontrolünü çalıştırır. */
-type InvRow = { id: string; kind: InvoiceCheckInput['kind']; currency: string; supplier_id: string; advance_offset: string; advance_invoice_id: string | null; supplier_status: string;
+type InvRow = { id: string; kind: InvoiceCheckInput['kind']; currency: string; supplier_id: string; advance_offset: string; advance_invoice_id: string | null; supplier_status: string; supplier_root_id: string; reversal_targets: string[] | null;
   tax_total: string | null; withholding: string | null; payable: string | null; other_tax: string | null };
-const INV_SQL = `SELECT i.id, i.kind, i.currency, i.supplier_id, i.advance_offset::text, i.advance_invoice_id, s.status AS supplier_status,
+const INV_SQL = `SELECT i.id, i.kind, i.currency, i.supplier_id, i.advance_offset::text, i.advance_invoice_id, s.status AS supplier_status, ${SUPPLIER_ROOT_SQL} AS supplier_root_id,
+  CASE WHEN i.kind = 'CREDIT_NOTE' AND EXISTS (SELECT 1 FROM invoice_decisions d WHERE d.invoice_id = i.original_invoice_id AND d.kind = 'APPROVAL')
+    THEN ARRAY(SELECT coalesce(a.po_line_id, a.contract_version_id)::text FROM invoice_allocations a WHERE a.invoice_id = i.original_invoice_id) END AS reversal_targets,
   i.declared_tax_total::text AS tax_total, i.declared_withholding::text AS withholding, i.declared_payable::text AS payable, i.declared_other_tax_total::text AS other_tax
   FROM invoices i JOIN suppliers s ON s.id = i.supplier_id WHERE i.id = ANY($1::uuid[])`;
 const LINES_SQL = `SELECT invoice_id, line_no AS "lineNo", description, trim_scale(quantity)::text AS quantity, unit, trim_scale(unit_price)::text AS "unitPrice", net_amount::text AS "netAmount",
@@ -405,7 +415,7 @@ const ADVANCE_SQL = `SELECT (a.total - coalesce((SELECT sum(i.advance_offset) FR
   FROM (SELECT sum(net_amount) AS total FROM invoice_lines WHERE invoice_id = $1) a`;
 
 function checkInput(inv: InvRow, lines: InvoiceCheckInput['lines'], allocations: AllocationInput[], poLines: PoLineState[], contracts: ContractState[], tolerances: ToleranceRule[], advanceBalance: string): InvoiceCheckInput {
-  return { kind: inv.kind, currency: inv.currency, supplierActive: inv.supplier_status === 'ACTIVE', lines, allocations, poLines, contracts,
+  return { kind: inv.kind, currency: inv.currency, supplierActive: inv.supplier_status === 'ACTIVE', supplierRootId: inv.supplier_root_id, reversalTargets: inv.reversal_targets ?? undefined, lines, allocations, poLines, contracts,
     tolerances, advanceOffset: inv.advance_offset, advanceBalance, declared: { taxTotal: inv.tax_total, withholding: inv.withholding, payable: inv.payable, otherTaxTotal: inv.other_tax } };
 }
 const strip = <T extends { invoice_id: string }>({ invoice_id: _, ...rest }: T) => rest;
@@ -551,7 +561,7 @@ const SUPPLIER_VERIFIED_SQL = `((s.tax_id IS NOT NULL OR s.status = 'MERGED') AN
 
 export async function getInvoice(tx: Tx, ctx: TenantContext, id: string) {
   const inv = (await tx.query(`SELECT i.id, i.kind, i.invoice_no AS "invoiceNo", i.ettn, i.issue_date::text AS "issueDate", i.currency, i.company_id AS "companyId",
-      i.supplier_id AS "supplierId", s.legal_name AS "supplierName", s.status AS "supplierStatus", ${SUPPLIER_VERIFIED_SQL} AS "supplierIdentityVerified", i.legal_status AS "legalStatus", i.payment_status AS "paymentStatus",
+      i.supplier_id AS "supplierId", s.legal_name AS "supplierName", s.status AS "supplierStatus", ${SUPPLIER_VERIFIED_SQL} AS "supplierIdentityVerified", ${SUPPLIER_ROOT_SQL} AS "supplierRootId", i.legal_status AS "legalStatus", i.payment_status AS "paymentStatus",
       i.original_invoice_id AS "originalInvoiceId", i.advance_invoice_id AS "advanceInvoiceId", i.advance_offset::text AS "advanceOffset", i.document_version_id AS "documentVersionId", (SELECT sha256 FROM document_versions dv WHERE dv.id = i.document_version_id) AS "documentSha256",
       i.declared_tax_total::text AS "declaredTaxTotal", i.declared_withholding::text AS "declaredWithholding", i.declared_payable::text AS "declaredPayable", i.declared_other_tax_total::text AS "declaredOtherTaxTotal",
       i.created_by = $2 AS "createdByMe", u.display_name AS "createdBy", i.created_at AS "createdAt"

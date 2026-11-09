@@ -455,3 +455,101 @@ describe('fatura listesi: tedarikçinin durumu ve kimliği görünür (D83)', ()
     expect((list.body.items as { id: string }[]).find((x) => x.id === invoiceId)).toMatchObject({ supplierStatus: 'MERGED', supplierIdentityVerified: true });
   });
 });
+
+describe('fatura tahsisi: sipariş faturanın tedarikçisine ait olmalı (D84)', () => {
+  const invoiceFor = async (supplierId: string, extra: Record<string, unknown> = {}) => {
+    const r = await call('finance', 'POST', '/api/v1/invoices', { companyId: h.world.companyA1.id, supplierId, kind: 'INVOICE', invoiceNo: `D84${randomUUID().slice(0, 8)}`,
+      issueDate: '2026-10-20', currency: 'TRY', lines: [{ description: 'Yedek parça', quantity: '1', unit: 'adet', unitPrice: '100', netAmount: '100.00' }], ...extra });
+    expect(r.status).toBe(201);
+    return r.body.id as string;
+  };
+  const allocate = (invoiceId: string, poLineId: string) => call('finance', 'PUT', `/api/v1/invoices/${invoiceId}/allocations`, { allocations: [{ lineNo: 1, poLineId, contractVersionId: null, quantity: '1', amount: '100.00' }] });
+  const poLineOf = async () => (await getPo(await po(null, '1', '100'))).lines[0].poLineId as string;
+  const sameNameCandidate = async (name: string) => {
+    const badVkn = sellerVkn.slice(0, 9) + String((Number(sellerVkn[9]) + 1) % 10);
+    const up = await upload(xml({ sellerVkn: badVkn, sellerName: name }));
+    expect(up.status).toBe(201);
+    return up.body.supplier.supplierId as string;
+  };
+
+  it('aynı ünvanlı adayın faturası aktif firmanın siparişine bağlanamaz; önceki tahsis değişmez', async () => {
+    const s1 = (await h.owner.query<{ legal_name: string }>(`SELECT legal_name FROM suppliers WHERE id = $1`, [h.world.suppliers.s1])).rows[0]!.legal_name;
+    const invoiceId = await invoiceFor(await sameNameCandidate(s1));
+    const r = await allocate(invoiceId, await poLineOf());
+    expect(r.status).toBe(422);
+    expect(r.body.error.code).toBe('allocation_supplier_mismatch');
+    expect((await call('finance', 'GET', `/api/v1/invoices/${invoiceId}`)).body.allocations).toEqual([]);
+  });
+
+  it('kendi siparişine tahsis çalışır; liste ve detay aynı tedarikçi kökünü döner', async () => {
+    const invoiceId = await invoiceFor(h.world.suppliers.s1);
+    const poLine = await poLineOf();
+    expect((await allocate(invoiceId, poLine)).status).toBe(200);
+    expect(await issueCodes(invoiceId)).not.toContain('SUPPLIER_MISMATCH');
+    expect((await call('finance', 'GET', `/api/v1/invoices/${invoiceId}`)).body.invoice.supplierRootId).toBe(h.world.suppliers.s1);
+    const pos = (await call('finance', 'GET', '/api/v1/purchase-orders')).body.items as { supplierRootId: string }[];
+    expect(pos.length).toBeGreaterThan(0);
+    expect(pos.every((x) => x.supplierRootId)).toBe(true);
+  });
+
+  it('önceden yanlış bağlanmış aktif firma faturası onaya kapanır', async () => {
+    const invoiceId = await invoiceFor(h.world.suppliers.s2);
+    const poLine = await poLineOf();
+    await h.owner.query(`INSERT INTO invoice_allocations (tenant_id, company_id, invoice_id, line_no, po_line_id, contract_version_id, quantity, amount, created_by)
+      SELECT tenant_id, company_id, id, 1, $2, NULL, 1, 100, created_by FROM invoices WHERE id = $1`, [invoiceId, poLine]);
+    const detail = await call('finance2', 'GET', `/api/v1/invoices/${invoiceId}`);
+    expect(detail.body.check.issues.map((x: { code: string }) => x.code)).toContain('SUPPLIER_MISMATCH');
+    expect(detail.body.check.canApprove).toBe(false);
+    expect((await approve(invoiceId)).status).not.toBe(200);
+  });
+
+  it('birleştirilen adayın faturası hedef firmanın siparişine bağlanabilir ama aktif olmadığı için onaya kapalı kalır', async () => {
+    const candidateId = await sameNameCandidate('Birleşecek Aday 2 (SENTETİK)');
+    const invoiceId = await invoiceFor(candidateId);
+    const before = await call('masterData', 'GET', `/api/v1/suppliers/${candidateId}`);
+    expect((await call('masterData', 'POST', `/api/v1/suppliers/${candidateId}/identity`,
+      { country: 'TR', taxIdType: 'VKN', taxId: sellerVkn, rationale: 'Kaynak belgede VKN doğrulandı (sentetik)', expectedRowVersion: before.body.rowVersion })).status).toBe(200);
+    expect((await allocate(invoiceId, await poLineOf())).status).toBe(200);
+    const codes = await issueCodes(invoiceId);
+    expect(codes).not.toContain('SUPPLIER_MISMATCH');
+    expect(codes).toContain('SUPPLIER_NOT_ACTIVE');
+  });
+
+  const insertForeignAllocation = (invoiceId: string, poLine: string) => h.owner.query(`INSERT INTO invoice_allocations (tenant_id, company_id, invoice_id, line_no, po_line_id, contract_version_id, quantity, amount, created_by)
+    SELECT tenant_id, company_id, id, 1, $2, NULL, 1, 100, created_by FROM invoices WHERE id = $1`, [invoiceId, poLine]);
+
+  it('yanlış bağ kaldırılabilir: boş tahsis kaydedilir, tedarikçi uyuşmazlığı biter', async () => {
+    const invoiceId = await invoiceFor(h.world.suppliers.s2);
+    await insertForeignAllocation(invoiceId, await poLineOf());
+    expect(await issueCodes(invoiceId)).toContain('SUPPLIER_MISMATCH');
+    expect((await call('finance', 'PUT', `/api/v1/invoices/${invoiceId}/allocations`, { allocations: [] })).status).toBe(200);
+    expect(await issueCodes(invoiceId)).not.toContain('SUPPLIER_MISMATCH');
+  });
+
+  it('sözleşmeye doğrudan tahsis: yabancı tedarikçi reddedilir; SUPPLIER tarafı olarak eklenen tedarikçi kabul edilir', async () => {
+    const cv = await contract('50000.00');
+    const invoiceId = await invoiceFor(h.world.suppliers.s2);
+    const toContract = () => call('finance', 'PUT', `/api/v1/invoices/${invoiceId}/allocations`, { allocations: [{ lineNo: 1, poLineId: null, contractVersionId: cv, quantity: '1', amount: '100.00' }] });
+    expect((await toContract()).body.error?.code).toBe('allocation_supplier_mismatch');
+    await h.owner.query(`INSERT INTO contract_parties (tenant_id, company_id, contract_version_id, party_role, supplier_id, display_name)
+      SELECT tenant_id, company_id, id, 'SUPPLIER', $2, 'İkinci tedarikçi (sentetik)' FROM contract_versions WHERE id = $1`, [cv, h.world.suppliers.s2]);
+    expect((await toContract()).status).toBe(200);
+  });
+
+  it('iade belgesi onaylı özgün faturanın sonradan yabancılaşan siparişine dönebilir; başka yabancı siparişe dönemez', async () => {
+    const poId = await po(null, '1', '100');
+    const line = (await getPo(poId)).lines[0].poLineId as string;
+    await call('buyer', 'POST', `/api/v1/po-lines/${line}/receipts`, { quantity: '1', note: 'Teslim alındı (sentetik)' });
+    const original = await invoiceFor(h.world.suppliers.s1);
+    expect((await allocate(original, line)).status).toBe(200);
+    expect((await approve(original)).status).toBe(200);
+    const otherPo = await po(null, '1', '100');
+    const otherLine = (await getPo(otherPo)).lines[0].poLineId as string;
+    await h.owner.query(`UPDATE purchase_orders SET supplier_id = $2 WHERE id = ANY($1::uuid[])`, [[poId, otherPo], h.world.suppliers.s2]);
+
+    const credit = await invoiceFor(h.world.suppliers.s1, { kind: 'CREDIT_NOTE', originalInvoiceId: original });
+    expect((await allocate(credit, line)).status).toBe(200);
+    expect(await issueCodes(credit)).not.toContain('SUPPLIER_MISMATCH');
+    expect((await allocate(credit, otherLine)).body.error?.code).toBe('allocation_supplier_mismatch');
+  });
+});

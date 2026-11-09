@@ -192,3 +192,36 @@ describe('Faz 4: sözleşme limiti vergi dahil (GROSS)', () => {
     expect(r.limitImpact).toEqual({ C1: '1200.00' });
   });
 });
+
+describe('tahsis edilen sipariş/sözleşme faturanın tedarikçisine ait olmalı (D84)', () => {
+  const contract = { contractVersionId: 'C1', title: 'Parça sözleşmesi', currency: 'TRY', ceiling: '1000000.00', netConsumption: '0.00', openCommitment: '0.00', signatureUnresolved: false, archiveImport: false };
+  const toPo = [{ lineNo: 1, poLineId: 'P1', contractVersionId: null, quantity: '50', amount: '50000.00' }];
+  const toContract = [{ lineNo: 1, poLineId: null, contractVersionId: 'C1', quantity: '100', amount: '100000.00' }];
+  const codes = (over: Partial<InvoiceCheckInput>) => checkInvoice(base(over)).issues.filter((x) => x.code === 'SUPPLIER_MISMATCH');
+
+  it('başka tedarikçinin siparişine tahsis engeldir ve satırıyla bildirilir', () => {
+    const issues = codes({ supplierRootId: 'A', poLines: [po({ supplierRootId: 'B' })], allocations: toPo });
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ severity: 'BLOCK', lineNo: 1, ownerRole: 'FINANCE' });
+    expect(checkInvoice(base({ supplierRootId: 'A', poLines: [po({ supplierRootId: 'B' })], allocations: toPo })).canApprove).toBe(false);
+  });
+  it('başka tedarikçinin sözleşmesine doğrudan tahsis de engeldir', () => {
+    expect(codes({ supplierRootId: 'A', contracts: [{ ...contract, supplierRootIds: ['B'] }], allocations: toContract })).toHaveLength(1);
+  });
+  it('sözleşmenin tedarikçi taraflarından biriyse bulgu yok (çok tedarikçili sözleşme)', () => {
+    expect(codes({ supplierRootId: 'A', contracts: [{ ...contract, supplierRootIds: ['B', 'A'] }], allocations: toContract })).toHaveLength(0);
+  });
+  it('iade belgesi onaylı özgün faturanın yanlış bağına dönebilir; başka yabancı hedefe dönemez', () => {
+    const reversal = { kind: 'CREDIT_NOTE' as const, supplierRootId: 'A', poLines: [po({ supplierRootId: 'B' })], allocations: toPo };
+    expect(codes({ ...reversal, reversalTargets: ['P1'] })).toHaveLength(0);
+    expect(codes({ ...reversal, reversalTargets: ['P9'] })).toHaveLength(1);
+  });
+  it('aynı tedarikçide ve tedarikçisi kayıtlı olmayan sözleşmede bulgu yok', () => {
+    expect(codes({ supplierRootId: 'A', poLines: [po({ supplierRootId: 'A' })], allocations: toPo })).toHaveLength(0);
+    expect(codes({ supplierRootId: 'A', contracts: [{ ...contract, supplierRootIds: [] }], allocations: toContract })).toHaveLength(0);
+  });
+  it('bir satır iki yabancı hedefe bölünse de tek bulgu verir', () => {
+    const split = [{ lineNo: 1, poLineId: 'P1', contractVersionId: null, quantity: '25', amount: '25000.00' }, { lineNo: 1, poLineId: 'P1', contractVersionId: null, quantity: '25', amount: '25000.00' }];
+    expect(codes({ supplierRootId: 'A', poLines: [po({ supplierRootId: 'B' })], allocations: split })).toHaveLength(1);
+  });
+});

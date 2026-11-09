@@ -57,6 +57,8 @@ export interface PoLineState {
   category?: string | null;
   /** Sipariş satırının KDV oranı (%): vergi dahil limitli sözleşmede açık taahhüt brüt hesaplanır. */
   taxRate?: string | null;
+  /** Siparişin tedarikçi kökü (D84). */
+  supplierRootId?: string | null;
 }
 export interface InvoiceLineInput {
   lineNo: number; description: string; quantity: string; unit: string; unitPrice: string; netAmount: string;
@@ -79,12 +81,18 @@ export interface ContractState {
   limitBasis?: 'NET' | 'GROSS';
   /** İmza kontrolü kesinleşmemiş veya arşivden alınmış: eski borç iptal edilmez, politika incelemesi (T37). */
   signatureUnresolved: boolean; archiveImport: boolean;
+  /** Sözleşmenin tedarikçi kökleri (aile tedarikçisi + SUPPLIER tarafları); hiç tedarikçi kayıtlı değilse boş (kontrol edilmez). */
+  supplierRootIds?: string[];
 }
 
 export interface InvoiceCheckInput {
   kind: 'INVOICE' | 'CREDIT_NOTE' | 'ADVANCE';
   currency: string;
   supplierActive: boolean;
+  /** Faturanın tedarikçi kökü (birleştirilmiş kayıtta hedef firma); tahsis hedefleriyle karşılaştırılır (D84). */
+  supplierRootId?: string | null;
+  /** İade belgesinde onaylı özgün faturanın tahsis hedefleri (sipariş satırı/sözleşme): yanlış bağı geri alma yolu kapanmasın (D84). */
+  reversalTargets?: string[];
   lines: InvoiceLineInput[];
   allocations: AllocationInput[];
   poLines: PoLineState[];
@@ -203,6 +211,19 @@ export function checkInvoice(i: InvoiceCheckInput): InvoiceCheck {
     const sum = add(...al.map((a) => dec(a.amount)));
     if (cmp(sum, dec(l.netAmount)) > 0) push({ code: 'OVER_ALLOCATED', severity: 'BLOCK', ownerRole: 'FINANCE', lineNo: l.lineNo, message: `Satır ${l.lineNo}: tahsis toplamı ${str(sum)} satır tutarını (${l.netAmount}) aşıyor.` });
     else if (cmp(sum, dec(l.netAmount)) < 0) push({ code: 'UNALLOCATED', severity: 'BLOCK', ownerRole: 'FINANCE', lineNo: l.lineNo, message: `Satır ${l.lineNo}: ${str(dec(l.netAmount) - sum)} ${i.currency} sipariş veya sözleşmeye tahsis edilmedi.` });
+    // Aynı ünvanlı başka bir tüzel kişinin siparişine/sözleşmesine tahsis, tedarikçi sonradan aktifleşse de engel kalır (D84).
+    const reversal = (id: string | null) => !!id && !!i.reversalTargets?.includes(id);
+    const foreignPo = (id: string | null) => {
+      const root = i.poLines.find((p) => p.poLineId === id)?.supplierRootId;
+      return !reversal(id) && !!i.supplierRootId && !!root && root !== i.supplierRootId;
+    };
+    const foreignContract = (id: string | null) => {
+      const roots = i.contracts.find((c) => c.contractVersionId === id)?.supplierRootIds ?? [];
+      return !reversal(id) && !!i.supplierRootId && roots.length > 0 && !roots.includes(i.supplierRootId);
+    };
+    if (al.some((a) => foreignPo(a.poLineId) || foreignContract(a.contractVersionId))) {
+      push({ code: 'SUPPLIER_MISMATCH', severity: 'BLOCK', ownerRole: 'FINANCE', lineNo: l.lineNo, message: `Satır ${l.lineNo}: bağlı sipariş veya sözleşme bu faturanın tedarikçisine ait değil; tahsisi düzenleyip bu bağı kaldırın.` });
+    }
     if (i.kind === 'ADVANCE') continue;
     for (const a of al) {
       if (!a.poLineId && !a.contractVersionId) {
