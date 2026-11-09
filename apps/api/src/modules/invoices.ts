@@ -397,8 +397,8 @@ export async function setAllocations(tx: Tx, ctx: TenantContext, invoiceId: stri
   if (await finalDecision(tx, invoiceId)) throw conflict('invoice_decided', 'Karar verilmiş faturanın tahsisi değişmez; iade/alacak belgesi kullanın.');
   for (const a of b.allocations) if (!isDecimal(a.quantity) || !isDecimal(a.amount) || Number(a.amount) <= 0) throw unprocessable('invalid_number', 'Tahsis miktarı ve tutarı pozitif olmalı.');
   if (b.advanceInvoiceId) {
-    const adv = (await tx.query(`SELECT 1 FROM invoices i WHERE i.id = $1 AND i.kind = 'ADVANCE' AND i.supplier_id = $2 AND ${APPROVED}`, [b.advanceInvoiceId, inv.supplier_id])).rowCount;
-    if (!adv) throw unprocessable('advance_invalid', 'Mahsup için aynı tedarikçinin onaylı avans faturası seçilmeli.');
+    const adv = (await tx.query(`SELECT 1 FROM invoices i WHERE i.id = $1 AND i.kind = 'ADVANCE' AND i.supplier_id = $2 AND i.company_id = $3 AND ${APPROVED}`, [b.advanceInvoiceId, inv.supplier_id, inv.company_id])).rowCount;
+    if (!adv) throw unprocessable('advance_invalid', 'Mahsup için aynı şirket ve tedarikçinin onaylı avans faturası seçilmeli.');
   }
   await tx.query(`DELETE FROM invoice_allocations WHERE invoice_id = $1`, [invoiceId]);
   for (const a of b.allocations) {
@@ -446,7 +446,7 @@ async function evaluate(tx: Tx, invoiceId: string) {
   const contracts: ContractState[] = [];
   for (const c of cvIds) { const s = await contractState(tx, c, invoiceId); if (s) contracts.push(s); }
   const tolerances = (await tx.query<ToleranceRule>(`${TOLERANCE_SQL} WHERE currency = $1`, [inv.currency])).rows;
-  const advanceBalance = inv.advance_invoice_id ? (await tx.query<{ v: string }>(ADVANCE_SQL, [inv.advance_invoice_id, invoiceId])).rows[0]!.v : '0';
+  const advanceBalance = inv.advance_invoice_id ? (await tx.query<{ v: string | null }>(ADVANCE_SQL, [inv.advance_invoice_id, invoiceId])).rows[0]!.v ?? '0' : '0';
   const check = checkInvoice(checkInput(inv, lines, allocations, poLines, contracts, tolerances, advanceBalance));
   // Parmak izi, istisnanın dayandığı sipariş kalemi durumunu da kapsar: sipariş fiyatı/miktarı veya kabul değişirse istisna eskir.
   const fingerprint = sha(JSON.stringify({ a: allocations, o: inv.advance_offset, i: check.issues.map((x) => [x.code, x.lineNo ?? null]),
@@ -467,7 +467,12 @@ export async function invoiceHasIssue(tx: Tx, invoiceId: string) {
  * `evaluate` ile aynı sonucu verir: tek tek kontroldeki "bu faturayı hariç tut" filtreleri yalnız onaylı faturaları etkiler.
  */
 export async function unapprovedInvoicesWithIssues(tx: Tx, ids: string[]): Promise<Set<string>> {
-  const out = new Set<string>();
+  const checks = await unapprovedInvoiceChecks(tx, ids);
+  return new Set([...checks].filter(([, c]) => c.issues.length).map(([id]) => id));
+}
+
+async function unapprovedInvoiceChecks(tx: Tx, ids: string[]) {
+  const out = new Map<string, ReturnType<typeof checkInvoice>>();
   if (!ids.length) return out;
   const invs = (await tx.query<InvRow>(INV_SQL, [ids])).rows;
   const group = <T extends { invoice_id: string }>(rows: T[]) => { const m = new Map<string, Omit<T, 'invoice_id'>[]>(); for (const r of rows) m.set(r.invoice_id, [...(m.get(r.invoice_id) ?? []), strip(r)]); return m; };
@@ -488,10 +493,11 @@ export async function unapprovedInvoicesWithIssues(tx: Tx, ids: string[]): Promi
     const allocations = (allocs.get(inv.id) ?? []) as AllocationInput[];
     const poLines = [...new Set(allocations.map((a) => a.poLineId).filter((x): x is string => !!x))].map((id) => poById.get(id)).filter((x): x is PoLineState => !!x);
     const cv = [...new Set([...poLines.map((p) => p.contractVersionId), ...allocations.map((a) => a.contractVersionId)].filter((x): x is string => !!x))];
-    const advanceBalance = inv.advance_invoice_id ? advBalance.get(inv.advance_invoice_id)! : '0';
+    // Erişilemeyen avansın bakiyesi sıfır sayılır (mahsup engele düşer); tek satır bütün listeyi düşürmez.
+    const advanceBalance = inv.advance_invoice_id ? advBalance.get(inv.advance_invoice_id) ?? '0' : '0';
     const check = checkInvoice(checkInput(inv, (lines.get(inv.id) ?? []) as InvoiceCheckInput['lines'], allocations, poLines,
       cv.map((c) => cvById.get(c)).filter((x): x is ContractState => !!x), tolerances, advanceBalance));
-    if (check.issues.length) out.add(inv.id);
+    out.set(inv.id, check);
   }
   return out;
 }
@@ -611,13 +617,16 @@ export async function getInvoice(tx: Tx, ctx: TenantContext, id: string) {
 }
 
 export async function listInvoices(tx: Tx) {
-  return (await tx.query(`SELECT i.id, i.kind, i.invoice_no AS "invoiceNo", i.issue_date::text AS "issueDate", i.currency, s.legal_name AS "supplierName",
+  const rows = (await tx.query<{ id: string; decision: string | null }>(`SELECT i.id, i.kind, i.invoice_no AS "invoiceNo", i.issue_date::text AS "issueDate", i.currency, s.legal_name AS "supplierName",
       s.status AS "supplierStatus", ${SUPPLIER_VERIFIED_SQL} AS "supplierIdentityVerified",
       (SELECT sum(net_amount)::text FROM invoice_lines WHERE invoice_id = i.id) AS "netAmount", i.legal_status AS "legalStatus", i.payment_status AS "paymentStatus",
       (SELECT kind FROM invoice_decisions d WHERE d.invoice_id = i.id AND d.kind IN ('APPROVAL','REJECTION')) AS decision,
       (SELECT status FROM erp_exports e WHERE e.invoice_id = i.id) AS "erpStatus",
       (SELECT count(*)::int FROM invoice_intake_events e WHERE e.invoice_id = i.id AND e.duplicate) AS "duplicateCount"
     FROM invoices i JOIN suppliers s ON s.id = i.supplier_id ORDER BY i.created_at DESC LIMIT 300`)).rows;
+  // Karar bekleyenlerde listede de engel görünsün (D90). Maliyet: fatura başına değil, bağlı sözleşme başına sorgu.
+  const checks = await unapprovedInvoiceChecks(tx, rows.filter((r) => !r.decision).map((r) => r.id));
+  return rows.map((r) => ({ ...r, blocked: checks.get(r.id)?.canApprove === false }));
 }
 
 export async function listTolerance(tx: Tx) {

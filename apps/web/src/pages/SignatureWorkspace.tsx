@@ -5,6 +5,7 @@ import { api, ApiError } from '../lib/api.ts';
 import { fmtDate, fmtDateTime, shortHash } from '../lib/format.ts';
 import {
   custodyLabel, decisionLabel, detectionLabel, digitalLabel, markLabel, methodLabel, overallLabel, partyRoleLabel, requirementLabel, stageLabel,
+  type SupplierOption,
 } from '../lib/labels.ts';
 import { useSession } from '../lib/session.tsx';
 import { Banner, Drawer, Empty, ErrorState, Field, Loading, Tag } from '../ui/kit.tsx';
@@ -413,6 +414,8 @@ function VersionDrawer({ s, etag, onClose }: { s: Status; etag: string | null; o
   const nav = useNavigate();
   const [file, setFile] = useState<File | null>(null);
   const [kind, setKind] = useState('AMENDMENT');
+  const [addSupplierId, setAddSupplierId] = useState('');
+  const sup = useResource<{ items: SupplierOption[] }>('/api/v1/supplier-options');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   async function submit() {
@@ -423,7 +426,7 @@ function VersionDrawer({ s, etag, onClose }: { s: Status; etag: string | null; o
       fd.set('companyId', s.contractVersion.companyId); fd.set('kind', 'CONTRACT'); fd.set('title', file.name); fd.set('file', file);
       const up = await api<{ documentVersionId: string; basicCheckStatus: string; basicCheckReason: string | null }>('/api/v1/documents', { method: 'POST', body: fd });
       if (up.data.basicCheckStatus !== 'PASSED') throw new ApiError(422, 'quarantined', `Belge karantinaya alındı: ${up.data.basicCheckReason}`);
-      const v = await api<{ contractVersionId: string }>(`/api/v1/contract-versions/${s.contractVersion.id}/versions`, { method: 'POST', ifMatch: etag, json: { documentVersionId: up.data.documentVersionId, kind, stage: 'EXECUTION' } });
+      const v = await api<{ contractVersionId: string }>(`/api/v1/contract-versions/${s.contractVersion.id}/versions`, { method: 'POST', ifMatch: etag, json: { documentVersionId: up.data.documentVersionId, kind, stage: 'EXECUTION', ...(kind === 'AMENDMENT' && addSupplierId ? { addSupplierId } : {}) } });
       onClose();
       nav(`/sozlesmeler/${v.data.contractVersionId}`);
     } catch (e) { setError((e as ApiError).message); } finally { setBusy(false); }
@@ -433,6 +436,7 @@ function VersionDrawer({ s, etag, onClose }: { s: Status; etag: string | null; o
       <Banner tone="neutral" title="Önceki imza kararları yeni sürüme taşınmaz">Taraf ve gereksinim tanımları kopyalanır; yeni belge için inceleme yeniden yapılır. Eski sürümün delilleri korunur.</Banner>
       {error && <Banner tone="danger" title={error} />}
       <Field label="Tür">{(p) => <select className="input" {...p} value={kind} onChange={(e) => setKind(e.target.value)}><option value="AMENDMENT">Zeyilname</option><option value="MAIN">Ana belge yeni sürüm</option><option value="ANNEX">Ek</option></select>}</Field>
+      {kind === 'AMENDMENT' && <Field label="Eklenecek tedarikçi tarafı (varsa)" hint="Devir veya ek taraf için. İmza gerektiren sözleşmede bu taraf için zorunlu imza gereksinimi açılır.">{(p) => <select className="input" {...p} value={addSupplierId} onChange={(e) => setAddSupplierId(e.target.value)}><option value="">Taraf eklenmiyor</option>{sup.data?.items.filter((x) => x.status === 'ACTIVE').map((x) => <option key={x.id} value={x.id}>{x.label ?? x.legalName}</option>)}</select>}</Field>}
       <Field label="Belge (PDF)" hint="En fazla 25 MB.">{(p) => (
         <div className="flex flex-wrap items-center gap-3">
           <input className="peer sr-only" type="file" accept="application/pdf" {...p} onChange={(e) => setFile(e.target.files?.[0] ?? null)} />

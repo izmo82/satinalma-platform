@@ -228,7 +228,7 @@ export function checkInvoice(i: InvoiceCheckInput): InvoiceCheck {
       return !reversal(id) && !!i.supplierRootId && roots.length > 0 && !roots.includes(i.supplierRootId);
     };
     if (al.some((a) => foreignPo(a.poLineId) || foreignContract(a.contractVersionId))) {
-      push({ code: 'SUPPLIER_MISMATCH', severity: 'BLOCK', ownerRole: 'FINANCE', lineNo: l.lineNo, message: `Satır ${l.lineNo}: bağlı sipariş veya sözleşme bu faturanın tedarikçisine ait değil; tahsisi düzenleyip bu bağı kaldırın.` });
+      push({ code: 'SUPPLIER_MISMATCH', severity: 'BLOCK', ownerRole: 'FINANCE', lineNo: l.lineNo, message: `Satır ${l.lineNo}: bağlı sipariş veya sözleşme bu faturanın tedarikçisine ait değil (aynı ünvanlı başka bir kayıt olabilir); tahsisi düzenleyip bu bağı kaldırın.` });
     }
     // Kapsam dışı hedef RLS nedeniyle yüklenmez; yok saymak kontrolü atlatırdı, engel sayılır (D87).
     const otherCompany = (id: string | null, owner: { companyId?: string | null } | undefined) => !!i.companyId && !!id && !reversal(id) && owner?.companyId !== i.companyId;

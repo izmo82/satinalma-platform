@@ -87,7 +87,7 @@ struct InvoiceDetail: Decodable, Sendable {
 struct InvoiceRow: Decodable, Identifiable, Sendable, Hashable {
     let id: String; let kind: String; let invoiceNo: String; let issueDate: String; let currency: String; let supplierName: String; let netAmount: String?
     let legalStatus: String; let decision: String?
-    let supplierStatus: String?; let supplierIdentityVerified: Bool?
+    let supplierStatus: String?; let supplierIdentityVerified: Bool?; let blocked: Bool?
 }
 struct InvoiceList: Decodable, Sendable { let items: [InvoiceRow] }
 

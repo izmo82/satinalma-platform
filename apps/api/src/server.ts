@@ -413,14 +413,22 @@ export async function buildApp(deps: AppDeps) {
   }, async (req) => scoped(req, 'supplier.identity.resolve', (tx, ctx) => resolveSupplierIdentity(tx, ctx, (req.params as { id: string }).id, req.body as any)));
 
   // --- Sözleşmeler ve imza kontrolü (UX09/UX14) -------------------------------------
-  app.get('/api/v1/contracts', { schema: { tags: ['contracts'] } }, async (req) => scoped(req, 'contract.read', async (tx, ctx) => {
+  app.get('/api/v1/contracts', { schema: { tags: ['contracts'], querystring: { type: 'object', additionalProperties: false, properties: {
+    limit: { type: 'integer', minimum: 1, maximum: 100 }, offset: { type: 'integer', minimum: 0 } } } } }, async (req) => scoped(req, 'contract.read', async (tx, ctx) => {
+    const { limit = 100, offset = 0 } = req.query as { limit?: number; offset?: number };
+    // İmza durumu satır başına türetilir; sayfa boyutu bu maliyeti sınırlar (D89).
+    const total = (await tx.query<{ n: number }>(`SELECT count(*)::int AS n FROM contract_versions cv WHERE cv.superseded_by_id IS NULL`)).rows[0]!.n;
     const r = await tx.query<{ id: string }>(
-      `SELECT cv.id FROM contract_versions cv WHERE cv.superseded_by_id IS NULL ORDER BY cv.created_at DESC LIMIT 100`);
+      `SELECT cv.id FROM contract_versions cv WHERE cv.superseded_by_id IS NULL ORDER BY cv.created_at DESC, cv.id LIMIT $1 OFFSET $2`, [limit, offset]);
     const items = [];
+    const parties = (await tx.query<{ id: string; names: string[] }>(`SELECT contract_version_id AS id, array_agg(display_name ORDER BY display_name) AS names FROM contract_parties
+      WHERE party_role = 'SUPPLIER' AND contract_version_id = ANY($1::uuid[]) GROUP BY contract_version_id`, [r.rows.map((x) => x.id)])).rows;
+    const supplierNames = new Map(parties.map((x) => [x.id, x.names]));
     for (const row of r.rows) {
       const s = await contracts.getSignatureStatus(tx, ctx, row.id);
       items.push({
         ...s.contractVersion,
+        supplierNames: supplierNames.get(row.id) ?? [],
         signature: { overall: s.status.overall, underlying: s.status.underlying, automaticCheck: s.status.automaticCheck,
           automaticAlert: s.status.automaticAlert, custody: s.status.custody,
           missingParties: s.status.blockers.filter((b) => b.code === 'SIGNATURE_MISSING').map((b) => b.partyName),
@@ -428,7 +436,7 @@ export async function buildApp(deps: AppDeps) {
         lastReviewedAt: s.reviews.at(-1)?.reviewedAt ?? null,
       });
     }
-    return { items };
+    return { items, total };
   }));
 
   app.get('/api/v1/contract-options', { schema: { tags: ['contracts'] } }, async (req) => scoped(req, 'contract.read', (tx) => invoices.contractOptions(tx)));
@@ -466,7 +474,7 @@ export async function buildApp(deps: AppDeps) {
 
   app.post('/api/v1/contract-versions/:id/versions', {
     schema: { tags: ['contracts'], params: idParams, body: { type: 'object', required: ['documentVersionId', 'kind', 'stage'], additionalProperties: false,
-      properties: { documentVersionId: uuid, kind: { type: 'string', enum: ['MAIN', 'AMENDMENT', 'ANNEX', 'SOW'] }, stage } } },
+      properties: { documentVersionId: uuid, kind: { type: 'string', enum: ['MAIN', 'AMENDMENT', 'ANNEX', 'SOW'] }, stage, addSupplierId: uuid } } },
   }, async (req, reply) => reply.status(201).send(await scoped(req, 'contract.manage', (tx, ctx) =>
     contracts.addContractVersion(tx, ctx, (req.params as any).id, ifMatch(req), req.body as any))));
 

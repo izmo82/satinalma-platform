@@ -42,6 +42,7 @@ struct InvoiceView: View {
                             Text("\(Labels.issueSeverity[x.severity] ?? x.severity) · Çözen: \(Labels.role[x.ownerRole] ?? x.ownerRole)").font(.caption.weight(.semibold))
                                 .foregroundStyle(x.severity == "BLOCK" ? Color.red : Color.orange)
                             Text(x.message).font(.subheadline)
+                            if x.code == "SUPPLIER_MISMATCH" || x.code == "COMPANY_MISMATCH" { Text("Tahsis düzenleme web uygulamasında yapılır.").font(.caption).foregroundStyle(.secondary) }
                         }.accessibilityElement(children: .combine)
                     }
                 }

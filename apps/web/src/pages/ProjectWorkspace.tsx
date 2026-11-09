@@ -319,7 +319,7 @@ function RoundPanel({ d, reload }: { d: Detail; reload: () => Promise<void> }) {
                 <div className="radio-list max-h-56 overflow-auto">
                   {suppliers.data?.items.map((s) => (
                     <label key={s.id}><input type="checkbox" checked={picked.includes(s.id)} onChange={(e) => setPicked((x) => e.target.checked ? [...x, s.id] : x.filter((y) => y !== s.id))} />
-                      <span>{s.label ?? s.legalName}{s.status === 'CANDIDATE' && <span className="block text-sm text-warn">Aday: teklif verebilir, aktivasyon olmadan kazanan olamaz</span>}</span></label>
+                      <span>{s.label ?? s.legalName}{s.status === 'CANDIDATE' && <span className="block text-sm text-warn">Teklif verebilir, aktivasyon olmadan kazanan olamaz</span>}</span></label>
                   ))}
                 </div>
               )}

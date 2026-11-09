@@ -62,3 +62,21 @@ test('sayfa yatay taşmaz', async ({ page }) => {
     expect(sw, path).toBeLessThanOrEqual(cw);
   }
 });
+
+test('sözleşme listesi: daha fazla yükleme satırları biriktirir, süzgeç yüklenenlerde çalışır (D89)', async ({ page }) => {
+  // Yalnız sayfalama arayüzünü sınar; 100'den fazla sözleşme üretmemek için liste yanıtı taklit edilir.
+  const row = (id: string, title: string, overall: string) => ({ id, title, versionNo: 1, stage: 'EXECUTION', signatureMethod: 'NOT_REQUIRED', originalCustodyRequired: false, finalizedAt: null, lastReviewedAt: null,
+    signature: { overall, underlying: overall, automaticCheck: 'NOT_PROCESSED', automaticAlert: null, custody: 'UNKNOWN', missingParties: [], blockerCount: 0, hasActiveException: false } });
+  await page.route(/\/api\/v1\/contracts(\?.*)?$/, (route) => {
+    const offset = Number(new URL(route.request().url()).searchParams.get('offset') ?? 0);
+    return route.fulfill({ json: offset === 0 ? { items: [row('a', 'Taklit Sözleşme A', 'NOT_REQUIRED')], total: 2 } : { items: [row('b', 'Taklit Sözleşme B', 'NOT_REVIEWED')], total: 2 } });
+  });
+  await login(page, 'leyla.hukuk@example.test');
+  await page.goto('/sozlesmeler?filtre=bekleyen');
+  await expect(page.getByText('Yüklenen sözleşmelerde bu filtreye uyan yok')).toBeVisible();
+  await expect(page.getByText('Süzgeç sayıları yüklenen 1 sözleşmeye göredir; toplam 2.')).toBeVisible();
+  await page.getByRole('button', { name: 'Daha fazla yükle' }).click();
+  await expect(page.getByRole('link', { name: 'Taklit Sözleşme B' }).first()).toBeAttached();
+  await expect(page.getByRole('button', { name: 'Daha fazla yükle' })).toHaveCount(0);
+  await expect(page.getByText('Süzgeç sayıları yüklenen')).toHaveCount(0);
+});

@@ -720,6 +720,27 @@
         "tags": [
           "contracts"
         ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100
+            },
+            "in": "query",
+            "name": "limit",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "in": "query",
+            "name": "offset",
+            "required": false
+          }
+        ],
         "responses": {
           "200": {
             "description": "Default Response"
@@ -972,6 +993,10 @@
                       "EXECUTION",
                       "ARCHIVE_IMPORT"
                     ]
+                  },
+                  "addSupplierId": {
+                    "type": "string",
+                    "format": "uuid"
                   }
                 }
               }

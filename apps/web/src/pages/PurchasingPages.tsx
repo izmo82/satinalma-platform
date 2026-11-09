@@ -94,7 +94,7 @@ function PoForm({ onCancel, onCreated }: { onCancel: () => void; onCreated: (id:
           <Field label="Para birimi">{(p) => <input className="input" maxLength={3} {...p} value={f.currency} onChange={(e) => setF({ ...f, currency: e.target.value.toUpperCase() })} />}</Field>
         </div>
         {lines.map((l, i) => (
-          <div key={i} className="grid grid-cols-[110px_minmax(0,1fr)_100px_90px_130px_90px_auto] items-start gap-3 max-[900px]:grid-cols-2">
+          <div key={i} className="grid grid-cols-[110px_minmax(0,1fr)_100px_90px_130px_90px_auto] items-start gap-3 max-[1200px]:grid-cols-2">
             <Field label="Tür">{(p) => <select className="input" {...p} value={l.kind} onChange={(e) => set(i, 'kind', e.target.value)}><option value="GOODS">Mal</option><option value="SERVICE">Hizmet</option></select>}</Field>
             <Field label={`Kalem ${i + 1}`}>{(p) => <input className="input" required {...p} value={l.description} onChange={(e) => set(i, 'description', e.target.value)} />}</Field>
             <Field label="Miktar">{(p) => <input className="input tabular text-right" required inputMode="decimal" {...p} value={l.quantity} onChange={(e) => set(i, 'quantity', e.target.value.replace(',', '.'))} />}</Field>
@@ -238,7 +238,7 @@ function PoChangeForm({ d, onDone }: { d: PoDetail; onDone: () => void }) {
           );
         })}
         {added.map((l, i) => (
-          <div key={i} className="grid grid-cols-[110px_minmax(0,1fr)_100px_90px_130px_90px_auto] items-start gap-3 max-[900px]:grid-cols-2">
+          <div key={i} className="grid grid-cols-[110px_minmax(0,1fr)_100px_90px_130px_90px_auto] items-start gap-3 max-[1200px]:grid-cols-2">
             <Field label="Tür">{(p) => <select className="input" {...p} value={l.kind} onChange={(e) => setAdd(i, 'kind', e.target.value)}><option value="GOODS">Mal</option><option value="SERVICE">Hizmet</option></select>}</Field>
             <Field label={`Yeni kalem ${i + 1}`}>{(p) => <input className="input" required {...p} value={l.description} onChange={(e) => setAdd(i, 'description', e.target.value)} />}</Field>
             <Field label="Miktar">{(p) => <input className="input tabular text-right" required inputMode="decimal" {...p} value={l.quantity} onChange={(e) => setAdd(i, 'quantity', e.target.value.replace(',', '.'))} />}</Field>
@@ -296,7 +296,7 @@ const ERP: Record<string, string> = { PENDING: 'ERP: aktarım bekliyor', UNKNOWN
 export function InvoicesPage() {
   const { me } = useSession();
   const navigate = useNavigate();
-  const r = useResource<{ items: { id: string; kind: keyof typeof KIND; invoiceNo: string; issueDate: string; currency: string; supplierName: string; supplierStatus: string; supplierIdentityVerified: boolean; netAmount: string; legalStatus: string; paymentStatus: string; decision: string | null; erpStatus: string | null; duplicateCount: number }[] }>('/api/v1/invoices');
+  const r = useResource<{ items: { id: string; kind: keyof typeof KIND; invoiceNo: string; issueDate: string; currency: string; supplierName: string; supplierStatus: string; supplierIdentityVerified: boolean; netAmount: string; legalStatus: string; paymentStatus: string; decision: string | null; erpStatus: string | null; duplicateCount: number; blocked: boolean }[] }>('/api/v1/invoices');
   const [creating, setCreating] = useState(false);
   // Süzgeç ve kolonlar URL'de (kayıtlı görünüm ve paylaşılabilir bağlantı); yetki ve kapsam sunucuda.
   const [params, setParams] = useSearchParams();
@@ -307,7 +307,9 @@ export function InvoicesPage() {
   const toggleCol = (c: string) => { const n = new Set(hidden); n.has(c) ? n.delete(c) : n.add(c); setParam('gizle', [...n].sort().join(',')); };
   const all = r.data?.items ?? [];
   const stateOf = (x: (typeof all)[number]) => x.legalStatus !== 'RECEIVED' ? 'IPTAL' : x.decision === 'APPROVAL' || x.decision === 'REJECTION' ? x.decision : 'BEKLIYOR';
-  const items = all.filter((x) => (!durum || stateOf(x) === durum) && (!para || x.currency === para));
+  const blockedOf = (x: (typeof all)[number]) => x.blocked && stateOf(x) === 'BEKLIYOR';
+  const matches = (x: (typeof all)[number], k: string) => !k || (k === 'ENGELLI' ? blockedOf(x) : stateOf(x) === k);
+  const items = all.filter((x) => matches(x, durum) && (!para || x.currency === para));
   const currencies = [...new Set(all.map((x) => x.currency))].sort();
   const COLS = [['tedarikci', 'Tedarikçi'], ['erp', 'ERP / ödeme'], ['tarih', 'Tarih']] as const;
   const show = (c: string) => !hidden.has(c);
@@ -323,8 +325,8 @@ export function InvoicesPage() {
       <SavedViews page="invoices" />
       <div className="mb-3 flex flex-wrap items-end gap-3">
         <div className="flex flex-wrap gap-2" role="group" aria-label="Onay durumu süzgeci">
-          {([['', 'Tümü'], ['BEKLIYOR', 'Karar bekliyor'], ['APPROVAL', 'Onaylandı'], ['REJECTION', 'Reddedildi'], ['IPTAL', 'Hukuken iptal/ret']] as const).map(([k, l]) =>
-            <FilterChip key={k} pressed={durum === k} count={k ? all.filter((x) => stateOf(x) === k).length : all.length} onClick={() => setParam('durum', k)}>{l}</FilterChip>)}
+          {([['', 'Tümü'], ['BEKLIYOR', 'Karar bekliyor'], ['ENGELLI', 'Engelli'], ['APPROVAL', 'Onaylandı'], ['REJECTION', 'Reddedildi'], ['IPTAL', 'Hukuken iptal/ret']] as const).map(([k, l]) =>
+            <FilterChip key={k} pressed={durum === k} count={all.filter((x) => matches(x, k)).length} onClick={() => setParam('durum', k)}>{l}</FilterChip>)}
         </div>
         {currencies.length > 1 && <label className="flex items-center gap-2 text-sm">Para birimi
           <select className="input h-8 w-24" value={para} onChange={(e) => setParam('para', e.target.value)}><option value="">Tümü</option>{currencies.map((c) => <option key={c} value={c}>{c}</option>)}</select></label>}
@@ -344,7 +346,7 @@ export function InvoicesPage() {
                 <span className="block text-sm text-ink-subtle">{KIND[x.kind]}{x.duplicateCount > 0 ? ` · ${x.duplicateCount} tekrar geliş` : ''}</span></TableCell>
               {show('tedarikci') && <TableCell>{x.supplierName}{supplierRecordNote(x.supplierStatus, x.supplierIdentityVerified) && <span className="block text-sm text-warn">{supplierRecordNote(x.supplierStatus, x.supplierIdentityVerified)}</span>}</TableCell>}
               <TableCell className="whitespace-nowrap text-right">{fmtMoney(x.netAmount, x.currency)}</TableCell>
-              <TableCell>{x.legalStatus !== 'RECEIVED' ? <Tag label={{ text: 'Hukuken iptal/ret', tone: 'danger', icon: 'x' }} /> : x.decision ? <Tag label={STATUS[x.decision]} /> : <span className="text-sm text-ink-subtle">Bekliyor</span>}</TableCell>
+              <TableCell>{x.legalStatus !== 'RECEIVED' ? <Tag label={{ text: 'Hukuken iptal/ret', tone: 'danger', icon: 'x' }} /> : x.decision ? <Tag label={STATUS[x.decision]} /> : <><span className="text-sm text-ink-subtle">Bekliyor</span>{x.blocked && <span className="mt-1 block"><Tag label={STATUS.BLOCKED} /></span>}</>}</TableCell>
               {show('erp') && <TableCell className="text-sm text-ink-muted max-[900px]:hidden">{x.erpStatus ? ERP[x.erpStatus] : '—'}{x.paymentStatus === 'PAID' ? ' · ödendi (ERP)' : ''}</TableCell>}
               {show('tarih') && <TableCell className="whitespace-nowrap text-sm text-ink-subtle">{fmtDate(x.issueDate)}</TableCell>}
             </TableRow>
@@ -450,6 +452,7 @@ export function InvoicePage() {
       </div>
       <div className="mb-5 flex flex-wrap gap-x-6 gap-y-1 text-sm text-ink-muted">
         {supplierNote && <span className="text-warn">Tedarikçi: {supplierNote}</span>}
+        <Link to={`/tedarikciler/${d.invoice.supplierId}`}>Tedarikçi kaydını aç</Link>
         <span>Tarih {fmtDate(d.invoice.issueDate)}</span>{d.invoice.ettn && <span className="mono">ETTN {d.invoice.ettn}</span>}
         <span>Hukuki durum: {d.invoice.legalStatus === 'RECEIVED' ? 'alındı' : 'iptal/ret'}</span>
         <span>{d.erp ? ERP[d.erp.status] : 'ERP: onaydan sonra'}</span><span>Ödeme: {d.invoice.paymentStatus === 'PAID' ? 'ödendi (ERP teyidi)' : 'ödenmedi'}</span>
@@ -525,6 +528,7 @@ export function InvoicePage() {
                 return <>
                   {needsEx && !canEx && <p className="text-sm text-ink-muted">İstisna onayını satınalma yöneticisi verir; bulgular sorumlularına görev olarak düştü.</p>}
                   {d.can.approve && d.invoice.createdByMe && <p className="text-sm text-ink-muted">Faturayı siz girdiniz; görev ayrılığı gereği başka bir finans kullanıcısı onaylar.</p>}
+                  {d.can.approve && !d.check.canApprove && <p className="text-sm text-ink-muted">Engel gerektiren bulgu varken onaylanamaz; önce yukarıdaki bulguları çözün.</p>}
                   {(canEx || canFin) && <Field label={canEx ? 'Gerekçe' : 'Ret gerekçesi'} hint={canEx ? 'İstisnada kapsam, tutar ve süreyi yazın.' : 'Yalnız reddederken gerekli.'}>
                     {(p) => <textarea className="input" rows={3} {...p} value={reason} onChange={(e) => setReason(e.target.value)} />}</Field>}
                   {canEx && <Button disabled={a.busy || reason.trim().length < 10} onClick={() => void a.run(() => api(`/api/v1/invoices/${d.invoice.id}/exception-approval`, { method: 'POST', json: { reason } }), 'İstisna onaylandı.')}><Icon name="stamp" />İstisnayı onayla</Button>}
@@ -555,7 +559,7 @@ function Issue({ x }: { x: InvDetail['check']['issues'][number] }) {
 }
 
 function AllocationEditor({ d, onDone }: { d: InvDetail; onDone: () => void }) {
-  const pos = useResource<{ items: { id: string; code: string; companyId: string; supplierRootId: string; contractTitle: string | null }[] }>('/api/v1/purchase-orders');
+  const pos = useResource<{ items: { id: string; code: string; status: string; companyId: string; supplierRootId: string; contractTitle: string | null }[] }>('/api/v1/purchase-orders');
   const [rows, setRows] = useState(d.allocations.length ? d.allocations.map((x) => ({ lineNo: x.lineNo, target: x.poLineId ? `po:${x.poLineId}` : x.contractVersionId ? `cv:${x.contractVersionId}` : '', quantity: x.quantity, amount: x.amount }))
     : d.lines.map((l) => ({ lineNo: l.lineNo, target: '', quantity: l.quantity, amount: l.netAmount })));
   const [poLines, setPoLines] = useState<Record<string, { poLineId: string; description: string }[]>>({});
@@ -563,7 +567,10 @@ function AllocationEditor({ d, onDone }: { d: InvDetail; onDone: () => void }) {
   const [advanceId, setAdvanceId] = useState(d.invoice.advanceInvoiceId ?? '');
   const [err, setErr] = useState<string | null>(null);
   // Ada göre değil tedarikçi köküne göre (D84) ve yalnız faturanın şirketinden (D87).
-  const supplierPos = (pos.data?.items ?? []).filter((p) => p.supplierRootId === d.invoice.supplierRootId && p.companyId === d.invoice.companyId);
+  const supplierPos = (pos.data?.items ?? []).filter((p) => p.supplierRootId === d.invoice.supplierRootId && p.companyId === d.invoice.companyId)
+    .sort((a, b) => Number(a.status !== 'OPEN') - Number(b.status !== 'OPEN'));
+  const [poQuery, setPoQuery] = useState('');
+  const shownPos = supplierPos.filter((p) => p.code.toLocaleLowerCase('tr-TR').includes(poQuery.trim().toLocaleLowerCase('tr-TR')));
   // Kayıtlı bağ, kalemi yüklenmemiş olsa da seçenek olarak görünür; "Seçin" ile kaldırılabilir (aksi halde yanlış bağ düzeltilemez, D84).
   const loaded = new Set(Object.values(poLines).flat().map((l) => l.poLineId));
   const current = [...new Map(d.allocations.filter((a) => (a.poLineId ? !loaded.has(a.poLineId) : a.contractVersionId))
@@ -575,7 +582,9 @@ function AllocationEditor({ d, onDone }: { d: InvDetail; onDone: () => void }) {
         allocations: rows.filter((x) => x.target).map((x) => ({ lineNo: x.lineNo, poLineId: x.target.startsWith('po:') ? x.target.slice(3) : null, contractVersionId: x.target.startsWith('cv:') ? x.target.slice(3) : null, quantity: x.quantity, amount: x.amount })) } })
         .then(onDone, (x: ApiError) => setErr(x.message)); }}>
       <p className="text-sm text-ink-muted">Satırı siparişin kalemine bağlayın. Tek satır birden çok siparişe bölünebilir; tahsis toplamı satır tutarını aşamaz.</p>
-      <div className="flex flex-wrap gap-2">{supplierPos.map((p) => <Button key={p.id} type="button" size="sm" variant="outline" onClick={() => void loadLines(p.id)}>{p.code} kalemlerini yükle</Button>)}
+      {supplierPos.length > 8 && <Field label="Sipariş ara">{(p) => <input className="input max-w-xs" {...p} placeholder="Sipariş no" value={poQuery} onChange={(e) => setPoQuery(e.target.value)} />}</Field>}
+      {/* Kapalı siparişler de kalır (geç fatura, iade); açıklar önce gelir, liste Kaydet düğmesini itmez. */}
+      <div className="flex max-h-44 flex-wrap gap-2 overflow-y-auto">{shownPos.map((p) => <Button key={p.id} type="button" size="sm" variant="outline" onClick={() => void loadLines(p.id)}>{p.code} kalemlerini yükle{p.status !== 'OPEN' ? ' · kapalı' : ''}</Button>)}
         {!supplierPos.length && <span className="text-sm text-ink-subtle">Bu tedarikçinin siparişi yok; sözleşmesiz tahsis istisna gerektirir.</span>}</div>
       {d.check.issues.some((x) => x.code === 'SUPPLIER_MISMATCH' || x.code === 'COMPANY_MISMATCH') && <p className="text-sm text-warn">Kayıtlı bağ başka bir tedarikçiye veya şirkete ait. Hedefi “Seçin” yapıp kaydederek bağı kaldırın.</p>}
       {rows.map((x, i) => (

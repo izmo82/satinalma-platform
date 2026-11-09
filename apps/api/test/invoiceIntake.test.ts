@@ -693,3 +693,105 @@ describe('sipariş formu sözleşme seçenekleri (D88)', () => {
     expect(r.truncated).toBe(true);
   });
 });
+
+describe('sözleşme listesi sayfalama (D89)', () => {
+  it('varsayılan ilk sayfa ve toplam döner; sayfalar çakışmaz, en yeni önce gelir', async () => {
+    const newest: string[] = [];
+    for (let i = 0; i < 3; i++) newest.unshift(await contract('50000.00'));
+    const first = await call('buyer', 'GET', '/api/v1/contracts?limit=2');
+    expect(first.status).toBe(200);
+    expect(first.body.items.map((x: { id: string }) => x.id)).toEqual(newest.slice(0, 2));
+    expect(first.body.total).toBeGreaterThanOrEqual(3);
+    const second = await call('buyer', 'GET', '/api/v1/contracts?limit=2&offset=2');
+    expect(second.body.items[0].id).toBe(newest[2]);
+    expect(second.body.total).toBe(first.body.total);
+    const all = await call('buyer', 'GET', '/api/v1/contracts');
+    expect(all.body.items.length).toBe(Math.min(all.body.total, 100));
+    expect(all.body.items[0].signature).toBeDefined();
+  });
+
+  it('sınır dışı sayfa boyutu reddedilir', async () => {
+    expect((await call('buyer', 'GET', '/api/v1/contracts?limit=101')).status).toBe(400);
+    expect((await call('buyer', 'GET', '/api/v1/contracts?offset=-1')).status).toBe(400);
+  });
+});
+
+describe('fatura listesinde engel ve yetki metni (D90)', () => {
+  it('engelli karar bekleyen fatura işaretlenir; hazır fatura işaretlenmez', async () => {
+    const poId = await po(null, '1', '100');
+    const line = (await getPo(poId)).lines[0].poLineId as string;
+    await call('buyer', 'POST', `/api/v1/po-lines/${line}/receipts`, { quantity: '1', note: 'Teslim alındı (sentetik)' });
+    const make = async () => (await call('finance', 'POST', '/api/v1/invoices', { companyId: h.world.companyA1.id, supplierId: h.world.suppliers.s1, kind: 'INVOICE', invoiceNo: `D90${randomUUID().slice(0, 8)}`,
+      issueDate: '2026-10-20', currency: 'TRY', lines: [{ description: 'Yedek parça', quantity: '1', unit: 'adet', unitPrice: '100', netAmount: '100.00' }] })).body.id as string;
+    const ready = await make(); const unallocated = await make();
+    await call('finance', 'PUT', `/api/v1/invoices/${ready}/allocations`, { allocations: [{ lineNo: 1, poLineId: line, contractVersionId: null, quantity: '1', amount: '100.00' }] });
+    const row = async (id: string) => ((await call('finance', 'GET', '/api/v1/invoices')).body.items as { id: string; blocked: boolean }[]).find((x) => x.id === id)!;
+    expect((await row(unallocated)).blocked).toBe(true);
+    expect((await call('finance', 'GET', `/api/v1/invoices/${ready}`)).body.check.canApprove).toBe(true);
+    expect((await row(ready)).blocked).toBe(false);
+  });
+
+  it('yetki hatası ham izin kodu göstermez', async () => {
+    const r = await call('masterData', 'GET', '/api/v1/purchase-orders');
+    expect(r.status).toBe(403);
+    expect(r.body.error.code).toBe('forbidden');
+    expect(r.body.error.message).not.toContain('po.read');
+  });
+});
+
+describe('zeyilnameyle tedarikçi tarafı ekleme (D91)', () => {
+  const amend = async (cv: string, extra: Record<string, unknown>, kind = 'AMENDMENT') => {
+    const up = await h.upload('legal', { name: 'z.pdf', mime: 'application/pdf', data: syntheticPdf([[`ZEYIL ${randomUUID()}`]]) }, { companyId: h.world.companyA1.id, kind: 'CONTRACT', title: 'Zeyilname (SENTETİK)' });
+    const old = await h.call('legal', 'GET', `/api/v1/contract-versions/${cv}/signature-status`);
+    return h.call('legal', 'POST', `/api/v1/contract-versions/${cv}/versions`, { headers: { 'if-match': old.headers.etag as string }, body: { documentVersionId: up.body.documentVersionId, kind, stage: 'EXECUTION', ...extra } });
+  };
+  it('zeyilnameyle eklenen tedarikçi yeni sürüme sipariş açabilir; önceki sürüm değişmez; denetim izi kalır', async () => {
+    const cv = await contract('50000.00');
+    const r = await amend(cv, { addSupplierId: h.world.suppliers.s2 });
+    expect(r.status, JSON.stringify(r.body)).toBe(201);
+    const newId = r.body.contractVersionId as string;
+    const parties = async (id: string) => (await h.owner.query<{ supplier_id: string }>(`SELECT supplier_id FROM contract_parties WHERE contract_version_id = $1 AND party_role = 'SUPPLIER'`, [id])).rows.map((x) => x.supplier_id);
+    expect(await parties(newId)).toContain(h.world.suppliers.s2);
+    expect(await parties(cv)).not.toContain(h.world.suppliers.s2);
+    expect((await h.owner.query(`SELECT 1 FROM audit_events WHERE action = 'contract.supplier_party.added' AND entity_id = $1`, [newId])).rowCount).toBe(1);
+    const po2 = await call('buyer', 'POST', '/api/v1/purchase-orders', { companyId: h.world.companyA1.id, supplierId: h.world.suppliers.s2, contractVersionId: newId, currency: 'TRY', lines: [{ kind: 'GOODS', description: 'Parça (sentetik)', unit: 'adet', quantity: '1', unitPrice: '100', taxRate: '20' }] });
+    expect(po2.status, JSON.stringify(po2.body)).toBe(201);
+  });
+  it('zeyilname dışında taraf eklenemez; zaten taraf olan tekrar eklenemez', async () => {
+    const cv = await contract('50000.00');
+    expect((await amend(cv, { addSupplierId: h.world.suppliers.s2 }, 'ANNEX')).body.error.code).toBe('party_change_requires_amendment');
+    const cv2 = await contract('50000.00');
+    await h.owner.query(`INSERT INTO contract_parties (tenant_id, company_id, contract_version_id, party_role, supplier_id, display_name)
+      SELECT tenant_id, company_id, id, 'SUPPLIER', $2, 'İkinci (sentetik)' FROM contract_versions WHERE id = $1`, [cv2, h.world.suppliers.s2]);
+    expect((await amend(cv2, { addSupplierId: h.world.suppliers.s2 })).body.error.code).toBe('party_exists');
+  });
+
+  it('imza gerektiren sözleşmede eklenen taraf için zorunlu gereksinim açılır; imzalamadan tamamlanmaz', async () => {
+    const cv = await contract('50000.00');
+    await h.owner.query(`UPDATE contract_versions SET signature_method = 'WET_IMAGE_REVIEW' WHERE id = $1`, [cv]);
+    const r = await amend(cv, { addSupplierId: h.world.suppliers.s2 });
+    expect(r.status, JSON.stringify(r.body)).toBe(201);
+    const newId = r.body.contractVersionId as string;
+    const req = (await h.owner.query<{ required: boolean; acceptable_methods: string[] }>(`SELECT r.required, r.acceptable_methods FROM signature_requirements r JOIN contract_parties p ON p.id = r.party_id
+      WHERE r.contract_version_id = $1 AND p.supplier_id = $2`, [newId, h.world.suppliers.s2])).rows;
+    expect(req).toHaveLength(1);
+    expect(req[0]).toMatchObject({ required: true, acceptable_methods: ['WET_IMAGE_REVIEW'] });
+    expect((await h.call('legal', 'GET', `/api/v1/contract-versions/${newId}/signature-status`)).body.status.overall).not.toBe('COMPLETE');
+  });
+});
+
+describe('avans mahsubu şirket sınırı (D87)', () => {
+  it('başka şirketin avansına bağlı fatura yazılamaz; erişilemeyen avansla kalmış eski kayıt listeyi düşürmez', async () => {
+    const inv = await call('finance', 'POST', '/api/v1/invoices', { companyId: h.world.companyA1.id, supplierId: h.world.suppliers.s1, kind: 'INVOICE', invoiceNo: `D87A${randomUUID().slice(0, 8)}`,
+      issueDate: '2026-10-20', currency: 'TRY', lines: [{ description: 'Yedek parça', quantity: '1', unit: 'adet', unitPrice: '100', netAmount: '100.00' }] });
+    expect(inv.status).toBe(201);
+    const adv = await call('finance', 'POST', '/api/v1/invoices', { companyId: h.world.companyA1.id, supplierId: h.world.suppliers.s1, kind: 'ADVANCE', invoiceNo: `D87B${randomUUID().slice(0, 8)}`,
+      issueDate: '2026-10-19', currency: 'TRY', lines: [{ description: 'Avans', quantity: '1', unit: 'adet', unitPrice: '100', netAmount: '100.00' }] });
+    expect(adv.status).toBe(201);
+    await h.owner.query(`UPDATE invoices SET company_id = $2 WHERE id = $1`, [adv.body.id, h.world.companyA2.id]);
+    await h.owner.query(`UPDATE invoices SET advance_invoice_id = $2 WHERE id = $1`, [inv.body.id, adv.body.id]);
+    const list = await call('finance', 'GET', '/api/v1/invoices');
+    expect(list.status).toBe(200);
+    expect((await call('finance', 'GET', `/api/v1/invoices/${inv.body.id}`)).status).toBe(200);
+  });
+});

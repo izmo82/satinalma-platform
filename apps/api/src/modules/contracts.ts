@@ -75,7 +75,7 @@ export async function createContract(tx: Tx, ctx: TenantContext, body: {
  * Taraf ve gereksinim tanımları yeni sürüme kopyalanır ama inceleme kararları taşınmaz (SIG09, T31).
  */
 export async function addContractVersion(tx: Tx, ctx: TenantContext, prevId: string, ifMatch: string | undefined, body: {
-  documentVersionId: string; kind: 'MAIN' | 'AMENDMENT' | 'ANNEX' | 'SOW'; stage: 'DRAFT' | 'EXECUTION' | 'ARCHIVE_IMPORT';
+  documentVersionId: string; kind: 'MAIN' | 'AMENDMENT' | 'ANNEX' | 'SOW'; stage: 'DRAFT' | 'EXECUTION' | 'ARCHIVE_IMPORT'; addSupplierId?: string;
 }) {
   const prev = await loadCv(tx, prevId, true);
   assertCurrent(prev, ifMatch);
@@ -109,6 +109,24 @@ export async function addContractVersion(tx: Tx, ctx: TenantContext, prevId: str
        required, attachment_scope, policy_version, $5
      FROM signature_requirements WHERE contract_version_id = $1 AND retired_at IS NULL`,
     [prevId, newId, body.documentVersionId, JSON.stringify(Object.fromEntries(partyMap)), ctx.userId]);
+  // Taraf değişimi yeniden onay gerektirir (BR05): yalnız zeyilnameyle, yeni sürüm ve imza incelemesiyle eklenir (D91).
+  if (body.addSupplierId) {
+    if (body.kind !== 'AMENDMENT') throw unprocessable('party_change_requires_amendment', 'Yeni tedarikçi tarafı yalnız zeyilnameyle eklenir.');
+    const sup = (await tx.query<{ legal_name: string; status: string }>(`SELECT legal_name, status FROM suppliers WHERE id = $1`, [body.addSupplierId])).rows[0];
+    if (!sup) throw notFound();
+    if (sup.status !== 'ACTIVE') throw unprocessable('supplier_not_active', `${sup.legal_name} aktif tedarikçi değil; sözleşme tarafı olarak eklenemez.`);
+    if (parties.rows.some((p) => p.party_role === 'SUPPLIER' && p.supplier_id === body.addSupplierId)) throw conflict('party_exists', `${sup.legal_name} bu sözleşmede zaten tedarikçi tarafı.`);
+    const party = await tx.query<{ id: string }>(`INSERT INTO contract_parties (tenant_id, company_id, contract_version_id, party_role, supplier_id, display_name) VALUES ($1,$2,$3,'SUPPLIER',$4,$5) RETURNING id`,
+      [ctx.tenantId, prev.company_id, newId, body.addSupplierId, sup.legal_name]);
+    // Durum yalnız gereksinimlerden türetilir: gereksinimsiz taraf imzalamadan sürüm kesinleşebilirdi.
+    if (prev.signature_method !== 'NOT_REQUIRED') {
+      const single = ['WET_IMAGE_REVIEW', 'QUALIFIED_ELECTRONIC', 'ELECTRONIC_OTHER'].includes(prev.signature_method);
+      await tx.query(`INSERT INTO signature_requirements (tenant_id, company_id, contract_version_id, document_version_id, party_id, signer_role, requirement_count, acceptable_methods, required, policy_version, created_by)
+        VALUES ($1,$2,$3,$4,$5,'Yetkili imzacı',1,$6,true,'zeyilname-taraf-1',$7)`,
+        [ctx.tenantId, prev.company_id, newId, body.documentVersionId, party.rows[0]!.id, single ? [prev.signature_method] : ['WET_IMAGE_REVIEW', 'QUALIFIED_ELECTRONIC', 'ELECTRONIC_OTHER'], ctx.userId]);
+    }
+    await audit(tx, ctx, 'contract.supplier_party.added', 'contract_version', newId, { supplierId: body.addSupplierId, previous: prevId });
+  }
   await tx.query(`UPDATE contract_versions SET superseded_by_id = $2, row_version = row_version + 1 WHERE id = $1`, [prevId, newId]);
   await closeTasks(tx, `sig:${prevId}:`);
   await audit(tx, ctx, 'contract.version.added', 'contract_version', newId, { previous: prevId, kind: body.kind });

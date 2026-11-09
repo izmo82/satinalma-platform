@@ -84,13 +84,15 @@ function Shell() {
   ] : [
     { to: '/islerim', label: 'İşlerim', icon: 'inbox', count: load(null) },
     ...(hasRole(me, 'BUYER', 'PROCUREMENT_MANAGER', 'FINANCE', 'LEGAL', 'AUDITOR') ? [{ to: '/lira-defteri', label: 'Lira Defteri', icon: 'wallet', count: load(['recovery_case']) }] : []),
-    { to: '/projeler', label: 'Projeler', icon: 'folder', count: load(['project']) },
-    { to: '/tedarikciler', label: 'Tedarikçiler', icon: 'users', count: load(['supplier']) },
-    { to: '/sozlesmeler', label: 'Sözleşmeler', icon: 'file', count: load(['contract_version']) },
+    // Yalnız yetkisiz (403) ekrana götüren girişler gizlenir; rol listeleri packages/domain/src/roles.ts ile aynı (D90).
+    // TENANT_ADMIN proje listesini okuyamaz ama onay politikasına buradan ulaşır.
+    ...(hasRole(me, 'REQUESTER', 'BUYER', 'PROCUREMENT_MANAGER', 'TECH_EVALUATOR', 'FINANCE', 'SECURITY', 'AUDITOR', 'TENANT_ADMIN') ? [{ to: '/projeler', label: 'Projeler', icon: 'folder', count: load(['project']) }] : []),
+    ...(hasRole(me, 'REQUESTER', 'BUYER', 'PROCUREMENT_MANAGER', 'TECH_EVALUATOR', 'LEGAL', 'FINANCE', 'SECURITY', 'MASTER_DATA', 'AUDITOR') ? [{ to: '/tedarikciler', label: 'Tedarikçiler', icon: 'users', count: load(['supplier']) }] : []),
+    ...(hasRole(me, 'BUYER', 'PROCUREMENT_MANAGER', 'LEGAL', 'FINANCE', 'AUDITOR') ? [{ to: '/sozlesmeler', label: 'Sözleşmeler', icon: 'file', count: load(['contract_version']) }] : []),
     { to: '/belge-girisi', label: 'Belge girişi', icon: 'upload', count: load(['document_version']) },
-    { to: '/siparisler', label: 'Siparişler', icon: 'package' },
-    { to: '/faturalar', label: 'Faturalar', icon: 'receipt', count: load(['invoice']) },
-    { to: '/olaylar', label: 'Olaylar', icon: 'alert', count: load(['incident']) },
+    ...(hasRole(me, 'REQUESTER', 'BUYER', 'PROCUREMENT_MANAGER', 'FINANCE', 'AUDITOR') ? [{ to: '/siparisler', label: 'Siparişler', icon: 'package' }] : []),
+    ...(hasRole(me, 'BUYER', 'PROCUREMENT_MANAGER', 'FINANCE', 'LEGAL', 'AUDITOR') ? [{ to: '/faturalar', label: 'Faturalar', icon: 'receipt', count: load(['invoice']) }] : []),
+    ...(hasRole(me, 'REQUESTER', 'BUYER', 'PROCUREMENT_MANAGER', 'TECH_EVALUATOR', 'LEGAL', 'FINANCE', 'SECURITY', 'MASTER_DATA', 'AUDITOR') ? [{ to: '/olaylar', label: 'Olaylar', icon: 'alert', count: load(['incident']) }] : []),
     ...(hasRole(me, 'BUYER', 'PROCUREMENT_MANAGER', 'FINANCE', 'AUDITOR') ? [{ to: '/raporlar', label: 'Raporlar', icon: 'chart' }] : []),
     ...(hasRole(me, 'TENANT_ADMIN', 'AUDITOR', 'PROCUREMENT_MANAGER') ? [{ to: '/yapay-zeka', label: 'Yapay zekâ', icon: 'sparkles', count: load(['tenant']) }] : []),
     ...(hasRole(me, 'LEGAL', 'TENANT_ADMIN', 'AUDITOR') ? [{ to: '/veri-yonetimi', label: 'Veri yönetimi', icon: 'archive', count: load(['disposal_batch', 'tenant_export']) }] : []),
