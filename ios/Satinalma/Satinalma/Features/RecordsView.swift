@@ -32,6 +32,7 @@ struct InvoicesList: View {
                         VStack(alignment: .leading, spacing: 2) {
                             AdaptiveStack { Text(x.invoiceNo).font(.body.weight(.semibold)); Text(x.decision.map { Labels.invoiceStatus[$0] ?? $0 } ?? "Karar bekliyor").font(.caption).foregroundStyle(.secondary) }
                             Text(x.supplierName).font(.subheadline)
+                            if let note = Labels.supplierNote(x.supplierStatus, verified: x.supplierIdentityVerified) { Text(note).font(.caption).foregroundStyle(.orange) }
                             Text(Fmt.money(x.netAmount, x.currency)).font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
                         }.accessibilityElement(children: .combine)
                     }

@@ -73,6 +73,7 @@ struct InvoiceDetail: Decodable, Sendable {
     struct Invoice: Decodable, Sendable {
         let id: String; let kind: String; let invoiceNo: String; let issueDate: String; let currency: String; let supplierName: String
         let documentVersionId: String?; let documentSha256: String?; let createdByMe: Bool; let legalStatus: String
+        let supplierStatus: String?; let supplierIdentityVerified: Bool?
     }
     struct Line: Decodable, Identifiable, Sendable { let lineNo: Int; let description: String; let quantity: String; let unit: String; let netAmount: String; var id: Int { lineNo } }
     struct Issue: Decodable, Identifiable, Sendable { let code: String; let severity: String; let message: String; let ownerRole: String; var id: String { "\(code)-\(message)" } }
@@ -86,6 +87,7 @@ struct InvoiceDetail: Decodable, Sendable {
 struct InvoiceRow: Decodable, Identifiable, Sendable, Hashable {
     let id: String; let kind: String; let invoiceNo: String; let issueDate: String; let currency: String; let supplierName: String; let netAmount: String?
     let legalStatus: String; let decision: String?
+    let supplierStatus: String?; let supplierIdentityVerified: Bool?
 }
 struct InvoiceList: Decodable, Sendable { let items: [InvoiceRow] }
 
@@ -139,6 +141,14 @@ enum Labels {
     static let severity: [String: String] = ["CRITICAL": "Kritik", "HIGH": "Yüksek", "NORMAL": "Normal", "MEDIUM": "Orta", "LOW": "Düşük"]
     static let decision: [String: String] = ["IMAGE_CONFIRMED": "İmza görüntüsü teyit edildi", "MISSING": "İmza eksik", "UNCLEAR": "Belirsiz", "PENDING": "Karar yok"]
     static let mark: [String: String] = ["FULL_SIGNATURE": "Tam imza", "STAMP_ONLY": "Yalnız kaşe", "INITIALS_ONLY": "Yalnız paraf", "NAME_ONLY": "Yalnız yazılı isim", "NONE": "İşaret yok", "ILLEGIBLE": "Okunamıyor"]
+    /// Kayıt üzerindeki tedarikçi notu (web `supplierRecordNote` ile aynı metin, D83); aktif ve doğrulanmış firmada nil.
+    static func supplierNote(_ status: String?, verified: Bool?) -> String? {
+        let names = ["CANDIDATE": "Aday", "CONDITIONAL": "Koşullu", "SUSPENDED": "Askıda", "ARCHIVED": "Arşiv", "REJECTED": "Reddedildi", "MERGED": "Birleştirildi"]
+        var notes: [String] = []
+        if let status, status != "ACTIVE" { notes.append(names[status] ?? status) }
+        if verified == false { notes.append("vergi kimliği doğrulanmadı") }
+        return notes.isEmpty ? nil : notes.joined(separator: " · ")
+    }
     static let invoiceStatus: [String: String] = [
         "APPROVAL": "Finans onaylı", "REJECTION": "Reddedildi", "READY": "Onaya hazır", "NEEDS_EXCEPTION": "İstisna gerekli",
         "EXCEPTION_APPROVED": "İstisna onaylı, finans onayı bekliyor", "BLOCKED": "Engelli",

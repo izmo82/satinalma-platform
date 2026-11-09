@@ -5,7 +5,7 @@ import { api, ApiError } from '../lib/api.ts';
 import { useResource } from '../lib/useApi.ts';
 import { useSession, hasRole } from '../lib/session.tsx';
 import { fmtDate, fmtDateTime, fmtMoney } from '../lib/format.ts';
-import { roleLabel, supplierPickHint, type SupplierOption } from '../lib/labels.ts';
+import { roleLabel, supplierPickHint, supplierRecordNote, type SupplierOption } from '../lib/labels.ts';
 import { Banner, Empty, ErrorState, Field, FilterChip, Loading, PageHeader, Tag, toneClass } from '../ui/kit.tsx';
 import { Icon } from '../ui/icons.tsx';
 import { UblFindings, ublTitle, type UblCheck } from '../ui/UblCheck.tsx';
@@ -283,7 +283,7 @@ const ERP: Record<string, string> = { PENDING: 'ERP: aktarım bekliyor', UNKNOWN
 export function InvoicesPage() {
   const { me } = useSession();
   const navigate = useNavigate();
-  const r = useResource<{ items: { id: string; kind: keyof typeof KIND; invoiceNo: string; issueDate: string; currency: string; supplierName: string; netAmount: string; legalStatus: string; paymentStatus: string; decision: string | null; erpStatus: string | null; duplicateCount: number }[] }>('/api/v1/invoices');
+  const r = useResource<{ items: { id: string; kind: keyof typeof KIND; invoiceNo: string; issueDate: string; currency: string; supplierName: string; supplierStatus: string; supplierIdentityVerified: boolean; netAmount: string; legalStatus: string; paymentStatus: string; decision: string | null; erpStatus: string | null; duplicateCount: number }[] }>('/api/v1/invoices');
   const [creating, setCreating] = useState(false);
   // Süzgeç ve kolonlar URL'de (kayıtlı görünüm ve paylaşılabilir bağlantı); yetki ve kapsam sunucuda.
   const [params, setParams] = useSearchParams();
@@ -329,7 +329,7 @@ export function InvoicesPage() {
             <TableRow key={x.id}>
               <TableCell className="whitespace-nowrap"><Link className="font-semibold text-ink no-underline hover:underline" to={`/faturalar/${x.id}`}>{x.invoiceNo}</Link>
                 <span className="block text-sm text-ink-subtle">{KIND[x.kind]}{x.duplicateCount > 0 ? ` · ${x.duplicateCount} tekrar geliş` : ''}</span></TableCell>
-              {show('tedarikci') && <TableCell>{x.supplierName}</TableCell>}
+              {show('tedarikci') && <TableCell>{x.supplierName}{supplierRecordNote(x.supplierStatus, x.supplierIdentityVerified) && <span className="block text-sm text-warn">{supplierRecordNote(x.supplierStatus, x.supplierIdentityVerified)}</span>}</TableCell>}
               <TableCell className="whitespace-nowrap text-right">{fmtMoney(x.netAmount, x.currency)}</TableCell>
               <TableCell>{x.legalStatus !== 'RECEIVED' ? <Tag label={{ text: 'Hukuken iptal/ret', tone: 'danger', icon: 'x' }} /> : x.decision ? <Tag label={STATUS[x.decision]} /> : <span className="text-sm text-ink-subtle">Bekliyor</span>}</TableCell>
               {show('erp') && <TableCell className="text-sm text-ink-muted max-[900px]:hidden">{x.erpStatus ? ERP[x.erpStatus] : '—'}{x.paymentStatus === 'PAID' ? ' · ödendi (ERP)' : ''}</TableCell>}
@@ -400,7 +400,7 @@ function InvoiceForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
 const TAX_CODE: Record<string, string> = { '4080': 'ÖİV', '4081': 'ÖİV (5035)', '0071': 'ÖTV (I sayılı liste)', '0073': 'ÖTV (III sayılı liste)', '0074': 'ÖTV (IV sayılı liste)', '0075': 'ÖTV (III sayılı liste)', '0076': 'ÖTV (II sayılı liste)', '0077': 'ÖTV (II sayılı liste)', '1047': 'Damga vergisi', '9021': 'Konaklama vergisi' };
 
 interface InvDetail {
-  invoice: { id: string; kind: keyof typeof KIND; invoiceNo: string; ettn: string | null; issueDate: string; currency: string; supplierId: string; supplierName: string; supplierStatus: string;
+  invoice: { id: string; kind: keyof typeof KIND; invoiceNo: string; ettn: string | null; issueDate: string; currency: string; supplierId: string; supplierName: string; supplierStatus: string; supplierIdentityVerified: boolean;
     legalStatus: string; paymentStatus: string; documentVersionId: string | null; declaredTaxTotal: string | null; declaredWithholding: string | null; declaredPayable: string | null; originalInvoiceId: string | null; advanceInvoiceId: string | null; advanceOffset: string; createdByMe: boolean; createdBy: string; createdAt: string };
   lines: { lineNo: number; description: string; quantity: string; unit: string; unitPrice: string; netAmount: string; taxRate: string; taxAmount: string | null;
     otherTax: string | null; otherTaxes: { code: string | null; name: string | null; rate: string | null; amount: string }[] | null }[];
@@ -427,6 +427,7 @@ export function InvoicePage() {
   const d = r.data;
   const decided = d.decisions.some((x) => x.kind === 'APPROVAL' || x.kind === 'REJECTION');
   const issuesFor = (lineNo?: number) => d.check.issues.filter((x) => x.lineNo === lineNo);
+  const supplierNote = supplierRecordNote(d.invoice.supplierStatus, d.invoice.supplierIdentityVerified);
   return (
     <div className="page">
       <p className="text-sm text-ink-subtle"><Link to="/faturalar" className="text-ink-subtle">Faturalar</Link> / {d.invoice.invoiceNo}</p>
@@ -435,6 +436,7 @@ export function InvoicePage() {
         <Tag label={STATUS[d.status]} />
       </div>
       <div className="mb-5 flex flex-wrap gap-x-6 gap-y-1 text-sm text-ink-muted">
+        {supplierNote && <span className="text-warn">Tedarikçi: {supplierNote}</span>}
         <span>Tarih {fmtDate(d.invoice.issueDate)}</span>{d.invoice.ettn && <span className="mono">ETTN {d.invoice.ettn}</span>}
         <span>Hukuki durum: {d.invoice.legalStatus === 'RECEIVED' ? 'alındı' : 'iptal/ret'}</span>
         <span>{d.erp ? ERP[d.erp.status] : 'ERP: onaydan sonra'}</span><span>Ödeme: {d.invoice.paymentStatus === 'PAID' ? 'ödendi (ERP teyidi)' : 'ödenmedi'}</span>

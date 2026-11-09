@@ -545,9 +545,13 @@ async function syncIssueTasks(tx: Tx, ctx: TenantContext, invoiceId: string, inv
   }
 }
 
+/** Aynı ünvanlı aday ile aktif firma faturada karışmasın (D83). Vergi kimliğinin kendisi fatura listesine çıkmaz; yalnız doğrulanmış mı bilgisi.
+ *  Birleştirilen aday kimliği çözülmüş sayılır: birleştirme vergi kimliğini hedef kayıtta bırakır, adayda boş kalır. */
+const SUPPLIER_VERIFIED_SQL = `((s.tax_id IS NOT NULL OR s.status = 'MERGED') AND NOT s.identity_review_required)`;
+
 export async function getInvoice(tx: Tx, ctx: TenantContext, id: string) {
   const inv = (await tx.query(`SELECT i.id, i.kind, i.invoice_no AS "invoiceNo", i.ettn, i.issue_date::text AS "issueDate", i.currency, i.company_id AS "companyId",
-      i.supplier_id AS "supplierId", s.legal_name AS "supplierName", s.status AS "supplierStatus", i.legal_status AS "legalStatus", i.payment_status AS "paymentStatus",
+      i.supplier_id AS "supplierId", s.legal_name AS "supplierName", s.status AS "supplierStatus", ${SUPPLIER_VERIFIED_SQL} AS "supplierIdentityVerified", i.legal_status AS "legalStatus", i.payment_status AS "paymentStatus",
       i.original_invoice_id AS "originalInvoiceId", i.advance_invoice_id AS "advanceInvoiceId", i.advance_offset::text AS "advanceOffset", i.document_version_id AS "documentVersionId", (SELECT sha256 FROM document_versions dv WHERE dv.id = i.document_version_id) AS "documentSha256",
       i.declared_tax_total::text AS "declaredTaxTotal", i.declared_withholding::text AS "declaredWithholding", i.declared_payable::text AS "declaredPayable", i.declared_other_tax_total::text AS "declaredOtherTaxTotal",
       i.created_by = $2 AS "createdByMe", u.display_name AS "createdBy", i.created_at AS "createdAt"
@@ -582,6 +586,7 @@ export async function getInvoice(tx: Tx, ctx: TenantContext, id: string) {
 
 export async function listInvoices(tx: Tx) {
   return (await tx.query(`SELECT i.id, i.kind, i.invoice_no AS "invoiceNo", i.issue_date::text AS "issueDate", i.currency, s.legal_name AS "supplierName",
+      s.status AS "supplierStatus", ${SUPPLIER_VERIFIED_SQL} AS "supplierIdentityVerified",
       (SELECT sum(net_amount)::text FROM invoice_lines WHERE invoice_id = i.id) AS "netAmount", i.legal_status AS "legalStatus", i.payment_status AS "paymentStatus",
       (SELECT kind FROM invoice_decisions d WHERE d.invoice_id = i.id AND d.kind IN ('APPROVAL','REJECTION')) AS decision,
       (SELECT status FROM erp_exports e WHERE e.invoice_id = i.id) AS "erpStatus",

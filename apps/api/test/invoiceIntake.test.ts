@@ -13,7 +13,7 @@ beforeAll(async () => {
 });
 afterAll(async () => { await h.close(); });
 
-type Who = 'buyer' | 'finance' | 'finance2' | 'legal' | 'legal2';
+type Who = 'buyer' | 'finance' | 'finance2' | 'legal' | 'legal2' | 'masterData';
 const call = (who: Who, method: string, url: string, body?: unknown) => h.call(who, method, url, body === undefined ? {} : { body });
 const goodLines = [
   { name: 'Yedek disk 2 TB', qty: '3', unitCode: 'C62', price: '333.33', net: '999.99', rate: '20', tax: '200.00' },
@@ -407,5 +407,51 @@ describe('tedarikçi seçim listesi: aynı adlı aday ayırt edilir (D82)', () =
     expect(cand.label).toBe(`${s1} · Aday, vergi kimliği doğrulanmadı`);
     expect(cand.identityVerified).toBe(false);
     expect(JSON.stringify(res.body)).not.toContain(sellerVkn);
+  });
+});
+
+describe('fatura listesi: tedarikçinin durumu ve kimliği görünür (D83)', () => {
+  const invoiceFor = async (supplierId: string) => {
+    const r = await call('finance', 'POST', '/api/v1/invoices', { companyId: h.world.companyA1.id, supplierId, kind: 'INVOICE', invoiceNo: `D83${randomUUID().slice(0, 8)}`,
+      issueDate: '2026-10-20', currency: 'TRY', lines: [{ description: 'Yedek parça', quantity: '1', unit: 'adet', unitPrice: '100', netAmount: '100.00' }] });
+    expect(r.status).toBe(201);
+    return r.body.id as string;
+  };
+
+  it('aynı ünvanlı adaya girilen fatura listede ve detayda ayırt edilir, onaya kapalıdır; aktif firmanın faturası doğrulanmış döner; vergi kimliği dönmez', async () => {
+    const s1 = (await h.owner.query<{ legal_name: string }>(`SELECT legal_name FROM suppliers WHERE id = $1`, [h.world.suppliers.s1])).rows[0]!.legal_name;
+    const badVkn = sellerVkn.slice(0, 9) + String((Number(sellerVkn[9]) + 1) % 10);
+    const up = await upload(xml({ sellerVkn: badVkn, sellerName: s1 }));
+    expect(up.status).toBe(201);
+    const candidateInvoice = await invoiceFor(up.body.supplier.supplierId as string);
+    const activeInvoice = await invoiceFor(h.world.suppliers.s1);
+
+    const list = await call('finance', 'GET', '/api/v1/invoices');
+    expect(list.status).toBe(200);
+    const row = (id: string) => (list.body.items as { id: string }[]).find((x) => x.id === id)!;
+    expect(row(candidateInvoice)).toMatchObject({ supplierName: s1, supplierStatus: 'CANDIDATE', supplierIdentityVerified: false });
+    expect(row(activeInvoice)).toMatchObject({ supplierName: s1, supplierStatus: 'ACTIVE', supplierIdentityVerified: true });
+    expect(JSON.stringify(list.body)).not.toContain(sellerVkn);
+
+    const detail = await call('finance', 'GET', `/api/v1/invoices/${candidateInvoice}`);
+    expect(detail.body.invoice).toMatchObject({ supplierStatus: 'CANDIDATE', supplierIdentityVerified: false });
+    expect(detail.body.check.issues.map((x: { code: string }) => x.code)).toContain('SUPPLIER_NOT_ACTIVE');
+    expect(detail.body.check.canApprove).toBe(false);
+  });
+
+  it('kimliği çözülüp mevcut firmaya birleştirilen adayın faturası "doğrulanmadı" görünmez; birleştirildiği görünür', async () => {
+    const badVkn = sellerVkn.slice(0, 9) + String((Number(sellerVkn[9]) + 1) % 10);
+    const up = await upload(xml({ sellerVkn: badVkn, sellerName: 'Birleşecek Aday (SENTETİK)' }));
+    expect(up.status).toBe(201);
+    const candidateId = up.body.supplier.supplierId as string;
+    const invoiceId = await invoiceFor(candidateId);
+    const before = await call('masterData', 'GET', `/api/v1/suppliers/${candidateId}`);
+    const merged = await call('masterData', 'POST', `/api/v1/suppliers/${candidateId}/identity`,
+      { country: 'TR', taxIdType: 'VKN', taxId: sellerVkn, rationale: 'Kaynak belgede VKN doğrulandı (sentetik)', expectedRowVersion: before.body.rowVersion });
+    expect(merged.status).toBe(200);
+    expect(merged.body.mergedInto).toBe(h.world.suppliers.s1);
+
+    const list = await call('finance', 'GET', '/api/v1/invoices');
+    expect((list.body.items as { id: string }[]).find((x) => x.id === invoiceId)).toMatchObject({ supplierStatus: 'MERGED', supplierIdentityVerified: true });
   });
 });

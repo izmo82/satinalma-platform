@@ -117,3 +117,11 @@ export function supplierPickHint(o: SupplierOption | undefined): string | undefi
   if (o.identityVerified === false) return `${status} · vergi kimliği doğrulanmadı; ödeme için ana veri onayı gerekir.`;
   return `${status}${o.taxIdTail ? ` · ${o.taxIdTail}` : ''}`;
 }
+
+/** Kayıt üzerindeki tedarikçi notu: aktif ve kimliği doğrulanmış firmada not yoktur, satır değişmez (D83). */
+export function supplierRecordNote(status: string | undefined, identityVerified: boolean | undefined): string | undefined {
+  const notes: string[] = [];
+  if (status && status !== 'ACTIVE') notes.push(supplierStatus[status]?.text ?? status);
+  if (identityVerified === false) notes.push('vergi kimliği doğrulanmadı');
+  return notes.length ? notes.join(' · ') : undefined;
+}

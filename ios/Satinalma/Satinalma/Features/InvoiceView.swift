@@ -18,6 +18,7 @@ struct InvoiceView: View {
             Loadable(value: data, error: error, retry: load) { d in
                 Section {
                     LabeledContent("Tedarikçi", value: d.invoice.supplierName)
+                    if let note = Labels.supplierNote(d.invoice.supplierStatus, verified: d.invoice.supplierIdentityVerified) { LabeledContent("Tedarikçi durumu") { Text(note).foregroundStyle(.orange) } }
                     LabeledContent("Durum", value: Labels.invoiceStatus[d.status] ?? d.status)
                     LabeledContent("Net", value: Fmt.money(d.check.netAmount, d.invoice.currency))
                     LabeledContent("KDV", value: Fmt.money(d.check.taxTotal, d.invoice.currency))
