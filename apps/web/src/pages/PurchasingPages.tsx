@@ -61,7 +61,7 @@ export function PurchaseOrdersPage() {
 function PoForm({ onCancel, onCreated }: { onCancel: () => void; onCreated: (id: string) => void }) {
   const { me } = useSession();
   const sup = useResource<{ items: SupplierOption[] }>('/api/v1/supplier-options');
-  const cons = useResource<{ items: { id: string; title: string; companyId?: string; supplierRootIds?: string[] }[] }>('/api/v1/contracts');
+  const cons = useResource<{ items: { id: string; title: string; companyId: string; supplierRootIds: string[] }[]; truncated: boolean }>('/api/v1/contract-options');
   const [f, setF] = useState({ companyId: me?.companies[0]?.id ?? '', supplierId: '', contractVersionId: '', currency: 'TRY' });
   const [contractCleared, setContractCleared] = useState(false);
   const blank = { kind: 'GOODS', description: '', unit: '', quantity: '', unitPrice: '', taxRate: '20' };
@@ -70,7 +70,7 @@ function PoForm({ onCancel, onCreated }: { onCancel: () => void; onCreated: (id:
   const [busy, setBusy] = useState(false);
   const set = (i: number, k: keyof typeof blank, v: string) => setLines(lines.map((x, j) => j === i ? { ...x, [k]: v } : x));
   // Limit seçilen sözleşmeden düşer: yalnız bu şirketin (D86) ve tedarikçinin tarafı olduğu veya tedarikçisi kayıtlı olmayan sözleşmeler (D85).
-  const fits = (c: { companyId?: string; supplierRootIds?: string[] }, companyId: string, supplierId: string) => (!c.companyId || c.companyId === companyId) && (!supplierId || !c.supplierRootIds?.length || c.supplierRootIds.includes(supplierId));
+  const fits = (c: { companyId: string; supplierRootIds: string[] }, companyId: string, supplierId: string) => c.companyId === companyId && (!supplierId || !c.supplierRootIds.length || c.supplierRootIds.includes(supplierId));
   const pick = (next: { companyId?: string; supplierId?: string }) => {
     const n = { ...f, ...next };
     const keep = !!cons.data?.items.some((c) => c.id === f.contractVersionId && fits(c, n.companyId, n.supplierId));
@@ -78,7 +78,8 @@ function PoForm({ onCancel, onCreated }: { onCancel: () => void; onCreated: (id:
     setF({ ...n, contractVersionId: keep ? f.contractVersionId : '' });
   };
   // Sessiz temizleme, limite işlemeyen sözleşmesiz siparişe yol açabilir; neden görünür olmalı.
-  const contractHint = contractCleared ? 'Seçtiğiniz sözleşme bu şirket ve tedarikçiye uygun değil; kaldırıldı.' : !f.supplierId || !cons.data ? undefined
+  const contractHint = contractCleared ? 'Seçtiğiniz sözleşme bu şirket ve tedarikçiye uygun değil; kaldırıldı.'
+    : cons.data?.truncated ? 'Sözleşme sayısı liste sınırını aştı; aradığınız sözleşme burada görünmeyebilir.' : !f.supplierId || !cons.data ? undefined
     : cons.data.items.some((c) => fits(c, f.companyId, f.supplierId)) ? 'Yalnız bu şirketin ve tedarikçinin sözleşmeleri listelenir.' : 'Bu şirkette bu tedarikçinin kayıtlı sözleşmesi yok.';
   return (
     <form className="panel mb-5" onSubmit={(e) => { e.preventDefault(); setBusy(true); setErr(null);

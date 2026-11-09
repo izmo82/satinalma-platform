@@ -94,10 +94,12 @@ function requireTaxRates(lines: { description: string; taxRate?: string | null }
 export interface PoInput { companyId: string; supplierId: string; contractVersionId?: string | null; projectId?: string | null; currency: string;
   lines: { kind: 'GOODS' | 'SERVICE'; description: string; unit: string; quantity: string; unitPrice: string; taxRate?: string | null }[] }
 
-/** Sözleşme listesi için toplu tedarikçi kökleri (N+1 yok). */
-export async function contractSupplierRoots(tx: Tx, contractVersionIds: string[]) {
-  const r = await tx.query<{ id: string; roots: string[] }>(`SELECT cv.id, ${CONTRACT_SUPPLIER_ROOTS_SQL} AS roots FROM contract_versions cv JOIN contract_families f ON f.id = cv.family_id WHERE cv.id = ANY($1::uuid[])`, [contractVersionIds]);
-  return new Map(r.rows.map((x) => [x.id, x.roots]));
+/** Sipariş formu seçenekleri: imza durumu hesaplanmaz, tek sorgu. Sınır aşılırsa form "sözleşme yok" dememek için `truncated` görür (D88). */
+export async function contractOptions(tx: Tx, limit = 2000) {
+  const rows = (await tx.query<{ id: string; companyId: string; title: string; supplierRootIds: string[] }>(
+    `SELECT cv.id, cv.company_id AS "companyId", f.title, ${CONTRACT_SUPPLIER_ROOTS_SQL} AS "supplierRootIds"
+     FROM contract_versions cv JOIN contract_families f ON f.id = cv.family_id WHERE cv.superseded_by_id IS NULL ORDER BY cv.created_at DESC LIMIT $1`, [limit + 1])).rows;
+  return { items: rows.slice(0, limit), truncated: rows.length > limit };
 }
 
 export async function createPo(tx: Tx, ctx: TenantContext, b: PoInput) {

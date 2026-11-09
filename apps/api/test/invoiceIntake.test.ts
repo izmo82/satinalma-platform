@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { syntheticPdf, ublInvoiceXml } from '../src/devdata.ts';
 import { makeHarness } from './harness.ts';
 import { withTenant } from '../src/db.ts';
-import { createInvoice, createPo, setAllocations } from '../src/modules/invoices.ts';
+import { contractOptions, createInvoice, createPo, setAllocations } from '../src/modules/invoices.ts';
 
 // Faz 4 açıkları: e-Fatura XML → fatura, vergi aritmetiği, sipariş değişikliği/kapatma/iptal, tolerans kuralı. Gerçek PostgreSQL + RLS; veri sentetik.
 let h: Awaited<ReturnType<typeof makeHarness>>;
@@ -578,7 +578,7 @@ describe('sipariş açma: sözleşme siparişin tedarikçisine ait olmalı (D85)
 
   it('tedarikçisi kayıtlı olmayan sözleşmeye sipariş açılabilir; sözleşme listesi tedarikçi köklerini döner', async () => {
     const cv = await contract('50000.00');
-    const listed = async () => ((await call('buyer', 'GET', '/api/v1/contracts')).body.items as { id: string; supplierRootIds: string[] }[]).find((x) => x.id === cv)!;
+    const listed = async () => ((await call('buyer', 'GET', '/api/v1/contract-options')).body.items as { id: string; supplierRootIds: string[] }[]).find((x) => x.id === cv)!;
     expect((await listed()).supplierRootIds).toEqual([h.world.suppliers.s1]);
     await h.owner.query(`UPDATE contract_families SET supplier_id = NULL WHERE id = (SELECT family_id FROM contract_versions WHERE id = $1)`, [cv]);
     expect((await listed()).supplierRootIds).toEqual([]);
@@ -672,5 +672,24 @@ describe('fatura tahsisi: sipariş ve sözleşme faturanın şirketine ait olmal
 
     await h.owner.query(`UPDATE invoices SET company_id = $2 WHERE id = $1`, [original, h.world.companyA2.id]);
     expect(await issueCodes(credit.body.id)).toContain('COMPANY_MISMATCH');
+  });
+});
+
+describe('sipariş formu sözleşme seçenekleri (D88)', () => {
+  it('güncel sözleşmeleri ad, şirket ve tedarikçi kökleriyle döner; yalnız sözleşme okuma yetkisiyle', async () => {
+    const cv = await contract('50000.00');
+    const r = await call('buyer', 'GET', '/api/v1/contract-options');
+    expect(r.status).toBe(200);
+    expect(r.body.truncated).toBe(false);
+    expect((r.body.items as { id: string }[]).find((x) => x.id === cv)).toMatchObject({ companyId: h.world.companyA1.id, supplierRootIds: [h.world.suppliers.s1], title: expect.any(String) });
+    expect(Object.keys(r.body.items[0]).sort()).toEqual(['companyId', 'id', 'supplierRootIds', 'title']);
+  });
+
+  it('sınır aşılınca listeyi kısaltır ve bunu bildirir', async () => {
+    await contract('50000.00'); await contract('50000.00');
+    const ctx = { tenantId: h.world.tenantA, userId: h.world.users.buyer.id, roles: ['BUYER'], companyIds: [h.world.companyA1.id], correlationId: 'd88' };
+    const r = await withTenant(h.pool, ctx as never, (tx) => contractOptions(tx, 1));
+    expect(r.items).toHaveLength(1);
+    expect(r.truncated).toBe(true);
   });
 });

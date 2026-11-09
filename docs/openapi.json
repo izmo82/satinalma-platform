@@ -837,6 +837,18 @@
         }
       }
     },
+    "/api/v1/contract-options": {
+      "get": {
+        "tags": [
+          "contracts"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
     "/api/v1/contract-versions/{id}/signature-status": {
       "get": {
         "tags": [
