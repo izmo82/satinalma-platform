@@ -50,7 +50,8 @@ export function SuppliersPage() {
           <TableBody>
             {r.data.items.map((s) => (
               <TableRow key={s.id}>
-                <TableCell className="min-w-[220px]"><Link className="font-semibold text-ink no-underline hover:underline" to={`/tedarikciler/${s.id}`}>{s.legalName}</Link></TableCell>
+                <TableCell className="min-w-[220px]"><Link className="font-semibold text-ink no-underline hover:underline" to={`/tedarikciler/${s.id}`}>{s.legalName}
+                  {(s.identityReviewRequired || !s.taxId) && <span className="sr-only">, vergi kimliği doğrulanmadı</span>}</Link></TableCell>
                 <TableCell><Tag label={supplierStatus[s.status]} /></TableCell>
                 <TableCell className="whitespace-nowrap">{s.taxId ? <span className="mono">{s.taxIdType} {s.taxId}</span> : <span className="text-ink-muted">Doğrulanmadı</span>}</TableCell>
                 <TableCell className="tabular text-right">{s.documentCount}</TableCell>

@@ -10,7 +10,8 @@ async function login(page: Page, email: string) {
 const logout = (page: Page) => page.getByRole('button', { name: 'Çıkış' }).click();
 async function openSupplier(page: Page, name: string, tab: string) {
   await page.getByRole('link', { name: 'Tedarikçiler' }).click();
-  await page.getByRole('link', { name: new RegExp(name) }).click();
+  // Aynı ünvanlı, kimliği doğrulanmamış aday (T06) listede bulunabilir; kimliği doğrulanmış kayıt açılır (D82).
+  await page.getByRole('link', { name: new RegExp(name) }).filter({ hasNotText: 'doğrulanmadı' }).click();
   await page.getByRole('tab', { name: tab }).click();
 }
 

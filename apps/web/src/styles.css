@@ -186,7 +186,7 @@
   table.data .row-link:hover { text-decoration: underline; }
   table.compact td { padding: 6px 12px; }
 
-  .field { display: grid; gap: 4px; margin-bottom: 16px; }
+  .field { display: grid; gap: 4px; margin-bottom: 16px; align-content: start; }
   .field label, .field legend { font-weight: 600; font-size: var(--text-sm); }
   .field .hint { font-size: var(--text-xs); color: var(--ink-muted); }
   .field .error { font-size: var(--text-sm); color: var(--danger); display: flex; gap: 6px; align-items: center; }

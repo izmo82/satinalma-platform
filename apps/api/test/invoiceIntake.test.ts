@@ -385,3 +385,27 @@ describe('zayıf bağlantı: yanıtı kaybolan istek tekrar gönderilince ikinci
     expect(i3.body.error.code).toBe('idempotency_mismatch');
   });
 });
+
+describe('tedarikçi seçim listesi: aynı adlı aday ayırt edilir (D82)', () => {
+  it('geçersiz VKN ile aynı ünvanla açılan aday, aktif firmadan ayrı etiketle listelenir; aktif firmanın etiketi değişmez; tam vergi kimliği dönmez', async () => {
+    const s1 = (await h.owner.query<{ legal_name: string }>(`SELECT legal_name FROM suppliers WHERE id = $1`, [h.world.suppliers.s1])).rows[0]!.legal_name;
+    const badVkn = sellerVkn.slice(0, 9) + String((Number(sellerVkn[9]) + 1) % 10);
+    const up = await upload(xml({ sellerVkn: badVkn, sellerName: s1 }));
+    expect(up.status).toBe(201);
+    const candidateId = up.body.supplier.supplierId as string;
+    expect(up.body.supplier.outcome).toBe('IDENTITY_REVIEW_REQUIRED');
+    expect(candidateId).not.toBe(h.world.suppliers.s1);
+
+    const res = await call('buyer', 'GET', '/api/v1/supplier-options');
+    expect(res.status).toBe(200);
+    const items = res.body.items as { id: string; legalName: string; label: string; taxIdTail: string | null; identityVerified: boolean }[];
+    const active = items.find((x) => x.id === h.world.suppliers.s1)!;
+    const cand = items.find((x) => x.id === candidateId)!;
+    expect(active.label).toBe(s1);
+    expect(active).toMatchObject({ identityVerified: true, taxIdTail: `VKN …${sellerVkn.slice(-4)}` });
+    expect(cand.legalName).toBe(s1);
+    expect(cand.label).toBe(`${s1} · Aday, vergi kimliği doğrulanmadı`);
+    expect(cand.identityVerified).toBe(false);
+    expect(JSON.stringify(res.body)).not.toContain(sellerVkn);
+  });
+});

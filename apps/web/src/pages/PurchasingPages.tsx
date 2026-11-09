@@ -5,7 +5,7 @@ import { api, ApiError } from '../lib/api.ts';
 import { useResource } from '../lib/useApi.ts';
 import { useSession, hasRole } from '../lib/session.tsx';
 import { fmtDate, fmtDateTime, fmtMoney } from '../lib/format.ts';
-import { roleLabel } from '../lib/labels.ts';
+import { roleLabel, supplierPickHint, type SupplierOption } from '../lib/labels.ts';
 import { Banner, Empty, ErrorState, Field, FilterChip, Loading, PageHeader, Tag, toneClass } from '../ui/kit.tsx';
 import { Icon } from '../ui/icons.tsx';
 import { UblFindings, ublTitle, type UblCheck } from '../ui/UblCheck.tsx';
@@ -60,7 +60,7 @@ export function PurchaseOrdersPage() {
 
 function PoForm({ onCancel, onCreated }: { onCancel: () => void; onCreated: (id: string) => void }) {
   const { me } = useSession();
-  const sup = useResource<{ items: { id: string; legalName: string; status: string }[] }>('/api/v1/supplier-options');
+  const sup = useResource<{ items: SupplierOption[] }>('/api/v1/supplier-options');
   const cons = useResource<{ items: { id: string; title: string }[] }>('/api/v1/contracts');
   const [f, setF] = useState({ companyId: me?.companies[0]?.id ?? '', supplierId: '', contractVersionId: '', currency: 'TRY' });
   const blank = { kind: 'GOODS', description: '', unit: '', quantity: '', unitPrice: '', taxRate: '20' };
@@ -76,7 +76,7 @@ function PoForm({ onCancel, onCreated }: { onCancel: () => void; onCreated: (id:
       <div className="panel-body grid gap-3">
         <div className="grid grid-cols-4 gap-x-3 max-[900px]:grid-cols-2">
           <Field label="Şirket">{(p) => <select className="input" {...p} value={f.companyId} onChange={(e) => setF({ ...f, companyId: e.target.value })}>{me?.companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>}</Field>
-          <Field label="Tedarikçi">{(p) => <select className="input" required {...p} value={f.supplierId} onChange={(e) => setF({ ...f, supplierId: e.target.value })}><option value="">Seçin</option>{sup.data?.items.filter((s) => s.status === 'ACTIVE').map((s) => <option key={s.id} value={s.id}>{s.legalName}</option>)}</select>}</Field>
+          <Field label="Tedarikçi" hint={supplierPickHint(sup.data?.items.find((s) => s.id === f.supplierId))}>{(p) => <select className="input" required {...p} value={f.supplierId} onChange={(e) => setF({ ...f, supplierId: e.target.value })}><option value="">Seçin</option>{sup.data?.items.filter((s) => s.status === 'ACTIVE').map((s) => <option key={s.id} value={s.id}>{s.label ?? s.legalName}</option>)}</select>}</Field>
           <Field label="Sözleşme (varsa)">{(p) => <select className="input" {...p} value={f.contractVersionId} onChange={(e) => setF({ ...f, contractVersionId: e.target.value })}><option value="">Sözleşmesiz</option>{cons.data?.items.map((c) => <option key={c.id} value={c.id}>{c.title}</option>)}</select>}</Field>
           <Field label="Para birimi">{(p) => <input className="input" maxLength={3} {...p} value={f.currency} onChange={(e) => setF({ ...f, currency: e.target.value.toUpperCase() })} />}</Field>
         </div>
@@ -344,7 +344,7 @@ export function InvoicesPage() {
 
 function InvoiceForm({ onCancel, onCreated }: { onCancel: () => void; onCreated: (id: string) => void }) {
   const { me } = useSession();
-  const sup = useResource<{ items: { id: string; legalName: string; status: string }[] }>('/api/v1/supplier-options');
+  const sup = useResource<{ items: SupplierOption[] }>('/api/v1/supplier-options');
   const [f, setF] = useState({ companyId: me?.companies[0]?.id ?? '', supplierId: '', kind: 'INVOICE', invoiceNo: '', ettn: '', issueDate: '', currency: 'TRY', originalInvoiceId: '' });
   const [lines, setLines] = useState([{ description: '', quantity: '', unit: '', unitPrice: '', taxRate: '20' }]);
   const [declared, setDeclared] = useState({ declaredTaxTotal: '', declaredWithholding: '', declaredPayable: '' });
@@ -360,7 +360,7 @@ function InvoiceForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
       <div className="panel-body grid gap-3">
         <div className="grid grid-cols-4 gap-x-3 max-[900px]:grid-cols-2">
           <Field label="Şirket">{(p) => <select className="input" {...p} value={f.companyId} onChange={(e) => setF({ ...f, companyId: e.target.value })}>{me?.companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>}</Field>
-          <Field label="Tedarikçi">{(p) => <select className="input" required {...p} value={f.supplierId} onChange={(e) => setF({ ...f, supplierId: e.target.value })}><option value="">Seçin</option>{sup.data?.items.map((s) => <option key={s.id} value={s.id}>{s.legalName}</option>)}</select>}</Field>
+          <Field label="Tedarikçi" hint={supplierPickHint(sup.data?.items.find((s) => s.id === f.supplierId))}>{(p) => <select className="input" required {...p} value={f.supplierId} onChange={(e) => setF({ ...f, supplierId: e.target.value })}><option value="">Seçin</option>{sup.data?.items.map((s) => <option key={s.id} value={s.id}>{s.label ?? s.legalName}</option>)}</select>}</Field>
           <Field label="Tür">{(p) => <select className="input" {...p} value={f.kind} onChange={(e) => setF({ ...f, kind: e.target.value })}>{Object.entries(KIND).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>}</Field>
           <Field label="Fatura no">{(p) => <input className="input" required {...p} value={f.invoiceNo} onChange={(e) => setF({ ...f, invoiceNo: e.target.value })} />}</Field>
           <Field label="ETTN (varsa)">{(p) => <input className="input mono" {...p} value={f.ettn} onChange={(e) => setF({ ...f, ettn: e.target.value })} />}</Field>

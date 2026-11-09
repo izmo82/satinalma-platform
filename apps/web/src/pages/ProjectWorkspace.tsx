@@ -3,7 +3,7 @@ import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { api, apiBlob, ApiError } from '../lib/api.ts';
 import { useResource } from '../lib/useApi.ts';
 import { fmtDate, fmtDateTime, fmtMoney } from '../lib/format.ts';
-import { costKindLabel, lineState, PROJECT_STAGES, projectStatus } from '../lib/labels.ts';
+import { costKindLabel, lineState, PROJECT_STAGES, projectStatus, supplierPickHint, type SupplierOption } from '../lib/labels.ts';
 import { Banner, Empty, ErrorState, Field, Loading, Tag } from '../ui/kit.tsx';
 import { Icon } from '../ui/icons.tsx';
 import { Button } from '@/components/ui/button';
@@ -137,7 +137,7 @@ function SavingsPanel({ d, reload }: { d: Detail; reload: () => Promise<void> })
 function ExceptionsPanel({ d, reload }: { d: Detail; reload: () => Promise<void> }) {
   const a = useAction(reload);
   const [f, setF] = useState<{ kind: keyof typeof EX_KIND; reason: string; supplierId: string } | null>(null);
-  const suppliers = useResource<{ items: { id: string; legalName: string; status: string }[] }>(f?.kind === 'SINGLE_SOURCE' ? '/api/v1/supplier-options' : null);
+  const suppliers = useResource<{ items: SupplierOption[] }>(f?.kind === 'SINGLE_SOURCE' ? '/api/v1/supplier-options' : null);
   if (!d.exceptions.length && !d.can.requestException) return null;
   return (
     <section className="panel self-start">
@@ -150,8 +150,8 @@ function ExceptionsPanel({ d, reload }: { d: Detail; reload: () => Promise<void>
             json: { kind: f.kind, reason: f.reason, supplierId: f.kind === 'SINGLE_SOURCE' ? f.supplierId : null } }), `${EX_KIND[f.kind]} istisnası onaya gönderildi.`).then(() => setF(null)); }}>
             <Field label="İstisna" hint={EX_HINT[f.kind]}>{(p) => <select className="input" {...p} value={f.kind} onChange={(e) => setF({ ...f, kind: e.target.value as keyof typeof EX_KIND })}>
               {Object.entries(EX_KIND).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>}</Field>
-            {f.kind === 'SINGLE_SOURCE' && <Field label="Tedarikçi">{(p) => <select className="input" required {...p} value={f.supplierId} onChange={(e) => setF({ ...f, supplierId: e.target.value })}>
-              <option value="">Seçin</option>{suppliers.data?.items.map((x) => <option key={x.id} value={x.id}>{x.legalName}</option>)}</select>}</Field>}
+            {f.kind === 'SINGLE_SOURCE' && <Field label="Tedarikçi" hint={supplierPickHint(suppliers.data?.items.find((x) => x.id === f.supplierId))}>{(p) => <select className="input" required {...p} value={f.supplierId} onChange={(e) => setF({ ...f, supplierId: e.target.value })}>
+              <option value="">Seçin</option>{suppliers.data?.items.map((x) => <option key={x.id} value={x.id}>{x.label ?? x.legalName}</option>)}</select>}</Field>}
             <Field label="Gerekçe" hint="Neden, kapsam ve değerlendirilen alternatifler (en az 20 karakter).">{(p) => <textarea className="input" rows={3} required minLength={20} {...p} value={f.reason} onChange={(e) => setF({ ...f, reason: e.target.value })} />}</Field>
             <div className="flex gap-2"><Button type="submit" disabled={a.busy || f.reason.trim().length < 20}>Onaya gönder</Button><Button type="button" variant="ghost" onClick={() => setF(null)}>Vazgeç</Button></div>
           </form>
@@ -270,7 +270,7 @@ function Summary({ d, reload }: { d: Detail; reload: () => Promise<void> }) {
 
 function RoundPanel({ d, reload }: { d: Detail; reload: () => Promise<void> }) {
   const a = useAction(reload);
-  const suppliers = useResource<{ items: { id: string; legalName: string; status: string }[] }>(d.can.manage && ['DRAFT', 'EVALUATION'].includes(d.project.status) ? '/api/v1/supplier-options' : null);
+  const suppliers = useResource<{ items: SupplierOption[] }>(d.can.manage && ['DRAFT', 'EVALUATION'].includes(d.project.status) ? '/api/v1/supplier-options' : null);
   const [picked, setPicked] = useState<string[]>([]);
   const [closesAt, setClosesAt] = useState('');
   const [note, setNote] = useState('');
@@ -319,7 +319,7 @@ function RoundPanel({ d, reload }: { d: Detail; reload: () => Promise<void> }) {
                 <div className="radio-list max-h-56 overflow-auto">
                   {suppliers.data?.items.map((s) => (
                     <label key={s.id}><input type="checkbox" checked={picked.includes(s.id)} onChange={(e) => setPicked((x) => e.target.checked ? [...x, s.id] : x.filter((y) => y !== s.id))} />
-                      <span>{s.legalName}{s.status === 'CANDIDATE' && <span className="block text-sm text-warn">Aday: teklif verebilir, aktivasyon olmadan kazanan olamaz</span>}</span></label>
+                      <span>{s.label ?? s.legalName}{s.status === 'CANDIDATE' && <span className="block text-sm text-warn">Aday: teklif verebilir, aktivasyon olmadan kazanan olamaz</span>}</span></label>
                   ))}
                 </div>
               )}

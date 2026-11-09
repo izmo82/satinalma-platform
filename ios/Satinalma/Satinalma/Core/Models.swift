@@ -107,7 +107,9 @@ struct IncidentDetail: Decodable, Sendable {
     struct Can: Decodable, Sendable { let verify: Bool; let report: Bool; let roles: [String] }
     let incident: Incident; let events: [Event]; let actions: [Action]; let scoreImpact: ScoreImpact; let can: Can
 }
-struct SupplierOption: Decodable, Identifiable, Sendable, Hashable { let id: String; let legalName: String; let status: String }
+// `label` aynı adlı kayıtları ayırt eder (D82); eski sunucu yanıtında yoksa ünvan gösterilir.
+struct SupplierOption: Decodable, Identifiable, Sendable, Hashable { let id: String; let legalName: String; let status: String; let label: String?
+    var displayName: String { label ?? legalName } }
 struct SupplierOptions: Decodable, Sendable { let items: [SupplierOption] }
 
 // MARK: Belge

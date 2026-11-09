@@ -29,7 +29,8 @@ test('satınalma: işlerim, siparişler, tedarikçi sekmeleri, olaylar', async (
   await expect(page.getByRole('heading', { level: 1 })).toContainText('PO-');
   await audit(page, 'Sipariş detayı');
   await nav(page, 'Tedarikçiler');
-  await page.getByRole('link', { name: /Anadolu Bilişim/ }).click();
+  // Aynı ünvanlı, kimliği doğrulanmamış aday (T06) listede bulunabilir; kimliği doğrulanmış kayıt açılır (D82).
+  await page.getByRole('link', { name: /Anadolu Bilişim/ }).filter({ hasNotText: 'doğrulanmadı' }).click();
   for (const tab of ['Değerlendirme ve risk', 'Olaylar', 'Performans karnesi']) {
     await page.getByRole('tab', { name: tab }).click();
     await page.waitForLoadState('networkidle');

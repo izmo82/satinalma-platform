@@ -106,3 +106,14 @@ export const costKindLabel: Record<string, string> = { SHIPPING: 'Nakliye', INST
 
 /** Tedarikçi anketi yanıtı (kurum ekranı ve tedarikçi portalı aynı metni kullanır). */
 export const ANSWER_RESPONSE = { YES: 'Evet', PARTIAL: 'Kısmen', NO: 'Hayır', NOT_APPLICABLE: 'Uygulanamaz', UNKNOWN: 'Bilinmiyor' } as const;
+
+/** /api/v1/supplier-options öğesi; `label` aynı adlı kayıtları ayırt eder (D82). */
+export interface SupplierOption { id: string; legalName: string; status: string; label?: string; taxIdTail?: string | null; identityVerified?: boolean }
+
+/** Seçilen tedarikçinin kimlik özeti: dar seçim kutusunda etiket kesildiğinde ayrım kaybolmasın (D82). */
+export function supplierPickHint(o: SupplierOption | undefined): string | undefined {
+  if (!o) return undefined;
+  const status = supplierStatus[o.status]?.text ?? o.status;
+  if (o.identityVerified === false) return `${status} · vergi kimliği doğrulanmadı; ödeme için ana veri onayı gerekir.`;
+  return `${status}${o.taxIdTail ? ` · ${o.taxIdTail}` : ''}`;
+}

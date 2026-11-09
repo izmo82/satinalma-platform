@@ -321,7 +321,7 @@ struct ReportIncidentSheet: View {
         NavigationStack {
             Form {
                 Section {
-                    Picker("Tedarikçi", selection: $supplierId) { Text("Seçin").tag(""); ForEach(suppliers) { Text($0.legalName).tag($0.id) } }
+                    Picker("Tedarikçi", selection: $supplierId) { Text("Seçin").tag(""); ForEach(suppliers) { Text($0.displayName).tag($0.id) } }
                     Picker("Kategori", selection: $category) { ForEach(Labels.category.keys.sorted(), id: \.self) { Text(Labels.category[$0]!).tag($0) } }
                     Picker("Şiddet", selection: $severity) { ForEach(["LOW", "MEDIUM", "HIGH", "CRITICAL"], id: \.self) { Text(Labels.severity[$0]!).tag($0) } }
                     DatePicker("Olay tarihi", selection: $occurredOn, in: ...Date(), displayedComponents: .date)

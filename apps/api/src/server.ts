@@ -3,7 +3,7 @@ import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import swagger from '@fastify/swagger';
 import type pg from 'pg';
-import { can, dec as decimal, type Permission } from '@sp/domain';
+import { can, dec as decimal, supplierOptionLabels, taxIdTail, type Permission } from '@sp/domain';
 import type { Config } from './config.ts';
 import { withTenant, type TenantContext, type Tx } from './db.ts';
 import { DevAuthProvider, identityFor, resolveIdentity, tenantContext, type AuthProvider } from './auth.ts';
@@ -1013,8 +1013,15 @@ export async function buildApp(deps: AppDeps) {
     csv: { type: 'string', minLength: 1, maxLength: 5 * 1024 * 1024 }, dryRun: { type: 'boolean' } } } } }, async (req) =>
     scoped(req, 'integration.replay', (tx, ctx) => integration.applyResultCsv(tx, ctx, req.body as any)));
 
-  app.get('/api/v1/supplier-options', { schema: { tags: ['projects'] } }, async (req) => scoped(req, 'supplier.read', async (tx) =>
-    ({ items: (await tx.query(`SELECT id, legal_name AS "legalName", status FROM suppliers WHERE status IN ('ACTIVE','CONDITIONAL','CANDIDATE') ORDER BY legal_name LIMIT 500`)).rows })));
+  app.get('/api/v1/supplier-options', { schema: { tags: ['projects'] } }, async (req) => scoped(req, 'supplier.read', async (tx) => {
+    const rows = (await tx.query<{ id: string; legalName: string; status: string; taxIdType: string | null; taxId: string | null; identityReviewRequired: boolean }>(
+      `SELECT id, legal_name AS "legalName", status, tax_id_type AS "taxIdType", tax_id AS "taxId", identity_review_required AS "identityReviewRequired", created_at AS "createdAt"
+         FROM suppliers WHERE status IN ('ACTIVE','CONDITIONAL','CANDIDATE') ORDER BY legal_name, created_at LIMIT 500`)).rows;
+    // Aynı adlı kayıtlar listede ayırt edilsin (D82); tam vergi kimliği dönmez, yalnız son 4 hane.
+    const labels = supplierOptionLabels(rows);
+    return { items: rows.map((r) => ({ id: r.id, legalName: r.legalName, status: r.status, label: labels.get(r.id)!,
+      taxIdTail: taxIdTail(r.taxIdType, r.taxId), identityVerified: !r.identityReviewRequired && !!r.taxId })) };
+  }));
 
   // Tedarikçi portalı (UX04): yalnız SUPPLIER rolü ve davet edildiği turlar.
   app.get('/api/v1/portal/rounds', { schema: { tags: ['portal'] } }, async (req) => scoped(req, 'bid.submit', async (tx, ctx) => ({ items: await sourcing.portalList(tx, ctx) })));
