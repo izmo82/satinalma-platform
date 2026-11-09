@@ -184,15 +184,24 @@ function SettingsTab({ d, reload }: { d: Ledger; reload: () => Promise<void> }) 
   const [fx, setFx] = useState({ currency: 'USD', rateDate: todayLocal(), rate: '', source: 'TCMB döviz satış' });
   const [msg, setMsg] = useState<{ tone: 'info' | 'danger' | 'warn'; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
-  const run = async (fn: () => Promise<unknown>, ok: string) => {
+  const [tcmbDate, setTcmbDate] = useState('');
+  const run = async <T,>(fn: () => Promise<T>, ok: string | ((r: T) => string)) => {
     setBusy(true); setMsg(null);
-    try { await fn(); setMsg({ tone: 'info', text: ok }); await Promise.all([reload(), rates.reload()]); return true; }
+    try { const r = await fn(); setMsg({ tone: 'info', text: typeof ok === 'string' ? ok : ok(r) }); await Promise.all([reload(), rates.reload()]); return true; }
     catch (e) { const err = e as ApiError; setMsg({ tone: err.status === 409 ? 'warn' : 'danger', text: err.message }); return false; }
     finally { setBusy(false); }
   };
   const can = d.can.settings;
+  // Sonuç işlemin yapıldığı yerin üstünde görünür; aşağıda kalınca işlem çalışmadı sanılıyordu.
   return <div className="grid grid-cols-[minmax(0,1fr)_360px] gap-6 max-[1100px]:grid-cols-1">
+    {msg && <div className="col-span-full" role="status"><Banner tone={msg.tone} title={msg.text} /></div>}
     <section className="panel"><div className="panel-head"><h2>Kur tablosu</h2><span className="text-sm text-ink-subtle">Kur farkı hesabında fatura ve ödeme gününün kuru; o gün yoksa en fazla 7 gün önceki son kur.</span></div>
+      {can && <form className="flex flex-wrap items-end gap-3 border-b border-border p-4" onSubmit={(e) => { e.preventDefault();
+        void run(() => api<{ rateDate: string; bulletin: string; imported: string[]; skipped: string[] }>('/api/v1/fx-rates/tcmb', { method: 'POST', json: tcmbDate ? { date: tcmbDate } : {} }),
+          (r) => `${fmtDate(r.data.rateDate)} TCMB bülteni (${r.data.bulletin}): ${r.data.imported.length ? `${r.data.imported.join(', ')} eklendi` : 'yeni kur yok'}${r.data.skipped.length ? `; ${r.data.skipped.join(', ')} zaten kayıtlı, korundu` : ''}.`); }}>
+        <Field label="TCMB bülten tarihi" hint="Boş bırakılırsa son bülten alınır. Kurlar tabloya hemen yazılır; kayıtlı kurlar korunur.">{(x) => <input className="input" type="date" {...x} value={tcmbDate} onChange={(e) => setTcmbDate(e.target.value)} />}</Field>
+        <Button type="submit" variant="outline" className="mb-4" disabled={busy}>TCMB'den al</Button>
+      </form>}
       {can && <form className="flex flex-wrap items-end gap-3 border-b border-border p-4" onSubmit={(e) => { e.preventDefault(); void run(() => api('/api/v1/fx-rates', { method: 'POST', json: fx }), `${fx.currency} ${fmtDate(fx.rateDate)} kuru eklendi.`).then((ok) => ok && setFx({ ...fx, rate: '' })); }}>
         <Field label="Para birimi">{(x) => <input className="input w-24 uppercase" required maxLength={3} pattern="[A-Za-z]{3}" {...x} value={fx.currency} onChange={(e) => setFx({ ...fx, currency: e.target.value.toUpperCase() })} />}</Field>
         <Field label="Tarih">{(x) => <input className="input" type="date" required {...x} value={fx.rateDate} onChange={(e) => setFx({ ...fx, rateDate: e.target.value })} />}</Field>
@@ -299,7 +308,6 @@ export function RecoveryCasePage() {
       <PageHeader title={`${c.code} · ${KIND[c.kind] ?? c.kind}`}>{c.summary}</PageHeader>
       <div className="mb-4 flex flex-wrap items-center gap-2"><Tag label={STATUS[c.status]} /><Tag label={CATEGORY[c.category]} />
         <span className="text-sm text-ink-subtle">Kural sonucu; tutar ve dayanak aşağıda. Karar insanındır.</span></div>
-      {msg && <Banner tone={msg.tone} icon={msg.tone === 'info' ? 'check' : undefined} title={msg.text} />}
       <div className="grid grid-cols-[minmax(0,1fr)_340px] gap-6 max-[1100px]:grid-cols-1">
         <div className="grid content-start gap-5">
           <section className="panel"><div className="panel-head"><h2>Hesap dayanağı</h2></div>

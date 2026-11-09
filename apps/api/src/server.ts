@@ -13,6 +13,7 @@ import type { ObjectStore } from './storage.ts';
 import { MAX_UPLOAD_BYTES } from './files.ts';
 import { submitSellerIdentity, uploadDocument } from './modules/documents.ts';
 import { activateSupplier, recordApproval, resolveIdentity as resolveSupplierIdentity } from './modules/suppliers.ts';
+import * as tcmb from './modules/tcmb.ts';
 import * as contracts from './modules/contracts.ts';
 import * as sourcing from './modules/sourcing.ts';
 import * as lifecycle from './modules/contractTerms.ts';
@@ -959,6 +960,12 @@ export async function buildApp(deps: AppDeps) {
     if (decimal(b.rate) <= 0n) throw unprocessable('invalid_rate', 'Kur sıfırdan büyük olmalı.');
     return recovery.addFxRate(tx, ctx, b);
   })));
+  app.post('/api/v1/fx-rates/tcmb', { schema: { tags: ['recovery'], body: { type: 'object', additionalProperties: false, properties: { date } } } }, async (req) => {
+    // Önce yetki; ağ çağrısı veritabanı işleminin dışında.
+    await scoped(req, 'recovery.settings', async () => undefined);
+    const bulletin = await tcmb.fetchTcmbBulletin((req.body as { date?: string } | undefined)?.date);
+    return scoped(req, 'recovery.settings', (tx, ctx) => tcmb.importTcmbRates(tx, ctx, bulletin));
+  });
   app.delete('/api/v1/fx-rates/:currency/:rateDate', { schema: { tags: ['recovery'], params: { type: 'object', required: ['currency', 'rateDate'],
     properties: { currency: { type: 'string', pattern: '^[A-Z]{3}$' }, rateDate: date } } } }, async (req) =>
     scoped(req, 'recovery.settings', (tx, ctx) => recovery.deleteFxRate(tx, ctx, (req.params as any).currency, (req.params as any).rateDate)));

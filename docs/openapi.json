@@ -6678,6 +6678,35 @@
         }
       }
     },
+    "/api/v1/fx-rates/tcmb": {
+      "post": {
+        "tags": [
+          "recovery"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "date": {
+                    "type": "string",
+                    "format": "date"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
     "/api/v1/fx-rates/{currency}/{rateDate}": {
       "delete": {
         "tags": [

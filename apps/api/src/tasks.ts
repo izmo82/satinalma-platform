@@ -29,6 +29,11 @@ export async function openTask(tx: Tx, ctx: TenantContext, t: TaskInput): Promis
   return { id: existing.rows[0]!.id, created: false };
 }
 
+/** Tedarikçi aktifleşince, reddedilince veya birleşince ona bağlı fatura görevleri biter (D92). */
+export async function closeSupplierInvoiceTasks(tx: Tx, supplierId: string): Promise<void> {
+  await tx.query(`UPDATE tasks SET status = 'DONE', closed_at = now() WHERE status = 'OPEN' AND kind = 'invoice_issue' AND entity_type = 'supplier' AND entity_id = $1`, [supplierId]);
+}
+
 export async function closeTasks(tx: Tx, dedupePrefix: string): Promise<void> {
   await tx.query(`UPDATE tasks SET status = 'DONE', closed_at = now() WHERE status = 'OPEN' AND dedupe_key LIKE $1`,
     [`${dedupePrefix}%`]);

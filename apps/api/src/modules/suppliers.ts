@@ -1,7 +1,7 @@
 import { isValidIban, normalizeIban, normalizeTaxId, type TaxIdType } from '@sp/domain';
 import type { TenantContext, Tx } from '../db.ts';
 import { audit } from '../audit.ts';
-import { openTask, closeTasks } from '../tasks.ts';
+import { openTask, closeTasks, closeSupplierInvoiceTasks } from '../tasks.ts';
 import { ApiError, conflict, notFound, unprocessable } from '../errors.ts';
 
 export interface SellerClaim {
@@ -201,6 +201,7 @@ export async function recordApproval(tx: Tx, ctx: TenantContext, supplierId: str
     await tx.query(`UPDATE suppliers SET status = 'REJECTED', rejection_reason = $2, row_version = row_version + 1 WHERE id = $1`,
       [supplierId, body.rationale]);
     await closeTasks(tx, `supplier:${supplierId}:`);
+    await closeSupplierInvoiceTasks(tx, supplierId);
   }
   await audit(tx, ctx, `supplier.approval.${body.decision.toLowerCase()}`, 'supplier', supplierId, { kind: body.kind }, body.rationale);
 }
@@ -222,6 +223,7 @@ export async function activateSupplier(tx: Tx, ctx: TenantContext, supplierId: s
     `UPDATE suppliers SET status = 'ACTIVE', activated_by = $2, activated_at = now(), row_version = row_version + 1 WHERE id = $1`,
     [supplierId, ctx.userId]);
   await closeTasks(tx, `supplier:${supplierId}:`);
+  await closeSupplierInvoiceTasks(tx, supplierId);
   await audit(tx, ctx, 'supplier.activated', 'supplier', supplierId);
 }
 
@@ -245,6 +247,7 @@ export async function resolveIdentity(tx: Tx, ctx: TenantContext, supplierId: st
     await tx.query(`UPDATE suppliers SET status = 'MERGED', merged_into_id = $2, identity_review_required = false, row_version = row_version + 1 WHERE id = $1`,
       [supplierId, target]);
     await closeTasks(tx, `supplier:${supplierId}:`);
+    await closeSupplierInvoiceTasks(tx, supplierId);
     await audit(tx, ctx, 'supplier.merged', 'supplier', supplierId, { into: target }, body.rationale);
     return { mergedInto: target };
   }

@@ -541,6 +541,7 @@ export async function approveInvoice(tx: Tx, ctx: TenantContext, invoiceId: stri
   }
   await tx.query(`INSERT INTO invoice_decisions (tenant_id, company_id, invoice_id, kind, check_hash, issues, decided_by) VALUES ($1,$2,$3,'APPROVAL',$4,$5,$6)`,
     [ctx.tenantId, inv.company_id, invoiceId, fingerprint, JSON.stringify(check.issues), ctx.userId]);
+  await closeTasks(tx, `invoice-issue:${invoiceId}:`);
   const key = `erp-invoice-${invoiceId}`;
   // ERP bağdaştırıcısı yoksa aktarım "yapılandırılmadı" olarak görünür; başarı gibi gösterilmez, kuyrukta da beklemez.
   const configured = !!erpAdapter(erpAdapterName);
@@ -563,16 +564,21 @@ export async function rejectInvoice(tx: Tx, ctx: TenantContext, invoiceId: strin
   if (reason.trim().length < 10) throw unprocessable('reason_required', 'Ret gerekçesi gerekli.');
   await tx.query(`INSERT INTO invoice_decisions (tenant_id, company_id, invoice_id, kind, check_hash, reason, decided_by) VALUES ($1,$2,$3,'REJECTION','-',$4,$5)`,
     [ctx.tenantId, inv.company_id, invoiceId, reason.trim(), ctx.userId]);
+  await closeTasks(tx, `invoice-issue:${invoiceId}:`);
   await audit(tx, ctx, 'invoice.rejected', 'invoice', invoiceId, {}, reason);
   return { rejected: true };
 }
 
 /** Kontrol bulguları sorumlu rollere görev olarak düşer (kim çözer, 02 §24). Aynı bulgu ikinci görev açmaz. */
-async function syncIssueTasks(tx: Tx, ctx: TenantContext, invoiceId: string, invoiceNo: string, companyId: string, issues: { code: string; ownerRole: string; message: string; severity: string }[]) {
+async function syncIssueTasks(tx: Tx, ctx: TenantContext, invoiceId: string, invoiceNo: string, companyId: string, supplierId: string, supplierStatus: string, issues: { code: string; ownerRole: string; message: string; severity: string }[]) {
   await closeTasks(tx, `invoice-issue:${invoiceId}:`);
   for (const x of issues) {
-    await openTask(tx, ctx, { companyId, kind: 'invoice_issue', entityType: 'invoice', entityId: invoiceId, title: `Fatura ${invoiceNo}: ${x.message.split(':')[0]}`,
-      reason: x.message, nextAction: x.code === 'RECEIPT_MISSING' ? 'Teslim aldıysanız kabul kaydını girin; almadıysanız finansa bildirin.' : 'Bulguyu çözün veya yetkili istisna isteyin.',
+    // Birleşen veya reddedilen tedarikçide ana verinin yapacağı iş kalmaz; engel faturada görünür.
+    if (x.code === 'SUPPLIER_NOT_ACTIVE' && ['MERGED', 'REJECTED'].includes(supplierStatus)) continue;
+    // Ana veri fatura okuyamaz; kendi işi tedarikçi kaydındadır (D92).
+    const onSupplier = x.code === 'SUPPLIER_NOT_ACTIVE';
+    await openTask(tx, ctx, { companyId, kind: 'invoice_issue', entityType: onSupplier ? 'supplier' : 'invoice', entityId: onSupplier ? supplierId : invoiceId, title: `Fatura ${invoiceNo}: ${x.message.split(':')[0]}`,
+      reason: x.message, nextAction: onSupplier ? 'Tedarikçinin kimliğini doğrulayıp aktivasyonunu tamamlayın.' : x.code === 'RECEIPT_MISSING' ? 'Teslim aldıysanız kabul kaydını girin; almadıysanız finansa bildirin.' : 'Bulguyu çözün veya yetkili istisna isteyin.',
       assigneeRole: x.ownerRole, severity: x.severity === 'BLOCK' ? 'HIGH' : 'NORMAL', dedupeKey: `invoice-issue:${invoiceId}:${x.code}` });
   }
 }
@@ -606,7 +612,7 @@ export async function getInvoice(tx: Tx, ctx: TenantContext, id: string) {
   const { check, fingerprint, contracts, poLines } = await evaluate(tx, id);
   const final = decisions.find((d: any) => d.kind === 'APPROVAL' || d.kind === 'REJECTION') ?? null;
   const exception = [...decisions].reverse().find((d: any) => d.kind === 'EXCEPTION_APPROVAL') ?? null;
-  if (!final) await syncIssueTasks(tx, ctx, id, inv.invoiceNo, inv.companyId, check.issues);
+  if (!final) await syncIssueTasks(tx, ctx, id, inv.invoiceNo, inv.companyId, inv.supplierId, inv.supplierStatus, check.issues);
   return {
     invoice: inv, lines, allocations, decisions, intake, erp, check, contracts, poLines, ublCheck,
     status: final ? final.kind : check.canApprove ? (check.needsException ? (exception?.checkHash === fingerprint ? 'EXCEPTION_APPROVED' : 'NEEDS_EXCEPTION') : 'READY') : 'BLOCKED',
