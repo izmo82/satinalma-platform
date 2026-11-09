@@ -59,6 +59,8 @@ export interface PoLineState {
   taxRate?: string | null;
   /** Siparişin tedarikçi kökü (D84). */
   supplierRootId?: string | null;
+  /** Siparişin şirketi (D87). */
+  companyId?: string | null;
 }
 export interface InvoiceLineInput {
   lineNo: number; description: string; quantity: string; unit: string; unitPrice: string; netAmount: string;
@@ -83,12 +85,16 @@ export interface ContractState {
   signatureUnresolved: boolean; archiveImport: boolean;
   /** Sözleşmenin tedarikçi kökleri (aile tedarikçisi + SUPPLIER tarafları); hiç tedarikçi kayıtlı değilse boş (kontrol edilmez). */
   supplierRootIds?: string[];
+  /** Sözleşmenin şirketi (D87). */
+  companyId?: string | null;
 }
 
 export interface InvoiceCheckInput {
   kind: 'INVOICE' | 'CREDIT_NOTE' | 'ADVANCE';
   currency: string;
   supplierActive: boolean;
+  /** Faturanın şirketi; verilmezse şirket eşleşmesi denetlenmez (D87). */
+  companyId?: string | null;
   /** Faturanın tedarikçi kökü (birleştirilmiş kayıtta hedef firma); tahsis hedefleriyle karşılaştırılır (D84). */
   supplierRootId?: string | null;
   /** İade belgesinde onaylı özgün faturanın tahsis hedefleri (sipariş satırı/sözleşme): yanlış bağı geri alma yolu kapanmasın (D84). */
@@ -223,6 +229,11 @@ export function checkInvoice(i: InvoiceCheckInput): InvoiceCheck {
     };
     if (al.some((a) => foreignPo(a.poLineId) || foreignContract(a.contractVersionId))) {
       push({ code: 'SUPPLIER_MISMATCH', severity: 'BLOCK', ownerRole: 'FINANCE', lineNo: l.lineNo, message: `Satır ${l.lineNo}: bağlı sipariş veya sözleşme bu faturanın tedarikçisine ait değil; tahsisi düzenleyip bu bağı kaldırın.` });
+    }
+    // Kapsam dışı hedef RLS nedeniyle yüklenmez; yok saymak kontrolü atlatırdı, engel sayılır (D87).
+    const otherCompany = (id: string | null, owner: { companyId?: string | null } | undefined) => !!i.companyId && !!id && !reversal(id) && owner?.companyId !== i.companyId;
+    if (al.some((a) => otherCompany(a.poLineId, i.poLines.find((p) => p.poLineId === a.poLineId)) || otherCompany(a.contractVersionId, i.contracts.find((c) => c.contractVersionId === a.contractVersionId)))) {
+      push({ code: 'COMPANY_MISMATCH', severity: 'BLOCK', ownerRole: 'FINANCE', lineNo: l.lineNo, message: `Satır ${l.lineNo}: bağlı sipariş veya sözleşme bu faturanın şirketine ait değil ya da erişiminiz dışında; tahsisi düzenleyip bu bağı kaldırın.` });
     }
     if (i.kind === 'ADVANCE') continue;
     for (const a of al) {

@@ -412,7 +412,7 @@ function InvoiceForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
 const TAX_CODE: Record<string, string> = { '4080': 'ÖİV', '4081': 'ÖİV (5035)', '0071': 'ÖTV (I sayılı liste)', '0073': 'ÖTV (III sayılı liste)', '0074': 'ÖTV (IV sayılı liste)', '0075': 'ÖTV (III sayılı liste)', '0076': 'ÖTV (II sayılı liste)', '0077': 'ÖTV (II sayılı liste)', '1047': 'Damga vergisi', '9021': 'Konaklama vergisi' };
 
 interface InvDetail {
-  invoice: { id: string; kind: keyof typeof KIND; invoiceNo: string; ettn: string | null; issueDate: string; currency: string; supplierId: string; supplierName: string; supplierStatus: string; supplierIdentityVerified: boolean; supplierRootId: string;
+  invoice: { id: string; kind: keyof typeof KIND; invoiceNo: string; ettn: string | null; issueDate: string; currency: string; companyId: string; supplierId: string; supplierName: string; supplierStatus: string; supplierIdentityVerified: boolean; supplierRootId: string;
     legalStatus: string; paymentStatus: string; documentVersionId: string | null; declaredTaxTotal: string | null; declaredWithholding: string | null; declaredPayable: string | null; originalInvoiceId: string | null; advanceInvoiceId: string | null; advanceOffset: string; createdByMe: boolean; createdBy: string; createdAt: string };
   lines: { lineNo: number; description: string; quantity: string; unit: string; unitPrice: string; netAmount: string; taxRate: string; taxAmount: string | null;
     otherTax: string | null; otherTaxes: { code: string | null; name: string | null; rate: string | null; amount: string }[] | null }[];
@@ -554,19 +554,19 @@ function Issue({ x }: { x: InvDetail['check']['issues'][number] }) {
 }
 
 function AllocationEditor({ d, onDone }: { d: InvDetail; onDone: () => void }) {
-  const pos = useResource<{ items: { id: string; code: string; supplierRootId: string; contractTitle: string | null }[] }>('/api/v1/purchase-orders');
+  const pos = useResource<{ items: { id: string; code: string; companyId: string; supplierRootId: string; contractTitle: string | null }[] }>('/api/v1/purchase-orders');
   const [rows, setRows] = useState(d.allocations.length ? d.allocations.map((x) => ({ lineNo: x.lineNo, target: x.poLineId ? `po:${x.poLineId}` : x.contractVersionId ? `cv:${x.contractVersionId}` : '', quantity: x.quantity, amount: x.amount }))
     : d.lines.map((l) => ({ lineNo: l.lineNo, target: '', quantity: l.quantity, amount: l.netAmount })));
   const [poLines, setPoLines] = useState<Record<string, { poLineId: string; description: string }[]>>({});
   const [offset, setOffset] = useState(d.invoice.advanceOffset);
   const [advanceId, setAdvanceId] = useState(d.invoice.advanceInvoiceId ?? '');
   const [err, setErr] = useState<string | null>(null);
-  // Ada göre değil tedarikçi köküne göre: aynı ünvanlı başka kaydın siparişi önerilmez (D84).
-  const supplierPos = (pos.data?.items ?? []).filter((p) => p.supplierRootId === d.invoice.supplierRootId);
+  // Ada göre değil tedarikçi köküne göre (D84) ve yalnız faturanın şirketinden (D87).
+  const supplierPos = (pos.data?.items ?? []).filter((p) => p.supplierRootId === d.invoice.supplierRootId && p.companyId === d.invoice.companyId);
   // Kayıtlı bağ, kalemi yüklenmemiş olsa da seçenek olarak görünür; "Seçin" ile kaldırılabilir (aksi halde yanlış bağ düzeltilemez, D84).
   const loaded = new Set(Object.values(poLines).flat().map((l) => l.poLineId));
   const current = [...new Map(d.allocations.filter((a) => (a.poLineId ? !loaded.has(a.poLineId) : a.contractVersionId))
-    .map((a) => [a.poLineId ? `po:${a.poLineId}` : `cv:${a.contractVersionId}`, a.poLineId ? `${a.poCode} · ${a.poLineDescription}` : `Sözleşme · ${a.contractTitle}`])).entries()];
+    .map((a) => [a.poLineId ? `po:${a.poLineId}` : `cv:${a.contractVersionId}`, a.poLineId ? (a.poCode ? `${a.poCode} · ${a.poLineDescription}` : 'Erişiminiz dışındaki sipariş') : a.contractTitle ? `Sözleşme · ${a.contractTitle}` : 'Erişiminiz dışındaki sözleşme'])).entries()];
   async function loadLines(poId: string) { if (poLines[poId]) return; const r = await api<{ lines: { poLineId: string; description: string }[] }>(`/api/v1/purchase-orders/${poId}`); setPoLines((x) => ({ ...x, [poId]: r.data.lines })); }
   return (
     <form className="grid gap-3 rounded-md border border-border bg-white p-3" onSubmit={(e) => { e.preventDefault(); setErr(null);
@@ -576,7 +576,7 @@ function AllocationEditor({ d, onDone }: { d: InvDetail; onDone: () => void }) {
       <p className="text-sm text-ink-muted">Satırı siparişin kalemine bağlayın. Tek satır birden çok siparişe bölünebilir; tahsis toplamı satır tutarını aşamaz.</p>
       <div className="flex flex-wrap gap-2">{supplierPos.map((p) => <Button key={p.id} type="button" size="sm" variant="outline" onClick={() => void loadLines(p.id)}>{p.code} kalemlerini yükle</Button>)}
         {!supplierPos.length && <span className="text-sm text-ink-subtle">Bu tedarikçinin siparişi yok; sözleşmesiz tahsis istisna gerektirir.</span>}</div>
-      {d.check.issues.some((x) => x.code === 'SUPPLIER_MISMATCH') && <p className="text-sm text-warn">Kayıtlı bağ başka bir tedarikçiye ait. Hedefi “Seçin” yapıp kaydederek bağı kaldırın.</p>}
+      {d.check.issues.some((x) => x.code === 'SUPPLIER_MISMATCH' || x.code === 'COMPANY_MISMATCH') && <p className="text-sm text-warn">Kayıtlı bağ başka bir tedarikçiye veya şirkete ait. Hedefi “Seçin” yapıp kaydederek bağı kaldırın.</p>}
       {rows.map((x, i) => (
         <div key={i} className="grid grid-cols-[60px_minmax(0,1fr)_100px_130px_auto] items-start gap-2 max-[640px]:grid-cols-2">
           <span className="pt-2 text-sm font-semibold">Satır {x.lineNo}</span>

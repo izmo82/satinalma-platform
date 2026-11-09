@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { syntheticPdf, ublInvoiceXml } from '../src/devdata.ts';
 import { makeHarness } from './harness.ts';
 import { withTenant } from '../src/db.ts';
-import { createPo } from '../src/modules/invoices.ts';
+import { createInvoice, createPo, setAllocations } from '../src/modules/invoices.ts';
 
 // Faz 4 açıkları: e-Fatura XML → fatura, vergi aritmetiği, sipariş değişikliği/kapatma/iptal, tolerans kuralı. Gerçek PostgreSQL + RLS; veri sentetik.
 let h: Awaited<ReturnType<typeof makeHarness>>;
@@ -595,5 +595,82 @@ describe('sipariş açma: sözleşme siparişin şirketine ait olmalı (D86)', (
     await expect(open(h.world.companyA2.id)).rejects.toMatchObject({ code: 'contract_company_mismatch' });
     expect(Number((await h.owner.query<{ n: string }>(`SELECT count(*) AS n FROM purchase_orders WHERE contract_version_id = $1`, [cv])).rows[0]!.n)).toBe(0);
     await expect(open(h.world.companyA1.id)).resolves.toMatchObject({ code: expect.any(String) });
+  });
+});
+
+describe('fatura tahsisi: sipariş ve sözleşme faturanın şirketine ait olmalı (D87)', () => {
+  const both = () => ({ tenantId: h.world.tenantA, userId: h.world.users.finance.id, roles: ['FINANCE', 'BUYER'], companyIds: [h.world.companyA1.id, h.world.companyA2.id], correlationId: 'd87' });
+  const invoice = async () => {
+    const r = await call('finance', 'POST', '/api/v1/invoices', { companyId: h.world.companyA1.id, supplierId: h.world.suppliers.s1, kind: 'INVOICE', invoiceNo: `D87${randomUUID().slice(0, 8)}`,
+      issueDate: '2026-10-20', currency: 'TRY', lines: [{ description: 'Yedek parça', quantity: '1', unit: 'adet', unitPrice: '100', netAmount: '100.00' }] });
+    expect(r.status).toBe(201);
+    return r.body.id as string;
+  };
+  const a2PoLine = async () => {
+    const ctx = both();
+    const created = await withTenant(h.pool, ctx as never, (tx) => createPo(tx, ctx as never, { companyId: h.world.companyA2.id, supplierId: h.world.suppliers.s1, contractVersionId: null, currency: 'TRY',
+      lines: [{ kind: 'GOODS', description: 'Yedek parça (sentetik)', unit: 'adet', quantity: '1', unitPrice: '100' }] } as never));
+    return (await h.owner.query<{ id: string }>(`SELECT id FROM po_lines WHERE po_id = $1`, [created.id])).rows[0]!.id;
+  };
+  const body = (poLineId: string | null, contractVersionId: string | null = null) => ({ allocations: [{ lineNo: 1, poLineId, contractVersionId, quantity: '1', amount: '100.00' }] });
+
+  it('iki şirkete erişen kullanıcı başka şirketin siparişine bağlayamaz; önceki tahsis kalır', async () => {
+    const invoiceId = await invoice();
+    const line = await a2PoLine();
+    const ctx = both();
+    await expect(withTenant(h.pool, ctx as never, (tx) => setAllocations(tx, ctx as never, invoiceId, body(line) as never))).rejects.toMatchObject({ code: 'allocation_company_mismatch' });
+    expect((await call('finance', 'GET', `/api/v1/invoices/${invoiceId}`)).body.allocations).toEqual([]);
+  });
+
+  it('tek şirketli kullanıcı gizli siparişin kimliğini göndererek kontrolü atlayamaz', async () => {
+    const r = await call('finance', 'PUT', `/api/v1/invoices/${await invoice()}/allocations`, body(await a2PoLine()));
+    expect(r.status).toBe(422);
+    expect(r.body.error.code).toBe('allocation_company_mismatch');
+  });
+
+  it('başka şirketin sözleşmesine doğrudan tahsis reddedilir', async () => {
+    const cv = await contract('50000.00');
+    await h.owner.query(`UPDATE contract_versions SET company_id = $2 WHERE id = $1`, [cv, h.world.companyA2.id]);
+    const r = await call('finance', 'PUT', `/api/v1/invoices/${await invoice()}/allocations`, body(null, cv));
+    expect(r.body.error?.code).toBe('allocation_company_mismatch');
+  });
+
+  it('önceden yanlış bağlanmış fatura onaya kapanır ve bağ kaldırılabilir; liste şirketi döner', async () => {
+    const invoiceId = await invoice();
+    await h.owner.query(`INSERT INTO invoice_allocations (tenant_id, company_id, invoice_id, line_no, po_line_id, contract_version_id, quantity, amount, created_by)
+      SELECT tenant_id, company_id, id, 1, $2, NULL, 1, 100, created_by FROM invoices WHERE id = $1`, [invoiceId, await a2PoLine()]);
+    const d = await call('finance2', 'GET', `/api/v1/invoices/${invoiceId}`);
+    expect(d.body.check.issues.map((x: { code: string }) => x.code)).toContain('COMPANY_MISMATCH');
+    expect(d.body.check.canApprove).toBe(false);
+    expect((await call('finance', 'PUT', `/api/v1/invoices/${invoiceId}/allocations`, { allocations: [] })).status).toBe(200);
+    expect(await issueCodes(invoiceId)).not.toContain('COMPANY_MISMATCH');
+    const pos = (await call('finance', 'GET', '/api/v1/purchase-orders')).body.items as { companyId: string }[];
+    expect(pos.every((x) => x.companyId)).toBe(true);
+  });
+
+  it('iade belgesi başka şirketin faturasına bağlanamaz', async () => {
+    const original = await invoice();
+    const ctx = both();
+    await expect(withTenant(h.pool, ctx as never, (tx) => createInvoice(tx, ctx as never, { companyId: h.world.companyA2.id, supplierId: h.world.suppliers.s1, kind: 'CREDIT_NOTE', originalInvoiceId: original, invoiceNo: `D87C${randomUUID().slice(0, 8)}`,
+      issueDate: '2026-10-20', currency: 'TRY', lines: [{ description: 'Yedek parça', quantity: '1', unit: 'adet', unitPrice: '100', netAmount: '100.00' }] } as never))).rejects.toMatchObject({ code: 'original_required' });
+  });
+
+  it('iade istisnası yalnız aynı şirketin onaylı özgün faturası için geçerlidir', async () => {
+    const poId = await po(null, '1', '100');
+    const line = (await getPo(poId)).lines[0].poLineId as string;
+    await call('buyer', 'POST', `/api/v1/po-lines/${line}/receipts`, { quantity: '1', note: 'Teslim alındı (sentetik)' });
+    const original = await invoice();
+    expect((await call('finance', 'PUT', `/api/v1/invoices/${original}/allocations`, body(line))).status).toBe(200);
+    expect((await approve(original)).status).toBe(200);
+    await h.owner.query(`UPDATE purchase_orders SET company_id = $2 WHERE id = $1`, [poId, h.world.companyA2.id]);
+
+    const credit = await call('finance', 'POST', '/api/v1/invoices', { companyId: h.world.companyA1.id, supplierId: h.world.suppliers.s1, kind: 'CREDIT_NOTE', originalInvoiceId: original, invoiceNo: `D87K${randomUUID().slice(0, 8)}`,
+      issueDate: '2026-10-21', currency: 'TRY', lines: [{ description: 'Yedek parça', quantity: '1', unit: 'adet', unitPrice: '100', netAmount: '100.00' }] });
+    expect(credit.status).toBe(201);
+    expect((await call('finance', 'PUT', `/api/v1/invoices/${credit.body.id}/allocations`, body(line))).status).toBe(200);
+    expect(await issueCodes(credit.body.id)).not.toContain('COMPANY_MISMATCH');
+
+    await h.owner.query(`UPDATE invoices SET company_id = $2 WHERE id = $1`, [original, h.world.companyA2.id]);
+    expect(await issueCodes(credit.body.id)).toContain('COMPANY_MISMATCH');
   });
 });
