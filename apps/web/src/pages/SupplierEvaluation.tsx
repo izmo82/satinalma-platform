@@ -7,6 +7,7 @@ import { todayLocal } from '../lib/format.ts';
 import type { Label } from '../lib/labels.ts';
 import { Banner, Empty, ErrorState, Field, Loading, Tag } from '../ui/kit.tsx';
 import { Icon } from '../ui/icons.tsx';
+import { DepartmentSelect } from '../ui/Departments.tsx';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { cn } from '@/lib/utils';
@@ -50,8 +51,8 @@ function AssessmentsTab({ supplierId }: { supplierId: string }) {
   const blocked = current.filter((x) => x.outcome === 'BLOCKED' && x.status === 'REVIEWED');
   return (
     <div className="grid gap-4">
-      {blocked.length > 0 && <Banner tone="danger" title="Kritik engel: yeni seçim ve sipariş engelli">
-        {blocked.map((x) => x.scope).join(', ')}. Yeni seçim önerisi, seçim onayı ve sipariş engellenir; ticari veya ağırlıklı puan bu engeli aşmaz. Engel, incelemesi tamamlanan yeni değerlendirmeyle giderilir.</Banner>}
+      {blocked.length > 0 && <Banner tone="danger" title="Kritik engel: yeni seçim engelli">
+        {blocked.map((x) => x.scope).join(', ')}. Yeni seçim önerisi ve seçim onayı engellenir; ticari veya ağırlıklı puan bu engeli aşmaz. Engel, incelemesi tamamlanan yeni değerlendirmeyle giderilir.</Banner>}
       <div className="flex flex-wrap items-center gap-2">
         <p className="min-w-0 flex-1 text-ink-muted">Hizmete özel anket: aynı firma farklı hizmetler için farklı değerlendirilir. Eksik yanıt başarılı sayılmaz.</p>
         <Button variant="outline" asChild><Link to="/tedarikciler/anketler">Anket şablonları</Link></Button>
@@ -83,21 +84,23 @@ function AssessmentsTab({ supplierId }: { supplierId: string }) {
 function NewAssessment({ supplierId, onCancel }: { supplierId: string; onCancel: () => void }) {
   const navigate = useNavigate();
   const t = useResource<{ items: { id: string; code: string; version: number; name: string; category: string; status: string; questions: number; critical: number }[] }>('/api/v1/questionnaire-templates');
-  const [f, setF] = useState({ templateId: '', scope: '', reviewDue: '' });
+  const [f, setF] = useState({ templateId: '', scope: '', reviewDue: '', departmentId: '' });
   const [factors, setFactors] = useState<Record<string, string>>(Object.fromEntries(FACTORS.map(([k]) => [k, 'LOW'])));
   const [err, setErr] = useState<string | null>(null);
   const published = (t.data?.items ?? []).filter((x) => x.status === 'PUBLISHED');
   return (
     <form className="panel" onSubmit={(e) => { e.preventDefault(); setErr(null);
-      void api<{ id: string }>('/api/v1/assessments', { method: 'POST', json: { supplierId, templateId: f.templateId, scope: f.scope, reviewDue: f.reviewDue || null, inherentFactors: factors } })
+      void api<{ id: string }>('/api/v1/assessments', { method: 'POST', json: { supplierId, templateId: f.templateId, scope: f.scope, reviewDue: f.reviewDue || null, departmentId: f.departmentId, inherentFactors: factors } })
         .then((r) => navigate(`/degerlendirmeler/${r.data.id}`), (x: ApiError) => setErr(x.message)); }}>
       <div className="panel-head"><h2>Değerlendirme başlat</h2></div>
       <div className="panel-body grid gap-3">
-        <div className="grid grid-cols-3 items-start gap-x-3 max-[900px]:grid-cols-1">
+        <div className="grid grid-cols-2 items-start gap-x-3 max-[900px]:grid-cols-1">
           <Field label="Anket şablonu">{(p) => <select className="input" required {...p} value={f.templateId} onChange={(e) => setF({ ...f, templateId: e.target.value })}>
             <option value="">Seçin</option>{published.map((x) => <option key={x.id} value={x.id}>{x.name} v{x.version} · {x.category} ({x.questions} soru, {x.critical} kritik)</option>)}</select>}</Field>
           <Field label="Hizmet kapsamı" hint="Ör. uzak erişimli sunucu bakımı">{(p) => <input className="input" required minLength={3} {...p} value={f.scope} onChange={(e) => setF({ ...f, scope: e.target.value })} />}</Field>
           <Field label="Yeniden inceleme tarihi">{(p) => <input className="input" type="date" {...p} value={f.reviewDue} onChange={(e) => setF({ ...f, reviewDue: e.target.value })} />}</Field>
+          {/* v2 (D93): değerlendirme departman taşır; form her rolde departman ister (departman kullanıcısı yalnız kendi departmanını görür). */}
+          <DepartmentSelect value={f.departmentId} onChange={(v) => setF((x) => ({ ...x, departmentId: v }))} />
         </div>
         <fieldset className="grid grid-cols-5 items-start gap-3 max-[1100px]:grid-cols-2">
           <legend className="mb-2 font-semibold">İçsel risk (kontrollerden önce)</legend>

@@ -6,6 +6,7 @@ import { fmtDate, fmtDateTime, fmtMoney } from '../lib/format.ts';
 import { costKindLabel, lineState, PROJECT_STAGES, projectStatus, supplierPickHint, type SupplierOption } from '../lib/labels.ts';
 import { Banner, Empty, ErrorState, Field, Loading, Tag } from '../ui/kit.tsx';
 import { Icon } from '../ui/icons.tsx';
+import { DepartmentName } from '../ui/Departments.tsx';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { cn } from '@/lib/utils';
@@ -14,7 +15,8 @@ interface PLine { id: string; lot: string; lineNo: number; description: string; 
 interface Crit { code: string; name: string; kind: 'PRICE' | 'SCORE'; weight: string; revision: number }
 interface Detail {
   project: { id: string; code: string; title: string; category: string; need: string; currency: string; budget: string | null; budgetVerified: boolean;
-    costCenter: string | null; deliveryLocation: string | null; neededBy: string | null; status: string; etag: string; ownedByMe: boolean };
+    costCenter: string | null; deliveryLocation: string | null; neededBy: string | null; status: string; etag: string; ownedByMe: boolean;
+    departmentId: string | null; departmentName: string | null };
   lines: PLine[]; criteria: Crit[]; criteriaHistory: { revision: number; reason: string | null; createdAt: string }[];
   round: null | { id: string; roundNo: number; closesAt: string; status: string; requestedByMe: boolean; closeReason: string | null; approval: Approval | null };
   invitations: { supplierId: string; supplierName: string; supplierStatus: string; bidVersion: number | null; submittedAt: string | null }[];
@@ -181,7 +183,7 @@ function nextStep(d: Detail): string {
   if (s === 'OPEN') return `Teklifler ${fmtDateTime(d.round?.closesAt)} kapanışına kadar mühürlü. Soruları yanıtlayın.`;
   if (s === 'EVALUATION') return 'Kapsamı ve karşılaştırmayı inceleyin, kanıtlı puanları girin, değerlendirme sürümü oluşturup tahsis önerin.';
   if (s === 'AWARD_APPROVAL') return d.awards.find((a) => a.status === 'PROPOSED')?.approval?.canDecide ? 'Önerilen tahsisi inceleyip onaylayın veya geri gönderin.' : 'Seçim onayı bekleniyor.';
-  if (s === 'CONTRACTING') return 'Kazanan tahsisi onaylandı. Sözleşme ve sipariş aşamasına geçilebilir.';
+  if (s === 'CONTRACTING') return 'Kazanan tahsisi onaylandı. Sözleşme aşamasına geçilebilir.';
   if (s === 'CANCELLED') return 'Proje onaylı istisnayla iptal edildi; kayıtlar korunur.';
   if (s === 'NO_AWARD') return 'Proje kazanansız kapandı; yeni ihtiyaç için yeni proje açılır.';
   return '—';
@@ -199,10 +201,11 @@ export function ProjectWorkspace() {
   return (
     <div className="page">
       <div className="mb-1 text-sm text-ink-subtle"><Link to="/projeler" className="text-ink-subtle">Projeler</Link> / <span className="tabular">{d.project.code}</span></div>
-      <div className="mb-4 flex flex-wrap items-start gap-3">
+      <div className="mb-1 flex flex-wrap items-start gap-3">
         <h1 className="min-w-0 flex-1">{d.project.title}</h1>
         <Tag label={projectStatus[d.project.status]} />
       </div>
+      <p className="mb-4 text-sm text-ink-muted">Departman: <DepartmentName name={d.project.departmentName} /></p>
       <ol aria-label="Proje aşaması" className="mb-3 grid grid-cols-6 overflow-hidden rounded-md border border-border bg-surface text-sm max-[900px]:grid-cols-3">
         {PROJECT_STAGES.map((s, i) => (
           <li key={s} aria-current={i === stageIdx ? 'step' : undefined}

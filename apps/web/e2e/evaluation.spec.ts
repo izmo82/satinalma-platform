@@ -1,4 +1,4 @@
-// v2 Faz 1 (D93/D95): Yapay zekâ Yönetim sekmesine, Olaylar ve performans ağırlıkları Tedarikçiler sekmelerine taşındı; testler yeni yerlerden açar. Sorumlu rol seçicisi yalnız v2 rollerini (tekrarsız) sunar.
+// v2 Faz 1 (D93/D95): Yapay zekâ Yönetim sekmesine, Olaylar ve performans ağırlıkları Tedarikçiler sekmelerine taşındı; testler yeni yerlerden açar. Sorumlu rol seçicisi yalnız v2 rollerini (tekrarsız) sunar. Değerlendirme başlatma formu departman ister (her rolde zorunlu); portal anketi senaryosu Bilgi Teknolojileri'ni seçer, böylece yanıtı inceleyen departman kullanıcısı (selin) kaydı görür.
 import { expect, test, type Page } from '@playwright/test';
 
 // Faz 5 kritik tarayıcı görevleri: olay (UX12, T19), değerlendirme ve kritik engel (T20), raporlar (UX13), AI yönetişimi (T23). Sentetik demo verisi.
@@ -66,6 +66,7 @@ test('değerlendirme: kritik kontrolde "hayır" kritik engel gösterir; uyum ora
   await page.getByRole('button', { name: 'Değerlendirme başlat' }).click();
   await page.getByLabel('Anket şablonu').selectOption({ index: 1 });
   await page.getByLabel('Hizmet kapsamı').fill('Uzak erişimli ağ bakımı (e2e)');
+  await page.getByLabel('Departman').selectOption({ label: 'Bilgi Teknolojileri' });
   await page.getByLabel('Veri hassasiyeti').selectOption('HIGH');
   await page.getByLabel('Erişim seviyesi').selectOption('HIGH');
   await page.getByRole('button', { name: 'Başlat' }).click();
@@ -127,6 +128,8 @@ test('portal anketi: kurum gönderir, tedarikçi yanıtlayıp gönderir, kurum y
   await page.getByRole('button', { name: 'Değerlendirme başlat' }).click();
   await page.getByLabel('Anket şablonu').selectOption({ index: 1 });
   await page.getByLabel('Hizmet kapsamı').fill(scope);
+  // v2: değerlendirme departman taşır; yanıtı görecek departman kullanıcısı (selin, Bilgi Teknolojileri) bu departmanda.
+  await page.getByLabel('Departman').selectOption({ label: 'Bilgi Teknolojileri' });
   await page.getByRole('button', { name: 'Başlat' }).click();
   await expect(page.getByRole('heading', { level: 1 })).toHaveText(scope);
   await page.getByRole('button', { name: 'Tedarikçiye gönder' }).click();

@@ -9,6 +9,7 @@ import {
 } from '../lib/labels.ts';
 import { useSession } from '../lib/session.tsx';
 import { Banner, Drawer, Empty, ErrorState, Field, Loading, Tag } from '../ui/kit.tsx';
+import { DepartmentName } from '../ui/Departments.tsx';
 import { Icon } from '../ui/icons.tsx';
 import { SplitPanes } from '../ui/SplitPanes.tsx';
 import { DocumentViewer, type Region } from '../ui/DocumentViewer.tsx';
@@ -16,7 +17,8 @@ import { DocumentViewer, type Region } from '../ui/DocumentViewer.tsx';
 interface Blocker { code: string; requirementId?: string; partyName?: string; action: string }
 interface Status {
   contractVersion: { id: string; companyId: string; title: string; versionNo: number; stage: string; signatureMethod: string; originalCustodyRequired: boolean;
-    documentVersionId: string; documentSha256: string; pageCount: number | null; supersededById: string | null; finalizedAt: string | null; finalizedStatus: string | null; etag: string };
+    documentVersionId: string; documentSha256: string; pageCount: number | null; supersededById: string | null; finalizedAt: string | null; finalizedStatus: string | null; etag: string;
+    departmentId: string | null; departmentName: string | null };
   status: { overall: string; underlying: string; blockers: Blocker[]; custody: string; automaticCheck: string; automaticAlert: string | null;
     activeExceptionId: string | null; canFinalize: boolean;
     requirements: { id: string; partyName: string; signerRole: string; required: boolean; state: string; satisfiedBy: string | null; digital: string;
@@ -88,7 +90,7 @@ export function SignatureWorkspace() {
           <p className="subtle"><Link to="/sozlesmeler">Sözleşmeler</Link> / İmza kontrolü</p>
           <h1 style={{ fontSize: 18, marginTop: 4, overflowWrap: 'anywhere' }}>{cv.title}</h1>
           <div className="kv-inline" style={{ marginTop: 6 }}>
-            <span>Sürüm {cv.versionNo}</span><span>{stageLabel[cv.stage]}</span><span>{methodLabel[cv.signatureMethod]}</span>
+            <span>Sürüm {cv.versionNo}</span><span>Departman: <DepartmentName name={cv.departmentName} /></span><span>{stageLabel[cv.stage]}</span><span>{methodLabel[cv.signatureMethod]}</span>
             <span className="mono" title={cv.documentSha256}>SHA-256 {shortHash(cv.documentSha256)}</span>
           </div>
         </div>
@@ -97,7 +99,7 @@ export function SignatureWorkspace() {
           {cv.supersededById && <Banner tone="warn" title="Bu sürümün yerine yeni sürüm geldi">Bu sürümdeki kararlar yeni sürüme taşınmaz. <Link to={`/sozlesmeler/${cv.supersededById}`}>Güncel sürümü aç</Link></Banner>}
           {s.status.automaticAlert === 'IMAGE_NOT_FOUND_REVIEW_REQUIRED' && <Banner tone="warn" title="İmza görüntüsü bulunamadı — inceleme gerekli">Algılayıcının bulamaması belgenin imzasız olduğu anlamına gelmez. Taraf bazında kaynak sayfayı inceleyin.</Banner>}
           {s.status.automaticAlert === 'AUTOMATIC_CHECK_UNAVAILABLE' && <Banner tone="neutral" title="Otomatik kontrol yapılamadı">İmza tespit servisi bağlı değil veya hata verdi. Manuel inceleme tam olarak çalışır; otomatik kontrol yapılmış sayılmaz.</Banner>}
-          {cv.stage === 'ARCHIVE_IMPORT' && <Banner tone="neutral" title="Arşivden alınan sözleşme">İmza durumunun doğrulanmamış olması mevcut borç veya faturaları otomatik geçersiz kılmaz; fatura blokajı kurum politikasına göre finans/hukuk kararıdır.</Banner>}
+          {cv.stage === 'ARCHIVE_IMPORT' && <Banner tone="neutral" title="Arşivden alınan sözleşme">İmza durumunun doğrulanmamış olması mevcut borç veya faturaları otomatik geçersiz kılmaz; fatura blokajı kurum politikasına göre verilen bir karardır.</Banner>}
           {feedback && <Banner tone={feedback.tone} title={feedback.title}>
             {feedback.body}
             {feedback.blockers && <ul className="blockers" style={{ marginTop: 6 }}>{feedback.blockers.map((b, i) => <li key={i}><Icon name="x" size={14} /><span><strong>{b.partyName ?? blockerCodeText[b.code]}</strong> — {blockerCodeText[b.code]}. {b.action}</span></li>)}</ul>}

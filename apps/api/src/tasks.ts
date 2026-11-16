@@ -29,6 +29,13 @@ export const taskRoleSql = (roles: string, t = 't') => `(${t}.assignee_role = AN
   AND ${t}.assignee_role = 'DEPARTMENT_USER' AND ${t}.department_id IS NULL AND app_task_departmental(${t}.entity_type)
   AND app_task_department(${t}.entity_type, ${t}.entity_id) IS NULL))`;
 
+/**
+ * v2 Faz 1 (D93): kaldırılan işlevlerin görevleri İşlerim'de, sayaçlarda ve bildirimlerde listelenmez (kayıt silinmez):
+ * Lira Defteri vakaları, imha partileri ve fatura onay akışının kontrol bulgusu görevleri (faturaya bağlı `invoice_issue`).
+ * Tedarikçiye düşen `invoice_issue` (aday tedarikçinin aktivasyonu) ana veri işidir ve kalır.
+ */
+export const visibleTaskSql = (t = 't') => `(${t}.entity_type NOT IN ('recovery_case', 'disposal_batch') AND NOT (${t}.kind = 'invoice_issue' AND ${t}.entity_type = 'invoice'))`;
+
 /** Aynı açık görev ikinci kez oluşmaz (BR12/SIG15). Var olanın id'sini döner. */
 export async function openTask(tx: Tx, ctx: TenantContext, t: TaskInput): Promise<{ id: string; created: boolean }> {
   const departmentId = t.departmentId !== undefined ? t.departmentId

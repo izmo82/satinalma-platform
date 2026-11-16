@@ -134,6 +134,8 @@ test('taşınan girişler: Tedarikçiler sekmeleri, Sözleşme ekle ve Fatura y�
   await login(page, 'leyla.hukuk@example.test');
   await menu(page).getByRole('link', { name: /^Tedarikçiler/ }).click();
   const tabs = page.getByRole('navigation', { name: 'Tedarikçiler sekmeleri' });
+  // Sekme çubuğu çizilmeden okunmaz (allInnerTexts beklemez; dar ekranda sayfa geçişi yavaş).
+  await expect(tabs.getByRole('link', { name: 'Liste' })).toBeVisible();
   expect(await entries(page, 'Tedarikçiler sekmeleri')).toEqual(['Liste', 'Olaylar', 'Anketler', 'Performans ağırlıkları']);
   await tabs.getByRole('link', { name: 'Olaylar' }).click();
   await expect(page).toHaveURL(/\/tedarikciler\/olaylar$/);

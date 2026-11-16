@@ -5,6 +5,7 @@ import { useSession } from '../lib/session.tsx';
 import { fmtMoney } from '../lib/format.ts';
 import { Banner, Field, PageHeader } from '../ui/kit.tsx';
 import { Icon } from '../ui/icons.tsx';
+import { DepartmentSelect, useDepartments } from '../ui/Departments.tsx';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 
@@ -12,7 +13,7 @@ import { cn } from '@/lib/utils';
 interface Line { lot: string; description: string; unit: string; quantity: string; spec: string }
 interface Crit { code: string; name: string; kind: 'PRICE' | 'SCORE'; weight: string }
 interface Draft {
-  companyId: string; title: string; category: string; need: string; currency: string; budget: string; budgetVerified: boolean;
+  companyId: string; departmentId: string; title: string; category: string; need: string; currency: string; budget: string; budgetVerified: boolean;
   costCenter: string; deliveryLocation: string; neededBy: string; lines: Line[]; criteria: Crit[];
 }
 const STEPS = ['İhtiyaç', 'Kalemler', 'Bütçe', 'Kriterler', 'Özet'] as const;
@@ -31,8 +32,9 @@ export function ProjectWizard() {
   const navigate = useNavigate();
   const storeKey = `sp.projectDraft.${me?.user.id}.${me?.activeTenantId}`;
   const [d, setD] = useState<Draft>(() => {
-    try { const s = localStorage.getItem(storeKey); if (s) return JSON.parse(s) as Draft; } catch { /* yok */ }
-    return { companyId: me?.companies[0]?.id ?? '', title: '', category: '', need: '', currency: 'TRY', budget: '', budgetVerified: false,
+    // v2: departman alanından önceki taslaklarda departmentId yoktur; boş başlar.
+    try { const s = localStorage.getItem(storeKey); if (s) return { departmentId: '', ...JSON.parse(s) } as Draft; } catch { /* yok */ }
+    return { companyId: me?.companies[0]?.id ?? '', departmentId: '', title: '', category: '', need: '', currency: 'TRY', budget: '', budgetVerified: false,
       costCenter: '', deliveryLocation: '', neededBy: '', lines: [blankLine()], criteria: defaultCriteria };
   });
   const [step, setStep] = useState(0);
@@ -41,6 +43,7 @@ export function ProjectWizard() {
   const [busy, setBusy] = useState(false);
   const [submitError, setSubmitError] = useState<ApiError | null>(null);
   const summaryRef = useRef<HTMLDivElement>(null);
+  const departments = useDepartments();
 
   useEffect(() => {
     const t = setTimeout(() => { try { localStorage.setItem(storeKey, JSON.stringify(d)); setSavedAt(new Date()); } catch { /* yok */ } }, 600);
@@ -56,6 +59,7 @@ export function ProjectWizard() {
     const e: Record<string, string> = {};
     if (s === 0) {
       if (!d.companyId) e.companyId = 'Alıcı şirketi seçin.';
+      if (!d.departmentId) e.departmentId = 'Departmanı seçin; proje bu departmanın kullanıcılarına açılır.';
       if (d.title.trim().length < 3) e.title = 'En az 3 karakterlik bir proje adı yazın.';
       if (d.category.trim().length < 2) e.category = 'Kategori gerekli (ör. BT hizmetleri).';
     }
@@ -93,7 +97,7 @@ export function ProjectWizard() {
     setBusy(true); setSubmitError(null);
     try {
       const r = await api<{ id: string }>('/api/v1/projects', { method: 'POST', json: {
-        companyId: d.companyId, title: d.title.trim(), category: d.category.trim(), need: d.need, currency: d.currency, budget: d.budget, budgetVerified: d.budgetVerified,
+        companyId: d.companyId, departmentId: d.departmentId, title: d.title.trim(), category: d.category.trim(), need: d.need, currency: d.currency, budget: d.budget, budgetVerified: d.budgetVerified,
         costCenter: d.costCenter || null, deliveryLocation: d.deliveryLocation || null, neededBy: d.neededBy || null,
         lines: d.lines.map((l) => ({ ...l, lot: l.lot.trim() || 'Lot 1' })), criteria: d.criteria } });
       try { localStorage.removeItem(storeKey); } catch { /* yok */ }
@@ -128,6 +132,7 @@ export function ProjectWizard() {
           <div className="grid max-w-[720px] gap-0">
             <Field id="f-companyId" label="Alıcı şirket" error={err('companyId')}>{(p) => <select className="input" {...p} value={d.companyId} onChange={(e) => set('companyId', e.target.value)}>
               {me?.companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>}</Field>
+            <DepartmentSelect id="f-departmentId" value={d.departmentId} onChange={(v) => set('departmentId', v)} error={err('departmentId')} />
             <Field id="f-title" label="Proje adı" hint="Ör. BT altyapı bakım hizmeti 2027" error={err('title')}>{(p) => <input className={inputCls('title')} {...p} value={d.title} onChange={(e) => set('title', e.target.value)} />}</Field>
             <Field id="f-category" label="Kategori" hint="Onay akışı ve değerlendirme kategoriye göre seçilir." error={err('category')}>{(p) => <input className={inputCls('category')} {...p} value={d.category} onChange={(e) => set('category', e.target.value)} />}</Field>
             <Field id="f-need" label="İhtiyaç açıklaması">{(p) => <textarea className="input" rows={4} {...p} value={d.need} onChange={(e) => set('need', e.target.value)} />}</Field>
@@ -161,7 +166,7 @@ export function ProjectWizard() {
               <Field id="f-currency" label="Para birimi" error={err('currency')}>{(p) => <input className={inputCls('currency')} {...p} value={d.currency} maxLength={3} onChange={(e) => set('currency', e.target.value.toUpperCase())} />}</Field>
             </div>
             <label className="mb-4 flex items-start gap-2"><input type="checkbox" className="mt-1 accent-[var(--ink)]" checked={d.budgetVerified} onChange={(e) => set('budgetVerified', e.target.checked)} />
-              <span>Bütçe kaynağı finans tarafından doğrulandı<span className="block text-sm text-ink-muted">İşaretlenmezse proje boyunca "Bütçe doğrulanmadı" olarak görünür.</span></span></label>
+              <span>Bütçe kaynağı doğrulandı<span className="block text-sm text-ink-muted">İşaretlenmezse proje boyunca "Bütçe doğrulanmadı" olarak görünür.</span></span></label>
             <Field id="f-costCenter" label="Maliyet merkezi">{(p) => <input className="input" {...p} value={d.costCenter} onChange={(e) => set('costCenter', e.target.value)} />}</Field>
           </div>
         )}
@@ -187,6 +192,7 @@ export function ProjectWizard() {
           <div className="grid gap-5">
             <dl className="facts">
               <dt>Şirket</dt><dd>{me?.companies.find((c) => c.id === d.companyId)?.name}</dd>
+              <dt>Departman</dt><dd>{departments.items.find((x) => x.id === d.departmentId)?.name ?? '—'}</dd>
               <dt>Proje</dt><dd className="font-semibold">{d.title}</dd>
               <dt>Kategori</dt><dd>{d.category}</dd>
               <dt>Bütçe</dt><dd className="tabular">{DEC.test(d.budget) ? fmtMoney(d.budget, d.currency) : '—'} {!d.budgetVerified && <span className="text-warn">· doğrulanmadı</span>}</dd>

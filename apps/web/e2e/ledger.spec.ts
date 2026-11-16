@@ -1,4 +1,8 @@
+// v2 Faz 1 (D93/D95): Lira Defteri ve TCMB kur alma onaylı kaldırma listesinde; dosyanın tamamı atlanır, veri silinmedi.
 import { expect, test, type Page } from '@playwright/test';
+
+// v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; kaldırılan adres RemovedPage ile navigation-v2.spec.ts'de korunur
+test.skip(true, 'v2 Faz 1 (D93): Lira Defteri onaylı kaldırma listesinde; /lira-defteri RemovedPage ile navigation-v2.spec.ts\'de korunur');
 
 // Lira Defteri (D80): kurallarla bulunan "masada unutulan para" ve kanıt zinciri. Sentetik demo verisi (npm run db:seed).
 // Demo vakalarının durumu değiştirilmez (yaşam döngüsü API testinde); burada görünüm, rol sınırı ve tarama sınanır.

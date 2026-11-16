@@ -207,7 +207,7 @@ function TermsForm({ initial, onSave, onCancel, busy }: { initial: Terms | null;
           <Field label="Tutar">{(p) => <input className="input tabular text-right" inputMode="decimal" disabled={f.valueType === 'UNPRICED'} {...p} value={f.amount} onChange={(e) => set('amount', e.target.value)} />}</Field>
           <Field label="Para">{(p) => <input className="input" maxLength={3} {...p} value={f.currency} onChange={(e) => set('currency', e.target.value.toUpperCase())} />}</Field>
         </div>
-        {f.valueType === 'CEILING' && <div className="col-span-full"><Field label="Tavan vergiyi kapsar mı?" hint="Vergi dahilse sipariş ve faturalar KDV ve KDV dışı vergilerle düşülür; siparişte KDV oranı zorunlu olur.">{(p) => <select className="input" {...p} value={f.limitBasis} onChange={(e) => set('limitBasis', e.target.value)}>
+        {f.valueType === 'CEILING' && <div className="col-span-full"><Field label="Tavan vergiyi kapsar mı?" hint="Vergi dahilse faturalar KDV ve KDV dışı vergilerle düşülür.">{(p) => <select className="input" {...p} value={f.limitBasis} onChange={(e) => set('limitBasis', e.target.value)}>
           <option value="NET">Vergi hariç (net tutar)</option><option value="GROSS">Vergi dahil (KDV ve diğer vergiler)</option></select>}</Field></div>}
         <Field label="Başlangıç">{(p) => <input className="input" type="date" {...p} value={f.startDate} onChange={(e) => set('startDate', e.target.value)} />}</Field>
         <Field label="Bitiş" hint="Boş bırakılırsa süresiz.">{(p) => <input className="input" type="date" {...p} value={f.endDate} onChange={(e) => set('endDate', e.target.value)} />}</Field>

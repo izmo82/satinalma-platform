@@ -7,6 +7,7 @@ import { todayLocal } from '../lib/format.ts';
 import { ANSWER_RESPONSE as RESPONSE, OWNER_ROLES, roleLabel } from '../lib/labels.ts';
 import { v2Role } from '../lib/session.tsx';
 import { Banner, Empty, ErrorState, Field, Loading, PageHeader, Tag } from '../ui/kit.tsx';
+import { DepartmentName } from '../ui/Departments.tsx';
 import { Icon } from '../ui/icons.tsx';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
@@ -31,7 +32,7 @@ const ITEM_KIND = { BLOCKER: 'Engel', FINDING: 'Bulgu', UNKNOWN: 'Bilinmiyor', E
 interface AssessmentDetail {
   assessment: { id: string; supplierId: string; supplierName: string; scope: string; status: string; inherentFactors: Record<string, string>; reviewDue: string | null;
     createdBy: string; createdByMe: boolean; createdAt: string; reviewedBy: string | null; reviewedAt: string | null;
-    residual: null | { level: string; reason: string; acceptedBy: string; acceptedAt: string } };
+    residual: null | { level: string; reason: string; acceptedBy: string; acceptedAt: string }; departmentId: string | null; departmentName: string | null };
   template: { name: string; version: number; category: string };
   portal: { status: 'NONE' | 'SENT' | 'SUBMITTED'; sentAt: string | null; due: string | null; submittedAt: string | null };
   questions: { id: string; ordinal: number; controlId: string; reference: string; text: string; critical: boolean; evidenceRequired: boolean }[];
@@ -58,7 +59,7 @@ export function AssessmentPage() {
     <div className="page">
       <p className="text-sm text-ink-subtle"><Link to={`/tedarikciler/${d.assessment.supplierId}?sekme=degerlendirme`} className="text-ink-subtle">{d.assessment.supplierName}</Link> / Değerlendirme</p>
       <div className="mb-2 mt-1 flex flex-wrap items-start gap-3"><h1 className="min-w-0 flex-1">{d.assessment.scope}</h1><Tag label={OUTCOME[d.outcome]} /></div>
-      <p className="mb-5 text-ink-muted">{d.template.name} v{d.template.version} · {d.template.category} · {d.assessment.createdBy}, {fmtDate(d.assessment.createdAt)}
+      <p className="mb-5 text-ink-muted">Departman: <DepartmentName name={d.assessment.departmentName} /> · {d.template.name} v{d.template.version} · {d.template.category} · {d.assessment.createdBy}, {fmtDate(d.assessment.createdAt)}
         {d.assessment.status === 'REVIEWED' ? ` · inceleme tamamlandı (${d.assessment.reviewedBy})` : d.assessment.status === 'SUPERSEDED' ? ' · yerini yeni değerlendirme aldı' : ' · inceleme sürüyor'}</p>
       {blockers.length > 0 && <Banner tone="danger" title={`Kritik engel (${blockers.length})`}>{blockers.map((x) => x.message).join(' ')} Uyum oranı{d.complianceRate !== null ? ` %${d.complianceRate}` : ''} bu engeli aşmaz.</Banner>}
       <div className="grid grid-cols-[minmax(0,1fr)_340px] gap-6 max-[1100px]:grid-cols-1">
@@ -106,7 +107,7 @@ export function AssessmentPage() {
           <section className="panel"><div className="panel-head"><h2>Sonuç</h2></div>
             <div className="panel-body grid gap-2"><p><Tag label={OUTCOME[d.outcome]} /> {d.complianceRate !== null && <span className="tabular text-sm text-ink-muted">uyum %{d.complianceRate} (yanıtlara göre, bilgi amaçlı)</span>}</p>
               {d.items.length > 0 && <ul className="grid list-disc gap-1 pl-5 text-sm">{d.items.map((x, n) => <li key={n}><strong>{ITEM_KIND[x.kind]}:</strong> {x.message}</li>)}</ul>}
-              <p className="text-sm text-ink-subtle">{d.outcome === 'BLOCKED' ? 'İnceleme tamamlanınca bu tedarikçiye yeni seçim önerisi, seçim onayı ve sipariş engellenir.'
+              <p className="text-sm text-ink-subtle">{d.outcome === 'BLOCKED' ? 'İnceleme tamamlanınca bu tedarikçiye yeni seçim önerisi ve seçim onayı engellenir.'
                 : d.outcome === 'INCOMPLETE' ? 'Bilinmeyen yanıt veya eksik/süresi geçmiş kanıt var; sonuç kesinleşmez.' : d.outcome === 'CONDITIONAL' ? 'Bulgular düzeltici faaliyetle izlenmeli.' : 'Engel ve açık bulgu yok.'}</p>
               {open && d.can.review && <Button disabled={a.busy || !d.reviewedAll || d.portal.status === 'SENT'} onClick={() => void a.run(() => api(`/api/v1/assessments/${d.assessment.id}/complete`, { method: 'POST' }), 'Değerlendirme tamamlandı.')}><Icon name="stamp" />İncelemeyi tamamla</Button>}
               {open && !d.reviewedAll && <p className="text-sm text-ink-muted">Tüm sorular yanıtlanıp incelenince tamamlanır.</p>}</div></section>
@@ -234,7 +235,7 @@ export function IncidentPage() {
       <div className="mb-2 mt-1 flex flex-wrap items-start gap-3"><h1 className="min-w-0 flex-1">{i.code} · {i.title}</h1><Tag label={INCIDENT_STATUS[i.status]} />
         {i.disputeOpen && <Tag label={{ text: 'İtiraz açık', tone: 'warn', icon: 'alert' }} />}</div>
       <p className="mb-5 text-ink-muted"><Link to={`/tedarikciler/${i.supplierId}?sekme=olaylar`}>{i.supplierName}</Link> · {CATEGORY[i.category]} · {fmtDate(i.occurredOn)}
-        {i.contractTitle ? <> · <Link to={`/sozlesmeler/${i.contractVersionId}`}>{i.contractTitle}</Link></> : null}{i.poCode ? <> · <Link to={`/siparisler/${i.poId}`}>{i.poCode}</Link></> : null}</p>
+        {i.contractTitle ? <> · <Link to={`/sozlesmeler/${i.contractVersionId}`}>{i.contractTitle}</Link></> : null}{i.poCode ? <> · Sipariş {i.poCode}</> : null}</p>
       <Banner tone={d.scoreImpact.counted ? 'warn' : 'neutral'} icon={d.scoreImpact.counted ? 'alert' : 'info'}
         title={d.scoreImpact.counted ? `Puan etkisi: −${d.scoreImpact.penalty}` : 'Puana yansımıyor'}>{d.scoreImpact.counted ? `Doğrulanmış, açık itirazı olmayan, tekil olay. Ceza olay politikasına göre (sürüm ${d.scoreImpact.policy}).` : d.scoreImpact.reason}</Banner>
       <div className="grid grid-cols-[minmax(0,1fr)_340px] gap-6 max-[1100px]:grid-cols-1">

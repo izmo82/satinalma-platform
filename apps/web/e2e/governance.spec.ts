@@ -1,3 +1,4 @@
+// v2 Faz 1 (D93/D95): saklama, hukuki saklama ve imha onaylı kaldırma listesinde (atlanır); kiracı dışa aktarımı Yönetim > Denetim izi'nde (istek Yönetici, onay Satınalma, K-03) ve ERP mutabakatı Yönetim > Entegrasyonlar'da yeni adreslerinden sınanır.
 import { readFileSync } from 'node:fs';
 import { expect, test, type Page } from '@playwright/test';
 
@@ -41,7 +42,8 @@ test('ERP mutabakatı: aktarım dosyası iner, sonuç dosyası önce denenir, ya
   await expect(attention.getByRole('link', { name: invoiceNo! })).toHaveCount(0);
 });
 
-test('saklama: politika dayanakla tanımlanır, imha önerisini öneren onaylayamaz, ikinci hukukçu reddeder; hukuki saklama başlar ve kalkar', async ({ page }, info) => {
+// v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; kaldırılan adres RemovedPage ile navigation-v2.spec.ts'de korunur
+test.skip('saklama: politika dayanakla tanımlanır, imha önerisini öneren onaylayamaz, ikinci hukukçu reddeder; hukuki saklama başlar ve kalkar', async ({ page }, info) => {
   test.skip(info.project.name !== 'desktop-1440', 'veri değiştirir; yalnız bir projede');
   const tag = Date.now().toString().slice(-6);
   await login(page, 'leyla.hukuk@example.test');
@@ -103,13 +105,14 @@ test('dışa aktarım: yönetici ister, kendisi onaylayamaz; hukuk onaylar; pake
   test.setTimeout(90_000);
   const tag = Date.now().toString().slice(-6);
   await login(page, 'tamer.yonetici@example.test');
-  await nav(page, 'Veri yönetimi');
-  await page.getByRole('tab', { name: 'Dışa aktarım' }).click();
+  // v2: dışa aktarım Yönetim > Denetim izi sekmesinde.
+  await page.goto('/yonetim/denetim-izi');
+  await expect(page.getByRole('heading', { name: 'Talepler' })).toBeVisible();
   const reason = `Veri iadesi provası ${tag} (sentetik).`;
   await page.getByLabel('Gerekçe').fill(reason);
   await page.getByRole('button', { name: 'Dışa aktarım iste' }).click();
   // Önceki koşudan kalan bekleyen talep varsa yeni talep açılmaz (tek açık talep kuralı).
-  await expect(page.getByText('Talep oluşturuldu; hukuk onayı bekleniyor.').or(page.getByText('Bekleyen veya hazırlanan bir dışa aktarım var.'))).toBeVisible();
+  await expect(page.getByText('Talep oluşturuldu; Satınalma onayı bekleniyor.').or(page.getByText('Bekleyen veya hazırlanan bir dışa aktarım var.'))).toBeVisible();
   await expect(page.getByText('Onayı başka bir kişi verir.').first()).toBeVisible();
   // Bu koşunun izleyeceği talep: tek açık talep (yeni ya da önceki koşudan kalan); gerekçe satırıyla tanınır.
   const pendingText = await page.getByRole('listitem').filter({ has: page.getByText('Onay bekliyor', { exact: true }) }).first().innerText();
@@ -117,8 +120,9 @@ test('dışa aktarım: yönetici ister, kendisi onaylayamaz; hukuk onaylar; pake
   expect(pendingReason).toBeTruthy();
   await logout(page);
 
+  // Onay: Satınalma rolünden başka bir kişi (K-03).
   await login(page, 'leyla.hukuk@example.test');
-  await page.goto('/veri-yonetimi?sekme=disa-aktarim');
+  await page.goto('/yonetim/denetim-izi');
   const pending = page.getByRole('listitem').filter({ hasText: 'Onay bekliyor' }).first();
   await expect(pending).toBeVisible();
   await pending.getByLabel('Karar notu').fill(`Gerekçe uygun (e2e ${tag}).`);
@@ -128,7 +132,7 @@ test('dışa aktarım: yönetici ister, kendisi onaylayamaz; hukuk onaylar; pake
   await logout(page);
 
   await login(page, 'tamer.yonetici@example.test');
-  await page.goto('/veri-yonetimi?sekme=disa-aktarim');
+  await page.goto('/yonetim/denetim-izi');
   const ready = page.getByRole('listitem').filter({ hasText: pendingReason }).filter({ has: page.getByText('Hazır', { exact: true }) });
   await expect(async () => { await page.getByRole('button', { name: 'Yenile' }).click(); await expect(ready).toBeVisible({ timeout: 2000 }); }).toPass({ timeout: 60_000 });
   await expect(ready.getByText(/SHA-256/)).toBeVisible();
@@ -137,18 +141,17 @@ test('dışa aktarım: yönetici ister, kendisi onaylayamaz; hukuk onaylar; pake
   expect(readFileSync(await dl.path()).subarray(0, 2).toString()).toBe('PK');
 });
 
-test('veri yönetimi ve ERP mutabakatı yatay taşmaz (ana içerik alanı dahil)', async ({ page }) => {
+test('dışa aktarım (Denetim izi) ve ERP mutabakatı yatay taşmaz (ana içerik alanı dahil)', async ({ page }) => {
   // Belge genişliği yetmez: taşma ana içerik alanının içinde de olabilir.
   const fits = () => page.evaluate(() => { const m = document.querySelector('main')!; return m.scrollWidth <= m.clientWidth + 1 && document.documentElement.scrollWidth <= window.innerWidth + 1; });
   await login(page, 'leyla.hukuk@example.test');
-  for (const [tab, heading] of [['saklama', 'Saklama politikası'], ['hukuki', 'Etkin hukuki saklamalar'], ['disa-aktarim', 'Talepler']] as const) {
-    await page.goto(`/veri-yonetimi${tab === 'saklama' ? '' : `?sekme=${tab}`}`);
-    await expect(page.getByRole('heading', { name: heading })).toBeVisible();
-    expect(await fits(), tab).toBe(true);
-  }
+  // v2: saklama ve hukuki saklama sekmeleri kaldırma listesinde; dışa aktarım Yönetim > Denetim izi'nde.
+  await page.goto('/yonetim/denetim-izi');
+  await expect(page.getByRole('heading', { name: 'Talepler' })).toBeVisible();
+  expect(await fits(), 'denetim-izi').toBe(true);
   await logout(page);
   await login(page, 'ferda.finans@example.test');
-  await page.goto('/faturalar/erp-mutabakati');
+  await page.goto('/yonetim/entegrasyonlar');
   await expect(page.getByRole('heading', { name: 'İlgilenilmesi gerekenler' })).toBeVisible();
   expect(await fits()).toBe(true);
 });

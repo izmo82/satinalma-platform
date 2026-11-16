@@ -12,303 +12,47 @@ import { UblFindings, ublTitle, type UblCheck } from '../ui/UblCheck.tsx';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { cn } from '@/lib/utils';
+import { DepartmentFilter, DepartmentName, useDepartmentParam, withDepartment } from '../ui/Departments.tsx';
 
-// UX10 Fatura + sipariş/kabul. Ödeme yürütme yok; ERP aktarımı, muhasebe ve ödeme durumu ayrı gösterilir.
+// UX10 Fatura. v2 (D93/D95): fatura onayı, istisna onayı, tolerans ve üçlü eşleştirme kaldırma listesinde; fatura girişi (elle ve
+// e-Fatura XML), UBL-TR denetimi, sözleşmeye tahsis (eşleştirme) ve sözleşme limiti kalır. Ödeme ERP'de yürür.
 const num = (s: string) => Number(s).toLocaleString('tr-TR', { maximumFractionDigits: 6 });
-function useAct(reload: () => Promise<void>) {
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<{ tone: 'info' | 'warn' | 'danger'; text: string } | null>(null);
-  const run = async (fn: () => Promise<unknown>, ok: string) => {
-    setBusy(true); setMsg(null);
-    try { await fn(); setMsg({ tone: 'info', text: ok }); await reload(); return true; }
-    catch (e) { const err = e as ApiError; setMsg({ tone: err.status === 409 ? 'warn' : 'danger', text: err.message }); await reload(); return false; }
-    finally { setBusy(false); }
-  };
-  return { busy, run, clear: () => setMsg(null), feedback: msg && <Banner tone={msg.tone} icon={msg.tone === 'info' ? 'check' : undefined} title={msg.text} /> };
-}
-
-// --- Siparişler -----------------------------------------------------------------------------------
-
-export function PurchaseOrdersPage() {
-  const { me } = useSession();
-  const navigate = useNavigate();
-  const [creating, setCreating] = useState(false);
-  const r = useResource<{ items: { id: string; code: string; currency: string; status: string; issuedAt: string; supplierName: string; contractTitle: string | null; total: string }[] }>('/api/v1/purchase-orders');
-  return (
-    <div className="page">
-      <PageHeader title="Siparişler" actions={hasRole(me, 'BUYER', 'PROCUREMENT_MANAGER') && <Button onClick={() => setCreating(true)}><Icon name="package" />Sipariş ver</Button>}>
-        Hafif sipariş kaydı ve mal/hizmet kabulü. Sözleşmeye bağlı sipariş açık taahhüttür ve sözleşme limitinden düşer.
-      </PageHeader>
-      {creating && <PoForm onCancel={() => setCreating(false)} onCreated={(id) => navigate(`/siparisler/${id}`)} />}
-      {r.loading && !r.data ? <Loading /> : r.error ? <ErrorState error={r.error} onRetry={r.reload} /> : !r.data?.items.length ? (
-        <div className="rounded-md border border-border bg-surface"><Empty icon="receipt" title="Sipariş yok">Onaylanan tahsisten veya sözleşmeden sipariş verildiğinde burada görünür.</Empty></div>
-      ) : (
-        <Table>
-          <TableHeader><TableRow className="hover:bg-transparent"><TableHead>Sipariş no</TableHead><TableHead>Tedarikçi</TableHead><TableHead>Sözleşme</TableHead><TableHead className="text-right">Tutar</TableHead><TableHead>Tarih</TableHead></TableRow></TableHeader>
-          <TableBody>{r.data.items.map((p) => (
-            <TableRow key={p.id}>
-              <TableCell className="whitespace-nowrap"><Link className="font-semibold text-ink no-underline hover:underline" to={`/siparisler/${p.id}`}>{p.code}</Link>{p.status !== 'OPEN' && <span className="ml-2 text-sm text-ink-subtle">{PO_STATUS[p.status]}</span>}</TableCell>
-              <TableCell>{p.supplierName}</TableCell><TableCell>{p.contractTitle ?? <span className="text-ink-subtle">Sözleşmesiz</span>}</TableCell>
-              <TableCell className="whitespace-nowrap text-right">{fmtMoney(p.total, p.currency)}</TableCell><TableCell className="whitespace-nowrap text-sm text-ink-subtle">{fmtDate(p.issuedAt)}</TableCell>
-            </TableRow>
-          ))}</TableBody>
-        </Table>
-      )}
-    </div>
-  );
-}
-
-function PoForm({ onCancel, onCreated }: { onCancel: () => void; onCreated: (id: string) => void }) {
-  const { me } = useSession();
-  const sup = useResource<{ items: SupplierOption[] }>('/api/v1/supplier-options');
-  const cons = useResource<{ items: { id: string; title: string; companyId: string; supplierRootIds: string[] }[]; truncated: boolean }>('/api/v1/contract-options');
-  const [f, setF] = useState({ companyId: me?.companies[0]?.id ?? '', supplierId: '', contractVersionId: '', currency: 'TRY' });
-  const [contractCleared, setContractCleared] = useState(false);
-  const blank = { kind: 'GOODS', description: '', unit: '', quantity: '', unitPrice: '', taxRate: '20' };
-  const [lines, setLines] = useState([blank]);
-  const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const set = (i: number, k: keyof typeof blank, v: string) => setLines(lines.map((x, j) => j === i ? { ...x, [k]: v } : x));
-  // Limit seçilen sözleşmeden düşer: yalnız bu şirketin (D86) ve tedarikçinin tarafı olduğu veya tedarikçisi kayıtlı olmayan sözleşmeler (D85).
-  const fits = (c: { companyId: string; supplierRootIds: string[] }, companyId: string, supplierId: string) => c.companyId === companyId && (!supplierId || !c.supplierRootIds.length || c.supplierRootIds.includes(supplierId));
-  const pick = (next: { companyId?: string; supplierId?: string }) => {
-    const n = { ...f, ...next };
-    const keep = !!cons.data?.items.some((c) => c.id === f.contractVersionId && fits(c, n.companyId, n.supplierId));
-    setContractCleared(!!f.contractVersionId && !keep);
-    setF({ ...n, contractVersionId: keep ? f.contractVersionId : '' });
-  };
-  // Sessiz temizleme, limite işlemeyen sözleşmesiz siparişe yol açabilir; neden görünür olmalı.
-  const contractHint = contractCleared ? 'Seçtiğiniz sözleşme bu şirket ve tedarikçiye uygun değil; kaldırıldı.'
-    : cons.data?.truncated ? 'Sözleşme sayısı liste sınırını aştı; aradığınız sözleşme burada görünmeyebilir.' : !f.supplierId || !cons.data ? undefined
-    : cons.data.items.some((c) => fits(c, f.companyId, f.supplierId)) ? 'Yalnız bu şirketin ve tedarikçinin sözleşmeleri listelenir.' : 'Bu şirkette bu tedarikçinin kayıtlı sözleşmesi yok.';
-  return (
-    <form className="panel mb-5" onSubmit={(e) => { e.preventDefault(); setBusy(true); setErr(null);
-      void api<{ id: string }>('/api/v1/purchase-orders', { method: 'POST', json: { ...f, contractVersionId: f.contractVersionId || null, lines: lines.map((l) => ({ ...l, taxRate: l.taxRate.trim() || null })) } })
-        .then((r) => onCreated(r.data.id), (x: ApiError) => setErr(x.message)).finally(() => setBusy(false)); }}>
-      <div className="panel-head"><h2>Sipariş ver</h2><span className="text-sm text-ink-subtle">Tedarikçi aktif olmalı; sözleşmeli siparişte limit kilit altında kontrol edilir. Sözleşme limiti vergi dahilse KDV oranı zorunludur.</span></div>
-      <div className="panel-body grid gap-3">
-        <div className="grid grid-cols-4 gap-x-3 max-[900px]:grid-cols-2">
-          <Field label="Şirket">{(p) => <select className="input" {...p} value={f.companyId} onChange={(e) => pick({ companyId: e.target.value })}>{me?.companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>}</Field>
-          <Field label="Tedarikçi" hint={supplierPickHint(sup.data?.items.find((s) => s.id === f.supplierId))}>{(p) => <select className="input" required {...p} value={f.supplierId} onChange={(e) => pick({ supplierId: e.target.value })}><option value="">Seçin</option>{sup.data?.items.filter((s) => s.status === 'ACTIVE').map((s) => <option key={s.id} value={s.id}>{s.label ?? s.legalName}</option>)}</select>}</Field>
-          <Field label="Sözleşme (varsa)" hint={contractHint}>{(p) => <select className="input" {...p} value={f.contractVersionId} onChange={(e) => { setContractCleared(false); setF({ ...f, contractVersionId: e.target.value }); }}><option value="">Sözleşmesiz</option>{cons.data?.items.filter((c) => fits(c, f.companyId, f.supplierId)).map((c) => <option key={c.id} value={c.id}>{c.title}</option>)}</select>}</Field>
-          <Field label="Para birimi">{(p) => <input className="input" maxLength={3} {...p} value={f.currency} onChange={(e) => setF({ ...f, currency: e.target.value.toUpperCase() })} />}</Field>
-        </div>
-        {lines.map((l, i) => (
-          <div key={i} className="grid grid-cols-[110px_minmax(0,1fr)_100px_90px_130px_90px_auto] items-start gap-3 max-[1200px]:grid-cols-2">
-            <Field label="Tür">{(p) => <select className="input" {...p} value={l.kind} onChange={(e) => set(i, 'kind', e.target.value)}><option value="GOODS">Mal</option><option value="SERVICE">Hizmet</option></select>}</Field>
-            <Field label={`Kalem ${i + 1}`}>{(p) => <input className="input" required {...p} value={l.description} onChange={(e) => set(i, 'description', e.target.value)} />}</Field>
-            <Field label="Miktar">{(p) => <input className="input tabular text-right" required inputMode="decimal" {...p} value={l.quantity} onChange={(e) => set(i, 'quantity', e.target.value.replace(',', '.'))} />}</Field>
-            <Field label="Birim">{(p) => <input className="input" required {...p} value={l.unit} onChange={(e) => set(i, 'unit', e.target.value)} />}</Field>
-            <Field label="Birim fiyat">{(p) => <input className="input tabular text-right" required inputMode="decimal" {...p} value={l.unitPrice} onChange={(e) => set(i, 'unitPrice', e.target.value.replace(',', '.'))} />}</Field>
-            <Field label="KDV %">{(p) => <input className="input tabular text-right" inputMode="decimal" {...p} value={l.taxRate} onChange={(e) => set(i, 'taxRate', e.target.value.replace(',', '.'))} />}</Field>
-            <Button type="button" variant="ghost" size="sm" className="mt-6" disabled={lines.length === 1} onClick={() => setLines(lines.filter((_, j) => j !== i))} aria-label={`Kalem ${i + 1} sil`}><Icon name="close" /></Button>
-          </div>
-        ))}
-        <div className="flex flex-wrap gap-2">
-          <Button type="button" variant="outline" onClick={() => setLines([...lines, blank])}>Kalem ekle</Button>
-          <Button type="submit" disabled={busy}>Siparişi kaydet</Button><Button type="button" variant="ghost" onClick={onCancel}>Vazgeç</Button>
-        </div>
-        {err && <Banner tone="danger" title={err} />}
-      </div>
-    </form>
-  );
-}
-
-const PO_STATUS: Record<string, string> = { OPEN: 'Açık', CLOSED: 'Kapatıldı', CANCELLED: 'İptal edildi' };
-interface PoDetail {
-  po: { id: string; code: string; currency: string; status: string; closeReason: string | null; issuedAt: string; supplierName: string; contractVersionId: string | null; contractTitle: string | null; issuedBy: string };
-  lines: { poLineId: string; description: string; unit: string; kind: string; orderedQty: string; unitPrice: string; receivedQty: string; invoicedQty: string; originalQty: string; originalUnitPrice: string; revision: number; addedByChange: boolean }[];
-  receipts: { id: string; poLineId: string; quantity: string; periodFrom: string | null; periodTo: string | null; reversesId: string | null; note: string; recordedAt: string; recordedBy: string }[];
-  changes: { changeNo: number; kind: 'CHANGE' | 'CLOSE' | 'CANCEL'; reason: string; changedAt: string; changedBy: string;
-    details: { delta?: string; released?: string; pendingInvoices?: number; changed?: { lineNo: number; description: string; before: { quantity: string; unitPrice: string }; after: { quantity: string; unitPrice: string } }[];
-      added?: { description: string; quantity: string; unit: string; unitPrice: string }[] } }[];
-  changeNo: number;
-  can: { receive: boolean; change: boolean };
-}
-
-export function PurchaseOrderPage() {
-  const { id } = useParams();
-  const r = useResource<PoDetail>(`/api/v1/purchase-orders/${id}`);
-  const a = useAct(r.reload);
-  const [form, setForm] = useState<{ lineId: string; quantity: string; note: string; periodFrom: string; periodTo: string; reverseOf?: string } | null>(null);
-  const [mode, setMode] = useState<'change' | 'close' | null>(null);
-  if (r.loading && !r.data) return <div className="page"><Loading rows={5} /></div>;
-  if (r.error || !r.data) return <div className="page"><ErrorState error={r.error} onRetry={r.reload} /></div>;
-  const d = r.data;
-  const isOpen = d.po.status === 'OPEN';
-  return (
-    <div className="page">
-      <p className="text-sm text-ink-subtle"><Link to="/siparisler" className="text-ink-subtle">Siparişler</Link> / {d.po.code}</p>
-      <PageHeader title={`${d.po.code} · ${d.po.supplierName}`} actions={d.can.change && isOpen && !mode && <div className="flex flex-wrap gap-2">
-        <Button variant="outline" onClick={() => { setForm(null); a.clear(); setMode('change'); }}><Icon name="pen" />Siparişi değiştir</Button>
-        <Button variant="outline" onClick={() => { setForm(null); a.clear(); setMode('close'); }}>Kapat / iptal et</Button></div>}>{d.po.contractTitle ? <>Sözleşme: <Link to={`/sozlesmeler/${d.po.contractVersionId}?sekme=kosullar`}>{d.po.contractTitle}</Link></> : 'Sözleşmesiz sipariş'} · {d.po.issuedBy} · {fmtDateTime(d.po.issuedAt)}</PageHeader>
-      {!isOpen && <Banner tone="neutral" icon="lock" title={`Sipariş ${PO_STATUS[d.po.status]!.toLocaleLowerCase('tr-TR')}`}>
-        <span className="block">Gerekçe: {d.po.closeReason}</span>
-        {d.po.status === 'CLOSED' ? `Kalemler kabul edilen/faturalanan miktara indirildi${d.po.contractTitle ? '; kalan taahhüt sözleşme limitine geri döndü' : ''}. Yeni kabul kaydedilemez.` : `Sipariş iptal edildi${d.po.contractTitle ? ', açık taahhüt sıfırlandı' : ''}; bu siparişe fatura bağlanamaz.`}</Banner>}
-      {mode === 'change' && <PoChangeForm d={d} onDone={() => { setMode(null); void r.reload(); }} />}
-      {mode === 'close' && <PoCloseForm d={d} onDone={() => { setMode(null); void r.reload(); }} />}
-      <Table>
-        <TableHeader><TableRow className="hover:bg-transparent"><TableHead>Kalem</TableHead><TableHead className="text-right">Sipariş</TableHead><TableHead className="text-right">Birim fiyat</TableHead>
-          <TableHead className="text-right">Kabul (net)</TableHead><TableHead className="text-right">Faturalanan</TableHead><TableHead><span className="sr-only">Eylem</span></TableHead></TableRow></TableHeader>
-        <TableBody>{d.lines.map((l) => {
-          const open = Number(l.orderedQty) - Number(l.receivedQty);
-          return (
-            <TableRow key={l.poLineId}>
-              <TableCell className="min-w-[200px]"><span className="font-semibold">{l.description}</span><span className="block text-sm text-ink-subtle">{l.kind === 'SERVICE' ? 'Hizmet (dönem kabulü)' : 'Mal'}</span></TableCell>
-              <TableCell className="whitespace-nowrap text-right">{num(l.orderedQty)} {l.unit}{l.addedByChange ? <span className="block text-sm text-ink-subtle">değişiklikle eklendi{Number(l.originalQty) !== Number(l.orderedQty) ? ` (${num(l.originalQty)})` : ''}</span>
-                : l.revision > 0 && Number(l.originalQty) !== Number(l.orderedQty) && <span className="block text-sm text-ink-subtle">özgün {num(l.originalQty)}</span>}</TableCell>
-              <TableCell className="whitespace-nowrap text-right">{fmtMoney(l.unitPrice, d.po.currency)}{!l.addedByChange && l.revision > 0 && Number(l.originalUnitPrice) !== Number(l.unitPrice) && <span className="block text-sm text-ink-subtle">özgün {fmtMoney(l.originalUnitPrice, d.po.currency)}</span>}</TableCell>
-              <TableCell className={cn('whitespace-nowrap text-right', open > 0 && 'text-warn')}>{num(l.receivedQty)} {l.unit}</TableCell>
-              <TableCell className="whitespace-nowrap text-right">{num(l.invoicedQty)} {l.unit}</TableCell>
-              <TableCell>{d.can.receive && isOpen && open > 0 && <Button size="sm" variant="outline" onClick={() => setForm({ lineId: l.poLineId, quantity: String(open), note: '', periodFrom: '', periodTo: '' })}>Kabul kaydet</Button>}</TableCell>
-            </TableRow>
-          );
-        })}</TableBody>
-      </Table>
-      {form && (
-        <form className="panel mt-4 max-w-[640px]" onSubmit={(e) => { e.preventDefault(); void a.run(() => form.reverseOf
-          ? api(`/api/v1/receipts/${form.reverseOf}/reverse`, { method: 'POST', json: { quantity: form.quantity, note: form.note } })
-          : api(`/api/v1/po-lines/${form.lineId}/receipts`, { method: 'POST', json: { quantity: form.quantity, note: form.note, periodFrom: form.periodFrom || null, periodTo: form.periodTo || null } }),
-          form.reverseOf ? 'Ters kabul kaydedildi.' : 'Kabul kaydedildi.').then((ok) => ok && setForm(null)); }}>
-          <div className="panel-head"><h2>{form.reverseOf ? 'Ters kabul' : 'Kabul kaydı'}: {d.lines.find((l) => l.poLineId === form.lineId)?.description}</h2></div>
-          <div className="panel-body grid grid-cols-2 gap-x-4 max-[640px]:grid-cols-1">
-            <Field label="Miktar">{(p) => <input className="input tabular text-right" inputMode="decimal" {...p} value={form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value.replace(',', '.') })} />}</Field>
-            <span />
-            {!form.reverseOf && d.lines.find((l) => l.poLineId === form.lineId)?.kind === 'SERVICE' && <>
-              <Field label="Dönem başı">{(p) => <input className="input" type="date" {...p} value={form.periodFrom} onChange={(e) => setForm({ ...form, periodFrom: e.target.value })} />}</Field>
-              <Field label="Dönem sonu">{(p) => <input className="input" type="date" {...p} value={form.periodTo} onChange={(e) => setForm({ ...form, periodTo: e.target.value })} />}</Field></>}
-            <div className="col-span-full"><Field label={form.reverseOf ? 'Ters kabul nedeni' : 'Not'} hint="Ne teslim alındı veya neden geri alınıyor.">{(p) => <input className="input" {...p} value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} />}</Field></div>
-            <div className="col-span-full flex gap-2"><Button type="submit" disabled={a.busy}>Kaydet</Button><Button type="button" variant="outline" onClick={() => setForm(null)}>Vazgeç</Button></div>
-          </div>
-        </form>
-      )}
-      <section className="panel mt-5">
-        <div className="panel-head"><h2>Kabul geçmişi</h2><span className="text-sm text-ink-subtle">Kayıtlar silinmez; düzeltme ters kabulle yapılır.</span></div>
-        <div className="panel-body">{!d.receipts.length ? <p className="text-ink-muted">Henüz kabul yok.</p> : (
-          <ol className="timeline">{d.receipts.map((x) => (
-            <li key={x.id}><strong className={cn('tabular', Number(x.quantity) < 0 && 'text-danger')}>{Number(x.quantity) < 0 ? 'Ters kabul' : 'Kabul'} {num(x.quantity)} {d.lines.find((l) => l.poLineId === x.poLineId)?.unit} · {d.lines.find((l) => l.poLineId === x.poLineId)?.description}</strong>
-              <span>{x.note}{x.periodFrom ? ` · dönem ${fmtDate(x.periodFrom)}–${fmtDate(x.periodTo)}` : ''}</span>
-              <span className="subtle">{x.recordedBy} · {fmtDateTime(x.recordedAt)}{d.can.receive && isOpen && Number(x.quantity) > 0 && <> · <button type="button" className="underline" onClick={() => setForm({ lineId: x.poLineId, quantity: '', note: '', periodFrom: '', periodTo: '', reverseOf: x.id })}>Ters kabul</button></>}</span></li>
-          ))}</ol>)}</div>
-      </section>
-      {d.changes.length > 0 && (
-        <section className="panel mt-5">
-          <div className="panel-head"><h2>Değişiklik geçmişi</h2><span className="text-sm text-ink-subtle">Özgün kalemler korunur; her değişiklik gerekçesiyle kayıtlıdır.</span></div>
-          <div className="panel-body"><ol className="timeline">{d.changes.map((c) => (
-            <li key={c.changeNo}><strong>{c.kind === 'CHANGE' ? `Değişiklik ${c.changeNo}` : c.kind === 'CLOSE' ? 'Kapatıldı' : 'İptal edildi'}
-              {c.details.delta ? ` · tutar farkı ${Number(c.details.delta) > 0 ? '+' : ''}${fmtMoney(c.details.delta, d.po.currency)}` : ''}{c.details.released ? ` · serbest kalan ${fmtMoney(c.details.released, d.po.currency)}` : ''}</strong>
-              {(c.details.changed ?? []).map((x) => <span key={x.lineNo} className="tabular">{x.lineNo}. {x.description}: {num(x.before.quantity)} × {fmtMoney(x.before.unitPrice, d.po.currency)} → {num(x.after.quantity)} × {fmtMoney(x.after.unitPrice, d.po.currency)}</span>)}
-              {(c.details.added ?? []).map((x, i) => <span key={i} className="tabular">Yeni kalem: {x.description}, {num(x.quantity)} {x.unit} × {fmtMoney(x.unitPrice, d.po.currency)}</span>)}
-              {!!c.details.pendingInvoices && <span className="text-warn">Bu siparişe bağlı {c.details.pendingInvoices} karar bekleyen fatura vardı; kontrolleri yeniden çalışır.</span>}
-              <span>{c.reason}</span><span className="subtle">{c.changedBy} · {fmtDateTime(c.changedAt)}</span></li>
-          ))}</ol></div>
-        </section>
-      )}
-      {a.feedback}
-    </div>
-  );
-}
-
-function PoChangeForm({ d, onDone }: { d: PoDetail; onDone: () => void }) {
-  const [rows, setRows] = useState(d.lines.map((l) => ({ poLineId: l.poLineId, quantity: l.orderedQty, unitPrice: l.unitPrice })));
-  const blank = { kind: 'GOODS', description: '', unit: '', quantity: '', unitPrice: '', taxRate: '20' };
-  const [added, setAdded] = useState<typeof blank[]>([]);
-  const [reason, setReason] = useState('');
-  const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const changed = rows.filter((x) => { const l = d.lines.find((y) => y.poLineId === x.poLineId)!; return Number(x.quantity) !== Number(l.orderedQty) || Number(x.unitPrice) !== Number(l.unitPrice); });
-  const delta = [...changed.map((x) => { const l = d.lines.find((y) => y.poLineId === x.poLineId)!; return Number(x.quantity) * Number(x.unitPrice) - Number(l.orderedQty) * Number(l.unitPrice); }),
-    ...added.map((x) => Number(x.quantity) * Number(x.unitPrice))].reduce((a, b) => a + (Number.isFinite(b) ? b : 0), 0);
-  const belowFloor = rows.filter((x) => { const l = d.lines.find((y) => y.poLineId === x.poLineId)!; return Number(x.quantity) < Math.max(Number(l.receivedQty), Number(l.invoicedQty)); });
-  const setAdd = (i: number, k: keyof typeof blank, v: string) => setAdded(added.map((x, j) => j === i ? { ...x, [k]: v } : x));
-  return (
-    <form className="panel mb-5" onSubmit={(e) => { e.preventDefault(); setBusy(true); setErr(null);
-      void api(`/api/v1/purchase-orders/${d.po.id}/changes`, { method: 'POST', json: { baseChangeNo: d.changeNo, reason, lines: changed, add: added.map((l) => ({ ...l, taxRate: l.taxRate.trim() || null })) } })
-        .then(onDone, (x: ApiError) => setErr(x.message)).finally(() => setBusy(false)); }}>
-      <div className="panel-head"><h2>Siparişi değiştir</h2><span className="text-sm text-ink-subtle">Miktar kabul edilen/faturalanan miktarın altına inemez; faturalanmış kalemin fiyatı değişmez.</span></div>
-      <div className="panel-body grid gap-3">
-        {d.lines.map((l, i) => {
-          const floor = Math.max(Number(l.receivedQty), Number(l.invoicedQty));
-          return (
-            <div key={l.poLineId} className="grid grid-cols-[minmax(0,1fr)_120px_140px] items-start gap-3 max-[640px]:grid-cols-2">
-              <div className="pt-6"><span className="font-semibold">{l.description}</span>{floor > 0 && <span className="block text-sm text-ink-subtle">En az {num(String(floor))} {l.unit}</span>}</div>
-              <Field label={`${l.description} miktar`} error={Number(rows[i]!.quantity) < floor ? `En az ${num(String(floor))} ${l.unit}` : null}>{(p) => <input className="input tabular text-right" inputMode="decimal" {...p} value={rows[i]!.quantity} onChange={(e) => setRows(rows.map((x, j) => j === i ? { ...x, quantity: e.target.value.replace(',', '.') } : x))} />}</Field>
-              <Field label={`${l.description} birim fiyat`} hint={Number(l.invoicedQty) > 0 ? 'Faturalandı; fiyat sabit.' : undefined}>{(p) => <input className="input tabular text-right" inputMode="decimal" disabled={Number(l.invoicedQty) > 0} {...p} value={rows[i]!.unitPrice} onChange={(e) => setRows(rows.map((x, j) => j === i ? { ...x, unitPrice: e.target.value.replace(',', '.') } : x))} />}</Field>
-            </div>
-          );
-        })}
-        {added.map((l, i) => (
-          <div key={i} className="grid grid-cols-[110px_minmax(0,1fr)_100px_90px_130px_90px_auto] items-start gap-3 max-[1200px]:grid-cols-2">
-            <Field label="Tür">{(p) => <select className="input" {...p} value={l.kind} onChange={(e) => setAdd(i, 'kind', e.target.value)}><option value="GOODS">Mal</option><option value="SERVICE">Hizmet</option></select>}</Field>
-            <Field label={`Yeni kalem ${i + 1}`}>{(p) => <input className="input" required {...p} value={l.description} onChange={(e) => setAdd(i, 'description', e.target.value)} />}</Field>
-            <Field label="Miktar">{(p) => <input className="input tabular text-right" required inputMode="decimal" {...p} value={l.quantity} onChange={(e) => setAdd(i, 'quantity', e.target.value.replace(',', '.'))} />}</Field>
-            <Field label="Birim">{(p) => <input className="input" required {...p} value={l.unit} onChange={(e) => setAdd(i, 'unit', e.target.value)} />}</Field>
-            <Field label="Birim fiyat">{(p) => <input className="input tabular text-right" required inputMode="decimal" {...p} value={l.unitPrice} onChange={(e) => setAdd(i, 'unitPrice', e.target.value.replace(',', '.'))} />}</Field>
-            <Field label="KDV %">{(p) => <input className="input tabular text-right" inputMode="decimal" {...p} value={l.taxRate} onChange={(e) => setAdd(i, 'taxRate', e.target.value.replace(',', '.'))} />}</Field>
-            <Button type="button" variant="ghost" size="sm" className="mt-6" onClick={() => setAdded(added.filter((_, j) => j !== i))} aria-label={`Yeni kalem ${i + 1} sil`}><Icon name="close" /></Button>
-          </div>
-        ))}
-        <Field label="Değişiklik gerekçesi" hint="Kim istedi, neden; denetim kaydına yazılır.">{(p) => <textarea className="input" rows={2} required minLength={10} {...p} value={reason} onChange={(e) => setReason(e.target.value)} />}</Field>
-        <p className="tabular text-sm text-ink-muted">Tutar farkı (yaklaşık): {delta >= 0 ? '+' : ''}{fmtMoney(delta.toFixed(2), d.po.currency)}{d.po.contractTitle && delta > 0 ? ' · sözleşme limitinden kilit altında düşülür' : ''}</p>
-        <div className="flex flex-wrap gap-2">
-          <Button type="button" variant="outline" onClick={() => setAdded([...added, blank])}>Kalem ekle</Button>
-          <Button type="submit" disabled={busy || (!changed.length && !added.length) || reason.trim().length < 10 || belowFloor.length > 0}>Değişikliği kaydet</Button>
-          <Button type="button" variant="ghost" onClick={onDone}>Vazgeç</Button>
-        </div>
-        {err && <Banner tone="danger" title={err} />}
-      </div>
-    </form>
-  );
-}
-
-function PoCloseForm({ d, onDone }: { d: PoDetail; onDone: () => void }) {
-  const [reason, setReason] = useState('');
-  const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const consumed = d.lines.some((l) => Number(l.receivedQty) > 0 || Number(l.invoicedQty) > 0);
-  return (
-    <form className="panel mb-5 max-w-[720px]" onSubmit={(e) => { e.preventDefault(); setBusy(true); setErr(null);
-      void api(`/api/v1/purchase-orders/${d.po.id}/close`, { method: 'POST', json: { baseChangeNo: d.changeNo, reason } })
-        .then(onDone, (x: ApiError) => setErr(x.message)).finally(() => setBusy(false)); }}>
-      <div className="panel-head"><h2>{consumed ? 'Siparişi kapat' : 'Siparişi iptal et'}</h2></div>
-      <div className="panel-body grid gap-3">
-        <p className="text-ink-muted">{consumed
-          ? `Kabul veya fatura olduğu için sipariş iptal edilmez, kapatılır: her kalem kabul edilen/faturalanan miktara iner${d.po.contractTitle ? ' ve kalan taahhüt sözleşme limitine geri döner' : ''}. Sonra yeni kabul kaydedilemez.`
-          : `Kabul ve onaylı fatura yok; sipariş iptal edilir${d.po.contractTitle ? ' ve açık taahhüt sıfırlanır' : ''}. Bu siparişe fatura bağlanamaz.`} Kayıtlar silinmez.</p>
-        <Field label="Gerekçe">{(p) => <textarea className="input" rows={2} required minLength={10} {...p} value={reason} onChange={(e) => setReason(e.target.value)} />}</Field>
-        <div className="flex gap-2"><Button type="submit" variant="destructive" disabled={busy || reason.trim().length < 10}>{consumed ? 'Kapat' : 'İptal et'}</Button><Button type="button" variant="ghost" onClick={onDone}>Vazgeç</Button></div>
-        {err && <Banner tone="danger" title={err} />}
-      </div>
-    </form>
-  );
-}
-
 // --- Faturalar ------------------------------------------------------------------------------------
 
 const KIND = { INVOICE: 'Fatura', CREDIT_NOTE: 'İade / alacak', ADVANCE: 'Avans' } as const;
-const STATUS: Record<string, { text: string; tone: 'human' | 'ok' | 'warn' | 'danger' | 'info' | 'neutral'; icon: string }> = {
-  APPROVAL: { text: 'Finans onaylı', tone: 'human', icon: 'stamp' }, REJECTION: { text: 'Reddedildi', tone: 'neutral', icon: 'x' },
-  READY: { text: 'Onaya hazır', tone: 'ok', icon: 'check' }, NEEDS_EXCEPTION: { text: 'İstisna gerekli', tone: 'warn', icon: 'alert' },
-  EXCEPTION_APPROVED: { text: 'İstisna onaylı, finans onayı bekliyor', tone: 'info', icon: 'clock' }, BLOCKED: { text: 'Engelli', tone: 'danger', icon: 'x' },
+type Label = { text: string; tone: 'human' | 'ok' | 'warn' | 'danger' | 'info' | 'neutral'; icon: string };
+/** Eşleşme durumu (v2): sözleşmeye (ya da eski sipariş bağına) tam tahsis edilmiş mi; hukuken iptal/ret ayrı. */
+const MATCH: Record<'ESLESTI' | 'ESLESMEDI' | 'IPTAL', Label> = {
+  ESLESTI: { text: 'Eşleşti', tone: 'ok', icon: 'check' }, ESLESMEDI: { text: 'Eşleşmedi', tone: 'warn', icon: 'alert' },
+  IPTAL: { text: 'Hukuken iptal/ret', tone: 'danger', icon: 'x' },
 };
+/** v1'de verilmiş kararlar salt okunur geçmiş olarak görünür (W-18-11). */
+const PAST_DECISION: Record<string, string> = { APPROVAL: 'Onaylandı (v1 kaydı)', REJECTION: 'Reddedildi (v1 kaydı)', EXCEPTION_APPROVAL: 'İstisna onaylandı (v1 kaydı)' };
+/** Kaldırılan üçlü eşleştirme (sipariş/kabul), tolerans ve istisna bulguları gösterilmez; vergi, tahsis, tedarikçi ve limit bulguları kalır. */
+const REMOVED_ISSUES = new Set(['RECEIPT_MISSING', 'OVER_ORDER', 'PRICE_MISMATCH', 'UNIT_MISMATCH', 'PO_CANCELLED', 'CURRENCY_MISMATCH', 'CREDIT_EXCEEDS', 'NO_CONTRACT']);
 const ERP: Record<string, string> = { PENDING: 'ERP: aktarım bekliyor', UNKNOWN: 'ERP: belirsiz (zaman aşımı) — sorgulanacak', CONFIRMED: 'ERP: aktarıldı', FAILED: 'ERP: hata', NOT_CONFIGURED: 'ERP bağlantısı yapılandırılmadı' };
+const MATCH_FILTERS = [['', 'Tümü'], ['ESLESMEDI', 'Eşleşmedi'], ['ESLESTI', 'Eşleşti'], ['IPTAL', 'Hukuken iptal/ret']] as const;
+
+interface InvoiceRow { id: string; kind: keyof typeof KIND; invoiceNo: string; issueDate: string; currency: string; supplierName: string; supplierStatus: string; supplierIdentityVerified: boolean;
+  netAmount: string; legalStatus: string; paymentStatus: string; decision: string | null; erpStatus: string | null; duplicateCount: number; matched: boolean; departmentId: string | null; departmentName: string | null }
+const matchOf = (x: InvoiceRow) => (x.legalStatus !== 'RECEIVED' ? 'IPTAL' : x.matched ? 'ESLESTI' : 'ESLESMEDI');
 
 export function InvoicesPage() {
   const { me } = useSession();
   const navigate = useNavigate();
-  const r = useResource<{ items: { id: string; kind: keyof typeof KIND; invoiceNo: string; issueDate: string; currency: string; supplierName: string; supplierStatus: string; supplierIdentityVerified: boolean; netAmount: string; legalStatus: string; paymentStatus: string; decision: string | null; erpStatus: string | null; duplicateCount: number; blocked: boolean }[] }>('/api/v1/invoices');
+  const [dep, setDep] = useDepartmentParam();
+  const r = useResource<{ items: InvoiceRow[] }>(withDepartment('/api/v1/invoices', dep));
   const [creating, setCreating] = useState(false);
   // Süzgeç ve kolonlar URL'de (kayıtlı görünüm ve paylaşılabilir bağlantı); yetki ve kapsam sunucuda.
   const [params, setParams] = useSearchParams();
-  const durum = params.get('durum') ?? '';
+  // Eski (v1 onay durumu) kayıtlı görünüm değerleri tanınmaz; "Tümü" sayılır.
+  const durum = MATCH_FILTERS.some(([k]) => k === params.get('durum')) ? params.get('durum')! : '';
   const para = params.get('para') ?? '';
   const hidden = new Set((params.get('gizle') ?? '').split(',').filter(Boolean));
   const setParam = (k: string, v: string) => { const p = new URLSearchParams(params); v ? p.set(k, v) : p.delete(k); setParams(p, { replace: true }); };
   const toggleCol = (c: string) => { const n = new Set(hidden); n.has(c) ? n.delete(c) : n.add(c); setParam('gizle', [...n].sort().join(',')); };
   const all = r.data?.items ?? [];
-  const stateOf = (x: (typeof all)[number]) => x.legalStatus !== 'RECEIVED' ? 'IPTAL' : x.decision === 'APPROVAL' || x.decision === 'REJECTION' ? x.decision : 'BEKLIYOR';
-  const blockedOf = (x: (typeof all)[number]) => x.blocked && stateOf(x) === 'BEKLIYOR';
-  const matches = (x: (typeof all)[number], k: string) => !k || (k === 'ENGELLI' ? blockedOf(x) : stateOf(x) === k);
+  const matches = (x: InvoiceRow, k: string) => !k || matchOf(x) === k;
   const items = all.filter((x) => matches(x, durum) && (!para || x.currency === para));
   const currencies = [...new Set(all.map((x) => x.currency))].sort();
   const COLS = [['tedarikci', 'Tedarikçi'], ['erp', 'ERP / ödeme'], ['tarih', 'Tarih']] as const;
@@ -316,18 +60,18 @@ export function InvoicesPage() {
   return (
     <div className="page">
       <PageHeader title="Faturalar" actions={<div className="flex flex-wrap gap-2">
-        <Button variant="outline" asChild><Link to="/faturalar/tolerans">Tolerans kuralları</Link></Button>
         {hasRole(me, 'PROCUREMENT', 'AUDITOR') && <Button variant="outline" asChild><Link to="/yonetim/entegrasyonlar">ERP mutabakatı</Link></Button>}
-        {/* D95 c: e-Fatura XML ile fatura girişi Satınalma'da; departman kullanıcısı faturayı yalnız okur. */}
+        {/* D95 c: e-Fatura XML ve elle fatura girişi Satınalma'da; departman kullanıcısı faturayı yalnız okur. */}
         {hasRole(me, 'PROCUREMENT') && <Button variant="outline" asChild><Link to="/faturalar/yukle"><Icon name="upload" />Fatura yükle</Link></Button>}
-        {hasRole(me, 'FINANCE') && <Button onClick={() => setCreating(true)}><Icon name="receipt" />Fatura gir</Button>}</div>}>
-        Satır tahsisi, sipariş/kabul eşleştirmesi ve limit kontrolü. Hukuki e-belge durumu, kurum içi onay, ERP aktarımı ve ödeme ayrı durumlardır; ödeme bu sistemden yürütülmez.
+        {hasRole(me, 'PROCUREMENT') && <Button onClick={() => setCreating(true)}><Icon name="receipt" />Fatura gir</Button>}</div>}>
+        Faturanın sözleşmeyle eşleştirilmesi ve sözleşme limiti. Hukuki e-belge durumu, ERP aktarımı ve ödeme ayrı durumlardır; ödeme bu sistemden yürütülmez.
       </PageHeader>
       {creating && <InvoiceForm onCancel={() => setCreating(false)} onCreated={(id) => navigate(`/faturalar/${id}`)} />}
       <SavedViews page="invoices" />
+      <div className="mb-3"><DepartmentFilter value={dep} onChange={setDep} /></div>
       <div className="mb-3 flex flex-wrap items-end gap-3">
-        <div className="flex flex-wrap gap-2" role="group" aria-label="Onay durumu süzgeci">
-          {([['', 'Tümü'], ['BEKLIYOR', 'Karar bekliyor'], ['ENGELLI', 'Engelli'], ['APPROVAL', 'Onaylandı'], ['REJECTION', 'Reddedildi'], ['IPTAL', 'Hukuken iptal/ret']] as const).map(([k, l]) =>
+        <div className="flex flex-wrap gap-2" role="group" aria-label="Eşleşme süzgeci">
+          {MATCH_FILTERS.map(([k, l]) =>
             <FilterChip key={k} pressed={durum === k} count={all.filter((x) => matches(x, k)).length} onClick={() => setParam('durum', k)}>{l}</FilterChip>)}
         </div>
         {currencies.length > 1 && <label className="flex items-center gap-2 text-sm">Para birimi
@@ -337,18 +81,19 @@ export function InvoicesPage() {
         </fieldset>
       </div>
       {r.loading && !r.data ? <Loading /> : r.error ? <ErrorState error={r.error} onRetry={r.reload} /> : !items.length ? (
-        <div className="rounded-md border border-border bg-surface"><Empty icon="receipt" title={all.length ? 'Süzgece uyan fatura yok' : 'Fatura yok'}>{all.length ? 'Süzgeci değiştirin veya “Tümü”nü seçin.' : 'e-Fatura girişi veya elle giriş sonrası burada görünür.'}</Empty></div>
+        <div className="rounded-md border border-border bg-surface"><Empty icon="receipt" title={all.length || dep ? 'Süzgece uyan fatura yok' : 'Fatura yok'}>{all.length || dep ? 'Süzgeci değiştirin veya “Tümü”nü seçin.' : 'e-Fatura girişi veya elle giriş sonrası burada görünür.'}</Empty></div>
       ) : (
         <Table>
-          <TableHeader><TableRow className="hover:bg-transparent"><TableHead>Fatura no</TableHead>{show('tedarikci') && <TableHead>Tedarikçi</TableHead>}<TableHead className="text-right">Net</TableHead>
-            <TableHead>Onay</TableHead>{show('erp') && <TableHead className="max-[900px]:hidden">ERP / ödeme</TableHead>}{show('tarih') && <TableHead>Tarih</TableHead>}</TableRow></TableHeader>
+          <TableHeader><TableRow className="hover:bg-transparent"><TableHead>Fatura no</TableHead>{show('tedarikci') && <TableHead>Tedarikçi</TableHead>}<TableHead>Departman</TableHead><TableHead className="text-right">Net</TableHead>
+            <TableHead>Eşleşme</TableHead>{show('erp') && <TableHead className="max-[900px]:hidden">ERP / ödeme</TableHead>}{show('tarih') && <TableHead>Tarih</TableHead>}</TableRow></TableHeader>
           <TableBody>{items.map((x) => (
             <TableRow key={x.id}>
               <TableCell className="whitespace-nowrap"><Link className="font-semibold text-ink no-underline hover:underline" to={`/faturalar/${x.id}`}>{x.invoiceNo}</Link>
                 <span className="block text-sm text-ink-subtle">{KIND[x.kind]}{x.duplicateCount > 0 ? ` · ${x.duplicateCount} tekrar geliş` : ''}</span></TableCell>
               {show('tedarikci') && <TableCell>{x.supplierName}{supplierRecordNote(x.supplierStatus, x.supplierIdentityVerified) && <span className="block text-sm text-warn">{supplierRecordNote(x.supplierStatus, x.supplierIdentityVerified)}</span>}</TableCell>}
+              <TableCell><DepartmentName name={x.departmentName} /></TableCell>
               <TableCell className="whitespace-nowrap text-right">{fmtMoney(x.netAmount, x.currency)}</TableCell>
-              <TableCell>{x.legalStatus !== 'RECEIVED' ? <Tag label={{ text: 'Hukuken iptal/ret', tone: 'danger', icon: 'x' }} /> : x.decision ? <Tag label={STATUS[x.decision]} /> : <><span className="text-sm text-ink-subtle">Bekliyor</span>{x.blocked && <span className="mt-1 block"><Tag label={STATUS.BLOCKED} /></span>}</>}</TableCell>
+              <TableCell><Tag label={MATCH[matchOf(x)]} />{x.decision && <span className="mt-1 block text-sm text-ink-subtle">{PAST_DECISION[x.decision]}</span>}</TableCell>
               {show('erp') && <TableCell className="text-sm text-ink-muted max-[900px]:hidden">{x.erpStatus ? ERP[x.erpStatus] : '—'}{x.paymentStatus === 'PAID' ? ' · ödendi (ERP)' : ''}</TableCell>}
               {show('tarih') && <TableCell className="whitespace-nowrap text-sm text-ink-subtle">{fmtDate(x.issueDate)}</TableCell>}
             </TableRow>
@@ -418,7 +163,8 @@ const TAX_CODE: Record<string, string> = { '4080': 'ÖİV', '4081': 'ÖİV (5035
 
 interface InvDetail {
   invoice: { id: string; kind: keyof typeof KIND; invoiceNo: string; ettn: string | null; issueDate: string; currency: string; companyId: string; supplierId: string; supplierName: string; supplierStatus: string; supplierIdentityVerified: boolean; supplierRootId: string;
-    legalStatus: string; paymentStatus: string; documentVersionId: string | null; declaredTaxTotal: string | null; declaredWithholding: string | null; declaredPayable: string | null; originalInvoiceId: string | null; advanceInvoiceId: string | null; advanceOffset: string; createdByMe: boolean; createdBy: string; createdAt: string };
+    legalStatus: string; paymentStatus: string; documentVersionId: string | null; declaredTaxTotal: string | null; declaredWithholding: string | null; declaredPayable: string | null; originalInvoiceId: string | null; advanceInvoiceId: string | null; advanceOffset: string; createdByMe: boolean; createdBy: string; createdAt: string;
+    departmentId: string | null; departmentName: string | null };
   lines: { lineNo: number; description: string; quantity: string; unit: string; unitPrice: string; netAmount: string; taxRate: string; taxAmount: string | null;
     otherTax: string | null; otherTaxes: { code: string | null; name: string | null; rate: string | null; amount: string }[] | null }[];
   allocations: { lineNo: number; poLineId: string | null; contractVersionId: string | null; quantity: string; amount: string; poId: string | null; poCode: string | null; poLineDescription: string | null; contractTitle: string | null }[];
@@ -436,28 +182,29 @@ const SEV = { BLOCK: { text: 'Engel', tone: 'danger', icon: 'x' }, EXCEPTION: { 
 export function InvoicePage() {
   const { id } = useParams();
   const r = useResource<InvDetail>(`/api/v1/invoices/${id}`);
-  const a = useAct(r.reload);
   const [editing, setEditing] = useState(false);
-  const [reason, setReason] = useState('');
   if (r.loading && !r.data) return <div className="page"><Loading rows={6} /></div>;
   if (r.error || !r.data) return <div className="page"><ErrorState error={r.error} onRetry={r.reload} /></div>;
   const d = r.data;
   const decided = d.decisions.some((x) => x.kind === 'APPROVAL' || x.kind === 'REJECTION');
-  const issuesFor = (lineNo?: number) => d.check.issues.filter((x) => x.lineNo === lineNo);
+  const issues = d.check.issues.filter((x) => !REMOVED_ISSUES.has(x.code));
+  const issuesFor = (lineNo?: number) => issues.filter((x) => x.lineNo === lineNo);
+  const match = d.invoice.legalStatus !== 'RECEIVED' ? 'IPTAL' : d.allocations.length && !d.check.issues.some((x) => x.code === 'UNALLOCATED') ? 'ESLESTI' : 'ESLESMEDI';
   const supplierNote = supplierRecordNote(d.invoice.supplierStatus, d.invoice.supplierIdentityVerified);
   return (
     <div className="page">
       <p className="text-sm text-ink-subtle"><Link to="/faturalar" className="text-ink-subtle">Faturalar</Link> / {d.invoice.invoiceNo}</p>
       <div className="mb-4 mt-1 flex flex-wrap items-start gap-3">
         <h1 className="min-w-0 flex-1">{KIND[d.invoice.kind]} {d.invoice.invoiceNo} · {d.invoice.supplierName}</h1>
-        <Tag label={STATUS[d.status]} />
+        <Tag label={MATCH[match]} />
       </div>
       <div className="mb-5 flex flex-wrap gap-x-6 gap-y-1 text-sm text-ink-muted">
         {supplierNote && <span className="text-warn">Tedarikçi: {supplierNote}</span>}
         <Link to={`/tedarikciler/${d.invoice.supplierId}`}>Tedarikçi kaydını aç</Link>
+        <span>Departman: <DepartmentName name={d.invoice.departmentName} /></span>
         <span>Tarih {fmtDate(d.invoice.issueDate)}</span>{d.invoice.ettn && <span className="mono">ETTN {d.invoice.ettn}</span>}
         <span>Hukuki durum: {d.invoice.legalStatus === 'RECEIVED' ? 'alındı' : 'iptal/ret'}</span>
-        <span>{d.erp ? ERP[d.erp.status] : 'ERP: onaydan sonra'}</span><span>Ödeme: {d.invoice.paymentStatus === 'PAID' ? 'ödendi (ERP teyidi)' : 'ödenmedi'}</span>
+        <span>{d.erp ? ERP[d.erp.status] : 'ERP: aktarım kaydı yok'}</span><span>Ödeme: {d.invoice.paymentStatus === 'PAID' ? 'ödendi (ERP teyidi)' : 'ödenmedi'}</span>
         {d.intake.filter((x) => x.duplicate).length > 0 && <span className="text-warn">Bu fatura {d.intake.filter((x) => x.duplicate).length} kez tekrar geldi; yeni kayıt açılmadı.</span>}
       </div>
       <div className="grid grid-cols-[minmax(0,1fr)_380px] gap-6 max-[1100px]:grid-cols-1">
@@ -475,7 +222,8 @@ export function InvoicePage() {
                         : Number(l.otherTax) > 0 && <span className="block text-right text-sm text-ink-subtle">KDV dışı vergiler (kalem ayrımı yok) · {fmtMoney(l.otherTax, d.invoice.currency)}</span>}</span></div>
                   {d.allocations.filter((x) => x.lineNo === l.lineNo).map((x, i) => (
                     <p key={i} className="flex flex-wrap gap-x-2 text-sm text-ink-muted"><Icon name="arrow" size={14} className="mt-0.5" />
-                      {x.poCode ? <>Sipariş <Link to={`/siparisler/${x.poId}`}>{x.poCode}</Link> · {x.poLineDescription}</> : x.contractTitle ? <>Sözleşme: {x.contractTitle}</> : 'Bağsız'}
+                      {/* v2 (D93): siparişler kalktı; eski sipariş bağı numarasıyla metin olarak görünür (bağlantı yok). */}
+                      {x.poLineId ? <>Sipariş {x.poCode ?? '(erişiminiz dışında)'}{x.poLineDescription ? ` · ${x.poLineDescription}` : ''}{x.contractTitle ? ` · Sözleşme: ${x.contractTitle}` : ''}</> : x.contractTitle ? <>Sözleşme: {x.contractTitle}</> : 'Bağsız'}
                       <span className="tabular">· {num(x.quantity)} {l.unit} · {fmtMoney(x.amount, d.invoice.currency)}</span></p>
                   ))}
                   {issuesFor(l.lineNo).map((x, i) => <Issue key={i} x={x} />)}
@@ -485,7 +233,6 @@ export function InvoicePage() {
               {editing && <AllocationEditor d={d} onDone={() => { setEditing(false); void r.reload(); }} />}
             </div>
           </section>
-          {a.feedback}
         </div>
         <aside className="grid content-start gap-5">
           <section className="panel">
@@ -514,35 +261,19 @@ export function InvoicePage() {
                 <dt>Tavan</dt><dd className="tabular">{fmtMoney(c.ceiling, c.currency)}</dd><dt>Net tüketim</dt><dd className="tabular">{fmtMoney(c.netConsumption, c.currency)}</dd>
                 <dt>Açık taahhüt</dt><dd className="tabular">{fmtMoney(c.openCommitment, c.currency)}</dd>
                 <dt>Kullanılabilir</dt><dd className="tabular font-semibold">{fmtMoney((Number(c.ceiling) - Number(c.netConsumption) - Number(c.openCommitment)).toFixed(2), c.currency)}</dd>
-              </dl><p className="mt-2 text-sm text-ink-subtle">Bu fatura hariç; onay anında kilit altında yeniden hesaplanır.</p></div>
+              </dl><p className="mt-2 text-sm text-ink-subtle">Bu fatura hariç. Aşım yalnız bilgidir; ödeme kararı ERP'dedir.</p></div>
             </section>
           ))}
-          <section className="panel">
-            <div className="panel-head"><h2>Karar</h2></div>
+          {/* v2 (D93): fatura onayı, istisna onayı ve ret kaldırma listesinde. v1'de verilmiş kararlar salt okunur geçmiş olarak kalır. */}
+          {(d.decisions.length > 0 || d.erp?.lastError) && <section className="panel">
+            <div className="panel-head"><h2>Karar geçmişi</h2></div>
             <div className="panel-body grid gap-3">
-              {d.decisions.map((x, i) => <p key={i}><Tag label={x.kind === 'REJECTION' ? { text: `Ret · ${x.decidedBy}`, tone: 'neutral', icon: 'x' } : { text: `${x.kind === 'APPROVAL' ? 'Finans onayı' : 'İstisna onayı'} · ${x.decidedBy}`, tone: 'human', icon: 'stamp' }} />
+              {d.decisions.map((x, i) => <p key={i}><Tag label={{ text: `${PAST_DECISION[x.kind] ?? 'Karar (v1 kaydı)'} · ${x.decidedBy}`, tone: x.kind === 'REJECTION' ? 'neutral' : 'human', icon: x.kind === 'REJECTION' ? 'x' : 'stamp' }} />
                 <span className="block text-sm text-ink-subtle">{fmtDateTime(x.decidedAt)}{x.reason ? ` · ${x.reason}` : ''}</span></p>)}
-              {d.exceptionCurrent === false && !decided && <Banner tone="warn" title="İstisna eskidi">Onaydan sonra tahsis veya kontrol sonucu değişti; yeniden istisna onayı gerekir.</Banner>}
-              {!decided && (() => {
-                const needsEx = d.status === 'NEEDS_EXCEPTION' || d.exceptionCurrent === false;
-                const canEx = needsEx && d.can.approveException && !d.invoice.createdByMe;
-                const canFin = d.can.approve && !d.invoice.createdByMe;
-                return <>
-                  {needsEx && !canEx && <p className="text-sm text-ink-muted">İstisna onayını satınalma yöneticisi verir; bulgular sorumlularına görev olarak düştü.</p>}
-                  {d.can.approve && d.invoice.createdByMe && <p className="text-sm text-ink-muted">Faturayı siz girdiniz; görev ayrılığı gereği başka bir finans kullanıcısı onaylar.</p>}
-                  {d.can.approve && !d.check.canApprove && <p className="text-sm text-ink-muted">Engel gerektiren bulgu varken onaylanamaz; önce yukarıdaki bulguları çözün.</p>}
-                  {(canEx || canFin) && <Field label={canEx ? 'Gerekçe' : 'Ret gerekçesi'} hint={canEx ? 'İstisnada kapsam, tutar ve süreyi yazın.' : 'Yalnız reddederken gerekli.'}>
-                    {(p) => <textarea className="input" rows={3} {...p} value={reason} onChange={(e) => setReason(e.target.value)} />}</Field>}
-                  {canEx && <Button disabled={a.busy || reason.trim().length < 10} onClick={() => void a.run(() => api(`/api/v1/invoices/${d.invoice.id}/exception-approval`, { method: 'POST', json: { reason } }), 'İstisna onaylandı.')}><Icon name="stamp" />İstisnayı onayla</Button>}
-                  {canFin && <>
-                    <Button disabled={a.busy || !d.check.canApprove || needsEx} onClick={() => void a.run(() => api(`/api/v1/invoices/${d.invoice.id}/approve`, { method: 'POST', ifMatch: d.checkFingerprint }), 'Fatura onaylandı.')}><Icon name="stamp" />Finans onayı</Button>
-                    <Button variant="outline" disabled={a.busy || reason.trim().length < 10} onClick={() => void a.run(() => api(`/api/v1/invoices/${d.invoice.id}/reject`, { method: 'POST', json: { reason } }), 'Fatura reddedildi.')}>Reddet</Button>
-                  </>}
-                </>;
-              })()}
+              {d.decisions.length > 0 && <p className="text-sm text-ink-subtle">Fatura onayı artık bu sistemde verilmez; ödeme ERP'de yürür.</p>}
               {d.erp?.lastError && <p className="text-sm text-ink-muted">{d.erp.lastError}</p>}
             </div>
-          </section>
+          </section>}
         </aside>
       </div>
     </div>
@@ -560,46 +291,51 @@ function Issue({ x }: { x: InvDetail['check']['issues'][number] }) {
   );
 }
 
+/** Sözleşme seçeneği: yalnız faturanın şirketinden (D86/D87) ve tedarikçi köküne bağlı ya da tedarikçisi kayıtlı olmayan sözleşmeler (D84/D85). */
+type ContractOption = { id: string; title: string; companyId: string; supplierRootIds: string[] };
+
+/**
+ * Tahsis (v2 eşleştirme): fatura satırı sözleşmeye bağlanır. Sipariş kalemine bağlama kaldırma listesinde (D93); eski sipariş bağı
+ * numarasıyla salt okunur satır olarak kalır ve kayıtta aynen geri gönderilir (silinmez, değiştirilmez).
+ */
 function AllocationEditor({ d, onDone }: { d: InvDetail; onDone: () => void }) {
-  const pos = useResource<{ items: { id: string; code: string; status: string; companyId: string; supplierRootId: string; contractTitle: string | null }[] }>('/api/v1/purchase-orders');
-  const [rows, setRows] = useState(d.allocations.length ? d.allocations.map((x) => ({ lineNo: x.lineNo, target: x.poLineId ? `po:${x.poLineId}` : x.contractVersionId ? `cv:${x.contractVersionId}` : '', quantity: x.quantity, amount: x.amount }))
-    : d.lines.map((l) => ({ lineNo: l.lineNo, target: '', quantity: l.quantity, amount: l.netAmount })));
-  const [poLines, setPoLines] = useState<Record<string, { poLineId: string; description: string }[]>>({});
+  const cons = useResource<{ items: ContractOption[]; truncated: boolean }>('/api/v1/contract-options');
+  const [rows, setRows] = useState(d.allocations.length ? d.allocations.map((x) => ({ lineNo: x.lineNo, target: x.poLineId ? `po:${x.poLineId}` : x.contractVersionId ? `cv:${x.contractVersionId}` : '', quantity: x.quantity, amount: x.amount,
+    legacy: x.poLineId ? `Sipariş ${x.poCode ?? '(erişiminiz dışında)'}${x.poLineDescription ? ` · ${x.poLineDescription}` : ''}` : null }))
+    : d.lines.map((l) => ({ lineNo: l.lineNo, target: '', quantity: l.quantity, amount: l.netAmount, legacy: null as string | null })));
   const [offset, setOffset] = useState(d.invoice.advanceOffset);
   const [advanceId, setAdvanceId] = useState(d.invoice.advanceInvoiceId ?? '');
   const [err, setErr] = useState<string | null>(null);
-  // Ada göre değil tedarikçi köküne göre (D84) ve yalnız faturanın şirketinden (D87).
-  const supplierPos = (pos.data?.items ?? []).filter((p) => p.supplierRootId === d.invoice.supplierRootId && p.companyId === d.invoice.companyId)
-    .sort((a, b) => Number(a.status !== 'OPEN') - Number(b.status !== 'OPEN'));
-  const [poQuery, setPoQuery] = useState('');
-  const shownPos = supplierPos.filter((p) => p.code.toLocaleLowerCase('tr-TR').includes(poQuery.trim().toLocaleLowerCase('tr-TR')));
-  // Kayıtlı bağ, kalemi yüklenmemiş olsa da seçenek olarak görünür; "Seçin" ile kaldırılabilir (aksi halde yanlış bağ düzeltilemez, D84).
-  const loaded = new Set(Object.values(poLines).flat().map((l) => l.poLineId));
-  const current = [...new Map(d.allocations.filter((a) => (a.poLineId ? !loaded.has(a.poLineId) : a.contractVersionId))
-    .map((a) => [a.poLineId ? `po:${a.poLineId}` : `cv:${a.contractVersionId}`, a.poLineId ? (a.poCode ? `${a.poCode} · ${a.poLineDescription}` : 'Erişiminiz dışındaki sipariş') : a.contractTitle ? `Sözleşme · ${a.contractTitle}` : 'Erişiminiz dışındaki sözleşme'])).entries()];
-  async function loadLines(poId: string) { if (poLines[poId]) return; const r = await api<{ lines: { poLineId: string; description: string }[] }>(`/api/v1/purchase-orders/${poId}`); setPoLines((x) => ({ ...x, [poId]: r.data.lines })); }
+  const fits = (c: ContractOption) => c.companyId === d.invoice.companyId && (!c.supplierRootIds.length || c.supplierRootIds.includes(d.invoice.supplierRootId));
+  const options = (cons.data?.items ?? []).filter(fits);
+  // Kayıtlı sözleşme bağı listede yoksa (erişim dışı ya da uygun değil) yine seçenek olarak görünür; "Seçin" ile kaldırılabilir (D84).
+  const current = [...new Map(d.allocations.filter((a) => !a.poLineId && a.contractVersionId && !options.some((c) => c.id === a.contractVersionId))
+    .map((a) => [`cv:${a.contractVersionId}`, a.contractTitle ? `Sözleşme · ${a.contractTitle}` : 'Erişiminiz dışındaki sözleşme'])).entries()];
   return (
     <form className="grid gap-3 rounded-md border border-border bg-white p-3" onSubmit={(e) => { e.preventDefault(); setErr(null);
       void api(`/api/v1/invoices/${d.invoice.id}/allocations`, { method: 'PUT', json: { advanceOffset: offset || '0', advanceInvoiceId: advanceId || null,
         allocations: rows.filter((x) => x.target).map((x) => ({ lineNo: x.lineNo, poLineId: x.target.startsWith('po:') ? x.target.slice(3) : null, contractVersionId: x.target.startsWith('cv:') ? x.target.slice(3) : null, quantity: x.quantity, amount: x.amount })) } })
         .then(onDone, (x: ApiError) => setErr(x.message)); }}>
-      <p className="text-sm text-ink-muted">Satırı siparişin kalemine bağlayın. Tek satır birden çok siparişe bölünebilir; tahsis toplamı satır tutarını aşamaz.</p>
-      {supplierPos.length > 8 && <Field label="Sipariş ara">{(p) => <input className="input max-w-xs" {...p} placeholder="Sipariş no" value={poQuery} onChange={(e) => setPoQuery(e.target.value)} />}</Field>}
-      {/* Kapalı siparişler de kalır (geç fatura, iade); açıklar önce gelir, liste Kaydet düğmesini itmez. */}
-      <div className="flex max-h-44 flex-wrap gap-2 overflow-y-auto">{shownPos.map((p) => <Button key={p.id} type="button" size="sm" variant="outline" onClick={() => void loadLines(p.id)}>{p.code} kalemlerini yükle{p.status !== 'OPEN' ? ' · kapalı' : ''}</Button>)}
-        {!supplierPos.length && <span className="text-sm text-ink-subtle">Bu tedarikçinin siparişi yok; sözleşmesiz tahsis istisna gerektirir.</span>}</div>
+      <p className="text-sm text-ink-muted">Satırı sözleşmeye bağlayın. Tek satır birden çok sözleşmeye bölünebilir; tahsis toplamı satır tutarını aşamaz.</p>
+      {!cons.loading && !options.length && <span className="text-sm text-ink-subtle">Bu şirkette bu tedarikçiye uygun sözleşme yok.</span>}
+      {cons.data?.truncated && <span className="text-sm text-ink-subtle">Sözleşme sayısı liste sınırını aştı; aradığınız sözleşme burada görünmeyebilir.</span>}
       {d.check.issues.some((x) => x.code === 'SUPPLIER_MISMATCH' || x.code === 'COMPANY_MISMATCH') && <p className="text-sm text-warn">Kayıtlı bağ başka bir tedarikçiye veya şirkete ait. Hedefi “Seçin” yapıp kaydederek bağı kaldırın.</p>}
       {rows.map((x, i) => (
         <div key={i} className="grid grid-cols-[60px_minmax(0,1fr)_100px_130px_auto] items-start gap-2 max-[640px]:grid-cols-2">
           <span className="pt-2 text-sm font-semibold">Satır {x.lineNo}</span>
-          <select className="input" aria-label={`Satır ${x.lineNo} hedef`} value={x.target} onChange={(e) => setRows(rows.map((y, j) => j === i ? { ...y, target: e.target.value } : y))}>
-            <option value="">Seçin</option>
-            {current.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-            {Object.entries(poLines).flatMap(([poId, ls]) => ls.map((l) => <option key={l.poLineId} value={`po:${l.poLineId}`}>{supplierPos.find((p) => p.id === poId)?.code} · {l.description}</option>))}
-          </select>
-          <input className="input tabular text-right" aria-label="Miktar" value={x.quantity} onChange={(e) => setRows(rows.map((y, j) => j === i ? { ...y, quantity: e.target.value.replace(',', '.') } : y))} />
-          <input className="input tabular text-right" aria-label="Tutar" value={x.amount} onChange={(e) => setRows(rows.map((y, j) => j === i ? { ...y, amount: e.target.value.replace(',', '.') } : y))} />
-          <Button type="button" variant="ghost" size="sm" onClick={() => setRows([...rows.slice(0, i + 1), { ...x, quantity: '', amount: '' }, ...rows.slice(i + 1)])}>Böl</Button>
+          {x.legacy ? <>
+            <span className="pt-2 text-sm">{x.legacy} <span className="text-ink-subtle">(eski sipariş bağı, salt okunur)</span></span>
+            <span className="tabular pt-2 text-right text-sm">{num(x.quantity)}</span><span className="tabular pt-2 text-right text-sm">{fmtMoney(x.amount, d.invoice.currency)}</span><span />
+          </> : <>
+            <select className="input" aria-label={`Satır ${x.lineNo} hedef`} value={x.target} onChange={(e) => setRows(rows.map((y, j) => j === i ? { ...y, target: e.target.value } : y))}>
+              <option value="">Seçin</option>
+              {current.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+              {options.map((c) => <option key={c.id} value={`cv:${c.id}`}>Sözleşme · {c.title}</option>)}
+            </select>
+            <input className="input tabular text-right" aria-label="Miktar" value={x.quantity} onChange={(e) => setRows(rows.map((y, j) => j === i ? { ...y, quantity: e.target.value.replace(',', '.') } : y))} />
+            <input className="input tabular text-right" aria-label="Tutar" value={x.amount} onChange={(e) => setRows(rows.map((y, j) => j === i ? { ...y, amount: e.target.value.replace(',', '.') } : y))} />
+            <Button type="button" variant="ghost" size="sm" onClick={() => setRows([...rows.slice(0, i + 1), { ...x, target: '', quantity: '', amount: '', legacy: null }, ...rows.slice(i + 1)])}>Böl</Button>
+          </>}
         </div>
       ))}
       {d.invoice.kind === 'INVOICE' && <div className="grid grid-cols-2 gap-x-3 max-[640px]:grid-cols-1">
@@ -608,73 +344,5 @@ function AllocationEditor({ d, onDone }: { d: InvDetail; onDone: () => void }) {
       <div className="flex gap-2"><Button type="submit">Tahsisi kaydet ve kontrol et</Button><Button type="button" variant="outline" onClick={onDone}>Vazgeç</Button></div>
       {err && <Banner tone="danger" title={err} />}
     </form>
-  );
-}
-
-// --- Tolerans kuralları -----------------------------------------------------------------------------
-
-interface ToleranceRow { currency: string; category: string; absAmount: string | null; percent: string | null; combine: 'LOWER' | 'HIGHER'; updatedAt: string; updatedBy: string | null }
-const combineText = (r: Pick<ToleranceRow, 'absAmount' | 'percent' | 'combine' | 'currency'>) =>
-  r.absAmount && r.percent ? `%${num(r.percent)} ve ${fmtMoney(r.absAmount, r.currency)} eşiklerinden ${r.combine === 'LOWER' ? 'düşük olanı' : 'yüksek olanı'}`
-    : r.percent ? `Satır tutarının %${num(r.percent)}'i` : `${fmtMoney(r.absAmount, r.currency)}`;
-
-export function ToleranceRulesPage() {
-  const r = useResource<{ items: ToleranceRow[]; can: { manage: boolean } }>('/api/v1/tolerance-rules');
-  const a = useAct(r.reload);
-  const empty = { currency: 'TRY', category: '', absAmount: '', percent: '', combine: 'LOWER' as 'LOWER' | 'HIGHER' };
-  const label = (x: { currency: string; category: string }) => x.category.trim() ? `${x.currency} · ${x.category.trim()}` : `${x.currency} genel`;
-  const keyOf = (x: { currency: string; category: string }) => `${x.currency}|${x.category.trim()}`;
-  const del = (x: ToleranceRow) => `/api/v1/tolerance-rules/${x.currency}${x.category ? `?category=${encodeURIComponent(x.category)}` : ''}`;
-  const [f, setF] = useState<typeof empty | null>(null);
-  const [removing, setRemoving] = useState<string | null>(null);
-  return (
-    <div className="page">
-      <p className="text-sm text-ink-subtle"><Link to="/faturalar" className="text-ink-subtle">Faturalar</Link> / Tolerans kuralları</p>
-      <PageHeader title="Tolerans kuralları" actions={r.data?.can.manage && !f && <Button onClick={() => setF(empty)}>Kural ekle</Button>}>
-        Fatura birim fiyatı siparişten bu kadar sapabilir; aşan fark istisna onayı ister. Siparişin projesindeki kategori için kural varsa o, yoksa para biriminin genel kuralı uygulanır; ikisi de yoksa tolerans sıfırdır. Kimlik ve para birimi farkı hiçbir kuralla geçmez.
-      </PageHeader>
-      {f && (
-        <form className="panel mb-5 max-w-[760px]" onSubmit={(e) => { e.preventDefault(); void a.run(() => api('/api/v1/tolerance-rules', { method: 'PUT',
-          json: { currency: f.currency, category: f.category.trim(), absAmount: f.absAmount || null, percent: f.percent || null, combine: f.combine } }), `${label(f)} kuralı kaydedildi.`).then((ok) => ok && setF(null)); }}>
-          <div className="panel-head"><h2>{r.data?.items.some((x) => keyOf(x) === keyOf(f)) ? `${label(f)} kuralını değiştir` : 'Yeni kural'}</h2></div>
-          <div className="panel-body grid gap-3">
-            <div className="grid grid-cols-[120px_minmax(0,1fr)] items-start gap-x-3 max-[640px]:grid-cols-1">
-              <Field label="Para birimi">{(p) => <input className="input" required maxLength={3} pattern="[A-Z]{3}" {...p} value={f.currency} onChange={(e) => setF({ ...f, currency: e.target.value.toUpperCase() })} />}</Field>
-              <Field label="Kategori (isteğe bağlı)" hint="Proje kategorisiyle aynı yazılır (büyük/küçük harf fark etmez). Boş = bu para biriminin genel kuralı.">{(p) => <input className="input" maxLength={200} {...p} value={f.category} onChange={(e) => setF({ ...f, category: e.target.value })} />}</Field>
-            </div>
-            <div className="grid grid-cols-3 items-start gap-x-3 max-[900px]:grid-cols-2">
-              <Field label="Tutar eşiği" hint="Satır başına, en fazla 2 ondalık.">{(p) => <input className="input tabular text-right" inputMode="decimal" {...p} value={f.absAmount} onChange={(e) => setF({ ...f, absAmount: e.target.value.replace(',', '.') })} />}</Field>
-              <Field label="Yüzde eşiği" hint="Satır tutarına göre, 0–100.">{(p) => <input className="input tabular text-right" inputMode="decimal" {...p} value={f.percent} onChange={(e) => setF({ ...f, percent: e.target.value.replace(',', '.') })} />}</Field>
-              <Field label="İkisi de varsa">{(p) => <select className="input" {...p} value={f.combine} onChange={(e) => setF({ ...f, combine: e.target.value as 'LOWER' | 'HIGHER' })}><option value="LOWER">Düşük olan geçerli</option><option value="HIGHER">Yüksek olan geçerli</option></select>}</Field>
-            </div>
-            {(f.absAmount || f.percent) && <p className="text-sm text-ink-muted">Geçerli tolerans: {combineText({ ...f, absAmount: f.absAmount || null, percent: f.percent || null })}.</p>}
-            <div className="flex gap-2"><Button type="submit" disabled={a.busy || (!f.absAmount && !f.percent)}>Kaydet</Button><Button type="button" variant="ghost" onClick={() => setF(null)}>Vazgeç</Button></div>
-          </div>
-        </form>
-      )}
-      {r.loading && !r.data ? <Loading /> : r.error ? <ErrorState error={r.error} onRetry={r.reload} /> : !r.data?.items.length ? (
-        <div className="rounded-md border border-border bg-surface"><Empty icon="info" title="Tolerans kuralı yok">Tüm para birimlerinde fiyat farkı sıfır toleransla kontrol edilir.</Empty></div>
-      ) : (
-        <Table>
-          <TableHeader><TableRow className="hover:bg-transparent"><TableHead>Para birimi</TableHead><TableHead>Kategori</TableHead><TableHead>Geçerli tolerans</TableHead><TableHead className="max-[640px]:hidden">Son değişiklik</TableHead><TableHead><span className="sr-only">Eylem</span></TableHead></TableRow></TableHeader>
-          <TableBody>{r.data.items.map((x) => (
-            <TableRow key={keyOf(x)}>
-              <TableCell className="font-semibold">{x.currency}</TableCell>
-              <TableCell>{x.category || <span className="text-ink-subtle">Genel (kategori kuralı olmayan alımlar)</span>}</TableCell>
-              <TableCell className="tabular">{combineText(x)}</TableCell>
-              <TableCell className="text-sm text-ink-subtle max-[640px]:hidden">{x.updatedBy ?? '—'} · {fmtDateTime(x.updatedAt)}</TableCell>
-              <TableCell className="whitespace-nowrap text-right">{r.data!.can.manage && (removing === keyOf(x) ? <>
-                <span className="mr-2 text-sm">{label(x)} kuralı kaldırılsın mı?</span>
-                <Button size="sm" variant="destructive" disabled={a.busy} onClick={() => void a.run(() => api(del(x), { method: 'DELETE' }),
-                  x.category ? `${label(x)} kuralı kaldırıldı; bu kategoride ${x.currency} genel kuralı geçerli.` : `${label(x)} kuralı kaldırıldı; kategori kuralı olmayan alımlarda tolerans sıfır.`).then(() => setRemoving(null))}>Kaldır</Button>
-                <Button size="sm" variant="ghost" onClick={() => setRemoving(null)}>Vazgeç</Button></> : <>
-                <Button size="sm" variant="outline" onClick={() => setF({ currency: x.currency, category: x.category, absAmount: x.absAmount ?? '', percent: x.percent ?? '', combine: x.combine })}>Değiştir</Button>
-                <Button size="sm" variant="ghost" onClick={() => setRemoving(keyOf(x))}>Kaldır</Button></>)}</TableCell>
-            </TableRow>
-          ))}</TableBody>
-        </Table>
-      )}
-      <div className="mt-4">{a.feedback}</div>
-    </div>
   );
 }

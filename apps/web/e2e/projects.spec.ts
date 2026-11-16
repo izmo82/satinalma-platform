@@ -1,4 +1,4 @@
-// v2 Faz 1 (D93/D95): yükümlülük ekleme formundaki rol seçicisi yalnız v2 rollerini (tekrarsız) sunar.
+// v2 Faz 1 (D93/D95): yükümlülük ekleme formundaki rol seçicisi yalnız v2 rollerini (tekrarsız) sunar. Proje sihirbazı departman ister (her rolde zorunlu); adım doğrulaması testi önce departmanı seçer.
 import { expect, test, type Page } from '@playwright/test';
 
 // Faz 2 kritik tarayıcı görevleri (sentetik demo verisi: npm run db:seed).
@@ -55,6 +55,8 @@ test('alıcı karşılaştırmada eksik kapsamı ve onaylı bölünmüş tahsisi
 test('proje sihirbazı: adım doğrulaması ve ilk hataya odak (UX03)', async ({ page }) => {
   await login(page, 'alper.satinalma@example.test', 'İşlerim');
   await page.goto('/projeler/yeni');
+  // v2: departman her rolde zorunlu; Satınalma bütün departmanları görür, önceden seçili gelmez.
+  await page.getByLabel('Departman').selectOption({ label: 'Bilgi Teknolojileri' });
   await page.getByLabel('Proje adı').fill('');
   await page.getByRole('button', { name: 'Devam' }).click();
   await expect(page.getByText('Formda düzeltilecek alanlar var')).toBeVisible();

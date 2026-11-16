@@ -648,7 +648,10 @@ export async function listInvoices(tx: Tx, f: { departmentId?: string } = {}) {
       (SELECT kind FROM invoice_decisions d WHERE d.invoice_id = i.id AND d.kind IN ('APPROVAL','REJECTION')) AS decision,
       (SELECT status FROM erp_exports e WHERE e.invoice_id = i.id) AS "erpStatus",
       (SELECT count(*)::int FROM invoice_intake_events e WHERE e.invoice_id = i.id AND e.duplicate) AS "duplicateCount",
-      i.department_id AS "departmentId", (SELECT d.name FROM departments d WHERE d.id = i.department_id) AS "departmentName"
+      i.department_id AS "departmentId", (SELECT d.name FROM departments d WHERE d.id = i.department_id) AS "departmentName",
+      -- v2 (D93): eşleşme kuyruğu; her satırın tutarı tahsisle (sözleşme ya da eski sipariş bağı) tam karşılanmışsa eşleşmiş sayılır.
+      (EXISTS (SELECT 1 FROM invoice_lines l WHERE l.invoice_id = i.id) AND NOT EXISTS (SELECT 1 FROM invoice_lines l WHERE l.invoice_id = i.id
+        AND l.net_amount > coalesce((SELECT sum(a.amount) FROM invoice_allocations a WHERE a.invoice_id = i.id AND a.line_no = l.line_no), 0))) AS matched
     FROM invoices i JOIN suppliers s ON s.id = i.supplier_id WHERE ($1::uuid IS NULL OR i.department_id = $1) ORDER BY i.created_at DESC LIMIT 300`, [f.departmentId ?? null])).rows;
   // Karar bekleyenlerde listede de engel görünsün (D90). Maliyet: fatura başına değil, bağlı sözleşme başına sorgu.
   const checks = await unapprovedInvoiceChecks(tx, rows.filter((r) => !r.decision).map((r) => r.id));

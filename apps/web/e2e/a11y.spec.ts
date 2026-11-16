@@ -1,4 +1,4 @@
-// v2 Faz 1 (D93/D95): taşınan girişler yeni yerlerinden açılır (Olaylar → Tedarikçiler sekmesi, ERP mutabakatı → Yönetim > Entegrasyonlar, performans ağırlıkları → Tedarikçiler sekmesi). Kaldırılan ekranların senaryoları Görev 6'da.
+// v2 Faz 1 (D93/D95): taşınan girişler yeni yerlerinden açılır (Olaylar → Tedarikçiler sekmesi, ERP mutabakatı → Yönetim > Entegrasyonlar, dışa aktarım → Yönetim > Denetim izi, performans ağırlıkları → Tedarikçiler sekmesi). Siparişler, onay politikası, veri yönetimi (saklama/imha) ve Lira Defteri senaryoları kaldırma listesinde (atlanır). Yeni departman süzgeci/alanı ve sözleşmeye tahsis düzenleyicisi denetlenir.
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Page } from '@playwright/test';
 
@@ -20,15 +20,10 @@ async function audit(page: Page, name: string) {
 }
 const nav = (page: Page, link: string) => page.getByRole('navigation', { name: 'Ana menü' }).getByRole('link', { name: link }).first().click();
 
-test('satınalma: işlerim, siparişler, tedarikçi sekmeleri, olaylar', async ({ page }) => {
+// v2: Siparişler ve sipariş detayı kaldırma listesinde (D93); kalan ekranlar aynı senaryoda denetlenir.
+test('satınalma: işlerim, tedarikçi sekmeleri, olaylar', async ({ page }) => {
   await login(page, 'alper.satinalma@example.test');
   await audit(page, 'İşlerim');
-  await nav(page, 'Siparişler');
-  await expect(page.getByRole('heading', { name: 'Siparişler' })).toBeVisible();
-  await audit(page, 'Siparişler');
-  await page.getByRole('table').getByRole('link').first().click();
-  await expect(page.getByRole('heading', { level: 1 })).toContainText('PO-');
-  await audit(page, 'Sipariş detayı');
   await nav(page, 'Tedarikçiler');
   // Aynı ünvanlı, kimliği doğrulanmamış aday (T06) listede bulunabilir; kimliği doğrulanmış kayıt açılır (D82).
   await page.getByRole('link', { name: /Anadolu Bilişim/ }).filter({ hasNotText: 'doğrulanmadı' }).click();
@@ -51,6 +46,10 @@ test('finans: faturalar, fatura detayı, raporlar', async ({ page }) => {
   await page.getByRole('link', { name: 'ANB2026000102' }).click();
   await expect(page.getByRole('heading', { level: 1 })).toContainText('ANB2026000102');
   await audit(page, 'Fatura detayı');
+  // v2: tahsis düzenleyicisi yalnız sözleşme seçenekleri sunar; eski sipariş bağı salt okunur satırdır (kaydedilmeden kapatılır).
+  await page.getByRole('button', { name: 'Tahsisi düzenle' }).click();
+  await audit(page, 'Tahsis düzenleyicisi');
+  await page.getByRole('button', { name: 'Vazgeç' }).click();
   await nav(page, 'Raporlar');
   await expect(page.getByText('Fatura istisna oranı')).toBeVisible();
   await audit(page, 'Raporlar');
@@ -67,7 +66,8 @@ test('hukuk: sözleşme imza çalışma alanı', async ({ page }) => {
   await audit(page, 'Fiyat, SLA ve teminat');
 });
 
-test('onay politikası ve proje istisnaları (Faz 2)', async ({ page }) => {
+// v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; kaldırılan adres RemovedPage ile navigation-v2.spec.ts'de korunur
+test.skip('onay politikası ve proje istisnaları (Faz 2)', async ({ page }) => {
   await login(page, 'kerem.hukuk@example.test');
   await page.goto('/projeler/onay-politikasi');
   await expect(page.getByRole('heading', { name: 'Onay politikası' })).toBeVisible();
@@ -76,16 +76,12 @@ test('onay politikası ve proje istisnaları (Faz 2)', async ({ page }) => {
   await audit(page, 'Onay politikası');
 });
 
-test('veri yönetimi ve ERP mutabakatı (Faz 7)', async ({ page }) => {
+// v2: saklama ve hukuki saklama sekmeleri kaldırma listesinde (D93); dışa aktarım Yönetim > Denetim izi'nde, ERP mutabakatı Yönetim > Entegrasyonlar'da denetlenir.
+test('dışa aktarım (Denetim izi) ve ERP mutabakatı (Faz 7)', async ({ page }) => {
   await login(page, 'leyla.hukuk@example.test');
-  await nav(page, 'Veri yönetimi');
-  await expect(page.getByRole('heading', { name: 'Saklama politikası' })).toBeVisible();
-  await audit(page, 'Veri yönetimi · saklama');
-  await page.getByRole('tab', { name: 'Hukuki saklama' }).click();
-  await audit(page, 'Veri yönetimi · hukuki saklama');
-  await page.getByRole('tab', { name: 'Dışa aktarım' }).click();
+  await page.goto('/yonetim/denetim-izi');
   await expect(page.getByRole('heading', { name: 'Talepler' })).toBeVisible();
-  await audit(page, 'Veri yönetimi · dışa aktarım');
+  await audit(page, 'Denetim izi · dışa aktarım');
   await page.getByRole('button', { name: 'Çıkış' }).first().click();
   await login(page, 'ferda.finans@example.test');
   await page.goto('/yonetim/entegrasyonlar');
@@ -115,7 +111,8 @@ test('Faz 5: tedarikçi anket listesi/yanıt ekranı ve performans ağırlıklar
   await audit(page, 'Performans ağırlıkları');
 });
 
-test('Lira Defteri: özet, bulgular, kanıtsız harcama, ayarlar ve vaka ayrıntısı (D80)', async ({ page }) => {
+// v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; kaldırılan adres RemovedPage ile navigation-v2.spec.ts'de korunur
+test.skip('Lira Defteri: özet, bulgular, kanıtsız harcama, ayarlar ve vaka ayrıntısı (D80)', async ({ page }) => {
   await login(page, 'ferda.finans@example.test');
   await nav(page, 'Lira Defteri');
   await expect(page.getByRole('heading', { name: 'Lira Defteri' })).toBeVisible();
@@ -130,4 +127,20 @@ test('Lira Defteri: özet, bulgular, kanıtsız harcama, ayarlar ve vaka ayrınt
   await page.getByRole('table').getByRole('link').first().click();
   await expect(page.getByRole('heading', { level: 1 })).toContainText('GRK-');
   await audit(page, 'Geri kazanım vakası');
+});
+
+// v2 Faz 1 (D93): departman süzgeci (çip satırı), departman sütunu ve sihirbazdaki zorunlu departman alanı.
+test('v2 departman: Projeler, Sözleşmeler, Faturalar süzgeci ve proje sihirbazı', async ({ page }) => {
+  await login(page, 'alper.satinalma@example.test');
+  for (const [path, heading] of [['/projeler', 'Projeler'], ['/sozlesmeler', 'Sözleşmeler'], ['/faturalar', 'Faturalar']] as const) {
+    await page.goto(path);
+    await expect(page.getByRole('heading', { name: heading, level: 1 })).toBeVisible();
+    await expect(page.getByRole('group', { name: 'Departman süzgeci' })).toBeVisible();
+    await page.waitForLoadState('networkidle');
+    await audit(page, `${heading} · departman süzgeci`);
+  }
+  await page.goto('/projeler/yeni');
+  await expect(page.getByLabel('Departman')).toBeVisible();
+  await audit(page, 'Proje sihirbazı · departman');
+  await page.getByRole('button', { name: 'Taslağı at' }).click();
 });

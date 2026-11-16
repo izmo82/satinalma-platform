@@ -366,7 +366,7 @@ export function ErpReconciliationPage() {
   return (
     <div className="page">
       <PageHeader title="ERP mutabakatı" actions={<Button variant="outline" asChild><Link to="/faturalar">Faturalar</Link></Button>}>
-        Fatura onayı bu platformda, muhasebe kaydı ve ödeme ERP'dedir. Onaylanan her faturanın ERP'ye ulaşıp ulaşmadığı burada izlenir; tutarı tutmayan veya eşleşmeyen satır hiçbir zaman "aktarıldı" sayılmaz.
+        Muhasebe kaydı ve ödeme ERP'dedir. Daha önce onaylanmış (v1) faturaların ERP'ye ulaşıp ulaşmadığı burada izlenir; tutarı tutmayan veya eşleşmeyen satır hiçbir zaman "aktarıldı" sayılmaz.
       </PageHeader>
       <form className="mb-4 flex flex-wrap items-end gap-3" onSubmit={(e) => { e.preventDefault(); setQ(p); }}>
         <Field label="Onay tarihi başı">{(x) => <input className="input" type="date" required {...x} value={p.from} onChange={(e) => setP({ ...p, from: e.target.value })} />}</Field>

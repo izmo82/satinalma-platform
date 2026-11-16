@@ -127,7 +127,7 @@ function SlaPanel({ d, cvId, readOnly, reload }: { d: Commercial; cvId: string; 
   const [rejecting, setRejecting] = useState<{ id: string; reason: string } | null>(null);
   return (
     <section className="panel">
-      <div className="panel-head"><h2>SLA ve hizmet kredisi</h2><span className="text-sm text-ink-subtle">Kredi, ölçüm başka biri tarafından doğrulanınca kesinleşir; finans iade/alacak belgesiyle işler.</span>
+      <div className="panel-head"><h2>SLA ve hizmet kredisi</h2><span className="text-sm text-ink-subtle">Kredi, ölçüm başka biri tarafından doğrulanınca kesinleşir; iade/alacak belgesiyle işlenir.</span>
         {d.can.propose && !readOnly && !tf && <Button size="sm" variant="outline" className="ml-auto" onClick={() => setTf(emptyTerm)}>SLA ekle</Button>}</div>
       <div className="panel-body grid gap-5">
         {!d.sla.length && !tf && <Empty icon="info" title="SLA tanımı yok">Sözleşmede hizmet seviyesi ve kredi/ceza maddesi varsa hedef, kademeler ve üst sınırla girin.</Empty>}
@@ -214,7 +214,7 @@ function GuaranteePanel({ d, cvId, reload }: { d: Commercial; cvId: string; relo
   const [ret, setRet] = useState<{ id: string; note: string } | null>(null);
   return (
     <section className="panel">
-      <div className="panel-head"><h2>Teminatlar</h2><span className="text-sm text-ink-subtle">Bitişine 30 gün kalan veya süresi geçen iade edilmemiş teminat için finansa görev açılır.</span>
+      <div className="panel-head"><h2>Teminatlar</h2><span className="text-sm text-ink-subtle">Bitişine 30 gün kalan veya süresi geçen iade edilmemiş teminat için Satınalma'ya görev açılır.</span>
         {d.can.guarantee && !f && <Button size="sm" variant="outline" className="ml-auto" onClick={() => setF(empty)}>Teminat kaydet</Button>}</div>
       <div className="panel-body grid gap-4">
         {f && (

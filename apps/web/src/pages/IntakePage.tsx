@@ -88,7 +88,7 @@ function ResultView({ r }: { r: Result }) {
           action={<Link className="btn btn-sm" to={`/faturalar/${r.invoice.invoiceId}`}>Faturayı aç</Link>}>
           Tutar ve KDV satırlardan yeniden hesaplanır; belgedeki toplam tutmazsa faturada bulgu olarak görünür.
         </Banner>
-      ) : <Banner tone="warn" title="Fatura kaydı açılamadı">{r.invoice.reason} Finans görevine düştü.</Banner>)}
+      ) : <Banner tone="warn" title="Fatura kaydı açılamadı">{r.invoice.reason} Satınalma görevine düştü.</Banner>)}
       {r.ublCheck && (
         <Banner tone={r.ublCheck.errors ? 'warn' : 'info'} icon={r.ublCheck.errors ? 'alert' : 'check'} title={ublTitle(r.ublCheck)}>
           <UblFindings c={r.ublCheck} />

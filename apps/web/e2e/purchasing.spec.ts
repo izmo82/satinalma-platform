@@ -1,4 +1,4 @@
-// v2 Faz 1 (D93/D95): e-Fatura XML yükleme kalır (D95 c); Belge girişi menüden kalktığı için yükleme Faturalar > Fatura yükle adresinden (/faturalar/yukle) yapılır; eski FINANCE çözen rolü v2 adıyla (Satınalma) görünür. Onay ve sipariş bölümleri Görev 6'da.
+// v2 Faz 1 (D93/D95): sipariş/kabul, fatura finans onayı, istisna onayı ve tolerans onaylı kaldırma listesinde (atlanır). Kalanlar yeni yollarından sınanır: Fatura gir ve tekrar gelen fatura, sözleşmeye tahsis (eşleştirme), e-Fatura XML yükleme (/faturalar/yukle), fatura ekranlarının taşmaması.
 import { expect, test, type Page } from '@playwright/test';
 import { syntheticVkn } from '../../../packages/domain/src/taxId.ts';
 
@@ -11,7 +11,8 @@ async function login(page: Page, email: string) {
 }
 const logout = (page: Page) => page.getByRole('button', { name: 'Çıkış' }).click();
 
-test('sipariş → kabul → fatura → tahsis → ikinci finans onayı; tekrar gelen fatura yeni kayıt açmaz (T13, T17, UX10)', async ({ page }, info) => {
+// v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; kaldırılan adres RemovedPage ile navigation-v2.spec.ts'de korunur
+test.skip('sipariş → kabul → fatura → tahsis → ikinci finans onayı; tekrar gelen fatura yeni kayıt açmaz (T13, T17, UX10)', async ({ page }, info) => {
   test.skip(info.project.name !== 'desktop-1440', 'veri değiştirir; yalnız bir projede');
   const tag = Date.now().toString().slice(-7);
   await login(page, 'alper.satinalma@example.test');
@@ -79,7 +80,53 @@ test('sipariş → kabul → fatura → tahsis → ikinci finans onayı; tekrar 
   await expect(page.getByRole('row', { name: new RegExp(`Etiket yazıcı ${tag}`) })).toContainText('5 adet');
 });
 
-test('istisna gereken fatura: neden eşleşmedi ve kim çözer görünür; tek başına onaylanamaz (T14, UX10)', async ({ page }) => {
+// v2: elle fatura girişi (K-05, Satınalma), tahsis yalnız sözleşmeye (eşleştirme) ve tekrar gelen fatura yeni kayıt açmaz (T17). Sipariş adımı kaldırma listesinde.
+test('Fatura gir → sözleşmeye tahsis → eşleşti; onay denetimi yok; tekrar gelen fatura yeni kayıt açmaz (T17, UX10)', async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop-1440', 'veri değiştirir; yalnız bir projede');
+  const tag = Date.now().toString().slice(-7);
+  await login(page, 'ferda.finans@example.test');
+  await page.goto('/faturalar');
+  const enter = async () => {
+    await page.getByRole('button', { name: 'Fatura gir' }).click();
+    await page.getByLabel('Şirket').selectOption({ label: 'Örnek Holding Üretim A.Ş.' });
+    await page.getByLabel('Tedarikçi', { exact: true }).selectOption({ label: 'Anadolu Bilişim Hizmetleri A.Ş. (SENTETİK)' });
+    await page.getByLabel('Fatura no').fill(`E2E${tag}`);
+    await page.getByLabel('Fatura tarihi').fill('2026-10-21');
+    await page.getByLabel('Satır 1', { exact: true }).fill('Etiket yazıcı');
+    await page.getByLabel('Miktar').fill('5');
+    await page.getByLabel('Birim', { exact: true }).fill('adet');
+    await page.getByLabel('Birim fiyat').fill('1200');
+    await page.getByRole('button', { name: 'Faturayı kaydet' }).click();
+    await expect(page.getByRole('heading', { level: 1 })).toContainText(`E2E${tag}`);
+  };
+  await enter();
+  const invoiceUrl = page.url();
+  // Tahsis yokken bulgu ve çözen rol (v2 adıyla) görünür; eşleşmedi.
+  await expect(page.getByText('sipariş veya sözleşmeye tahsis edilmedi')).toBeVisible();
+  await expect(page.getByText('Çözen: Satınalma').first()).toBeVisible();
+  await expect(page.getByText('Eşleşmedi', { exact: true }).first()).toBeVisible();
+  await page.getByRole('button', { name: 'Tahsisi düzenle' }).click();
+  // Tahsis yalnız sözleşmeye: sipariş kalemi yükleme ve sipariş seçeneği yok.
+  await expect(page.getByRole('button', { name: /kalemlerini yükle/ })).toHaveCount(0);
+  const target = page.getByLabel('Satır 1 hedef');
+  const contract = 'Sözleşme · Yazılım Lisans ve Destek Sözleşmesi (SENTETİK)';
+  await expect(target.locator('option', { hasText: contract })).toHaveCount(1);
+  const options = await target.locator('option').allInnerTexts();
+  expect(options.filter((o) => o !== 'Seçin').every((o) => o.startsWith('Sözleşme · ')), options.join(' | ')).toBe(true);
+  await target.selectOption({ label: contract });
+  await page.getByRole('button', { name: 'Tahsisi kaydet ve kontrol et' }).click();
+  await expect(page.getByText('Sözleşme: Yazılım Lisans ve Destek Sözleşmesi (SENTETİK)')).toBeVisible();
+  await expect(page.getByText('Eşleşti', { exact: true }).first()).toBeVisible();
+  for (const b of ['Finans onayı', 'Reddet', 'İstisnayı onayla']) await expect(page.getByRole('button', { name: b })).toHaveCount(0);
+  // Aynı fatura ikinci kez girilirse mevcut kayıt açılır.
+  await page.goto('/faturalar');
+  await enter();
+  expect(page.url()).toBe(invoiceUrl);
+  await expect(page.getByText('1 kez tekrar geldi')).toBeVisible();
+});
+
+// v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; kaldırılan adres RemovedPage ile navigation-v2.spec.ts'de korunur
+test.skip('istisna gereken fatura: neden eşleşmedi ve kim çözer görünür; tek başına onaylanamaz (T14, UX10)', async ({ page }) => {
   await login(page, 'nur.finansonay@example.test');
   await page.goto('/faturalar');
   await page.getByRole('link', { name: 'ANB2026000102' }).click();
@@ -90,13 +137,12 @@ test('istisna gereken fatura: neden eşleşmedi ve kim çözer görünür; tek b
   await expect(page.getByText('Kullanılabilir')).toBeVisible();
 });
 
-test('sipariş ve fatura ekranları yatay taşmaz', async ({ page }) => {
+// v2: sipariş ekranı kaldırma listesinde; fatura listesi ve detayı (departman sütunu ve eşleşme süzgeciyle) taşmaz.
+test('fatura ekranları yatay taşmaz', async ({ page }) => {
   await login(page, 'nur.finansonay@example.test');
-  for (const path of ['/siparisler', '/faturalar']) {
-    await page.goto(path);
-    await expect(page.getByRole('table')).toBeVisible();
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), path).toBe(true);
-  }
+  await page.goto('/faturalar');
+  await expect(page.getByRole('table')).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), '/faturalar').toBe(true);
   await page.getByRole('link', { name: 'ANB2026000102' }).click();
   await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
@@ -140,7 +186,8 @@ test('e-Fatura XML yüklenince fatura satırlardan açılır; KDV tutmazsa sorum
   await expect(page.getByText('Çözen: Satınalma').first()).toBeVisible();
 });
 
-test('sipariş değişikliği gerekçeyle kaydedilir; kısmi kabul sonrası kapatılır ve yeni kabul kapanır', async ({ page }, info) => {
+// v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; kaldırılan adres RemovedPage ile navigation-v2.spec.ts'de korunur
+test.skip('sipariş değişikliği gerekçeyle kaydedilir; kısmi kabul sonrası kapatılır ve yeni kabul kapanır', async ({ page }, info) => {
   test.skip(info.project.name !== 'desktop-1440', 'veri değiştirir; yalnız bir projede');
   const tag = Date.now().toString().slice(-7);
   await login(page, 'alper.satinalma@example.test');
@@ -175,7 +222,8 @@ test('sipariş değişikliği gerekçeyle kaydedilir; kısmi kabul sonrası kapa
   await expect(page.getByRole('button', { name: 'Siparişi değiştir' })).toHaveCount(0);
 });
 
-test('tolerans kuralı: finans ekler, geçerli eşik açıkça yazılır, kaldırınca sıfır', async ({ page }, info) => {
+// v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; kaldırılan adres RemovedPage ile navigation-v2.spec.ts'de korunur
+test.skip('tolerans kuralı: finans ekler, geçerli eşik açıkça yazılır, kaldırınca sıfır', async ({ page }, info) => {
   test.skip(info.project.name !== 'desktop-1440', 'veri değiştirir; yalnız bir projede');
   await login(page, 'ferda.finans@example.test');
   await page.goto('/faturalar');
@@ -194,7 +242,8 @@ test('tolerans kuralı: finans ekler, geçerli eşik açıkça yazılır, kaldı
   await expect(page.getByRole('row', { name: /GBP/ })).toHaveCount(0);
 });
 
-test('satınalma tolerans kuralını görür ama değiştiremez; yeni ekranlar yatay taşmaz', async ({ page }) => {
+// v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; kaldırılan adres RemovedPage ile navigation-v2.spec.ts'de korunur
+test.skip('satınalma tolerans kuralını görür ama değiştiremez; yeni ekranlar yatay taşmaz', async ({ page }) => {
   await login(page, 'alper.satinalma@example.test');
   await page.goto('/faturalar/tolerans');
   await expect(page.getByRole('heading', { name: 'Tolerans kuralları' })).toBeVisible();
