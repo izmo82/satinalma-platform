@@ -70,10 +70,14 @@ test('Fatura detayı: onay, ret ve istisna denetimi yok; eski sipariş bağı nu
   // Sözleşme limiti paneli ve UBL denetimi kalır.
   await expect(page.getByText('Kullanılabilir')).toBeVisible();
   await noRemovedLinks(page, 'fatura detayı');
-  // Tahsis düzenleyicide sipariş kalemi yükleme yok; eski sipariş bağı salt okunur satır.
+  // Tahsis düzenleyicide sipariş kalemi yükleme yok. Düzeltme dalgası (I4): eski sipariş bağı kendi numarasıyla seçili kalır; kaldırılabilir
+  // ya da sözleşmeye taşınabilir, yeni sipariş seçeneği yoktur (önce salt okunur metindi). Kaydedilmeden kapatılır (demo fatura değişmez).
   await page.getByRole('button', { name: 'Tahsisi düzenle' }).click();
   await expect(page.getByRole('button', { name: /kalemlerini yükle/ })).toHaveCount(0);
-  await expect(page.getByText(/eski sipariş bağı, salt okunur/).first()).toBeVisible();
+  const target = page.getByLabel('Satır 1 hedef');
+  await expect(target.locator('option:checked')).toHaveText(/^Sipariş PO-\d{4}-\d+.*\(eski sipariş bağı\)$/);
+  await expect(target.locator('option', { hasText: 'Bağı kaldır' })).toHaveCount(1);
+  expect((await target.locator('option').allInnerTexts()).filter((o) => o.startsWith('Sipariş ')).length).toBe(1);
   await page.getByRole('button', { name: 'Vazgeç' }).click();
 });
 
