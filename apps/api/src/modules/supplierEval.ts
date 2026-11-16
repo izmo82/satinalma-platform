@@ -182,6 +182,11 @@ export async function completeReview(tx: Tx, ctx: TenantContext, id: string) {
     // değerlendirmeyi bölüm kullanıcıları göremez; bölüm görevi açılmaz, Satınalma görevi yeter.
     const department = (await tx.query<{ d: string | null }>(`SELECT department_id AS d FROM supplier_assessments WHERE id = $1`, [id])).rows[0]?.d ?? null;
     for (const role of department ? ['PROCUREMENT_MANAGER', 'SECURITY'] : ['PROCUREMENT_MANAGER']) {
+      // Faz 1 kalan düzeltme: aynı değerlendirme için aynı (v2) role açık engel görevi varsa (ör. 035'in Satınalma'ya taşıdığı eski
+      // bölüm görevi, anahtarı farklı) ikinci görev açılmaz; Satınalma aynı bulguyu iki kez görmez.
+      const open = (await tx.query(`SELECT 1 FROM tasks WHERE kind = 'assessment_blocker' AND status = 'OPEN' AND assignee_role = $2
+          AND split_part(dedupe_key, ':', 2) = $1`, [id, v2Role(role)])).rowCount;
+      if (open) continue;
       await openTask(tx, ctx, { companyId: null, kind: 'assessment_blocker', entityType: 'supplier', entityId: a.supplier_id, title: `Kritik engel: ${a.supplier_name}`,
         reason: result.items.filter((x) => x.kind === 'BLOCKER').map((x) => x.message).join(' '), nextAction: 'Düzeltici faaliyet isteyin veya tedarikçiyle yeni işlem yapılmamasına karar verin.',
         assigneeRole: role, severity: 'HIGH', dedupeKey: `assessment-blocker:${id}:${role}`, departmentId: department });

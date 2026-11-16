@@ -201,6 +201,65 @@ describe('I3 görev departmanı ve merkezi ön inceleme', () => {
     expect(ids.some((id) => procSees.includes(id))).toBe(true);
   });
 
+  // Faz 1 kalan düzeltme: 035 departmansız değerlendirmenin eski bölüm görevini (anahtar `:SECURITY`) Satınalma'ya taşıdı; aynı
+  // değerlendirmenin `:PROCUREMENT_MANAGER` görevi de açıktı. 036 taşınan kopyayı kapatır (silmez); kod ikiz açmaz.
+  async function blockedAssessment(departmentId: string | null) {
+    const t = await h.call('legal', 'POST', '/api/v1/questionnaire-templates', { body: { code: `IKZ-${randomUUID().slice(0, 6)}`, name: 'İkiz engel anketi (sentetik)', category: 'Genel',
+      questions: [{ controlId: 'ERS-01', reference: 'Sentetik', text: 'Uzak erişimde MFA var mı?', critical: true, evidenceRequired: false }] } });
+    expect((await h.call('legal2', 'POST', `/api/v1/questionnaire-templates/${t.body.id}/publish`)).status).toBe(200);
+    const a = await h.call('buyer', 'POST', '/api/v1/assessments', { body: { supplierId: h.world.suppliers.s2, templateId: t.body.id, scope: 'Departmansız eski değerlendirme (sentetik)',
+      inherentFactors: { dataSensitivity: 'LOW', accessLevel: 'LOW', criticality: 'LOW', substitutability: 'LOW', subcontractorDependence: 'LOW' }, ...(departmentId ? { departmentId } : {}) } });
+    expect(a.status, JSON.stringify(a.body)).toBe(201);
+    const q = (await h.call('buyer', 'GET', `/api/v1/assessments/${a.body.id}`)).body.questions[0];
+    expect((await h.call('buyer', 'PUT', `/api/v1/assessments/${a.body.id}/answers/${q.id}`, { body: { response: 'NO' } })).status).toBe(200);
+    expect((await h.call('legal2', 'POST', `/api/v1/assessments/${a.body.id}/answers/${q.id}/review`, { body: { review: 'ACCEPTED' } })).status).toBe(200);
+    return a.body.id as string;
+  }
+  const blockerTasks = async (assessmentId: string) => (await h.owner.query<{ id: string; status: string; assignee_role: string; dedupe_key: string }>(
+    `SELECT id, status, assignee_role, dedupe_key FROM tasks WHERE kind = 'assessment_blocker' AND dedupe_key LIKE $1 ORDER BY dedupe_key`, [`assessment-blocker:${assessmentId}:%`])).rows;
+  /** 035 sonrası eski durum: departmansız değerlendirmenin eski bölüm görevi Satınalma'ya taşınmış (anahtar `:SECURITY`). */
+  const movedLegacyTask = async (assessmentId: string, reason: string) => h.owner.query(
+    `INSERT INTO tasks (tenant_id, company_id, kind, entity_type, entity_id, title, reason, next_action, assignee_role, severity, dedupe_key, department_id)
+     VALUES ($1, NULL, 'assessment_blocker', 'supplier', $2, 'Kritik engel: (sentetik)', $3, 'Düzeltici faaliyet isteyin.', 'PROCUREMENT', 'HIGH', $4, NULL)`,
+    [h.world.tenantA, h.world.suppliers.s2, reason, `assessment-blocker:${assessmentId}:SECURITY`]);
+
+  it('036: taşınan ikiz "Kritik engel" görevi kapanır (silinmez); ikizsiz taşınmış görev açık kalır; yeniden çalıştırma aynı sonucu verir', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const sql = await readFile(new URL('../migrations/036_v2_assessment_blocker_twins.sql', import.meta.url), 'utf8');
+    const id = await blockedAssessment(null);
+    expect((await h.call('legal2', 'POST', `/api/v1/assessments/${id}/complete`)).status).toBe(200);
+    const [pm] = await blockerTasks(id);
+    expect(pm).toMatchObject({ status: 'OPEN', assignee_role: 'PROCUREMENT', dedupe_key: `assessment-blocker:${id}:PROCUREMENT_MANAGER` });
+    const reason = (await h.owner.query<{ reason: string }>(`SELECT reason FROM tasks WHERE id = $1`, [pm!.id])).rows[0]!.reason;
+    await movedLegacyTask(id, reason);
+    const lone = randomUUID();
+    await movedLegacyTask(lone, 'İkizi olmayan taşınmış görev (sentetik)');
+    expect((await blockerTasks(id)).filter((t) => t.status === 'OPEN')).toHaveLength(2);
+    await h.owner.query(sql);
+    const after = await blockerTasks(id);
+    expect(after).toHaveLength(2);
+    expect(after.filter((t) => t.status === 'OPEN').map((t) => t.dedupe_key)).toEqual([`assessment-blocker:${id}:PROCUREMENT_MANAGER`]);
+    expect(after.find((t) => t.dedupe_key.endsWith(':SECURITY'))!.status).toBe('CANCELLED');
+    expect((await blockerTasks(lone)).map((t) => t.status)).toEqual(['OPEN']);
+    await h.owner.query(sql);
+    expect(await blockerTasks(id)).toEqual(after);
+    expect((await blockerTasks(lone)).map((t) => t.status)).toEqual(['OPEN']);
+    // Satınalma listesinde değerlendirme başına tek görev.
+    const procSees = await taskIds('legal2');
+    expect(after.filter((t) => procSees.includes(t.id))).toHaveLength(1);
+  });
+
+  it('kod ikiz açmaz: aynı değerlendirme ve rol için açık engel görevi varsa tamamlama ikinci görev açmaz', async () => {
+    const id = await blockedAssessment(null);
+    await movedLegacyTask(id, 'Taşınmış eski görev (sentetik)');
+    expect((await h.call('legal2', 'POST', `/api/v1/assessments/${id}/complete`)).status).toBe(200);
+    expect((await blockerTasks(id)).filter((t) => t.status === 'OPEN' && t.assignee_role === 'PROCUREMENT')).toHaveLength(1);
+    // Departmanlı değerlendirmede rol başına bir görev (Satınalma + departman kullanıcısı).
+    const withDept = await blockedAssessment(ik);
+    expect((await h.call('legal2', 'POST', `/api/v1/assessments/${withDept}/complete`)).status).toBe(200);
+    expect((await blockerTasks(withDept)).filter((t) => t.status === 'OPEN').map((t) => t.assignee_role).sort()).toEqual(['DEPARTMENT_USER', 'PROCUREMENT']);
+  });
+
   it('karantinadaki belge görevi Satınalma\'ya düşer; bölüm kullanıcısına görünmez', async () => {
     const evil = Buffer.from(`%PDF-1.4\n1 0 obj << /OpenAction << /S /JavaScript /JS (app.alert(1)) >> >> endobj\n% ${randomUUID()}\n%%EOF`);
     const p = await h.upload('legal', { name: 'x.pdf', mime: 'application/pdf', data: evil }, { companyId: h.world.companyA1.id, kind: 'OTHER' });
