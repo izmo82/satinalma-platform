@@ -91,11 +91,20 @@ struct ScanComposer: View {
     let save: (Data, Int, String, String, Me.Company) async -> Void
     @Environment(SessionStore.self) private var session
     @State private var title = ""
-    @State private var kind = "INVOICE"
+    /// Varsayılan Sözleşme; fatura girebilen rolde (Satınalma) görünürken Fatura'ya geçer.
+    @State private var kind = "CONTRACT"
+    @State private var kindChosen = false
     @State private var companyId = ""
     @State private var busy = false
     private let maxBytes = 25 * 1024 * 1024
     private var companies: [Me.Company] { session.me?.companies ?? [] }
+    private var v2Roles: Set<String> { Set((session.me?.roles ?? []).map(Labels.v2Role)) }
+    /// D98 (web ile aynı): Fatura türü yalnız fatura giren role (Satınalma, `invoice.manage`) ve tek departmanlı departman kullanıcısına
+    /// sunulur. Birden çok (ya da hiç) departmanı olan departman kullanıcısının faturası departmanı belirlenemediği için açılmaz.
+    private var canUploadInvoice: Bool {
+        v2Roles.contains("PROCUREMENT") || (v2Roles.contains("DEPARTMENT_USER") && (session.me?.departments?.count ?? 0) == 1)
+    }
+    private var kinds: [String] { (canUploadInvoice ? ["INVOICE"] : []) + ["CONTRACT", "QUOTE", "OTHER"] }
 
     var body: some View {
         Section("Sayfalar") {
@@ -118,10 +127,15 @@ struct ScanComposer: View {
         }
         Section("Belge") {
             TextField("Başlık", text: $title)
-            Picker("Tür", selection: $kind) { ForEach(["INVOICE", "CONTRACT", "QUOTE", "OTHER"], id: \.self) { Text(Labels.documentKind[$0]!).tag($0) } }
+            Picker("Tür", selection: $kind) { ForEach(kinds, id: \.self) { Text(Labels.documentKind[$0]!).tag($0) } }
             Picker("Şirket", selection: $companyId) { Text("Seçin").tag(""); ForEach(companies) { Text($0.name).tag($0.id) } }
         }
-        .onAppear { if companyId.isEmpty, companies.count == 1 { companyId = companies[0].id } }
+        .onAppear {
+            if companyId.isEmpty, companies.count == 1 { companyId = companies[0].id }
+            // Departman kullanıcısında varsayılan Sözleşme; Satınalma'da Fatura. Sunulmayan tür seçili kalmaz.
+            if !kindChosen { kindChosen = true; kind = v2Roles.contains("PROCUREMENT") ? "INVOICE" : "CONTRACT" }
+            if !kinds.contains(kind) { kind = "CONTRACT" }
+        }
         Section {
             Button { Task { await finish() } } label: { Label("Taslak olarak kaydet ve yükle", systemImage: "square.and.arrow.up") }
                 .disabled(busy || title.trimmingCharacters(in: .whitespaces).count < 2 || companyId.isEmpty || (pages.isEmpty && importedPDF == nil))
