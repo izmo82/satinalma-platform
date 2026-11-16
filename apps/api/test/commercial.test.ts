@@ -1,3 +1,4 @@
+// v2 Faz 1 (D93/D95): satınalmacı artık Satınalma rolünde (onay/teminat yetkisi var); yetkisiz rol örneği bölüm kullanıcısı, ayrılık iki ayrı Satınalma kullanıcısıyla
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { syntheticPdf } from '../src/devdata.ts';
@@ -27,7 +28,7 @@ describe('endeksli fiyat revizyonu', () => {
     const rev = await h.call('legal', 'POST', `/api/v1/price-rules/${rule.body.id}/revisions`, { body: { effectiveFrom: '2026-07-01', indexValue: '2150', indexSource: 'TÜİK bülteni (sentetik)' } });
     expect(rev.body).toMatchObject({ rawChangePercent: '7.5000', appliedChangePercent: '5.0000', factor: '1.050000', limitedBy: 'CAP' });
     expect((await h.call('legal', 'POST', `/api/v1/price-revisions/${rev.body.id}/approve`)).body.error.code).toBe('segregation_of_duties');
-    expect((await h.call('buyer', 'POST', `/api/v1/price-revisions/${rev.body.id}/approve`)).status).toBe(403);
+    expect((await h.call('techEval', 'POST', `/api/v1/price-revisions/${rev.body.id}/approve`)).status).toBe(403); // bölüm kullanıcısının yetkisi yok
     expect((await view(cv)).currentFactor).toBeNull();
     expect((await h.call('legal2', 'POST', `/api/v1/price-revisions/${rev.body.id}/approve`)).status).toBe(200);
     expect((await view(cv)).currentFactor).toEqual({ factor: '1.05', effectiveFrom: '2026-07-01' });
@@ -80,7 +81,7 @@ describe('teminat', () => {
     const soon = new Date(Date.now() + 10 * 86_400_000).toISOString().slice(0, 10);
     const g = await h.call('finance', 'POST', `/api/v1/contract-versions/${cv}/guarantees`, { body: { kind: 'PERFORMANCE', amount: '150000.00', currency: 'TRY', issuer: 'Sentetik Bank A.Ş.', referenceNo: 'TM-001', validUntil: soon } });
     expect(g.status).toBe(201);
-    expect((await h.call('buyer', 'POST', `/api/v1/contract-versions/${cv}/guarantees`, { body: { kind: 'CASH', amount: '1.00', currency: 'TRY', issuer: 'x', referenceNo: 'y', validUntil: null } })).status).toBe(403);
+    expect((await h.call('techEval', 'POST', `/api/v1/contract-versions/${cv}/guarantees`, { body: { kind: 'CASH', amount: '1.00', currency: 'TRY', issuer: 'x', referenceNo: 'y', validUntil: null } })).status).toBe(403);
     const v = await view(cv, 'finance');
     expect(v.guarantees[0]).toMatchObject({ status: 'EXPIRING', referenceNo: 'TM-001' });
     const task = await h.owner.query(`SELECT count(*)::int AS n FROM tasks WHERE dedupe_key = $1 AND status = 'OPEN'`, [`guarantee:${g.body.id}:EXPIRING`]);

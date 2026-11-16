@@ -5,6 +5,40 @@ import { randomUUID } from 'node:crypto';
 import { syntheticVkn } from '@sp/domain';
 import type { DevAuthProvider } from './auth.ts';
 import type { App } from './server.ts';
+import { withTenant, type TenantContext } from './db.ts';
+import { DEMO_DEPARTMENTS } from './devdata.ts';
+import { createPo, recordReceipt } from './modules/invoices.ts';
+
+/** v2 (D93): demo kiracısının üç departmanı (yoksa oluşturur; varsa aynen döner). Yeniden çalıştırmada değişiklik yapmaz. */
+export async function ensureDepartments(owner: pg.Pool, tenantId: string): Promise<{ bt: string; ik: string; tc: string }> {
+  const one = async (name: string) => {
+    await owner.query(`INSERT INTO departments (tenant_id, name) VALUES ($1,$2) ON CONFLICT (tenant_id, name) DO NOTHING`, [tenantId, name]);
+    return (await owner.query<{ id: string }>(`SELECT id FROM departments WHERE tenant_id = $1 AND name = $2`, [tenantId, name])).rows[0]!.id;
+  };
+  return { bt: await one(DEMO_DEPARTMENTS.bt), ik: await one(DEMO_DEPARTMENTS.ik), tc: await one(DEMO_DEPARTMENTS.tc) };
+}
+
+/**
+ * v2 (D93) demo departmanları: departmanlar, bölüm kullanıcılarının (talep eden satınalmacı, teknik değerlendirici, güvenlik) departmanı ve
+ * departmanla ilgili demo kayıtların departmanı. Yalnız boş alanları doldurur; kullanıcı, kayıt ya da veri silmez.
+ */
+export async function ensureDepartmentsDemo(owner: pg.Pool, tenantId: string, log = console.log) {
+  const d = await ensureDepartments(owner, tenantId);
+  const users = ['alper.satinalma', 'tolga.teknik', 'selin.guvenlik'].map((k) => `${k}@example.test`);
+  const m = await owner.query(`UPDATE memberships m SET department_ids = ARRAY[$2::uuid] FROM users u
+    WHERE u.id = m.user_id AND m.tenant_id = $1 AND u.email = ANY($3) AND 'DEPARTMENT_USER' = ANY(m.roles) AND m.department_ids = '{}'`, [tenantId, d.bt, users]);
+  // Bilgi Teknolojileri kayıtları: BT bakım ve donanım projeleri, yazılım lisans sözleşmesi, yedekleme hizmeti değerlendirmesi.
+  const p = await owner.query(`UPDATE projects SET department_id = $2 WHERE tenant_id = $1 AND department_id IS NULL
+    AND title IN ('BT altyapı bakım hizmeti 2027', 'Ofis ekipmanı yenileme')`, [tenantId, d.bt]);
+  const c = await owner.query(`UPDATE contract_families SET department_id = $2 WHERE tenant_id = $1 AND department_id IS NULL
+    AND title = 'Yazılım Lisans Sözleşmesi (e-imza)'`, [tenantId, d.bt]);
+  const a = await owner.query(`UPDATE supplier_assessments SET department_id = $2 WHERE tenant_id = $1 AND department_id IS NULL
+    AND scope = 'Yedekleme ve felaket kurtarma hizmeti'`, [tenantId, d.bt]);
+  // Görevler bağlı kaydın departmanını taşır (göç 032 ile aynı kural); yalnız boş olanlar doldurulur.
+  await owner.query(`UPDATE tasks t SET department_id = app_task_department(t.entity_type, t.entity_id)
+    WHERE t.tenant_id = $1 AND t.department_id IS NULL AND app_task_departmental(t.entity_type) AND app_task_department(t.entity_type, t.entity_id) IS NOT NULL`, [tenantId]);
+  log(`v2 demo departmanları: 3 departman; ${m.rowCount} üyelik, ${p.rowCount} proje, ${c.rowCount} sözleşme, ${a.rowCount} değerlendirme departmanlandı.`);
+}
 
 export async function ensureSourcingDemo(owner: pg.Pool, app: App, auth: DevAuthProvider, tenantId: string, log = console.log) {
   const company = (await owner.query<{ id: string }>(`SELECT id FROM legal_entities WHERE tenant_id = $1 ORDER BY name DESC LIMIT 1`, [tenantId])).rows[0]!.id;
@@ -18,7 +52,9 @@ export async function ensureSourcingDemo(owner: pg.Pool, app: App, auth: DevAuth
   const buyer = await userId('alper.satinalma', 'Alper Yıldız');
   const masterData = await userId('mine.anaveri', 'Mine Kaya');
   const tech = await userId('tolga.teknik', 'Tolga Er');
-  await owner.query(`INSERT INTO memberships (tenant_id, user_id, roles, company_ids) VALUES ($1,$2,ARRAY['TECH_EVALUATOR'],ARRAY[$3]::uuid[]) ON CONFLICT DO NOTHING`, [tenantId, tech, company]);
+  // v2 (D93): teknik değerlendirici bölüm kullanıcısıdır (eski TECH_EVALUATOR); Bilgi Teknolojileri departmanında.
+  const dept = await ensureDepartments(owner, tenantId);
+  await owner.query(`INSERT INTO memberships (tenant_id, user_id, roles, company_ids, department_ids) VALUES ($1,$2,ARRAY['DEPARTMENT_USER'],ARRAY[$3]::uuid[],ARRAY[$4]::uuid[]) ON CONFLICT DO NOTHING`, [tenantId, tech, company, dept.bt]);
   const supplier = async (name: string, prefix: string, status: string, userKey: string, userName: string) => {
     let s = (await owner.query<{ id: string }>(`SELECT id FROM suppliers WHERE tenant_id = $1 AND legal_name = $2`, [tenantId, name])).rows[0]?.id;
     s ??= (await owner.query<{ id: string }>(`INSERT INTO suppliers (tenant_id, status, country, tax_id_type, tax_id, legal_name, created_by, activated_by, activated_at)
@@ -54,7 +90,7 @@ export async function ensureSourcingDemo(owner: pg.Pool, app: App, auth: DevAuth
   // 1) Tamamlanmış akış: üç teklif (biri eksik kapsamlı), puanlar, değerlendirme, bölünmüş ve onaylı tahsis.
   const p1 = (await call('alper.satinalma', 'POST', '/api/v1/projects', { companyId: company, title: 'BT altyapı bakım hizmeti 2027', category: 'BT hizmetleri',
     need: 'Merkez veri odası ve iki şube için yıllık bakım ve destek (sentetik).', currency: 'TRY', budget: '1900000.00', budgetVerified: true, costCenter: 'MM-410',
-    deliveryLocation: 'Gebze Lojistik Merkezi', lines, criteria })).body;
+    deliveryLocation: 'Gebze Lojistik Merkezi', lines, criteria, departmentId: dept.bt })).body;
   const r1 = (await call('alper.satinalma', 'POST', `/api/v1/projects/${p1.id}/rounds`, { closesAt: at(72), supplierIds: [s1, s2, s3] }, { 'if-match': p1.etag })).body;
   await call('kerem.hukuk', 'POST', `/api/v1/rfq-rounds/${r1.roundId}/decision`, { approve: true, note: 'Bütçe ve kriterler uygun.' });
   const lid = (await call('alper.satinalma', 'GET', `/api/v1/projects/${p1.id}`)).body.lines.map((l: any) => l.id);
@@ -88,7 +124,7 @@ export async function ensureSourcingDemo(owner: pg.Pool, app: App, auth: DevAuth
     lines: [{ lot: 'Lot 1', description: 'Depo temizliği', unit: 'ay', quantity: '12' }, { lot: 'Lot 2', description: 'İdari bina temizliği', unit: 'ay', quantity: '12' }] })).body;
   const r2 = (await call('alper.satinalma', 'POST', `/api/v1/projects/${p2.id}/rounds`, { closesAt: at(96), supplierIds: [s1, s2] }, { 'if-match': p2.etag })).body;
   await call('kerem.hukuk', 'POST', `/api/v1/rfq-rounds/${r2.roundId}/decision`, { approve: true });
-  await call('alper.satinalma', 'POST', '/api/v1/projects', { companyId: company, title: 'Ofis ekipmanı yenileme', category: 'Donanım', currency: 'TRY', budget: '412500.00', criteria,
+  await call('alper.satinalma', 'POST', '/api/v1/projects', { companyId: company, title: 'Ofis ekipmanı yenileme', category: 'Donanım', currency: 'TRY', budget: '412500.00', criteria, departmentId: dept.bt,
     lines: [{ description: 'Dizüstü bilgisayar', unit: 'adet', quantity: '25' }, { description: 'Monitör', unit: 'adet', quantity: '25' }] });
   log('Faz 2 demo: 3 proje (onaylı bölünmüş tahsis, teklife açık, taslak) oluşturuldu.');
 }
@@ -113,7 +149,7 @@ export async function ensureLifecycleDemo(owner: pg.Pool, app: App, auth: DevAut
     paymentTerms: 'Fatura tarihinden itibaren 30 gün', startDate: '2026-01-01', endDate: '2026-12-31', autoRenewal: true, renewalMonths: 12,
     noticeAmount: 60, noticeUnit: 'DAY', nonWorkingDay: 'PREVIOUS_WORKING_DAY', sourceRef: 'Madde 4.2 (süre), 9.1 (ihbar), s. 3 (sentetik)' });
   await call('kerem.hukuk', 'POST', `/api/v1/contract-terms/${t.id}/verify`);
-  await call('leyla.hukuk', 'POST', `/api/v1/contract-versions/${cv.id}/obligations`, { title: 'Üç aylık bakım ve arıza raporu', counterparty: 'SUPPLIER', ownerRole: 'BUYER',
+  await call('leyla.hukuk', 'POST', `/api/v1/contract-versions/${cv.id}/obligations`, { title: 'Üç aylık bakım ve arıza raporu', counterparty: 'SUPPLIER', ownerRole: 'PROCUREMENT',
     firstDue: '2026-11-15', recurrence: 'QUARTERLY', until: '2026-12-31', evidenceRequired: true, sourceRef: 'Ek-2 madde 3 (sentetik)' });
   await call('leyla.hukuk', 'POST', `/api/v1/contract-versions/${cv.id}/obligations`, { title: 'Yıllık sızma testi raporu', counterparty: 'SUPPLIER', ownerRole: null,
     firstDue: '2026-11-05', recurrence: 'YEARLY', until: null, evidenceRequired: true, sourceRef: 'Ek-4 bilgi güvenliği madde 2 (sentetik)' });
@@ -122,6 +158,8 @@ export async function ensureLifecycleDemo(owner: pg.Pool, app: App, auth: DevAut
 }
 
 // Faz 4 demo: sözleşmeli sipariş, kısmi kabul ve üç fatura (onaya hazır, kabulden fazla, sözleşmesiz). Onay verilmez; karar kullanıcıya bırakılır.
+// v2 (D93): sipariş ve mal kabul uçları kaldırıldı; demo sipariş ve kabuller eski (v1) kayıt olarak modül işlevleriyle yazılır. Faturalar ve
+// tahsisler API'den girer. Demo faturaların (ANB2026000101, ANB2026000102, EGE2026000877) durumunu değiştiren adım yoktur.
 export async function ensurePurchasingDemo(owner: pg.Pool, app: App, auth: DevAuthProvider, tenantId: string, log = console.log) {
   if ((await owner.query(`SELECT 1 FROM purchase_orders WHERE tenant_id = $1`, [tenantId])).rowCount) { log('Faz 4 demo zaten var; atlandı.'); return; }
   const cv = (await owner.query<{ id: string; company_id: string }>(`SELECT cv.id, f.company_id FROM contract_versions cv JOIN contract_families f ON f.id = cv.family_id
@@ -134,7 +172,7 @@ export async function ensurePurchasingDemo(owner: pg.Pool, app: App, auth: DevAu
   const email = 'nur.finansonay@example.test';
   const f2 = (await owner.query<{ id: string }>(`SELECT id FROM users WHERE email = $1`, [email])).rows[0]?.id
     ?? (await owner.query<{ id: string }>(`INSERT INTO users (auth_subject, email, display_name) VALUES ($1,$2,'Nur Aydın') RETURNING id`, [`dev|${email}`, email])).rows[0]!.id;
-  await owner.query(`INSERT INTO memberships (tenant_id, user_id, roles, company_ids) VALUES ($1,$2,ARRAY['FINANCE'],ARRAY[$3]::uuid[]) ON CONFLICT DO NOTHING`, [tenantId, f2, cv.company_id]);
+  await owner.query(`INSERT INTO memberships (tenant_id, user_id, roles, company_ids) VALUES ($1,$2,ARRAY['PROCUREMENT'],ARRAY[$3]::uuid[]) ON CONFLICT DO NOTHING`, [tenantId, f2, cv.company_id]);
   const tok = async (key: string) => auth.issue(`dev|${key}@example.test`);
   async function call(who: string, method: string, url: string, body?: unknown) {
     const r = await app.inject({ method: method as any, url, payload: body as any, headers: { authorization: `Bearer ${await tok(who)}`, 'x-tenant-id': tenantId } });
@@ -144,12 +182,17 @@ export async function ensurePurchasingDemo(owner: pg.Pool, app: App, auth: DevAu
   // Demo sipariş bu sözleşmeye bağlıdır; sipariş açma kuralı gereği (D85) tedarikçisi sözleşmenin tarafı olmalı. İmza gereksinimi ayrı kayıttır, etkilenmez.
   await owner.query(`INSERT INTO contract_parties (tenant_id, company_id, contract_version_id, party_role, supplier_id, display_name)
     SELECT cv.tenant_id, cv.company_id, cv.id, 'SUPPLIER', s.id, s.legal_name FROM contract_versions cv JOIN suppliers s ON s.id = $2 WHERE cv.id = $1`, [cv.id, s1]);
-  const po = await call('alper.satinalma', 'POST', '/api/v1/purchase-orders', { companyId: cv.company_id, supplierId: s1, contractVersionId: cv.id, currency: 'TRY', lines: [
-    { kind: 'GOODS', description: 'Yedek disk 2 TB', unit: 'adet', quantity: '10', unitPrice: '4000' },
-    { kind: 'SERVICE', description: 'Aylık bakım hizmeti', unit: 'ay', quantity: '12', unitPrice: '50000' }] });
-  const lines = (await call('alper.satinalma', 'GET', `/api/v1/purchase-orders/${po.id}`)).lines as { poLineId: string }[];
-  await call('alper.satinalma', 'POST', `/api/v1/po-lines/${lines[0]!.poLineId}/receipts`, { quantity: '6', note: 'İlk sevkiyat, irsaliye 0012 (sentetik)' });
-  await call('alper.satinalma', 'POST', `/api/v1/po-lines/${lines[1]!.poLineId}/receipts`, { quantity: '1', note: 'Ekim bakımı yapıldı', periodFrom: '2026-10-01', periodTo: '2026-10-31' });
+  const buyer = (await owner.query<{ id: string }>(`SELECT id FROM users WHERE email = 'alper.satinalma@example.test'`)).rows[0]!.id;
+  const ctx: TenantContext = { tenantId, userId: buyer, roles: ['PROCUREMENT'], companyIds: [cv.company_id], departmentIds: [], allDepartments: true, correlationId: 'seed-v1-po' };
+  const lines = await withTenant(owner, ctx, async (tx) => {
+    const po = await createPo(tx, ctx, { companyId: cv.company_id, supplierId: s1, contractVersionId: cv.id, currency: 'TRY', lines: [
+      { kind: 'GOODS', description: 'Yedek disk 2 TB', unit: 'adet', quantity: '10', unitPrice: '4000' },
+      { kind: 'SERVICE', description: 'Aylık bakım hizmeti', unit: 'ay', quantity: '12', unitPrice: '50000' }] } as Parameters<typeof createPo>[2]);
+    const l = (await tx.query<{ poLineId: string }>(`SELECT id AS "poLineId" FROM po_lines WHERE po_id = $1 ORDER BY line_no`, [po.id])).rows;
+    await recordReceipt(tx, ctx, l[0]!.poLineId, { quantity: '6', note: 'İlk sevkiyat, irsaliye 0012 (sentetik)' });
+    await recordReceipt(tx, ctx, l[1]!.poLineId, { quantity: '1', note: 'Ekim bakımı yapıldı', periodFrom: '2026-10-01', periodTo: '2026-10-31' });
+    return l;
+  });
   const inv = async (supplierId: string, invoiceNo: string, l: { description: string; quantity: string; unit: string; unitPrice: string }[]) =>
     (await call('ferda.finans', 'POST', '/api/v1/invoices', { companyId: cv.company_id, supplierId, kind: 'INVOICE', invoiceNo, issueDate: '2026-10-20', currency: 'TRY',
       lines: l.map((x) => ({ ...x, netAmount: (Number(x.quantity) * Number(x.unitPrice)).toFixed(2), taxRate: '20' })) })).id as string;
@@ -182,7 +225,9 @@ export async function ensureEvaluationDemo(owner: pg.Pool, app: App, auth: DevAu
     { controlId: 'KVK-01', reference: 'KVKK veri işleme ve aktarım', text: 'Alt işleyen listesi ve veri konumu paylaşıldı mı?', critical: false, evidenceRequired: false },
   ] });
   await call('kerem.hukuk', 'POST', `/api/v1/questionnaire-templates/${t.id}/publish`);
-  const a = await call('alper.satinalma', 'POST', '/api/v1/assessments', { supplierId: s2, templateId: t.id, scope: 'Yedekleme ve felaket kurtarma hizmeti',
+  // v2: inceleyen güvenlik kullanıcısı bölüm kullanıcısıdır; değerlendirme onun departmanında (Bilgi Teknolojileri).
+  const dept = await ensureDepartments(owner, tenantId);
+  const a = await call('alper.satinalma', 'POST', '/api/v1/assessments', { supplierId: s2, templateId: t.id, scope: 'Yedekleme ve felaket kurtarma hizmeti', departmentId: dept.bt,
     inherentFactors: { dataSensitivity: 'HIGH', accessLevel: 'MEDIUM', criticality: 'HIGH', substitutability: 'MEDIUM', subcontractorDependence: 'LOW' } });
   const d = await call('alper.satinalma', 'GET', `/api/v1/assessments/${a.id}`);
   const resp: Record<string, string> = { 'ERS-01': 'YES', 'ERS-02': 'PARTIAL', 'YDK-01': 'YES', 'OLY-01': 'YES', 'KVK-01': 'YES' };
@@ -204,9 +249,10 @@ export async function ensureEvaluationDemo(owner: pg.Pool, app: App, auth: DevAu
  * (kurumun kararıdır); "Teklif" için süre tanımlanınca bu belgeler imha adayı olarak görünür.
  */
 export async function ensureRetentionDemo(owner: pg.Pool, app: App, auth: DevAuthProvider, tenantId: string, log = console.log) {
-  // İmha onayı ikinci bir hukuk yetkilisini gerektirir: belgeler bütün hukuk kullanıcılarının erişebildiği şirkete konur.
-  const company = (await owner.query<{ id: string }>(`SELECT le.id FROM legal_entities le WHERE le.tenant_id = $1 AND NOT EXISTS (SELECT 1 FROM memberships m
-    WHERE m.tenant_id = $1 AND 'LEGAL' = ANY(m.roles) AND NOT le.id = ANY(m.company_ids)) ORDER BY le.name LIMIT 1`, [tenantId])).rows[0];
+  // Belgeler Satınalma kullanıcılarının en çoğunun erişebildiği şirkete konur (v2, D93: eski hukuk rolü Satınalma'ya katıldı; tek şirkete
+  // bağlı Satınalma kullanıcıları olduğundan "hepsinin eriştiği" şirket olmayabilir, bu yüzden en geniş erişimli şirket seçilir).
+  const company = (await owner.query<{ id: string }>(`SELECT le.id FROM legal_entities le WHERE le.tenant_id = $1
+    ORDER BY (SELECT count(*) FROM memberships m WHERE m.tenant_id = $1 AND 'PROCUREMENT' = ANY(m.roles) AND NOT le.id = ANY(m.company_ids)), le.name LIMIT 1`, [tenantId])).rows[0];
   if (!company) { log('Faz 7 demo: ortak şirket yok; atlandı.'); return; }
   const { syntheticPdf } = await import('./devdata.ts');
   const token = await auth.issue('dev|leyla.hukuk@example.test');

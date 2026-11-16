@@ -1,3 +1,4 @@
+// v2 Faz 1 (D93/D95): satınalmacı Satınalma rolünde kesinleştirir/istisna karar verebilir; yetkisiz rol örneği bölüm kullanıcısı, istisnada talep eden karar veremez
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createHash, randomUUID } from 'node:crypto';
 import { syntheticPdf } from '../src/devdata.ts';
@@ -167,7 +168,8 @@ describe('İnsan incelemesi ve kesinleştirme', () => {
   it('yetki: satınalmacı kesinleştiremez; istek UI dışından da reddedilir', async () => {
     const { cv } = await setupContract();
     const st = await status(cv);
-    const r = await h.call('buyer', 'POST', `/api/v1/contract-versions/${cv}/finalize-signature-review`, { headers: { 'if-match': st.headers.etag as string } });
+    // v2 (D93): Satınalma kesinleştirir; kesinleştirme yetkisi olmayan rol bölüm kullanıcısıdır.
+    const r = await h.call('techEval', 'POST', `/api/v1/contract-versions/${cv}/finalize-signature-review`, { headers: { 'if-match': st.headers.etag as string } });
     expect(r.status).toBe(403);
   });
 });
@@ -255,7 +257,7 @@ describe('İstisna', () => {
     expect(x.status).toBe(201);
     const self = await h.call('legal', 'POST', `/api/v1/signature-exceptions/${x.body.exceptionId}/decision`, { body: { decision: 'APPROVED', rationale: 'ok' } });
     expect(self.status).toBe(403);
-    expect((await h.call('buyer', 'POST', `/api/v1/signature-exceptions/${x.body.exceptionId}/decision`, { body: { decision: 'APPROVED', rationale: 'ok' } })).status).toBe(403);
+    expect((await h.call('techEval', 'POST', `/api/v1/signature-exceptions/${x.body.exceptionId}/decision`, { body: { decision: 'APPROVED', rationale: 'ok' } })).status).toBe(403);
     expect((await h.call('legal2', 'POST', `/api/v1/signature-exceptions/${x.body.exceptionId}/decision`, { body: { decision: 'APPROVED', rationale: 'Risk kabul edildi' } })).status).toBe(204);
     let st = await status(cv);
     expect(st.body.status.overall).toBe('EXCEPTION_ACTIVE');

@@ -13,7 +13,13 @@ export interface SyntheticWorld {
     | 'techEval' | 'supplier1' | 'supplier2' | 'supplier3' | 'finance2', { id: string; email: string }>;
   /** Tedarikçi portalı için sentetik firmalar: iki aktif, bir aday (BR02). */
   suppliers: { s1: string; s2: string; s3: string };
+  /** v2 (D93): kiracı başına üç departman. Bölüm kullanıcıları (techEval, security, buyer) Bilgi Teknolojileri'nde. */
+  departments: { bt: string; ik: string; tc: string };
+  departmentsB: { bt: string; ik: string; tc: string };
 }
+
+/** v2 (D93): her demo kiracısında oluşturulan departmanlar. */
+export const DEMO_DEPARTMENTS = { bt: 'Bilgi Teknolojileri', ik: 'İnsan Kaynakları', tc: 'Tıbbi Cihaz' } as const;
 
 export const DEMO_TENANT_A = 'Örnek Holding (SENTETİK)';
 
@@ -43,8 +49,15 @@ export async function createSyntheticWorld(owner: pg.Pool, suffix = ''): Promise
         `INSERT INTO users (auth_subject, email, display_name) VALUES ($1,$2,$3) RETURNING id`, [`dev|${email}`, email, name])).rows[0]!.id;
       return { id, email };
     };
-    const member = async (tenantId: string, userId: string, roles: string[], companies: string[]) => {
-      await c.query(`INSERT INTO memberships (tenant_id, user_id, roles, company_ids) VALUES ($1,$2,$3,$4)`, [tenantId, userId, roles, companies]);
+    const departmentsOf = async (tenantId: string) => {
+      const d = async (name: string) => (await c.query<{ id: string }>(`INSERT INTO departments (tenant_id, name) VALUES ($1,$2) RETURNING id`, [tenantId, name])).rows[0]!.id;
+      return { bt: await d(DEMO_DEPARTMENTS.bt), ik: await d(DEMO_DEPARTMENTS.ik), tc: await d(DEMO_DEPARTMENTS.tc) };
+    };
+    const departments = await departmentsOf(tenantA);
+    const departmentsB = await departmentsOf(tenantB);
+    // v2 (D93/D95): üyelikler v2 rol kodlarıyla; bölüm kullanıcısının departmanları üyelikte.
+    const member = async (tenantId: string, userId: string, roles: string[], companies: string[], departmentIds: string[] = []) => {
+      await c.query(`INSERT INTO memberships (tenant_id, user_id, roles, company_ids, department_ids) VALUES ($1,$2,$3,$4,$5)`, [tenantId, userId, roles, companies, departmentIds]);
     };
     const users = {
       buyer: await user('alper.satinalma', 'Alper Yıldız'),
@@ -74,25 +87,27 @@ export async function createSyntheticWorld(owner: pg.Pool, suffix = ''): Promise
     };
     const supplierMember = async (userId: string, supplierId: string) => c.query(
       `INSERT INTO memberships (tenant_id, user_id, roles, company_ids, supplier_id) VALUES ($1,$2,ARRAY['SUPPLIER'],'{}',$3)`, [tenantA, userId, supplierId]);
-    await member(tenantA, users.buyer.id, ['BUYER', 'REQUESTER'], [companyA1.id]);
-    await member(tenantA, users.masterData.id, ['MASTER_DATA'], [companyA1.id, companyA2.id]);
-    await member(tenantA, users.legal.id, ['LEGAL'], [companyA1.id, companyA2.id]);
-    await member(tenantA, users.legal2.id, ['LEGAL', 'PROCUREMENT_MANAGER'], [companyA1.id]);
-    await member(tenantA, users.finance.id, ['FINANCE'], [companyA1.id]);
-    await member(tenantA, users.security.id, ['SECURITY'], [companyA1.id]);
-    // Kiracı yöneticisi: şirket belgelerine otomatik erişimi yok.
-    await member(tenantA, users.tenantAdmin.id, ['TENANT_ADMIN'], []);
+    // Eski rol (v1) → v2: BUYER+REQUESTER → PROCUREMENT+DEPARTMENT_USER; MASTER_DATA/LEGAL/PROCUREMENT_MANAGER/FINANCE → PROCUREMENT;
+    // SECURITY/TECH_EVALUATOR → DEPARTMENT_USER; TENANT_ADMIN → ADMIN. Kullanıcılar ve şirket kapsamları aynen korunur.
+    await member(tenantA, users.buyer.id, ['PROCUREMENT', 'DEPARTMENT_USER'], [companyA1.id], [departments.bt]);
+    await member(tenantA, users.masterData.id, ['PROCUREMENT'], [companyA1.id, companyA2.id]);
+    await member(tenantA, users.legal.id, ['PROCUREMENT'], [companyA1.id, companyA2.id]);
+    await member(tenantA, users.legal2.id, ['PROCUREMENT'], [companyA1.id]);
+    await member(tenantA, users.finance.id, ['PROCUREMENT'], [companyA1.id]);
+    await member(tenantA, users.security.id, ['DEPARTMENT_USER'], [companyA1.id], [departments.bt]);
+    // Yönetici: şirket belgelerine otomatik erişimi yok (şirket kapsamı boş).
+    await member(tenantA, users.tenantAdmin.id, ['ADMIN'], []);
     await member(tenantA, users.auditor.id, ['AUDITOR'], [companyA1.id]);
-    await member(tenantB, users.buyerB.id, ['BUYER', 'LEGAL', 'MASTER_DATA'], [companyB1.id]);
-    await member(tenantA, users.multi.id, ['BUYER'], [companyA2.id]);
-    await member(tenantB, users.multi.id, ['BUYER'], [companyB1.id]);
-    await member(tenantA, users.techEval.id, ['TECH_EVALUATOR'], [companyA1.id]);
-    await member(tenantA, users.finance2.id, ['FINANCE'], [companyA1.id]);
+    await member(tenantB, users.buyerB.id, ['PROCUREMENT'], [companyB1.id]);
+    await member(tenantA, users.multi.id, ['PROCUREMENT'], [companyA2.id]);
+    await member(tenantB, users.multi.id, ['PROCUREMENT'], [companyB1.id]);
+    await member(tenantA, users.techEval.id, ['DEPARTMENT_USER'], [companyA1.id], [departments.bt]);
+    await member(tenantA, users.finance2.id, ['PROCUREMENT'], [companyA1.id]);
     await supplierMember(users.supplier1.id, suppliers.s1);
     await supplierMember(users.supplier2.id, suppliers.s2);
     await supplierMember(users.supplier3.id, suppliers.s3);
     await c.query('COMMIT');
-    return { tenantA, tenantB, companyA1, companyA2, companyB1, users, suppliers };
+    return { tenantA, tenantB, companyA1, companyA2, companyB1, users, suppliers, departments, departmentsB };
   } catch (e) {
     await c.query('ROLLBACK');
     throw e;

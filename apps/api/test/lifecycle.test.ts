@@ -1,3 +1,4 @@
+// v2 Faz 1 (D93/D95): görev rolleri v2 kodlarıyla (PROCUREMENT, DEPARTMENT_USER); satınalmacı Satınalma rolünde, yetkisiz rol örneği bölüm kullanıcısı
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { addDays, addMonths } from '@sp/domain';
@@ -55,7 +56,7 @@ describe('T21 ihbar son günü ve uyarılar', () => {
     const sod = await h.call('legal', 'POST', `/api/v1/contract-terms/${t.body.id}/verify`);
     expect(sod.status).toBe(403);
     expect(sod.body.error.code).toBe('segregation_of_duties');
-    expect((await h.call('buyer', 'POST', `/api/v1/contract-terms/${t.body.id}/verify`)).status).toBe(403);
+    expect((await h.call('techEval', 'POST', `/api/v1/contract-terms/${t.body.id}/verify`)).status).toBe(403); // bölüm kullanıcısının doğrulama yetkisi yok
     expect((await h.call('legal2', 'POST', `/api/v1/contract-terms/${t.body.id}/verify`)).status).toBe(200);
   });
 
@@ -101,11 +102,11 @@ describe('T21 ihbar son günü ve uyarılar', () => {
   });
 
   it('fesih kararı yetkili insan kararıdır; ihbar görevini kapatır, çıkış kontrolü görevleri açar', async () => {
-    expect((await h.call('buyer', 'POST', `/api/v1/contract-versions/${cv}/renewal-decision`, { body: { decision: 'TERMINATE', rationale: 'Performans yetersiz (sentetik).' } })).status).toBe(403);
+    expect((await h.call('techEval', 'POST', `/api/v1/contract-versions/${cv}/renewal-decision`, { body: { decision: 'TERMINATE', rationale: 'Performans yetersiz (sentetik).' } })).status).toBe(403);
     const d = await h.call('legal2', 'POST', `/api/v1/contract-versions/${cv}/renewal-decision`, { body: { decision: 'TERMINATE', rationale: 'Performans yetersiz; yeni ihale açılacak (sentetik).' } });
     expect(d.status).toBe(201);
     const exit = (await h.owner.query(`SELECT assignee_role FROM tasks WHERE entity_id = $1 AND kind = 'contract_exit' AND status = 'OPEN' ORDER BY assignee_role`, [cv])).rows.map((r) => r.assignee_role);
-    expect(exit).toEqual(['FINANCE', 'FINANCE', 'SECURITY', 'SECURITY']);
+    expect(exit).toEqual(['DEPARTMENT_USER', 'DEPARTMENT_USER', 'PROCUREMENT', 'PROCUREMENT']); // v2: FINANCE → PROCUREMENT, SECURITY → DEPARTMENT_USER
     expect((await h.owner.query(`SELECT 1 FROM tasks WHERE entity_id = $1 AND kind = 'contract_notice' AND status = 'OPEN'`, [cv])).rowCount).toBe(0);
     // Karar verilen koşul değiştirilemez; değişiklik yeni sürüm (zeyilname) ister.
     expect((await h.call('legal', 'POST', `/api/v1/contract-versions/${cv}/terms`, { body: terms({ changeReason: 'Karar sonrası değişiklik denemesi.' }) })).status).toBe(409);
@@ -138,7 +139,7 @@ describe('yükümlülükler', () => {
       firstDue: first, recurrence: 'QUARTERLY', until: null, evidenceRequired: true, sourceRef: 'Ek-2 madde 3' } });
     expect(o.status).toBe(201);
     const t = await eventually(async () => (await tasksFor('legal2', cv)).find((x: any) => x.kind === 'contract_obligation'));
-    expect(t.assigneeRole).toBe('PROCUREMENT_MANAGER');
+    expect(t.assigneeRole).toBe('PROCUREMENT'); // v2: eski PROCUREMENT_MANAGER → PROCUREMENT
     expect(t.reason).toContain('Sahipsiz');
     expect((await h.call('legal', 'POST', `/api/v1/obligations/${o.body.id}/events`, { body: { dueDate: addDays(first, 1), outcome: 'FULFILLED', note: 'Rapor alındı' } })).body.error.code).toBe('invalid_period');
     expect((await h.call('legal', 'POST', `/api/v1/obligations/${o.body.id}/events`, { body: { dueDate: first, outcome: 'FULFILLED', note: 'Rapor alındı' } })).body.error.code).toBe('evidence_required');

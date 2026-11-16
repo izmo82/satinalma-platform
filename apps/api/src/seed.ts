@@ -1,3 +1,4 @@
+// v2 Faz 1 (D93/D95): üyelikler v2 rolleriyle, üç demo departmanı; kaldırılan uçlar (sipariş, kabul, onay, Lira Defteri) tohumda çağrılmaz.
 // Sentetik demo verisi (09 Demo veri seti). Aynı API yolunu kullanır; doğrudan tablo yazmaz.
 // Tekrar çalıştırılırsa demo kiracısı zaten varsa çıkar. Tüm kişi/firma/kimlikler sentetiktir.
 import pg from 'pg';
@@ -9,9 +10,8 @@ import { DevAuthProvider } from './auth.ts';
 import { S3ObjectStore } from './storage.ts';
 import { buildApp } from './server.ts';
 import { createSyntheticWorld, DEMO_TENANT_A, syntheticPdf, ublInvoiceXml } from './devdata.ts';
-import { ensureEvaluationDemo, ensureLifecycleDemo, ensurePurchasingDemo, ensureRetentionDemo, ensureSourcingDemo } from './seedSourcing.ts';
+import { ensureDepartmentsDemo, ensureEvaluationDemo, ensureLifecycleDemo, ensurePurchasingDemo, ensureRetentionDemo, ensureSourcingDemo } from './seedSourcing.ts';
 import { processJobs } from './worker.ts';
-import { ensureRecoveryDemo } from './seedRecovery.ts';
 
 const config = loadConfig();
 if (config.env === 'production' || config.authMode !== 'dev') throw new Error('Seed only runs in development with AUTH_MODE=dev');
@@ -26,8 +26,10 @@ if (exists.rows[0]) {
   await ensureLifecycleDemo(owner, app0, auth0, exists.rows[0].id, () => processJobs(pool0, new S3ObjectStore(config.objectStore), null));
   await ensurePurchasingDemo(owner, app0, auth0, exists.rows[0].id);
   await ensureEvaluationDemo(owner, app0, auth0, exists.rows[0].id);
+  await ensureDepartmentsDemo(owner, exists.rows[0].id);
   await ensureRetentionDemo(owner, app0, auth0, exists.rows[0].id);
-  await ensureRecoveryDemo(owner, app0, auth0, exists.rows[0].id);
+  // v2 (D93): Lira Defteri ve fatura onayı kaldırıldı; geri kazanım demosu (seedRecovery.ts) artık eklenmez. Var olan demo kayıtları silinmez.
+  console.log('Lira Defteri demosu v2 kapsamında eklenmiyor (D93); var olan kayıtlar korunur.');
   await app0.close(); await pool0.end(); await owner.end();
   process.exit(0);
 }
@@ -129,8 +131,10 @@ await ensureSourcingDemo(owner, app, auth, world.tenantA);
 await ensureLifecycleDemo(owner, app, auth, world.tenantA, () => processJobs(pool, new S3ObjectStore(config.objectStore), null));
 await ensurePurchasingDemo(owner, app, auth, world.tenantA);
 await ensureEvaluationDemo(owner, app, auth, world.tenantA);
+await ensureDepartmentsDemo(owner, world.tenantA);
 await ensureRetentionDemo(owner, app, auth, world.tenantA);
-await ensureRecoveryDemo(owner, app, auth, world.tenantA);
+// v2 (D93): Lira Defteri ve fatura onayı kaldırıldı; geri kazanım demosu (seedRecovery.ts) eklenmez.
+console.log('Lira Defteri demosu v2 kapsamında eklenmiyor (D93).');
 console.log('Sentetik demo verisi oluşturuldu. Kullanıcılar (dev oturumu):');
 for (const [k, u] of Object.entries(world.users)) console.log(`  ${k.padEnd(12)} ${u.email}`);
 await app.close();

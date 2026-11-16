@@ -1,3 +1,4 @@
+// v2 Faz 1 (D93/D95): departmanlar artık sentetik dünyada (devdata) oluşur; test aynı departmanları kullanır
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { withTenant, type TenantContext } from '../src/db.ts';
@@ -36,9 +37,9 @@ const deptCtx = (departmentIds: string[]): TenantContext => ({ tenantId: h.world
 
 beforeAll(async () => {
   h = await makeHarness();
-  const dep = async (name: string) => (await h.owner.query<{ id: string }>(`INSERT INTO departments (tenant_id, name) VALUES ($1, $2) RETURNING id`, [h.world.tenantA, name])).rows[0]!.id;
-  bt = await dep('Bilgi Teknolojileri');
-  ik = await dep('İnsan Kaynakları');
+  // Görev 4: departmanlar ve techEval'in departmanı (Bilgi Teknolojileri) sentetik dünyada (devdata) oluşur.
+  bt = h.world.departments.bt;
+  ik = h.world.departments.ik;
   await h.owner.query(`UPDATE memberships SET department_ids = $3 WHERE tenant_id = $1 AND user_id = $2`, [h.world.tenantA, h.world.users.techEval.id, [bt]]);
 
   ikProject = await newProject(`İK bordro yazılımı bakımı ${randomUUID().slice(0, 4)}`);

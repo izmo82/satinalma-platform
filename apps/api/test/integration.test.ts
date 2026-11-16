@@ -1,6 +1,9 @@
+// v2 Faz 1 (D93/D95): fatura onayı kaldırıldı; mutabakat korunur, onaylı fatura test verisi olarak modül işleviyle (API ucu değil) oluşur; yetkisiz rol örneği bölüm kullanıcısı
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { syntheticPdf } from '../src/devdata.ts';
+import { withTenant, type TenantContext } from '../src/db.ts';
+import { approveInvoice } from '../src/modules/invoices.ts';
 import { parseCsv } from '../src/modules/integration.ts';
 import { makeHarness } from './harness.ts';
 
@@ -26,9 +29,11 @@ async function approvedInvoice(net: string) {
     issueDate: today, currency: 'TRY', lines: [{ description: 'Hizmet', quantity: '1', unit: 'ay', unitPrice: net, netAmount: net }] } });
   expect(inv.status).toBe(201);
   await h.call('finance', 'PUT', `/api/v1/invoices/${inv.body.id}/allocations`, { body: { allocations: [{ lineNo: 1, poLineId: null, contractVersionId: cv, quantity: '1', amount: net }] } });
-  const fp = (await h.call('finance2', 'GET', `/api/v1/invoices/${inv.body.id}`)).body.checkFingerprint;
-  const ap = await h.call('finance2', 'POST', `/api/v1/invoices/${inv.body.id}/approve`, { headers: { 'if-match': fp } });
-  expect(ap.status).toBe(200);
+  // v2 (D93): fatura onayı ucu kaldırıldı. Mutabakat eski (v1) onaylı faturalar için korunur; onaylı durum test verisi olarak modül
+  // işleviyle yazılır (karar, ERP aktarım kaydı aynen v1'deki gibi). Ürün davranışı değildir.
+  const ctx: TenantContext = { tenantId: h.world.tenantA, userId: h.world.users.finance2.id, roles: ['PROCUREMENT'], companyIds: [h.world.companyA1.id],
+    departmentIds: [], allDepartments: true, correlationId: 'v2-legacy-approval' };
+  await withTenant(h.pool, ctx, (tx) => approveInvoice(tx, ctx, inv.body.id, null));
   return { id: inv.body.id as string, no, key: `erp-invoice-${inv.body.id}` };
 }
 
@@ -43,7 +48,9 @@ describe('ERP mutabakatı', () => {
     const rp = await h.call('finance', 'POST', `/api/v1/integration/erp/exports/${a.id}/replay`, { body: { reason: 'Bağlantı hatası sonrası tekrar (sentetik).' } });
     expect(rp.status).toBe(409);
     expect(rp.body.error.code).toBe('erp_not_configured');
-    expect((await h.call('buyer', 'GET', `/api/v1/integration/erp/reconciliation?${q}`)).status).toBe(403);
+    // v2: satınalmacı (Satınalma) mutabakatı görür; yetkisiz rol bölüm kullanıcısıdır.
+    expect((await h.call('buyer', 'GET', `/api/v1/integration/erp/reconciliation?${q}`)).status).toBe(200);
+    expect((await h.call('techEval', 'GET', `/api/v1/integration/erp/reconciliation?${q}`)).status).toBe(403);
     expect((await h.call('auditor', 'GET', `/api/v1/integration/erp/reconciliation?${q}`)).status).toBe(200);
   });
 

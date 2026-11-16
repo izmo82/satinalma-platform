@@ -1,3 +1,4 @@
+// v2 Faz 1 (D93/D95): Lira Defteri (geri kazanım) ve fatura onayı kaldırıldı; testler atlandı, 403 removed-v1.test.ts'de
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { syntheticPdf, ublInvoiceXml } from '../src/devdata.ts';
@@ -50,7 +51,8 @@ const cases = async () => (await call('finance', 'GET', '/api/v1/recovery/cases'
 const caseFor = async (invoiceNo: string) => (await cases()).find((c) => c.invoiceNo === invoiceNo);
 
 describe('Lira Defteri bulguları', () => {
-  it('kur farkı: sözleşme izin vermiyorsa tamamı, izin veriyorsa kurla hesaplanan fazlası geri alınabilir; veri eksikse tutar uydurulmaz', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('kur farkı: sözleşme izin vermiyorsa tamamı, izin veriyorsa kurla hesaplanan fazlası geri alınabilir; veri eksikse tutar uydurulmaz', async () => {
     const no = await contract({ fxDifference: 'NOT_ALLOWED' });
     const kf1No = `KF${randomUUID().slice(0, 6).toUpperCase()}`;
     const kf1 = await invoice({ net: '42000.00', description: 'Kur farkı faturası', no: kf1No });
@@ -85,7 +87,8 @@ describe('Lira Defteri bulguları', () => {
     expect(d.claimDraft).toContain(d.code);
   });
 
-  it('avans, erken ödeme ve teminat: kural koşulu yoksa bulgu yok, ayar yoksa erken ödeme hesaplanmaz', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('avans, erken ödeme ve teminat: kural koşulu yoksa bulgu yok, ayar yoksa erken ödeme hesaplanmaz', async () => {
     const cv = await contract({ paymentDays: 60 });
     const advNo = `AV${randomUUID().slice(0, 6).toUpperCase()}`;
     const adv = await invoice({ net: '200000.00', kind: 'ADVANCE', issueDate: '2026-06-01', no: advNo });
@@ -124,7 +127,8 @@ describe('Lira Defteri bulguları', () => {
     expect(tasks.find((t) => t.entityType === 'recovery_case' && t.refNo === advCode)).toBeTruthy();
   });
 
-  it('vaka yaşam döngüsü: doğrula → talep → tahsil; yetki, durum ve tutar kuralları; kapanan vaka değişmez', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('vaka yaşam döngüsü: doğrula → talep → tahsil; yetki, durum ve tutar kuralları; kapanan vaka değişmez', async () => {
     const cv = await contract({ fxDifference: 'NOT_ALLOWED' });
     const no = `KF${randomUUID().slice(0, 6).toUpperCase()}`;
     const inv = await invoice({ net: '8000.00', description: 'kur farkı', no });
@@ -168,7 +172,8 @@ describe('Lira Defteri bulguları', () => {
     expect((await call('buyer', 'POST', `/api/v1/recovery/cases/${r.id}/dismiss`, { reason: 'Sözleşme ekinde kur farkı açıkça kabul edilmiş; uygun.' })).status).toBe(200);
   });
 
-  it('kanıt zinciri: sözleşmesiz ve kabulsüz harcama ayrılır; tutarlar para birimi başına; vaka özeti defterde', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('kanıt zinciri: sözleşmesiz ve kabulsüz harcama ayrılır; tutarlar para birimi başına; vaka özeti defterde', async () => {
     const from = '2026-01-01', to = '2026-12-31';
     const before = (await call('finance', 'GET', `/api/v1/ledger?from=${from}&to=${to}`)).body;
     const po = await call('buyer', 'POST', '/api/v1/purchase-orders', { companyId: h.world.companyA1.id, supplierId: h.world.suppliers.s1, contractVersionId: null, currency: 'TRY',
@@ -195,7 +200,8 @@ describe('Lira Defteri bulguları', () => {
     expect((await call('finance', 'GET', `/api/v1/ledger?from=${to}&to=${from}`)).status).toBe(422);
   });
 
-  it('inceleme bulguları: yalnız kur farkı satırı sayılır; birden çok döviz fatura toplanır; iade düşülür; ele alınan teminat riskten çıkar', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('inceleme bulguları: yalnız kur farkı satırı sayılır; birden çok döviz fatura toplanır; iade düşülür; ele alınan teminat riskten çıkar', async () => {
     // Karışık fatura: 100.000 malzeme + 2.000 kur farkı; izinsiz sözleşmede yalnız 2.000 geri alınabilir.
     const no = await contract({ fxDifference: 'NOT_ALLOWED' });
     const mixNo = `MX${randomUUID().slice(0, 6).toUpperCase()}`;

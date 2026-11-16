@@ -1,4 +1,4 @@
-// v2 Faz 1 (D93/D95): TenantContext artık departmentIds/allDepartments ister; test yardımcısı sistem kapsamıyla çalışır
+// v2 Faz 1 (D93/D95): TenantContext departmentIds/allDepartments ister; fatura reddi (invoice.approve) kaldırıldı, ilgili test atlandı
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { makeHarness } from './harness.ts';
@@ -79,7 +79,8 @@ describe('ana veri görevi açılabilir kayda gider (D92)', () => {
   };
   const openTaskFor = async (supplierId: string) => ((await h.call('masterData', 'GET', '/api/v1/tasks?view=mine')).body.items as { entityId: string; reason: string }[]).some((x) => x.reason.includes('BR02') && x.entityId === supplierId);
 
-  it('fatura reddedilince görev kapanır', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('fatura reddedilince görev kapanır', async () => {
     const { supplierId, invoiceId } = await candidateInvoice();
     expect(await openTaskFor(supplierId)).toBe(true);
     expect((await h.call('finance2', 'POST', `/api/v1/invoices/${invoiceId}/reject`, { body: { reason: 'Aday tedarikçi (sentetik)' } })).status).toBe(200);

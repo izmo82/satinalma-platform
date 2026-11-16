@@ -1,3 +1,4 @@
+// v2 Faz 1 (D93/D95): hukuk artık Satınalma rolünde ve proje okur; izinsiz tür örneği tedarikçi kullanıcısı
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { makeHarness } from './harness.ts';
@@ -17,8 +18,9 @@ describe('arama', () => {
     expect(proj.items[0]).toMatchObject({ id: p.body.id, matched: 'Başlık' });
     const byCode = await h.call('buyer', 'GET', `/api/v1/search?q=${p.body.code}`);
     expect(byCode.body.groups.find((g: any) => g.type === 'project').items[0].matched).toBe('Proje no');
-    // Sözleşme okuma izni olmayan talep sahibi... satınalmacıda var; finans proje okuyabilir, hukuk okuyamaz.
-    expect((await h.call('legal', 'GET', `/api/v1/search?q=${encodeURIComponent(tag)}`)).body.groups.some((g: any) => g.type === 'project')).toBe(false);
+    // v2: hukuk (Satınalma) proje okur; proje okuma izni olmayan rol (tedarikçi) proje sonucu almaz.
+    expect((await h.call('legal', 'GET', `/api/v1/search?q=${encodeURIComponent(tag)}`)).body.groups.some((g: any) => g.type === 'project')).toBe(true);
+    expect((await h.call('supplier1', 'GET', `/api/v1/search?q=${encodeURIComponent(tag)}`)).body.groups.some((g: any) => g.type === 'project')).toBe(false);
     expect((await h.call('buyerB', 'GET', `/api/v1/search?q=${encodeURIComponent(tag)}`, { tenant: h.world.tenantB })).body.groups).toEqual([]);
     // A2 şirketine erişimi olan kullanıcı A1 projesini görmez.
     expect((await h.call('multi', 'GET', `/api/v1/search?q=${encodeURIComponent(tag)}`)).body.groups).toEqual([]);

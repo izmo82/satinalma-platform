@@ -1,10 +1,21 @@
+// v2 Faz 1 (D93/D95): politika yönetimi kaldırıldı (yürürlükteki politika test kurulumunda SQL ile); adımlar v2 rolüyle, ayrılık iki ayrı Satınalma kullanıcısıyla
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { makeHarness } from './harness.ts';
 
 // Faz 2: kurallı onay motoru (sürümlü politika, ardışık adımlar, en az davetli/süre) ve kaynak bulma istisnaları.
 let h: Awaited<ReturnType<typeof makeHarness>>;
-beforeAll(async () => { h = await makeHarness(); });
+// Politika yönetimi (taslak/yayın) v2'de kaldırıldı (D93). Yayın kurallarını sınayan testler için yürürlükteki politika test verisi olarak
+// doğrudan yazılır (ürün davranışı değildir): RFQ_PUBLISH için iki Satınalma adımı, en az 2 davetli, en az 3 gün.
+let policyVersion: number;
+beforeAll(async () => {
+  h = await makeHarness();
+  policyVersion = (await h.owner.query<{ n: number }>(`SELECT coalesce(max(version_no), 0) + 1 AS n FROM approval_policies WHERE tenant_id = $1`, [h.world.tenantA])).rows[0]!.n;
+  const rules = [{ id: 'YAYIN', action: 'RFQ_PUBLISH', companyId: null, category: null, currency: 'TRY', minAmount: '0', maxAmount: null,
+    steps: [{ role: 'PROCUREMENT', label: 'Satınalma yöneticisi' }, { role: 'PROCUREMENT', label: 'Finans' }], minInvitees: 2, minResponseDays: 3 }];
+  await h.owner.query(`INSERT INTO approval_policies (tenant_id, version_no, rules, note, status, created_by, activated_by, activated_at)
+    VALUES ($1,$2,$3,'Kurum politikası (sentetik test verisi).','ACTIVE',$4,$5,now())`, [h.world.tenantA, policyVersion, JSON.stringify(rules), h.world.users.legal2.id, h.world.users.tenantAdmin.id]);
+});
 afterAll(async () => { await h.close(); });
 
 const lines = [{ lot: 'Lot 1', description: 'Sunucu bakımı', unit: 'ay', quantity: '12' }];
@@ -24,7 +35,8 @@ const PM = { role: 'PROCUREMENT_MANAGER', label: 'Satınalma yöneticisi' };
 const FIN = { role: 'FINANCE', label: 'Finans' };
 
 describe('onay politikası', () => {
-  it('çakışan kural reddedilir; hazırlayan yayınlayamaz; yayınlanan sürüm simülasyonda açıklanır', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('çakışan kural reddedilir; hazırlayan yayınlayamaz; yayınlanan sürüm simülasyonda açıklanır', async () => {
     const bad = await h.call('legal2', 'POST', '/api/v1/approval-policies', { body: { note: 'Çakışan deneme (sentetik).', rules: [
       { id: 'A', action: 'AWARD', currency: 'TRY', minAmount: '0', maxAmount: '100', steps: [PM] }, { id: 'B', action: 'AWARD', currency: 'TRY', minAmount: '50', maxAmount: null, steps: [PM] }] } });
     expect(bad.body.error.code).toBe('invalid_policy');
@@ -37,6 +49,16 @@ describe('onay politikası', () => {
     const sim = await h.call('buyer', 'POST', '/api/v1/approval-policies/simulate', { body: { action: 'RFQ_PUBLISH', companyId: h.world.companyA1.id, category: null, currency: 'TRY', amount: '10' } });
     expect(sim.body).toMatchObject({ ruleId: 'YAYIN', minInvitees: 2, minResponseDays: 3 });
     expect(sim.body.explanation).toContain(`Politika v${d.body.versionNo}, kural YAYIN`);
+  });
+
+  // Görev 4 ayrımı: simülasyon ve politika okuma korunur (project.read); politika test kurulumunda yazılır.
+  it('yürürlükteki politika simülasyonda açıklanır; politika okunur ama yönetilemez', async () => {
+    const sim = await h.call('buyer', 'POST', '/api/v1/approval-policies/simulate', { body: { action: 'RFQ_PUBLISH', companyId: h.world.companyA1.id, category: null, currency: 'TRY', amount: '10' } });
+    expect(sim.body).toMatchObject({ ruleId: 'YAYIN', minInvitees: 2, minResponseDays: 3 });
+    expect(sim.body.explanation).toContain(`Politika v${policyVersion}, kural YAYIN`);
+    const list = await h.call('legal2', 'GET', '/api/v1/approval-policies');
+    expect(list.body.items.find((p: any) => p.versionNo === policyVersion)).toMatchObject({ status: 'ACTIVE' });
+    expect(list.body.can.manage).toBe(false);
   });
 });
 
@@ -54,14 +76,17 @@ describe('yayın: politika kuralları, istisna ve ardışık adımlar', () => {
     expect((await h.call('legal2', 'POST', `/api/v1/sourcing-exceptions/${ex.body.id}/decision`, { body: { approve: true } })).body.status).toBe('APPROVED');
     const ok = await publish(id, [h.world.suppliers.s1], 5);
     expect(ok.status).toBe(201);
-    expect(ok.body.approval.steps.map((s: any) => s.role)).toEqual(['PROCUREMENT_MANAGER', 'FINANCE']);
+    // v2 (D93): iki adımın rolü de Satınalma; ayrılık kişi düzeyinde (talep eden ve önceki adımı onaylayan karar veremez).
+    expect(ok.body.approval.steps.map((s: any) => s.role)).toEqual(['PROCUREMENT', 'PROCUREMENT']);
     expect((await detail(id)).exceptions[0].status).toBe('USED');
 
     const round = ok.body.roundId;
-    // Sıra: önce satınalma yöneticisi. Finans ilk adımı onaylayamaz.
-    const early = await h.call('finance', 'POST', `/api/v1/rfq-rounds/${round}/decision`, { body: { approve: true } });
-    expect(early.body.error.code).toBe('approval_step');
+    // Talep eden (buyer) ilk adımı onaylayamaz.
+    const early = await h.call('buyer', 'POST', `/api/v1/rfq-rounds/${round}/decision`, { body: { approve: true } });
+    expect(early.body.error.code).toBe('segregation_of_duties');
     expect((await h.call('legal2', 'POST', `/api/v1/rfq-rounds/${round}/decision`, { body: { approve: true } })).body.status).toBe('PENDING_APPROVAL');
+    // İlk adımı onaylayan aynı Satınalma kullanıcısı ikinci adımı onaylayamaz.
+    expect((await h.call('legal2', 'POST', `/api/v1/rfq-rounds/${round}/decision`, { body: { approve: true } })).body.error.code).toBe('approval_step');
     const fin = (await h.call('finance', 'GET', '/api/v1/tasks?view=mine')).body.items;
     expect(fin.some((t: any) => t.entityId === id && /adım 2\/2: Finans/.test(t.title))).toBe(true);
     const st = (await detail(id, 'finance')).round.approval;
@@ -104,7 +129,8 @@ describe('inceleme bulguları (regresyon)', () => {
     expect(fin.body.error.code).toBe('closes_at_too_short');
   });
 
-  it('iptal onaylanınca bekleyen diğer istisnanın onayı ve görevi kapanır; eski taslak yürürlüktekini geri alamaz', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('iptal onaylanınca bekleyen diğer istisnanın onayı ve görevi kapanır; eski taslak yürürlüktekini geri alamaz', async () => {
     const id = await newProject();
     const single = await h.call('buyer', 'POST', `/api/v1/projects/${id}/exceptions`, { body: { kind: 'SINGLE_SOURCE', supplierId: h.world.suppliers.s1, reason: 'Tek yetkili servis firması (sentetik gerekçe).' } });
     const cancel = await h.call('buyer', 'POST', `/api/v1/projects/${id}/exceptions`, { body: { kind: 'CANCEL', reason: 'İhtiyaç kalktı; bütçe geri çekildi (sentetik).' } });
@@ -123,5 +149,17 @@ describe('inceleme bulguları (regresyon)', () => {
     expect((await h.call('tenantAdmin', 'GET', '/api/v1/approval-policies')).body.can.manage).toBe(true);
     expect((await h.call('tenantAdmin', 'POST', `/api/v1/approval-policies/${newer.body.id}/activate`)).status).toBe(200);
     expect((await h.call('tenantAdmin', 'POST', `/api/v1/approval-policies/${old.body.id}/activate`)).body.error.code).toBe('stale_draft');
+  });
+
+  // Görev 4 ayrımı: istisna iptal davranışı korunur (politika taslağı/yayını kaldırıldı).
+  it('iptal onaylanınca bekleyen diğer istisnanın onayı ve görevi kapanır', async () => {
+    const id = await newProject();
+    const single = await h.call('buyer', 'POST', `/api/v1/projects/${id}/exceptions`, { body: { kind: 'SINGLE_SOURCE', supplierId: h.world.suppliers.s1, reason: 'Tek yetkili servis firması (sentetik gerekçe).' } });
+    const cancel = await h.call('buyer', 'POST', `/api/v1/projects/${id}/exceptions`, { body: { kind: 'CANCEL', reason: 'İhtiyaç kalktı; bütçe geri çekildi (sentetik).' } });
+    expect((await h.call('legal2', 'POST', `/api/v1/sourcing-exceptions/${cancel.body.id}/decision`, { body: { approve: true } })).body.status).toBe('APPROVED');
+    const req = await h.owner.query(`SELECT id, status FROM approval_requests WHERE entity_id = $1`, [single.body.id]);
+    expect(req.rows[0].status).toBe('CANCELLED');
+    const open = await h.owner.query(`SELECT count(*)::int AS n FROM tasks WHERE dedupe_key LIKE $1 AND status = 'OPEN'`, [`approval:${req.rows[0].id}:%`]);
+    expect(open.rows[0].n).toBe(0);
   });
 });

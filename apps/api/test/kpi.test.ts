@@ -1,3 +1,4 @@
+// v2 Faz 1 (D93/D95): Yönetici (eski kiracı yöneticisi) raporları okur; yetkisiz rol örneği bölüm kullanıcısı
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { makeHarness } from './harness.ts';
@@ -25,8 +26,10 @@ describe('yönetim göstergeleri', () => {
   });
 
   it('yetkisiz rol ne ekranı ne dışa aktarmayı görür; CSV formül enjeksiyonuna karşı kaçışlı ve denetim kaydı var', async () => {
-    expect((await h.call('tenantAdmin', 'GET', '/api/v1/reports/summary?from=2026-01-01&to=2026-12-31')).status).toBe(403);
-    expect((await h.call('tenantAdmin', 'GET', '/api/v1/reports/summary.csv?from=2026-01-01&to=2026-12-31')).status).toBe(403);
+    expect((await h.call('techEval', 'GET', '/api/v1/reports/summary?from=2026-01-01&to=2026-12-31')).status).toBe(403);
+    expect((await h.call('techEval', 'GET', '/api/v1/reports/summary.csv?from=2026-01-01&to=2026-12-31')).status).toBe(403);
+    // v2: Yönetici rapor okur (report.read).
+    expect((await h.call('tenantAdmin', 'GET', '/api/v1/reports/summary?from=2026-01-01&to=2026-12-31')).status).toBe(200);
     const csv = await h.call('finance', 'GET', '/api/v1/reports/summary.csv?from=2026-01-01&to=2026-12-31');
     expect(csv.status).toBe(200);
     expect(csv.headers['content-type']).toContain('text/csv');

@@ -11,7 +11,7 @@ Kapsam kaynağı artık `docs/analiz-v2.md` (ONAYLANDI 16.11.2026); `project-spe
 | Faz | İçerik | Durum | Not |
 |---|---|---|---|
 | 0 | Figma ekran tasarımları + tasarım onayı | TAMAM (kullanıcı onayı, 2026-11-16) | 33 çerçeve çizildi (web 23, portal 6, iOS 4). 2026-11-16'da 31 çerçeve ekran görüntüsüyle tek tek görüldü (01 ve 02 önceki oturumda), bulunan kusurlar düzeltilip yeniden bakıldı. Kullanıcı tasarımları onayladı ("Onaylıyorum", D94). Dosya: https://www.figma.com/design/V6jh1q5ZK11eRhVeKgHe6O |
-| 1 | Sadeleştirme: roller, menü, departman alanı ve görünürlük, onaylı kaldırma listesi | NOT_RUN | İşlev envanteri `docs/envanter-faz1.md`. `v1` etiketi ve v2 dalı kullanıcı onayı bekliyor |
+| 1 | Sadeleştirme: roller, menü, departman alanı ve görünürlük, onaylı kaldırma listesi | PARTIAL | İşlev envanteri `docs/envanter-faz1.md`. Görev 1–4 (API: 5 rol, departmanlar ve RLS, kaldırılan uçların 403 testi, v2 sentetik veri) yapıldı; web, iOS ve gerçek kullanıcıyla uçtan uca yürüyüş yapılmadı. API test sayıları ve atlanan testler tablonun altında. `v1` etiketi ve v2 dalı kullanıcı onayı bekliyor |
 | 2 | Entra: giriş, kapsam, eşitleme, onaycı ataması | NOT_RUN | Gerçek Entra kiracısı gerekir |
 | 3 | Sözleşme: ekleme akışı, taslak kütüphanesi, üç onay, hatırlatıcılar | NOT_RUN | |
 | 4 | Yapay zekâ: alan okuma, taslak karşılaştırma, hukuk ön incelemesi | NOT_RUN / BLOCKED | Gerçek sağlayıcı ücretli kaynak; kanal, bütçe ve KVKK kararı kullanıcıda |
@@ -19,6 +19,54 @@ Kapsam kaynağı artık `docs/analiz-v2.md` (ONAYLANDI 16.11.2026); `project-spe
 | 6 | Yıllık risk değerlendirmesi, 5×5 matris, Excel içe/dışa aktarım | NOT_RUN | 26 soruluk şablon dosyası verilmedi; sorular yönetici ekranından girilebilir kurulacak |
 | 7 | Fatura eşleştirme, uyum denetimi, kural kataloğu | NOT_RUN | |
 | 8 | Oracle ERP: özellik başına uç nokta kartı | NOT_RUN / BLOCKED | Gerçek Oracle test ortamı yok; EBS varsayıldı, teyit bekliyor |
+
+Faz 1 Görev 4 (2026-11-16, `v2-sadelestirme` dalı, test veritabanı): `npm test -w @sp/api` **PASS: 202 geçti, 0 kaldı, 44 atlandı** (görev öncesi 148 geçti / 76 kaldı / 1 atlandı); `npm test -w @sp/domain` PASS 145; `npm run typecheck` PASS. Yeni `apps/api/test/removed-v1.test.ts`: kaldırılan her uç Satınalma, Yönetici ve Denetçi için 403 `forbidden`, tablolarda satır sayısı değişmez; aynı Satınalma kullanıcısı iki adımlı işin iki adımını yapamaz. Atlanan 44 testin 43'ü kaldırılan işlevi pozitif sınar (`it.skip`, davranış removed-v1.test.ts ile 403 olarak korunur); 1'i önceden de koşullu atlanan canlı TCMB testidir (`TCMB_LIVE`). Atlanan testlerin korunan kısımları ayrı testlere taşındı (eski sipariş/onay durumu test verisi olarak modül işleviyle yazılır).
+
+| Dosya › test | Neden |
+|---|---|
+| approvals › çakışan kural reddedilir; hazırlayan yayınlayamaz; yayınlanan sürüm simülasyonda açıklanır | onay politikası yönetimi |
+| approvals › iptal onaylanınca bekleyen diğer istisnanın onayı ve görevi kapanır; eski taslak yürürlüktekini geri alamaz | onay politikası yönetimi (iptal kısmı ayrı testte) |
+| governance › politika dayanakla ve yalnız hukuk tarafından tanımlanır; politika yoksa belge aday olmaz | saklama politikası |
+| governance › hukuki saklama süresi dolmuş belgeyi aday listesinden çıkarır; kaldırılınca döner | hukuki saklama |
+| governance › öneren onaylayamaz; onayda baytlar silinir, hash ve denetim izi kalır; aynı dosya yeniden yüklenebilir | imha |
+| governance › öneriden sonra gelen hukuki saklama onay anında belgeyi korur; başka canlı kayıt kullanan nesne silinmez | imha / hukuki saklama |
+| governance › şirket kapsamı partinin tamamını görmeyen kişi karar veremez | imha |
+| governance › onaylayan kiracıdan ayrılsa da imha edilen belgenin baytları silinir; sonuç partide görünür | imha |
+| recovery › kur farkı: sözleşme izin vermiyorsa tamamı, … veri eksikse tutar uydurulmaz | Lira Defteri, fatura onayı |
+| recovery › avans, erken ödeme ve teminat: kural koşulu yoksa bulgu yok, ayar yoksa erken ödeme hesaplanmaz | Lira Defteri, fatura onayı |
+| recovery › vaka yaşam döngüsü: doğrula → talep → tahsil; yetki, durum ve tutar kuralları; kapanan vaka değişmez | Lira Defteri |
+| recovery › kanıt zinciri: sözleşmesiz ve kabulsüz harcama ayrılır; tutarlar para birimi başına; vaka özeti defterde | Lira Defteri |
+| recovery › inceleme bulguları: yalnız kur farkı satırı sayılır; birden çok döviz fatura toplanır; iade düşülür; … | Lira Defteri |
+| tcmb › fatura reddedilince görev kapanır | fatura reddi (invoice.approve) |
+| invoices › T14: 1M tavan, 400 bin faturalanmış tüketim, 300 bin kalan açık sipariş → … | sipariş, kabul, fatura onayı |
+| invoices › T13: siparişin yarısı kabul, tamamı fatura → eksik kabul istisnası; … | mal kabul, istisna ve fatura onayı |
+| invoices › aynı limit için iki onay aynı anda: biri geçer, diğeri atomik olarak engellenir | fatura onayı |
+| invoices › net tüketim ve önceki tahsis doğru; faturalanmış kabul geri alınamaz | sipariş, kabul, fatura onayı |
+| invoices › T18: ERP zaman aşımı ama kayıt dışarıda oluştu → sorgu ile mutabakat, ikinci kayıt yok | fatura onayı (ERP kısmı ayrı testte) |
+| invoices › kalıcı hatayla DEAD olan aktarım, … tek kayıt olarak onaylanır | fatura onayı (tekrar gönderim ayrı testte) |
+| invoices › imza durumu bilinmeyen arşiv sözleşmesine bağlı mevcut fatura iptal edilmez; politika incelemesi açılır | istisna ve fatura onayı (bulgu kısmı ayrı testte) |
+| invoices › toplu kontrol, onaylanmamış her faturada tek tek kontrolle aynı sonucu verir (bu dosyadaki bütün senaryolar) | sipariş ve kabul (siparişsiz hali ayrı testte) |
+| invoices › vergi dahil limitli sözleşmede siparişte KDV oranı zorunlu; … | sipariş, kabul, fatura onayı |
+| invoices › inceleme: oransız açık sipariş varken vergi dahil limite geçilmez; … | sipariş (revizyon tavanı kısmı ayrı testte) |
+| invoices › kategori kuralı siparişin projesinin kategorisine göre seçilir; kural listesi ve kaldırma kategoriyle | tolerans kuralı, sipariş |
+| invoiceIntake › miktar artışı limit kilidiyle kontrol edilir; özgün kalem korunur, revizyon ve fark görünür | sipariş değişikliği |
+| invoiceIntake › kabul edilen miktarın altına inemez; faturalanmış kalemin fiyatı değişmez; gerekçe zorunlu; yalnız satınalma | sipariş değişikliği, kabul, onay |
+| invoiceIntake › tüketim varsa kapatılır: kalan taahhüt serbest kalır, yeni kabul yapılamaz | sipariş kapatma |
+| invoiceIntake › hiç tüketim yoksa iptal edilir: taahhüt sıfır, iptal edilmiş siparişe fatura bağlanamaz | sipariş iptali |
+| invoiceIntake › finans kural koyar, listeler ve kaldırır; satınalma koyamaz; geçersiz yüzde reddedilir | tolerans kuralı |
+| invoiceIntake › karar bekleyen faturası olan sipariş kapatılamaz (taahhüt erken serbest kalmaz) | sipariş kapatma |
+| invoiceIntake › istisna onayından sonra sipariş fiyatı değişirse istisna eskir; eski onayla finans onayı verilemez | istisna onayı, sipariş değişikliği |
+| invoiceIntake › eşzamanlı kabul ve kapatma: kabul hiçbir durumda sipariş miktarını aşmaz | mal kabul, sipariş kapatma |
+| invoiceIntake › If-Match yoksa 428; inceleme sonrası tahsis değiştiyse eski parmak iziyle onay 409 | fatura onayı |
+| invoiceIntake › aynı Idempotency-Key ile kabul ve olay tek kayıt; anahtar başka kalemde kullanılırsa 409 | mal kabul (olay kısmı ayrı testte) |
+| invoiceIntake › kendi siparişine tahsis çalışır; liste ve detay aynı tedarikçi kökünü döner | sipariş listesi (tahsis kısmı ayrı testte) |
+| invoiceIntake › başka tedarikçinin sözleşmesine sipariş açılamaz ve kayıt oluşmaz; kendi tedarikçisi açabilir | sipariş açma |
+| invoiceIntake › sözleşmeye SUPPLIER tarafı olarak eklenen tedarikçi sipariş açabilir | sipariş açma |
+| invoiceIntake › tedarikçisi kayıtlı olmayan sözleşmeye sipariş açılabilir; sözleşme listesi tedarikçi köklerini döner | sipariş açma (sözleşme seçenekleri kısmı ayrı testte) |
+| invoiceIntake › önceden yanlış bağlanmış fatura onaya kapanır ve bağ kaldırılabilir; liste şirketi döner | sipariş listesi (şirket kontrolü ayrı testte) |
+| invoiceIntake › zeyilnameyle eklenen tedarikçi yeni sürüme sipariş açabilir; önceki sürüm değişmez; denetim izi kalır | sipariş açma (zeyilname kısmı ayrı testte) |
+| supplierEval › kritik kontrol "hayır": uyum %75 ama sonuç BLOCKED; sipariş verilemez; sorumlulara görev düşer | sipariş açma (engel ve görev kısmı ayrı testte) |
+| supplierEval › yeterli kabul örneğinde puan = ağırlıklı ortalama − doğrulanmış olay cezası | sipariş ve mal kabul (puan kısmı ayrı testte, kabul test verisi) |
 
 Faz 0 Figma denetiminde düzeltilenler (2026-11-16): 07 sözleşme listesinde kırpılan ad sütunu ve taşan durum etiketi; 15 başvuru ekranında telefonun üstüne binen e-posta; 20 kullanıcı tablosunda kırpılan e-postalar; 09'da sütuna taşan taslak adı; P2'de tarihe değen anket adı; 10, 14 ve 18'de yüzdesiyle uyuşmayan ilerleme çubukları (100 puan dolu görünmüyordu); 02, 06, 08, 17, 23, P1, P2'de boş eylem kutusundan gelen fazla üst boşluk; 10'da yapay zekâ karşılaştırma sonucunun kural yeşiliyle basılması (nötr etikete çevrildi, "Three-Ink" kuralı); satınalma yöntemi adlarının analizle hizalanması ("Davetli teklif", "Tek kaynak"); 18 denetçi özetinin 06'daki kazanan gerekçesiyle çelişmesi; 22 entegrasyon özellik listesinin analiz 3.8 ile hizalanması (7 özellik); P1 örnek verisinin 15 ile tutarlılığı; P2'de tedarikçiye kritiklik girdisi yerine beklenen aksiyon (analiz 3.3 ve Karar 7); iOS onay ekranındaki bulgu özetinin web ile tutarlılığı.
 

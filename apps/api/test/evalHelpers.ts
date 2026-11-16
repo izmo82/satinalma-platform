@@ -1,3 +1,4 @@
+// v2 Faz 1 (D93/D95): inceleyen güvenlik kullanıcısı bölüm kullanıcısıdır; değerlendirme onun departmanında (Bilgi Teknolojileri) açılır
 import { randomUUID } from 'node:crypto';
 import { expect } from 'vitest';
 import type { makeHarness } from './harness.ts';
@@ -21,7 +22,8 @@ export async function securityTemplate(h: H) {
 
 /** Değerlendirme: verilen yanıtlarla (varsayılan hepsi "evet"), inceleme ve tamamlama. Yanıtı satınalma girer, güvenlik inceler. */
 export async function reviewedAssessment(h: H, supplierId: string, templateId: string, responses: Record<string, string> = {}, factors = lowFactors) {
-  const a = await h.call('buyer', 'POST', '/api/v1/assessments', { body: { supplierId, templateId, scope: 'Uzak erişimli sunucu bakımı (sentetik)', inherentFactors: factors } });
+  const a = await h.call('buyer', 'POST', '/api/v1/assessments', { body: { supplierId, templateId, scope: 'Uzak erişimli sunucu bakımı (sentetik)', inherentFactors: factors,
+    departmentId: h.world.departments.bt } });
   expect(a.status).toBe(201);
   const d = (await h.call('buyer', 'GET', `/api/v1/assessments/${a.body.id}`)).body;
   for (const q of d.questions as { id: string; controlId: string }[]) {

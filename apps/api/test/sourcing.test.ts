@@ -1,4 +1,4 @@
-// v2 Faz 1 (D93/D95): TenantContext artık departmentIds/allDepartments ister; test yardımcısı sistem kapsamıyla çalışır
+// v2 Faz 1 (D93/D95): TenantContext departmentIds/allDepartments ister; teknik değerlendirici bölüm kullanıcısı, T10–T12 projesi onun departmanında (Bilgi Teknolojileri)
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import ExcelJS from 'exceljs';
@@ -197,6 +197,8 @@ describe('T10–T12 karşılaştırma, eskime ve bölünmüş tahsis', () => {
   let projectId: string; let roundId: string; let lineIds: string[]; const bidOf: Record<string, string> = {};
   beforeAll(async () => {
     projectId = (await newProject()).id;
+    // v2: teknik puanı bölüm kullanıcısı (techEval, Bilgi Teknolojileri) verir; departmansız kayıt ona kapalıdır (RLS gevşetilmez).
+    await h.owner.query(`UPDATE projects SET department_id = $2 WHERE id = $1`, [projectId, h.world.departments.bt]);
     roundId = await publish(projectId, [h.world.suppliers.s1, h.world.suppliers.s2, h.world.suppliers.s3]);
     // Tasarruf bazı teklifler açılmadan önerilir ve ikinci kişi (finans) onaylar; rapor yalnız onaylı bazla seçim tutarını karşılaştırır.
     const base = await h.call('buyer', 'POST', `/api/v1/projects/${projectId}/savings-baselines`, { body: { basis: 'PREVIOUS_PRICE', amount: '1100000.00', source: 'Önceki dönem sözleşme bedeli (sentetik).' } });

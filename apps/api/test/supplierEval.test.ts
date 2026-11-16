@@ -1,4 +1,7 @@
+// v2 Faz 1 (D93/D95): değerlendirme bölüm kullanıcısının departmanında; yetkisiz rol örnekleri v2'ye göre; sipariş/kabul adımları kaldırıldı (kabul örneği test verisi)
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { withTenant, type TenantContext } from '../src/db.ts';
+import { createPo, recordReceipt } from '../src/modules/invoices.ts';
 import { makeHarness } from './harness.ts';
 import { reviewedAssessment, securityTemplate } from './evalHelpers.ts';
 
@@ -8,7 +11,7 @@ let tpl: string;
 beforeAll(async () => { h = await makeHarness(); tpl = await securityTemplate(h); });
 afterAll(async () => { await h.close(); });
 
-type Who = 'buyer' | 'finance' | 'legal' | 'legal2' | 'security' | 'masterData' | 'auditor';
+type Who = 'buyer' | 'finance' | 'legal' | 'legal2' | 'security' | 'masterData' | 'auditor' | 'techEval';
 const call = (who: Who, method: string, url: string, body?: unknown) => h.call(who, method, url, body === undefined ? {} : { body });
 const s1 = () => h.world.suppliers.s1;
 const s2 = () => h.world.suppliers.s2;
@@ -26,11 +29,13 @@ describe('anket şablonu ve değerlendirme', () => {
       questions: [{ controlId: 'ISG-01', reference: 'İSG mevzuatı', text: 'Personel İSG eğitimi belgeli mi?', critical: true, evidenceRequired: true }] });
     expect(v2.body.version).toBe(2);
     expect((await call('buyer', 'POST', '/api/v1/questionnaire-templates', { code: 'X1', name: 'Yetkisiz', category: 'x', questions: [] })).status).toBe(400);
-    expect((await call('buyer', 'POST', '/api/v1/questionnaire-templates', { code: 'X1', name: 'Yetkisiz', category: 'xx', questions: [{ controlId: 'A', reference: 'ab', text: 'abcde', critical: false, evidenceRequired: false }] })).status).toBe(403);
+    // v2: satınalmacı (Satınalma) şablon yönetir; yönetim yetkisi olmayan rol denetçidir.
+    expect((await call('auditor', 'POST', '/api/v1/questionnaire-templates', { code: 'X1', name: 'Yetkisiz', category: 'xx', questions: [{ controlId: 'A', reference: 'ab', text: 'abcde', critical: false, evidenceRequired: false }] })).status).toBe(403);
   });
 
   it('eksik yanıt başarılı sayılmaz; gerekçesiz "uygulanamaz" reddedilir; yanıtı giren kendi yanıtını inceleyemez', async () => {
-    const a = await call('buyer', 'POST', '/api/v1/assessments', { supplierId: s2(), templateId: tpl, scope: 'Yedekleme hizmeti (sentetik)',
+    // v2: inceleyen güvenlik kullanıcısı bölüm kullanıcısıdır; değerlendirme onun departmanında açılır.
+    const a = await call('buyer', 'POST', '/api/v1/assessments', { supplierId: s2(), templateId: tpl, scope: 'Yedekleme hizmeti (sentetik)', departmentId: h.world.departments.bt,
       inherentFactors: { dataSensitivity: 'HIGH', accessLevel: 'HIGH', criticality: 'MEDIUM', substitutability: 'LOW', subcontractorDependence: 'LOW' } });
     const d = (await call('buyer', 'GET', `/api/v1/assessments/${a.body.id}`)).body;
     expect(d.inherent.level).toBe('CRITICAL');
@@ -61,7 +66,8 @@ describe('anket şablonu ve değerlendirme', () => {
 });
 
 describe('T20 kritik engel', () => {
-  it('kritik kontrol "hayır": uyum %75 ama sonuç BLOCKED; sipariş verilemez; sorumlulara görev düşer', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('kritik kontrol "hayır": uyum %75 ama sonuç BLOCKED; sipariş verilemez; sorumlulara görev düşer', async () => {
     const id = await reviewedAssessment(h, s1(), tpl, { 'ERS-01': 'NO' });
     const d = (await call('buyer', 'GET', `/api/v1/assessments/${id}`)).body;
     expect(d.complianceRate).toBe(75);
@@ -85,6 +91,23 @@ describe('T20 kritik engel', () => {
     expect((await call('buyer', 'POST', '/api/v1/purchase-orders', { companyId: h.world.companyA1.id, supplierId: s1(), contractVersionId: null, currency: 'TRY',
       lines: [{ kind: 'SERVICE', description: 'Uzak bakım', unit: 'ay', quantity: '1', unitPrice: '1000' }] })).status).toBe(201);
   });
+
+  // Görev 4 ayrımı: kritik engel, görev ve yerine geçme korunur; sipariş adımları (kaldırıldı) çıkarıldı. Seçim engeli sourcing T20'de.
+  it('kritik kontrol "hayır": uyum %75 ama sonuç BLOCKED; sorumlulara görev düşer; incelenmemiş taslak engeli kaldırmaz, tamamlanan yeni değerlendirme yerini alır', async () => {
+    const id = await reviewedAssessment(h, s1(), tpl, { 'ERS-01': 'NO' });
+    const d = (await call('buyer', 'GET', `/api/v1/assessments/${id}`)).body;
+    expect(d.complianceRate).toBe(75);
+    expect(d.outcome).toBe('BLOCKED');
+    const tasks = (await call('security', 'GET', '/api/v1/tasks?view=all')).body.items as { title: string; entityId: string }[];
+    expect(tasks.some((t) => t.entityId === s1() && t.title.startsWith('Kritik engel'))).toBe(true);
+    const draft = await call('buyer', 'POST', '/api/v1/assessments', { supplierId: s1(), templateId: tpl, scope: 'Yeniden değerlendirme taslağı', departmentId: h.world.departments.bt,
+      inherentFactors: { dataSensitivity: 'LOW', accessLevel: 'LOW', criticality: 'LOW', substitutability: 'LOW', subcontractorDependence: 'LOW' } });
+    expect(draft.status).toBe(201);
+    expect((await call('buyer', 'GET', `/api/v1/suppliers/${s1()}/assessments`)).body.items.find((x: any) => x.id === id).status).not.toBe('SUPERSEDED');
+    await reviewedAssessment(h, s1(), tpl);
+    const list = (await call('buyer', 'GET', `/api/v1/suppliers/${s1()}/assessments`)).body.items;
+    expect(list.find((x: any) => x.id === id).status).toBe('SUPERSEDED');
+  });
 });
 
 describe('T19 olay: iddia ≠ doğrulanmış; itiraz; çift sayım yok', () => {
@@ -103,7 +126,7 @@ describe('T19 olay: iddia ≠ doğrulanmış; itiraz; çift sayım yok', () => {
     expect((await move(a.id, 'VERIFY', {}, 'buyer')).status).toBe(403);
     expect((await move(a.id, 'VERIFY', { countedInMetric: false })).body.status).toBe('VERIFIED');
     expect((await call('buyer', 'GET', `/api/v1/incidents/${a.id}`)).body.scoreImpact).toMatchObject({ counted: true, penalty: 7 });
-    expect((await move(a.id, 'DISPUTE', {}, 'buyer')).status).toBe(403); // itiraz cezayı askıya alır: yalnız doğrulama yetkisi
+    expect((await move(a.id, 'DISPUTE', {}, 'auditor')).status).toBe(403); // itiraz cezayı askıya alır: yalnız doğrulama yetkisi (v2: denetçide yok)
     expect((await move(a.id, 'DISPUTE')).body.disputeOpen).toBe(true);
     expect(((await call('legal2', 'GET', '/api/v1/tasks?view=all')).body.items as { title: string }[]).some((t) => t.title === `İtiraz sonuçlandırma: ${a.code}`)).toBe(true);
     expect((await call('buyer', 'GET', `/api/v1/incidents/${a.id}`)).body.scoreImpact).toMatchObject({ counted: false, reason: 'Tedarikçi itirazı açık; kesinleşmedi.' });
@@ -138,7 +161,10 @@ describe('T19 olay: iddia ≠ doğrulanmış; itiraz; çift sayım yok', () => {
     await move(a.id, 'START_REVIEW', {}, 'security'); await move(a.id, 'VERIFY', {}, 'security');
     const act = await call('security', 'POST', `/api/v1/incidents/${a.id}/actions`, { title: 'Paylaşılan hesapları kapat ve MFA zorunlu kıl', ownerRole: 'SECURITY', dueDate: '2026-11-30' });
     expect((await move(a.id, 'CLOSE', {}, 'security')).body.error.code).toBe('actions_open');
-    expect((await call('buyer', 'POST', `/api/v1/corrective-actions/${act.body.id}/complete`, { note: 'Tedarikçi erişim listesini güncelledi (sentetik).' })).status).toBe(403);
+    // Yalnız sorumlu rol (SECURITY → v2 DEPARTMENT_USER) tamamlar: bölüm kullanıcısı rolü olmayan Satınalma kullanıcısı (legal) tamamlayamaz.
+    const notOwner = await call('legal', 'POST', `/api/v1/corrective-actions/${act.body.id}/complete`, { note: 'Tedarikçi erişim listesini güncelledi (sentetik).' });
+    expect(notOwner.status).toBe(403);
+    expect(notOwner.body.error.code).toBe('not_owner');
     await call('security', 'POST', `/api/v1/corrective-actions/${act.body.id}/complete`, { note: 'Hesaplar kapatıldı, MFA raporu eklendi (sentetik).' });
     expect((await call('security', 'POST', `/api/v1/corrective-actions/${act.body.id}/verify`)).status).toBe(403);
     expect((await call('legal2', 'POST', `/api/v1/corrective-actions/${act.body.id}/verify`)).status).toBe(200);
@@ -158,7 +184,7 @@ describe('performans ve yıllık karne', () => {
     const bad = await call('buyer', 'POST', `/api/v1/suppliers/${s2()}/performance-reviews`, { periodStart: '2026-01-01', periodEnd: '2026-06-30', category: 'BT hizmeti',
       weights: { quality: 50, delivery: 50, sla: 10, communication: 0, commercial: 0 }, scores: { quality: 90 }, basis: 'Kabul kayıtları ve SLA raporları (sentetik).' });
     expect(bad.body.error.code).toBe('invalid_weights');
-    expect((await call('finance', 'POST', `/api/v1/suppliers/${s2()}/performance-reviews`, { periodStart: '2026-01-01', periodEnd: '2026-06-30', category: 'BT', scores: {}, basis: 'Yetkisiz deneme (sentetik).' })).status).toBe(403);
+    expect((await call('techEval', 'POST', `/api/v1/suppliers/${s2()}/performance-reviews`, { periodStart: '2026-01-01', periodEnd: '2026-06-30', category: 'BT', scores: {}, basis: 'Yetkisiz deneme (sentetik).' })).status).toBe(403); // v2: bölüm kullanıcısının yetkisi yok
     expect((await call('buyer', 'POST', `/api/v1/suppliers/${s2()}/performance-reviews`, { periodStart: '2026-01-01', periodEnd: new Date().toISOString().slice(0, 10), category: 'BT hizmeti',
       scores: { quality: 90, delivery: 80, sla: 70, communication: 100, commercial: 60 }, basis: 'Kabul kayıtları ve SLA raporları (sentetik).' })).status).toBe(201);
     const sc = (await call('auditor', 'GET', `/api/v1/suppliers/${s2()}/scorecard?year=2026`)).body;
@@ -169,11 +195,29 @@ describe('performans ve yıllık karne', () => {
     expect(sc.sources.length).toBeGreaterThan(0);
   });
 
-  it('yeterli kabul örneğinde puan = ağırlıklı ortalama − doğrulanmış olay cezası', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('yeterli kabul örneğinde puan = ağırlıklı ortalama − doğrulanmış olay cezası', async () => {
     const po = await call('buyer', 'POST', '/api/v1/purchase-orders', { companyId: h.world.companyA1.id, supplierId: s2(), contractVersionId: null, currency: 'TRY',
       lines: [{ kind: 'GOODS', description: 'Sarf malzeme', unit: 'adet', quantity: '10', unitPrice: '10' }] });
     const line = (await call('buyer', 'GET', `/api/v1/purchase-orders/${po.body.id}`)).body.lines[0].poLineId;
     for (let i = 0; i < 5; i++) await call('buyer', 'POST', `/api/v1/po-lines/${line}/receipts`, { quantity: '1', note: `Teslim ${i + 1} (sentetik)` });
+    const sc = (await call('buyer', 'GET', `/api/v1/suppliers/${s2()}/scorecard?year=${new Date().getFullYear()}`)).body;
+    expect(sc.performance.sample).toBeGreaterThanOrEqual(5);
+    expect(sc.performance.base).toBe(80);
+    expect(sc.performance.score).toBe(80 - sc.incidents.penalty);
+  });
+
+  // Görev 4 ayrımı: karne puanı korunur. Sipariş ve mal kabul v2'de kaldırıldı; örneklem için eski (v1) kabul kayıtları test verisi olarak
+  // modül işleviyle yazılır (API ucu değil). Bkz. rapor: yeni kabul kaydı oluşmadığı için örneklem yalnız eski kayıtlardan gelir.
+  it('yeterli kabul örneğinde puan = ağırlıklı ortalama − doğrulanmış olay cezası (kabul kayıtları test verisi)', async () => {
+    const ctx: TenantContext = { tenantId: h.world.tenantA, userId: h.world.users.buyer.id, roles: ['PROCUREMENT'], companyIds: [h.world.companyA1.id],
+      departmentIds: [], allDepartments: true, correlationId: 'v2-legacy-receipts' };
+    await withTenant(h.pool, ctx, async (tx) => {
+      const po = await createPo(tx, ctx, { companyId: h.world.companyA1.id, supplierId: s2(), contractVersionId: null, currency: 'TRY',
+        lines: [{ kind: 'GOODS', description: 'Sarf malzeme', unit: 'adet', quantity: '10', unitPrice: '10' }] } as never);
+      const line = (await tx.query<{ id: string }>(`SELECT id FROM po_lines WHERE po_id = $1`, [po.id])).rows[0]!.id;
+      for (let i = 0; i < 5; i++) await recordReceipt(tx, ctx, line, { quantity: '1', note: `Teslim ${i + 1} (sentetik)` });
+    });
     const sc = (await call('buyer', 'GET', `/api/v1/suppliers/${s2()}/scorecard?year=${new Date().getFullYear()}`)).body;
     expect(sc.performance.sample).toBeGreaterThanOrEqual(5);
     expect(sc.performance.base).toBe(80);

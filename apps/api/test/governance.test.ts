@@ -1,3 +1,4 @@
+// v2 Faz 1 (D93/D95): saklama, hukuki saklama ve imha kaldırıldı (testler atlandı, 403 removed-v1.test.ts'de); kiracı dışa aktarımı korunur
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createHash, randomUUID } from 'node:crypto';
 import { syntheticPdf } from '../src/devdata.ts';
@@ -24,7 +25,8 @@ async function oldDocument(companyId: string, kind = 'OTHER', label = 'eski belg
 const keyOf = (sha: string) => `t/${h.world.tenantA}/sha256/${sha}`;
 
 describe('saklama politikası ve hukuki saklama', () => {
-  it('politika dayanakla ve yalnız hukuk tarafından tanımlanır; politika yoksa belge aday olmaz', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('politika dayanakla ve yalnız hukuk tarafından tanımlanır; politika yoksa belge aday olmaz', async () => {
     const d = await oldDocument(h.world.companyA1.id, 'QUOTE', 'politikasız teklif');
     let c = await h.call('legal', 'GET', '/api/v1/retention/candidates');
     expect(c.body.candidates.find((x: any) => x.id === d.documentId)).toBeUndefined();
@@ -37,7 +39,8 @@ describe('saklama politikası ve hukuki saklama', () => {
     expect((await h.call('tenantAdmin', 'GET', '/api/v1/retention/candidates')).body.candidates).toEqual([]);
   });
 
-  it('hukuki saklama süresi dolmuş belgeyi aday listesinden çıkarır; kaldırılınca döner', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('hukuki saklama süresi dolmuş belgeyi aday listesinden çıkarır; kaldırılınca döner', async () => {
     await h.call('legal', 'PUT', '/api/v1/retention/policies/OTHER', { body: { retentionMonths: 12, legalBasis: 'Kurum saklama politikası md. 7 (sentetik)' } });
     const d = await oldDocument(h.world.companyA2.id, 'OTHER', 'davalı belge');
     const hold = await h.call('legal', 'POST', '/api/v1/legal-holds', { body: { scope: 'COMPANY', companyId: h.world.companyA2.id, matterRef: 'DAVA-2026/1 (sentetik)', reason: 'Devam eden uyuşmazlık nedeniyle saklama.' } });
@@ -57,7 +60,8 @@ describe('saklama politikası ve hukuki saklama', () => {
 });
 
 describe('iki kişi onaylı imha', () => {
-  it('öneren onaylayamaz; onayda baytlar silinir, hash ve denetim izi kalır; aynı dosya yeniden yüklenebilir', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('öneren onaylayamaz; onayda baytlar silinir, hash ve denetim izi kalır; aynı dosya yeniden yüklenebilir', async () => {
     await h.call('legal', 'PUT', '/api/v1/retention/policies/OTHER', { body: { retentionMonths: 12, legalBasis: 'Kurum saklama politikası md. 7 (sentetik)' } });
     const d = await oldDocument(h.world.companyA1.id, 'OTHER', 'imha edilecek');
     expect(await h.store.exists(keyOf(d.sha256))).toBe(true);
@@ -89,7 +93,8 @@ describe('iki kişi onaylı imha', () => {
     expect(trail.rows.map((r) => r.action)).toEqual(['disposal.proposed', 'disposal.executed']);
   });
 
-  it('öneriden sonra gelen hukuki saklama onay anında belgeyi korur; başka canlı kayıt kullanan nesne silinmez', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('öneriden sonra gelen hukuki saklama onay anında belgeyi korur; başka canlı kayıt kullanan nesne silinmez', async () => {
     await h.call('legal', 'PUT', '/api/v1/retention/policies/OTHER', { body: { retentionMonths: 12, legalBasis: 'Kurum saklama politikası md. 7 (sentetik)' } });
     const held = await oldDocument(h.world.companyA1.id, 'OTHER', 'sonradan saklanan');
     const shared = await oldDocument(h.world.companyA1.id, 'OTHER', 'ortak içerik');
@@ -109,7 +114,8 @@ describe('iki kişi onaylı imha', () => {
     expect((await h.call('legal', 'GET', `/api/v1/document-versions/${shared.versionId}/content`)).status).toBe(410);
   });
 
-  it('şirket kapsamı partinin tamamını görmeyen kişi karar veremez', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('şirket kapsamı partinin tamamını görmeyen kişi karar veremez', async () => {
     await h.call('legal', 'PUT', '/api/v1/retention/policies/OTHER', { body: { retentionMonths: 12, legalBasis: 'Kurum saklama politikası md. 7 (sentetik)' } });
     const d = await oldDocument(h.world.companyA2.id, 'OTHER', 'ikinci şirket');
     const p = await h.call('legal', 'POST', '/api/v1/disposal-batches', { body: { documentIds: [d.documentId], reason: 'Saklama süresi doldu (sentetik).' } });
@@ -189,7 +195,8 @@ describe('Faz 7 inceleme bulguları', () => {
     expect((await h.call('tenantAdmin', 'POST', '/api/v1/tenant-exports', { body: { reason: 'Yeniden deneme (sentetik).' } })).status).toBe(201);
   });
 
-  it('onaylayan kiracıdan ayrılsa da imha edilen belgenin baytları silinir; sonuç partide görünür', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('onaylayan kiracıdan ayrılsa da imha edilen belgenin baytları silinir; sonuç partide görünür', async () => {
     await h.call('legal', 'PUT', '/api/v1/retention/policies/OTHER', { body: { retentionMonths: 12, legalBasis: 'Kurum saklama politikası md. 7 (sentetik)' } });
     const d = await oldDocument(h.world.companyA1.id, 'OTHER', 'ayrılan onaylayan');
     const p = await h.call('legal', 'POST', '/api/v1/disposal-batches', { body: { documentIds: [d.documentId], reason: 'Saklama süresi doldu (sentetik).' } });

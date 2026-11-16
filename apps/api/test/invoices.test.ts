@@ -1,8 +1,10 @@
-// v2 Faz 1 (D93/D95): TenantContext artık departmentIds/allDepartments ister; test yardımcısı sistem kapsamıyla çalışır
+// v2 Faz 1 (D93/D95): sipariş, mal kabul, fatura onayı/istisnası ve tolerans kaldırıldı (testler atlandı); korunan ERP, arşiv sözleşmesi ve toplu kontrol ayrı testlerde
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { syntheticPdf } from '../src/devdata.ts';
 import { processJobs } from '../src/worker.ts';
+import { withTenant, type TenantContext } from '../src/db.ts';
+import { approveInvoice } from '../src/modules/invoices.ts';
 import { fakeErp, makeHarness } from './harness.ts';
 
 // Faz 4 kabul testleri (T13–T18, T37) gerçek PostgreSQL + RLS üzerinde. Tüm veri sentetik; ERP bağdaştırıcısı yalnız testte.
@@ -49,9 +51,17 @@ const approve = async (id: string, who: Who = 'finance2') => {
   return h.call(who, 'POST', `/api/v1/invoices/${id}/approve`, { headers: { 'if-match': fp } });
 };
 const limit = async (cv: string) => (await call('finance', 'GET', `/api/v1/contract-versions/${cv}/limit`)).body;
+/** v2 (D93): fatura onayı ucu kaldırıldı. ERP aktarımı eski (v1) onaylı faturalar için korunur; onaylı durum test verisi olarak modül
+ *  işleviyle yazılır (API ucu değil, ürün davranışı değil). */
+const legacyApprove = async (id: string) => {
+  const ctx: TenantContext = { tenantId: h.world.tenantA, userId: h.world.users.finance2.id, roles: ['PROCUREMENT'], companyIds: [h.world.companyA1.id],
+    departmentIds: [], allDepartments: true, correlationId: 'v2-legacy-approval' };
+  return withTenant(h.pool, ctx, (tx) => approveInvoice(tx, ctx, id, 'test-erp'));
+};
 
 describe('T14 limit hesabı ve T13 eksik kabul', () => {
-  it('T14: 1M tavan, 400 bin faturalanmış tüketim, 300 bin kalan açık sipariş → kullanılabilir 300 bin; aşan sipariş verilemez', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('T14: 1M tavan, 400 bin faturalanmış tüketim, 300 bin kalan açık sipariş → kullanılabilir 300 bin; aşan sipariş verilemez', async () => {
     const cv = await contract('1000000.00');
     const p = await po(cv, '700');
     expect(p.status).toBe(201);
@@ -66,7 +76,8 @@ describe('T14 limit hesabı ve T13 eksik kabul', () => {
     expect(over.body.error.code).toBe('limit_exceeded');
   });
 
-  it('T13: siparişin yarısı kabul, tamamı fatura → eksik kabul istisnası; yetkisiz onay engelli; istisna kontrol parmak izine bağlı', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('T13: siparişin yarısı kabul, tamamı fatura → eksik kabul istisnası; yetkisiz onay engelli; istisna kontrol parmak izine bağlı', async () => {
     const cv = await contract('1000000.00');
     const p = await po(cv, '100');
     const line = await poLine(p.body.id);
@@ -95,7 +106,8 @@ describe('T14 limit hesabı ve T13 eksik kabul', () => {
 });
 
 describe('T15 eşzamanlı onay', () => {
-  it('aynı limit için iki onay aynı anda: biri geçer, diğeri atomik olarak engellenir', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('aynı limit için iki onay aynı anda: biri geçer, diğeri atomik olarak engellenir', async () => {
     const cv = await contract('100000.00');
     const a = await invoice('60'); const b = await invoice('60');
     await allocate(a.id, { contractVersionId: cv, quantity: '60', amount: a.net });
@@ -108,7 +120,8 @@ describe('T15 eşzamanlı onay', () => {
 });
 
 describe('T16 avans, kısmi fatura, iade ve ters kabul', () => {
-  it('net tüketim ve önceki tahsis doğru; faturalanmış kabul geri alınamaz', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('net tüketim ve önceki tahsis doğru; faturalanmış kabul geri alınamaz', async () => {
     const cv = await contract('1000000.00');
     const p = await po(cv, '100');
     const line = await poLine(p.body.id);
@@ -155,7 +168,8 @@ describe('T17 mükerrer fatura ve olay, T18 ERP zaman aşımı', () => {
     expect((await h.owner.query(`SELECT count(*)::int AS n FROM audit_events WHERE action = 'invoice.erp_status' AND entity_id = $1`, [a.body.id])).rows[0].n).toBe(1);
   });
 
-  it('T18: ERP zaman aşımı ama kayıt dışarıda oluştu → sorgu ile mutabakat, ikinci kayıt yok', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('T18: ERP zaman aşımı ama kayıt dışarıda oluştu → sorgu ile mutabakat, ikinci kayıt yok', async () => {
     const cv = await contract('1000000.00');
     const inv = await invoice('1', '500');
     await allocate(inv.id, { contractVersionId: cv, quantity: '1', amount: inv.net });
@@ -172,7 +186,8 @@ describe('T17 mükerrer fatura ve olay, T18 ERP zaman aşımı', () => {
 });
 
 describe('Faz 7: yetkili ERP tekrar gönderimi', () => {
-  it('kalıcı hatayla DEAD olan aktarım, sebep giderilince gerekçeli tekrar gönderimle tek kayıt olarak onaylanır', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('kalıcı hatayla DEAD olan aktarım, sebep giderilince gerekçeli tekrar gönderimle tek kayıt olarak onaylanır', async () => {
     const cv = await contract('1000000.00');
     const inv = await invoice('1', '300');
     await allocate(inv.id, { contractVersionId: cv, quantity: '1', amount: inv.net });
@@ -200,7 +215,8 @@ describe('Faz 7: yetkili ERP tekrar gönderimi', () => {
 });
 
 describe('T37 arşiv sözleşmesi', () => {
-  it('imza durumu bilinmeyen arşiv sözleşmesine bağlı mevcut fatura iptal edilmez; politika incelemesi açılır', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('imza durumu bilinmeyen arşiv sözleşmesine bağlı mevcut fatura iptal edilmez; politika incelemesi açılır', async () => {
     const cv = await contract(null, { stage: 'ARCHIVE_IMPORT', method: 'WET_IMAGE_REVIEW' });
     const inv = await invoice('1', '750');
     await allocate(inv.id, { contractVersionId: cv, quantity: '1', amount: inv.net });
@@ -215,7 +231,8 @@ describe('T37 arşiv sözleşmesi', () => {
 });
 
 describe('Faz 7: rapor için toplu fatura kontrolü', () => {
-  it('toplu kontrol, onaylanmamış her faturada tek tek kontrolle aynı sonucu verir (bu dosyadaki bütün senaryolar)', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('toplu kontrol, onaylanmamış her faturada tek tek kontrolle aynı sonucu verir (bu dosyadaki bütün senaryolar)', async () => {
     const { withTenant } = await import('../src/db.ts');
     const { invoiceHasIssue, unapprovedInvoicesWithIssues } = await import('../src/modules/invoices.ts');
     // Onaylanmamış çeşitli durumlar: tahsissiz, kabulü eksik sipariş, tam kabullü sipariş, tavanlı sözleşme, belgede yazan tutar farkı.
@@ -248,7 +265,8 @@ describe('Faz 7: rapor için toplu fatura kontrolü', () => {
 });
 
 describe('Faz 4: vergi dahil limit, KDV dışı vergi oranı, kategori toleransı', () => {
-  it('vergi dahil limitli sözleşmede siparişte KDV oranı zorunlu; açık taahhüt ve tüketim brüt; aşım KDV dahil hesaplanır', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('vergi dahil limitli sözleşmede siparişte KDV oranı zorunlu; açık taahhüt ve tüketim brüt; aşım KDV dahil hesaplanır', async () => {
     const cv = await contract('130000.00', { limitBasis: 'GROSS' });
     const noRate = await po(cv, '100');
     expect(noRate.status).toBe(422);
@@ -273,7 +291,8 @@ describe('Faz 4: vergi dahil limit, KDV dışı vergi oranı, kategori tolerans�
     expect(l).toMatchObject({ netConsumption: '120000.00', openCommitment: '0.00', available: '10000.00' });
   });
 
-  it('inceleme: oransız açık sipariş varken vergi dahil limite geçilmez; doğrulanmamış revizyon tavanı kaldırmaz; sipariş yalnız onaylı projeye bağlanır', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('inceleme: oransız açık sipariş varken vergi dahil limite geçilmez; doğrulanmamış revizyon tavanı kaldırmaz; sipariş yalnız onaylı projeye bağlanır', async () => {
     const cv = await contract('100000.00');
     expect((await po(cv, '10')).status).toBe(201); // oran yok (NET sözleşme)
     const terms = { currency: 'TRY', valueType: 'CEILING', amount: '100000.00', paymentTerms: '30 gün', startDate: '2026-01-01', endDate: '2027-12-31', autoRenewal: false,
@@ -306,7 +325,8 @@ describe('Faz 4: vergi dahil limit, KDV dışı vergi oranı, kategori tolerans�
     expect(c).toMatchObject({ otherTaxTotal: '100.00', taxTotal: '220.00' });
   });
 
-  it('kategori kuralı siparişin projesinin kategorisine göre seçilir; kural listesi ve kaldırma kategoriyle', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('kategori kuralı siparişin projesinin kategorisine göre seçilir; kural listesi ve kaldırma kategoriyle', async () => {
     expect((await call('finance', 'PUT', '/api/v1/tolerance-rules', { currency: 'TRY', absAmount: '100', percent: null, combine: 'LOWER' })).status).toBe(200);
     expect((await call('finance', 'PUT', '/api/v1/tolerance-rules', { currency: 'TRY', category: 'BT donanımı', absAmount: '5000', percent: null, combine: 'LOWER' })).status).toBe(200);
     const rules = (await call('finance', 'GET', '/api/v1/tolerance-rules')).body.items;
@@ -325,5 +345,91 @@ describe('Faz 4: vergi dahil limit, KDV dışı vergi oranı, kategori tolerans�
     expect((await h.call('finance', 'DELETE', `/api/v1/tolerance-rules/TRY?category=${encodeURIComponent('BT donanımı')}`)).status).toBe(200);
     c = (await call('finance', 'GET', `/api/v1/invoices/${inv.id}`)).body.check;
     expect(c.issues.find((x: any) => x.code === 'PRICE_MISMATCH').message).toContain('TRY genel kuralı');
+  });
+});
+
+// Görev 4 ayrımı: atlanan testlerin korunan kısımları (sipariş/kabul/onay adımları olmadan; onaylı durum test verisi).
+describe('v2: korunan ERP aktarımı, arşiv sözleşmesi bulgusu ve toplu kontrol', () => {
+  it('T18: ERP zaman aşımı ama kayıt dışarıda oluştu → sorgu ile mutabakat, ikinci kayıt yok (onay test verisi)', async () => {
+    const cv = await contract('1000000.00');
+    const inv = await invoice('1', '500');
+    await allocate(inv.id, { contractVersionId: cv, quantity: '1', amount: inv.net });
+    fakeErp.timeoutOnce.add(`erp-invoice-${inv.id}`);
+    await legacyApprove(inv.id);
+    const status = async () => (await call('finance', 'GET', `/api/v1/invoices/${inv.id}`)).body.erp;
+    for (let i = 0; i < 50 && (await status()).status === 'PENDING'; i++) { await processJobs(h.pool, h.store, null, 10, 'test-erp'); await new Promise((r) => setTimeout(r, 50)); }
+    expect(await status()).toMatchObject({ status: 'UNKNOWN', postCalls: 1 });
+    await h.owner.query(`UPDATE jobs SET run_after = now() WHERE idempotency_key = $1`, [`erp-invoice-${inv.id}`]);
+    for (let i = 0; i < 50 && (await status()).status !== 'CONFIRMED'; i++) { await processJobs(h.pool, h.store, null, 10, 'test-erp'); await new Promise((r) => setTimeout(r, 50)); }
+    expect(await status()).toMatchObject({ status: 'CONFIRMED', postCalls: 1, externalId: fakeErp.records.get(`erp-invoice-${inv.id}`) });
+    expect(fakeErp.posts.get(`erp-invoice-${inv.id}`)).toBe(1);
+  });
+
+  it('kalıcı hatayla DEAD olan aktarım, gerekçeli tekrar gönderimle (Satınalma) tek kayıt olarak onaylanır; denetçi tekrar gönderemez (onay test verisi)', async () => {
+    const cv = await contract('1000000.00');
+    const inv = await invoice('1', '300');
+    await allocate(inv.id, { contractVersionId: cv, quantity: '1', amount: inv.net });
+    const key = `erp-invoice-${inv.id}`;
+    fakeErp.failAlways.add(key);
+    await legacyApprove(inv.id);
+    const job = async () => (await h.owner.query(`SELECT status FROM jobs WHERE idempotency_key = $1`, [key])).rows[0].status;
+    for (let i = 0; i < 10 && (await job()) !== 'DEAD'; i++) {
+      await h.owner.query(`UPDATE jobs SET run_after = now() WHERE idempotency_key = $1`, [key]);
+      await processJobs(h.pool, h.store, null, 10, 'test-erp');
+    }
+    expect(await job()).toBe('DEAD');
+    expect((await call('finance', 'GET', `/api/v1/invoices/${inv.id}`)).body.erp).toMatchObject({ status: 'FAILED' });
+    expect((await call('finance', 'POST', `/api/v1/integration/erp/exports/${inv.id}/replay`, { reason: 'kısa' })).status).toBe(400);
+    expect((await h.call('auditor', 'POST', `/api/v1/integration/erp/exports/${inv.id}/replay`, { body: { reason: 'Cari kart ERP tarafında açıldı (sentetik).' } })).status).toBe(403);
+    fakeErp.failAlways.delete(key);
+    const r = await call('finance', 'POST', `/api/v1/integration/erp/exports/${inv.id}/replay`, { reason: 'Cari kart ERP tarafında açıldı (sentetik).' });
+    expect(r.status).toBe(200);
+    for (let i = 0; i < 5; i++) await processJobs(h.pool, h.store, null, 10, 'test-erp');
+    expect((await call('finance', 'GET', `/api/v1/invoices/${inv.id}`)).body.erp).toMatchObject({ status: 'CONFIRMED', externalId: fakeErp.records.get(key) });
+    expect((await call('finance', 'POST', `/api/v1/integration/erp/exports/${inv.id}/replay`, { reason: 'Gereksiz tekrar denemesi (sentetik).' })).status).toBe(409);
+    expect((await h.owner.query(`SELECT reason FROM audit_events WHERE action = 'erp.export.replayed' AND entity_id = $1`, [inv.id])).rows[0].reason).toContain('Cari kart');
+  });
+
+  it('T37: imza durumu bilinmeyen arşiv sözleşmesine bağlı fatura iptal edilmez; politika incelemesi bulgusu görünür', async () => {
+    const cv = await contract(null, { stage: 'ARCHIVE_IMPORT', method: 'WET_IMAGE_REVIEW' });
+    const inv = await invoice('1', '750');
+    await allocate(inv.id, { contractVersionId: cv, quantity: '1', amount: inv.net });
+    const d = (await call('finance', 'GET', `/api/v1/invoices/${inv.id}`)).body;
+    expect(d.check.issues).toEqual([expect.objectContaining({ code: 'CONTRACT_SIGNATURE_UNRESOLVED', severity: 'REVIEW', ownerRole: 'LEGAL' })]);
+    expect(d.invoice.legalStatus).toBe('RECEIVED');
+    expect(d.status).toBe('NEEDS_EXCEPTION');
+  });
+
+  it('toplu kontrol, onaylanmamış her faturada tek tek kontrolle aynı sonucu verir (sipariş olmadan)', async () => {
+    const { invoiceHasIssue, unapprovedInvoicesWithIssues } = await import('../src/modules/invoices.ts');
+    const cv = await contract('5000.00');
+    await invoice('1', '100');
+    const i3 = await invoice('1', '4000'); await allocate(i3.id, { contractVersionId: cv, quantity: '1', amount: i3.net });
+    const i4 = await invoice('1', '9000'); await allocate(i4.id, { contractVersionId: cv, quantity: '1', amount: i4.net });
+    await invoice('2', '50', 'INVOICE', { declaredPayable: '999.00' });
+    const adv = await invoice('1', '1000', 'ADVANCE');
+    const i5 = await invoice('1', '500'); await allocate(i5.id, { contractVersionId: cv, quantity: '1', amount: i5.net }, { advanceOffset: '2000', advanceInvoiceId: adv.id });
+    const i6 = await invoice('1', '500'); await allocate(i6.id, { contractVersionId: cv, quantity: '1', amount: i6.net }, { advanceOffset: '300', advanceInvoiceId: adv.id });
+    const ctx = { tenantId: h.world.tenantA, userId: h.world.users.finance.id, roles: ['PROCUREMENT'], companyIds: [h.world.companyA1.id, h.world.companyA2.id], departmentIds: [], allDepartments: true, correlationId: 'test' };
+    const ids = (await h.owner.query<{ id: string }>(`SELECT i.id FROM invoices i WHERE i.tenant_id = $1
+      AND NOT EXISTS (SELECT 1 FROM invoice_decisions d WHERE d.invoice_id = i.id AND d.kind = 'APPROVAL')`, [h.world.tenantA])).rows.map((r) => r.id);
+    expect(ids.length).toBeGreaterThan(5);
+    await withTenant(h.pool, ctx, async (tx) => {
+      const bulk = await unapprovedInvoicesWithIssues(tx, ids);
+      const single = new Set<string>();
+      for (const id of ids) if (await invoiceHasIssue(tx, id)) single.add(id);
+      expect([...bulk].sort()).toEqual([...single].sort());
+      expect(single.size).toBeGreaterThan(0);
+      expect(single.size).toBeLessThan(ids.length);
+    });
+  });
+
+  it('doğrulanmamış koşul revizyonu tavanı kaldırmaz (satınalmacı girer, doğrulanana kadar eski tavan geçerli)', async () => {
+    const cv = await contract('100000.00');
+    const terms = { currency: 'TRY', valueType: 'CEILING', amount: '100000.00', paymentTerms: '30 gün', startDate: '2026-01-01', endDate: '2027-12-31', autoRenewal: false,
+      renewalMonths: null, noticeAmount: null, noticeUnit: null, nonWorkingDay: 'AS_IS', sourceRef: 'Madde 5 (sentetik)' };
+    const loose = await call('buyer', 'POST', `/api/v1/contract-versions/${cv}/terms`, { ...terms, valueType: 'UNPRICED', amount: null, changeReason: 'Bedelsiz yapıldı (sentetik deneme).' });
+    expect(loose.status).toBe(201);
+    expect((await limit(cv)).ceiling).toBe('100000.00');
   });
 });

@@ -1,10 +1,10 @@
-// v2 Faz 1 (D93/D95): TenantContext artık departmentIds/allDepartments ister; test yardımcısı sistem kapsamıyla çalışır
+// v2 Faz 1 (D93/D95): sipariş açma/değişiklik/kapatma, mal kabul, fatura onayı ve tolerans kaldırıldı (testler atlandı); eski (v1) sipariş ve onay durumu gereken korunan testlerde test verisi modül işleviyle
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { syntheticPdf, ublInvoiceXml } from '../src/devdata.ts';
 import { makeHarness } from './harness.ts';
-import { withTenant } from '../src/db.ts';
-import { contractOptions, createInvoice, createPo, setAllocations } from '../src/modules/invoices.ts';
+import { withTenant, type TenantContext } from '../src/db.ts';
+import { approveInvoice, contractOptions, createInvoice, createPo, recordReceipt, setAllocations } from '../src/modules/invoices.ts';
 
 // Faz 4 açıkları: e-Fatura XML → fatura, vergi aritmetiği, sipariş değişikliği/kapatma/iptal, tolerans kuralı. Gerçek PostgreSQL + RLS; veri sentetik.
 let h: Awaited<ReturnType<typeof makeHarness>>;
@@ -179,8 +179,23 @@ const approve = async (id: string) => {
   return h.call('finance2', 'POST', `/api/v1/invoices/${id}/approve`, { headers: { 'if-match': fp } });
 };
 
+// v2 (D93): sipariş, mal kabul ve fatura onayı uçları kaldırıldı. Eski (v1) siparişe bağlı faturaların kontrolleri (tedarikçi/şirket uyuşmazlığı,
+// iade, engel işareti) korunduğu için bu durumlar test verisi olarak modül işlevleriyle yazılır (API ucu değil, ürün davranışı değil).
+const legacyCtx = (userId = h.world.users.buyer.id): TenantContext => ({ tenantId: h.world.tenantA, userId, roles: ['PROCUREMENT'], companyIds: [h.world.companyA1.id],
+  departmentIds: [], allDepartments: true, correlationId: 'v2-legacy-po' });
+async function legacyPo(cv: string | null, qty = '10', price = '1000') {
+  const ctx = legacyCtx();
+  const r = await withTenant(h.pool, ctx, (tx) => createPo(tx, ctx, { companyId: h.world.companyA1.id, supplierId: h.world.suppliers.s1, contractVersionId: cv, currency: 'TRY',
+    lines: [{ kind: 'GOODS', description: 'Yedek parça (sentetik)', unit: 'adet', quantity: qty, unitPrice: price }] } as never));
+  return r.id as string;
+}
+const legacyPoLine = async (poId: string) => (await h.owner.query<{ id: string }>(`SELECT id FROM po_lines WHERE po_id = $1 ORDER BY line_no`, [poId])).rows[0]!.id;
+const legacyReceive = (poLineId: string, quantity: string) => { const ctx = legacyCtx(); return withTenant(h.pool, ctx, (tx) => recordReceipt(tx, ctx, poLineId, { quantity, note: 'Teslim alındı (sentetik)' })); };
+const legacyApprove = (invoiceId: string) => { const ctx = legacyCtx(h.world.users.finance2.id); return withTenant(h.pool, ctx, (tx) => approveInvoice(tx, ctx, invoiceId, null)); };
+
 describe('sipariş değişikliği', () => {
-  it('miktar artışı limit kilidiyle kontrol edilir; özgün kalem korunur, revizyon ve fark görünür', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('miktar artışı limit kilidiyle kontrol edilir; özgün kalem korunur, revizyon ve fark görünür', async () => {
     const cv = await contract('20000.00');
     const id = await po(cv);
     const line = (await getPo(id)).lines[0].poLineId;
@@ -200,7 +215,8 @@ describe('sipariş değişikliği', () => {
     expect(stale.status).toBe(409);
   });
 
-  it('kabul edilen miktarın altına inemez; faturalanmış kalemin fiyatı değişmez; gerekçe zorunlu; yalnız satınalma', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('kabul edilen miktarın altına inemez; faturalanmış kalemin fiyatı değişmez; gerekçe zorunlu; yalnız satınalma', async () => {
     const id = await po(null, '10', '100');
     const line = (await getPo(id)).lines[0].poLineId;
     await call('buyer', 'POST', `/api/v1/po-lines/${line}/receipts`, { quantity: '6', note: 'Teslim alındı (sentetik)' });
@@ -219,7 +235,8 @@ describe('sipariş değişikliği', () => {
 });
 
 describe('sipariş kapatma ve iptal', () => {
-  it('tüketim varsa kapatılır: kalan taahhüt serbest kalır, yeni kabul yapılamaz', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('tüketim varsa kapatılır: kalan taahhüt serbest kalır, yeni kabul yapılamaz', async () => {
     const cv = await contract('50000.00');
     const id = await po(cv, '10', '1000');
     const line = (await getPo(id)).lines[0].poLineId;
@@ -237,7 +254,8 @@ describe('sipariş kapatma ve iptal', () => {
     expect((await call('buyer', 'POST', `/api/v1/purchase-orders/${id}/close`, { baseChangeNo: 1, reason: 'Tekrar kapatma denemesi' })).status).toBe(409);
   });
 
-  it('hiç tüketim yoksa iptal edilir: taahhüt sıfır, iptal edilmiş siparişe fatura bağlanamaz', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('hiç tüketim yoksa iptal edilir: taahhüt sıfır, iptal edilmiş siparişe fatura bağlanamaz', async () => {
     const cv = await contract('50000.00');
     const id = await po(cv, '5', '1000');
     const line = (await getPo(id)).lines[0].poLineId;
@@ -252,7 +270,8 @@ describe('sipariş kapatma ve iptal', () => {
 });
 
 describe('tolerans kuralı', () => {
-  it('finans kural koyar, listeler ve kaldırır; satınalma koyamaz; geçersiz yüzde reddedilir', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('finans kural koyar, listeler ve kaldırır; satınalma koyamaz; geçersiz yüzde reddedilir', async () => {
     const cur = 'CHF';
     expect((await call('buyer', 'PUT', '/api/v1/tolerance-rules', { currency: cur, absAmount: '50', percent: null, combine: 'LOWER' })).status).toBe(403);
     expect((await call('finance', 'PUT', '/api/v1/tolerance-rules', { currency: cur, absAmount: null, percent: '150', combine: 'LOWER' })).status).toBe(422);
@@ -294,7 +313,8 @@ describe('inceleme bulguları (regresyon)', () => {
     }
   });
 
-  it('karar bekleyen faturası olan sipariş kapatılamaz (taahhüt erken serbest kalmaz)', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('karar bekleyen faturası olan sipariş kapatılamaz (taahhüt erken serbest kalmaz)', async () => {
     const id = await po(null, '10', '100');
     const line = (await getPo(id)).lines[0].poLineId;
     const inv = await call('finance', 'POST', '/api/v1/invoices', { companyId: h.world.companyA1.id, supplierId: h.world.suppliers.s1, kind: 'INVOICE', invoiceNo: `PD${randomUUID().slice(0, 8)}`,
@@ -305,7 +325,8 @@ describe('inceleme bulguları (regresyon)', () => {
     expect(r.body.error.code).toBe('pending_invoices');
   });
 
-  it('istisna onayından sonra sipariş fiyatı değişirse istisna eskir; eski onayla finans onayı verilemez', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('istisna onayından sonra sipariş fiyatı değişirse istisna eskir; eski onayla finans onayı verilemez', async () => {
     const id = await po(null, '10', '100');
     const line = (await getPo(id)).lines[0].poLineId;
     await call('buyer', 'POST', `/api/v1/po-lines/${line}/receipts`, { quantity: '10', note: 'Teslim alındı (sentetik)' });
@@ -323,7 +344,8 @@ describe('inceleme bulguları (regresyon)', () => {
     expect(ap.body.error.code).toBe('exception_stale');
   });
 
-  it('eşzamanlı kabul ve kapatma: kabul hiçbir durumda sipariş miktarını aşmaz', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('eşzamanlı kabul ve kapatma: kabul hiçbir durumda sipariş miktarını aşmaz', async () => {
     for (let i = 0; i < 5; i++) {
       const id = await po(null, '10', '100');
       const line = (await getPo(id)).lines[0].poLineId;
@@ -339,7 +361,8 @@ describe('inceleme bulguları (regresyon)', () => {
 });
 
 describe('T44 nihai onay görülen sürüme bağlı', () => {
-  it('If-Match yoksa 428; inceleme sonrası tahsis değiştiyse eski parmak iziyle onay 409', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('If-Match yoksa 428; inceleme sonrası tahsis değiştiyse eski parmak iziyle onay 409', async () => {
     const id = await po(null, '10', '100');
     const line = (await getPo(id)).lines[0].poLineId;
     await call('buyer', 'POST', `/api/v1/po-lines/${line}/receipts`, { quantity: '10', note: 'Teslim alındı (sentetik)' });
@@ -359,7 +382,8 @@ describe('T44 nihai onay görülen sürüme bağlı', () => {
 });
 
 describe('zayıf bağlantı: yanıtı kaybolan istek tekrar gönderilince ikinci kayıt açılmaz', () => {
-  it('aynı Idempotency-Key ile kabul ve olay tek kayıt; anahtar başka kalemde kullanılırsa 409', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('aynı Idempotency-Key ile kabul ve olay tek kayıt; anahtar başka kalemde kullanılırsa 409', async () => {
     const id = await po(null, '10', '100');
     const line = (await getPo(id)).lines[0].poLineId;
     const key = `rcpt-${randomUUID()}`;
@@ -466,7 +490,7 @@ describe('fatura tahsisi: sipariş faturanın tedarikçisine ait olmalı (D84)',
     return r.body.id as string;
   };
   const allocate = (invoiceId: string, poLineId: string) => call('finance', 'PUT', `/api/v1/invoices/${invoiceId}/allocations`, { allocations: [{ lineNo: 1, poLineId, contractVersionId: null, quantity: '1', amount: '100.00' }] });
-  const poLineOf = async () => (await getPo(await po(null, '1', '100'))).lines[0].poLineId as string;
+  const poLineOf = async () => legacyPoLine(await legacyPo(null, '1', '100'));
   const sameNameCandidate = async (name: string) => {
     const badVkn = sellerVkn.slice(0, 9) + String((Number(sellerVkn[9]) + 1) % 10);
     const up = await upload(xml({ sellerVkn: badVkn, sellerName: name }));
@@ -483,7 +507,8 @@ describe('fatura tahsisi: sipariş faturanın tedarikçisine ait olmalı (D84)',
     expect((await call('finance', 'GET', `/api/v1/invoices/${invoiceId}`)).body.allocations).toEqual([]);
   });
 
-  it('kendi siparişine tahsis çalışır; liste ve detay aynı tedarikçi kökünü döner', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('kendi siparişine tahsis çalışır; liste ve detay aynı tedarikçi kökünü döner', async () => {
     const invoiceId = await invoiceFor(h.world.suppliers.s1);
     const poLine = await poLineOf();
     expect((await allocate(invoiceId, poLine)).status).toBe(200);
@@ -539,14 +564,15 @@ describe('fatura tahsisi: sipariş faturanın tedarikçisine ait olmalı (D84)',
   });
 
   it('iade belgesi onaylı özgün faturanın sonradan yabancılaşan siparişine dönebilir; başka yabancı siparişe dönemez', async () => {
-    const poId = await po(null, '1', '100');
-    const line = (await getPo(poId)).lines[0].poLineId as string;
-    await call('buyer', 'POST', `/api/v1/po-lines/${line}/receipts`, { quantity: '1', note: 'Teslim alındı (sentetik)' });
+    // v2: sipariş, kabul ve onay test verisi (eski v1 kayıtları); iade tahsis kontrolü korunur.
+    const poId = await legacyPo(null, '1', '100');
+    const line = await legacyPoLine(poId);
+    await legacyReceive(line, '1');
     const original = await invoiceFor(h.world.suppliers.s1);
     expect((await allocate(original, line)).status).toBe(200);
-    expect((await approve(original)).status).toBe(200);
-    const otherPo = await po(null, '1', '100');
-    const otherLine = (await getPo(otherPo)).lines[0].poLineId as string;
+    await legacyApprove(original);
+    const otherPo = await legacyPo(null, '1', '100');
+    const otherLine = await legacyPoLine(otherPo);
     await h.owner.query(`UPDATE purchase_orders SET supplier_id = $2 WHERE id = ANY($1::uuid[])`, [[poId, otherPo], h.world.suppliers.s2]);
 
     const credit = await invoiceFor(h.world.suppliers.s1, { kind: 'CREDIT_NOTE', originalInvoiceId: original });
@@ -561,7 +587,8 @@ describe('sipariş açma: sözleşme siparişin tedarikçisine ait olmalı (D85)
     lines: [{ kind: 'GOODS', description: 'Yedek parça (sentetik)', unit: 'adet', quantity: '1', unitPrice: '100' }] });
   const poCount = async (cv: string) => Number((await h.owner.query<{ n: string }>(`SELECT count(*) AS n FROM purchase_orders WHERE contract_version_id = $1`, [cv])).rows[0]!.n);
 
-  it('başka tedarikçinin sözleşmesine sipariş açılamaz ve kayıt oluşmaz; kendi tedarikçisi açabilir', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('başka tedarikçinin sözleşmesine sipariş açılamaz ve kayıt oluşmaz; kendi tedarikçisi açabilir', async () => {
     const cv = await contract('50000.00');
     const r = await create(h.world.suppliers.s2, cv);
     expect(r.status).toBe(422);
@@ -570,14 +597,16 @@ describe('sipariş açma: sözleşme siparişin tedarikçisine ait olmalı (D85)
     expect((await create(h.world.suppliers.s1, cv)).status).toBe(201);
   });
 
-  it('sözleşmeye SUPPLIER tarafı olarak eklenen tedarikçi sipariş açabilir', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('sözleşmeye SUPPLIER tarafı olarak eklenen tedarikçi sipariş açabilir', async () => {
     const cv = await contract('50000.00');
     await h.owner.query(`INSERT INTO contract_parties (tenant_id, company_id, contract_version_id, party_role, supplier_id, display_name)
       SELECT tenant_id, company_id, id, 'SUPPLIER', $2, 'İkinci tedarikçi (sentetik)' FROM contract_versions WHERE id = $1`, [cv, h.world.suppliers.s2]);
     expect((await create(h.world.suppliers.s2, cv)).status).toBe(201);
   });
 
-  it('tedarikçisi kayıtlı olmayan sözleşmeye sipariş açılabilir; sözleşme listesi tedarikçi köklerini döner', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('tedarikçisi kayıtlı olmayan sözleşmeye sipariş açılabilir; sözleşme listesi tedarikçi köklerini döner', async () => {
     const cv = await contract('50000.00');
     const listed = async () => ((await call('buyer', 'GET', '/api/v1/contract-options')).body.items as { id: string; supplierRootIds: string[] }[]).find((x) => x.id === cv)!;
     expect((await listed()).supplierRootIds).toEqual([h.world.suppliers.s1]);
@@ -636,7 +665,8 @@ describe('fatura tahsisi: sipariş ve sözleşme faturanın şirketine ait olmal
     expect(r.body.error?.code).toBe('allocation_company_mismatch');
   });
 
-  it('önceden yanlış bağlanmış fatura onaya kapanır ve bağ kaldırılabilir; liste şirketi döner', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('önceden yanlış bağlanmış fatura onaya kapanır ve bağ kaldırılabilir; liste şirketi döner', async () => {
     const invoiceId = await invoice();
     await h.owner.query(`INSERT INTO invoice_allocations (tenant_id, company_id, invoice_id, line_no, po_line_id, contract_version_id, quantity, amount, created_by)
       SELECT tenant_id, company_id, id, 1, $2, NULL, 1, 100, created_by FROM invoices WHERE id = $1`, [invoiceId, await a2PoLine()]);
@@ -657,12 +687,13 @@ describe('fatura tahsisi: sipariş ve sözleşme faturanın şirketine ait olmal
   });
 
   it('iade istisnası yalnız aynı şirketin onaylı özgün faturası için geçerlidir', async () => {
-    const poId = await po(null, '1', '100');
-    const line = (await getPo(poId)).lines[0].poLineId as string;
-    await call('buyer', 'POST', `/api/v1/po-lines/${line}/receipts`, { quantity: '1', note: 'Teslim alındı (sentetik)' });
+    // v2: sipariş, kabul ve onay test verisi (eski v1 kayıtları); şirket kontrolü korunur.
+    const poId = await legacyPo(null, '1', '100');
+    const line = await legacyPoLine(poId);
+    await legacyReceive(line, '1');
     const original = await invoice();
     expect((await call('finance', 'PUT', `/api/v1/invoices/${original}/allocations`, body(line))).status).toBe(200);
-    expect((await approve(original)).status).toBe(200);
+    await legacyApprove(original);
     await h.owner.query(`UPDATE purchase_orders SET company_id = $2 WHERE id = $1`, [poId, h.world.companyA2.id]);
 
     const credit = await call('finance', 'POST', '/api/v1/invoices', { companyId: h.world.companyA1.id, supplierId: h.world.suppliers.s1, kind: 'CREDIT_NOTE', originalInvoiceId: original, invoiceNo: `D87K${randomUUID().slice(0, 8)}`,
@@ -719,9 +750,10 @@ describe('sözleşme listesi sayfalama (D89)', () => {
 
 describe('fatura listesinde engel ve yetki metni (D90)', () => {
   it('engelli karar bekleyen fatura işaretlenir; hazır fatura işaretlenmez', async () => {
-    const poId = await po(null, '1', '100');
-    const line = (await getPo(poId)).lines[0].poLineId as string;
-    await call('buyer', 'POST', `/api/v1/po-lines/${line}/receipts`, { quantity: '1', note: 'Teslim alındı (sentetik)' });
+    // v2: sipariş ve kabul test verisi (eski v1 kayıtları); engel işareti korunur.
+    const poId = await legacyPo(null, '1', '100');
+    const line = await legacyPoLine(poId);
+    await legacyReceive(line, '1');
     const make = async () => (await call('finance', 'POST', '/api/v1/invoices', { companyId: h.world.companyA1.id, supplierId: h.world.suppliers.s1, kind: 'INVOICE', invoiceNo: `D90${randomUUID().slice(0, 8)}`,
       issueDate: '2026-10-20', currency: 'TRY', lines: [{ description: 'Yedek parça', quantity: '1', unit: 'adet', unitPrice: '100', netAmount: '100.00' }] })).body.id as string;
     const ready = await make(); const unallocated = await make();
@@ -746,7 +778,8 @@ describe('zeyilnameyle tedarikçi tarafı ekleme (D91)', () => {
     const old = await h.call('legal', 'GET', `/api/v1/contract-versions/${cv}/signature-status`);
     return h.call('legal', 'POST', `/api/v1/contract-versions/${cv}/versions`, { headers: { 'if-match': old.headers.etag as string }, body: { documentVersionId: up.body.documentVersionId, kind, stage: 'EXECUTION', ...extra } });
   };
-  it('zeyilnameyle eklenen tedarikçi yeni sürüme sipariş açabilir; önceki sürüm değişmez; denetim izi kalır', async () => {
+  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
+  it.skip('zeyilnameyle eklenen tedarikçi yeni sürüme sipariş açabilir; önceki sürüm değişmez; denetim izi kalır', async () => {
     const cv = await contract('50000.00');
     const r = await amend(cv, { addSupplierId: h.world.suppliers.s2 });
     expect(r.status, JSON.stringify(r.body)).toBe(201);
@@ -794,5 +827,75 @@ describe('avans mahsubu şirket sınırı (D87)', () => {
     const list = await call('finance', 'GET', '/api/v1/invoices');
     expect(list.status).toBe(200);
     expect((await call('finance', 'GET', `/api/v1/invoices/${inv.body.id}`)).status).toBe(200);
+  });
+});
+
+// Görev 4 ayrımı: atlanan testlerin korunan kısımları (sipariş açma/kabul/onay uçları olmadan; eski sipariş test verisi modül işleviyle).
+describe('v2: atlanan testlerin korunan kısımları', () => {
+  const invoiceFor = async (supplierId: string, companyId = h.world.companyA1.id) => {
+    const r = await call('finance', 'POST', '/api/v1/invoices', { companyId, supplierId, kind: 'INVOICE', invoiceNo: `V2K${randomUUID().slice(0, 8)}`,
+      issueDate: '2026-10-20', currency: 'TRY', lines: [{ description: 'Yedek parça', quantity: '1', unit: 'adet', unitPrice: '100', netAmount: '100.00' }] });
+    expect(r.status).toBe(201);
+    return r.body.id as string;
+  };
+  const allocateTo = (invoiceId: string, a: { poLineId?: string | null; contractVersionId?: string | null }) => call('finance', 'PUT', `/api/v1/invoices/${invoiceId}/allocations`,
+    { allocations: [{ lineNo: 1, poLineId: a.poLineId ?? null, contractVersionId: a.contractVersionId ?? null, quantity: '1', amount: '100.00' }] });
+
+  it('olay bildirimi: aynı Idempotency-Key tek kayıt; farklı içerikle aynı anahtar 409', async () => {
+    const ikey = `inc-${randomUUID()}`;
+    const inc = () => h.call('buyer', 'POST', '/api/v1/incidents', { body: { supplierId: h.world.suppliers.s1, category: 'DELAY', severity: 'LOW', title: 'Mobil olay bildirimi',
+      description: 'Bağlantı koptu, tekrar gönderildi (sentetik).', occurredOn: '2026-10-20' }, headers: { 'idempotency-key': ikey } });
+    const i1 = await inc(); const i2 = await inc();
+    expect(i2.body).toMatchObject({ id: i1.body.id, code: i1.body.code, duplicate: true });
+    const i3 = await h.call('buyer', 'POST', '/api/v1/incidents', { body: { supplierId: h.world.suppliers.s1, category: 'DELAY', severity: 'HIGH', title: 'Mobil olay bildirimi',
+      description: 'Bağlantı koptu, tekrar gönderildi (sentetik).', occurredOn: '2026-10-20' }, headers: { 'idempotency-key': ikey } });
+    expect(i3.status).toBe(409);
+    expect(i3.body.error.code).toBe('idempotency_mismatch');
+  });
+
+  it('eski siparişin kendi tedarikçisine tahsis çalışır; fatura detayı tedarikçi kökünü döner (D84)', async () => {
+    const invoiceId = await invoiceFor(h.world.suppliers.s1);
+    expect((await allocateTo(invoiceId, { poLineId: await legacyPoLine(await legacyPo(null, '1', '100')) })).status).toBe(200);
+    expect(await issueCodes(invoiceId)).not.toContain('SUPPLIER_MISMATCH');
+    expect((await call('finance', 'GET', `/api/v1/invoices/${invoiceId}`)).body.invoice.supplierRootId).toBe(h.world.suppliers.s1);
+  });
+
+  it('sözleşme seçenekleri tedarikçi köklerini döner; aile tedarikçisi kalkınca boş (D85)', async () => {
+    const cv = await contract('50000.00');
+    const listed = async () => ((await call('buyer', 'GET', '/api/v1/contract-options')).body.items as { id: string; supplierRootIds: string[] }[]).find((x) => x.id === cv)!;
+    expect((await listed()).supplierRootIds).toEqual([h.world.suppliers.s1]);
+    await h.owner.query(`UPDATE contract_families SET supplier_id = NULL WHERE id = (SELECT family_id FROM contract_versions WHERE id = $1)`, [cv]);
+    expect((await listed()).supplierRootIds).toEqual([]);
+  });
+
+  it('başka şirketin eski siparişine yanlış bağlanmış fatura onaya kapanır ve bağ kaldırılabilir (D87)', async () => {
+    const ctx = { ...legacyCtx(h.world.users.finance.id), companyIds: [h.world.companyA1.id, h.world.companyA2.id] };
+    const created = await withTenant(h.pool, ctx, (tx) => createPo(tx, ctx, { companyId: h.world.companyA2.id, supplierId: h.world.suppliers.s1, contractVersionId: null, currency: 'TRY',
+      lines: [{ kind: 'GOODS', description: 'Yedek parça (sentetik)', unit: 'adet', quantity: '1', unitPrice: '100' }] } as never));
+    const invoiceId = await invoiceFor(h.world.suppliers.s1);
+    await h.owner.query(`INSERT INTO invoice_allocations (tenant_id, company_id, invoice_id, line_no, po_line_id, contract_version_id, quantity, amount, created_by)
+      SELECT tenant_id, company_id, id, 1, $2, NULL, 1, 100, created_by FROM invoices WHERE id = $1`, [invoiceId, await legacyPoLine(created.id)]);
+    const d = await call('finance2', 'GET', `/api/v1/invoices/${invoiceId}`);
+    expect(d.body.check.issues.map((x: { code: string }) => x.code)).toContain('COMPANY_MISMATCH');
+    expect(d.body.check.canApprove).toBe(false);
+    expect((await call('finance', 'PUT', `/api/v1/invoices/${invoiceId}/allocations`, { allocations: [] })).status).toBe(200);
+    expect(await issueCodes(invoiceId)).not.toContain('COMPANY_MISMATCH');
+  });
+
+  it('zeyilnameyle eklenen tedarikçi yeni sürümün tarafı olur (fatura tahsisi kabul edilir); önceki sürüm değişmez; denetim izi kalır (D91)', async () => {
+    const cv = await contract('50000.00');
+    const up = await h.upload('legal', { name: 'z.pdf', mime: 'application/pdf', data: syntheticPdf([[`ZEYIL ${randomUUID()}`]]) }, { companyId: h.world.companyA1.id, kind: 'CONTRACT', title: 'Zeyilname (SENTETİK)' });
+    const old = await h.call('legal', 'GET', `/api/v1/contract-versions/${cv}/signature-status`);
+    const r = await h.call('legal', 'POST', `/api/v1/contract-versions/${cv}/versions`, { headers: { 'if-match': old.headers.etag as string },
+      body: { documentVersionId: up.body.documentVersionId, kind: 'AMENDMENT', stage: 'EXECUTION', addSupplierId: h.world.suppliers.s2 } });
+    expect(r.status, JSON.stringify(r.body)).toBe(201);
+    const newId = r.body.contractVersionId as string;
+    const parties = async (id: string) => (await h.owner.query<{ supplier_id: string }>(`SELECT supplier_id FROM contract_parties WHERE contract_version_id = $1 AND party_role = 'SUPPLIER'`, [id])).rows.map((x) => x.supplier_id);
+    expect(await parties(newId)).toContain(h.world.suppliers.s2);
+    expect(await parties(cv)).not.toContain(h.world.suppliers.s2);
+    expect((await h.owner.query(`SELECT 1 FROM audit_events WHERE action = 'contract.supplier_party.added' AND entity_id = $1`, [newId])).rowCount).toBe(1);
+    const inv = await invoiceFor(h.world.suppliers.s2);
+    expect((await allocateTo(inv, { contractVersionId: cv })).body.error?.code).toBe('allocation_supplier_mismatch');
+    expect((await allocateTo(inv, { contractVersionId: newId })).status).toBe(200);
   });
 });

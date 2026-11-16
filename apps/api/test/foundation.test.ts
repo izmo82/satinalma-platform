@@ -1,4 +1,4 @@
-// v2 Faz 1 (D93/D95): TenantContext artık departmentIds/allDepartments ister; test yardımcısı sistem kapsamıyla çalışır
+// v2 Faz 1 (D93/D95): TenantContext departmentIds/allDepartments ister; Yönetici belge okur (şirket kapsamı RLS'de); T07 ayrılığı iki ayrı Satınalma kullanıcısıyla
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { syntheticVkn } from '@sp/domain';
@@ -53,8 +53,19 @@ describe('T02 şirket kapsamı', () => {
     expect(up.status).toBe(201);
     const url = `/api/v1/document-versions/${up.body.documentVersionId}`;
     expect((await h.call('buyer', 'GET', url)).status).toBe(404); // buyer yalnız A1
-    expect((await h.call('tenantAdmin', 'GET', url)).status).toBe(403); // izin yok
+    // v2 (D93): Yönetici belge okuma iznine sahip, ama şirket kapsamı boş: RLS kaydı göstermez (otomatik görmez).
+    expect((await h.call('tenantAdmin', 'GET', url)).status).toBe(404);
     expect((await h.call('multi', 'GET', url, { tenant: h.world.tenantA })).status).toBe(200); // A2 üyesi
+    // Yönetici yalnız üyeliğindeki şirketlerin belgesini görür: A1 kapsamı A2 belgesini açmaz, A2 kapsamı açar.
+    const adminScope = (companies: string[]) => h.owner.query(`UPDATE memberships SET company_ids = $3 WHERE tenant_id = $1 AND user_id = $2`, [h.world.tenantA, h.world.users.tenantAdmin.id, companies]);
+    try {
+      await adminScope([h.world.companyA1.id]);
+      expect((await h.call('tenantAdmin', 'GET', url)).status).toBe(404);
+      await adminScope([h.world.companyA2.id]);
+      expect((await h.call('tenantAdmin', 'GET', url)).status).toBe(200);
+    } finally {
+      await adminScope([]);
+    }
     // Yetkisiz şirkete yükleme
     const bad = await uploadInvoice('buyer', invoice({ sellerVkn: syntheticVkn('300000003') }), h.world.companyA2.id);
     expect(bad.status).toBe(403);
@@ -169,7 +180,12 @@ describe('T07 görev ayrılığı', () => {
     const o = await h.call('masterData', 'GET', `/api/v1/suppliers/${oid}`);
     const noApproval = await h.call('masterData', 'POST', `/api/v1/suppliers/${oid}/activate`, { body: { expectedRowVersion: o.body.rowVersion } });
     expect(noApproval.status).toBe(422);
-    expect((await h.call('legal', 'POST', `/api/v1/suppliers/${oid}/activate`, { body: { expectedRowVersion: o.body.rowVersion } })).status).toBe(403);
+    // v2 (D93): hukuk da Satınalma rolünde (aktivasyon yetkisi var); ayrılık kişi düzeyinde: kaydı açan (buyer, Satınalma) aktifleştiremez,
+    // açmayan başka Satınalma kullanıcısı (legal) yetkili, onay eksikse koşul hatası alır.
+    const creator = await h.call('buyer', 'POST', `/api/v1/suppliers/${oid}/activate`, { body: { expectedRowVersion: o.body.rowVersion } });
+    expect(creator.status).toBe(403);
+    expect(creator.body.error.code).toBe('sod_violation');
+    expect((await h.call('legal', 'POST', `/api/v1/suppliers/${oid}/activate`, { body: { expectedRowVersion: o.body.rowVersion } })).status).toBe(422);
     expect((await h.call('masterData', 'POST', `/api/v1/suppliers/${oid}/approvals`,
       { body: { kind: 'MASTER_DATA', decision: 'APPROVED', rationale: 'Kimlik ve kanıt incelendi', expectedRowVersion: o.body.rowVersion } })).status).toBe(204);
     // Rol/onay türü eşleşmeli

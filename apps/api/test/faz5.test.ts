@@ -1,3 +1,4 @@
+// v2 Faz 1 (D93/D95): anket bölüm kullanıcısı (güvenlik) için departmanlı açılır; ağırlık politikasında yetkisiz rol örneği bölüm kullanıcısı
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { makeHarness } from './harness.ts';
@@ -12,7 +13,10 @@ const lowFactors = { dataSensitivity: 'LOW', accessLevel: 'LOW', criticality: 'L
 describe('portal anketi', () => {
   it('gönderilmeyen anket görünmez; tedarikçi yalnız kendine gönderileni yanıtlar; eksik yanıtla gönderemez; gönderince kilitlenir; kurum incelemesi bulgu göstermez', async () => {
     const tpl = await securityTemplate(h);
-    const a = await h.call('buyer', 'POST', '/api/v1/assessments', { body: { supplierId: h.world.suppliers.s1, templateId: tpl, scope: 'Uzak erişimli bakım (sentetik)', inherentFactors: lowFactors } });
+    // v2: inceleyen güvenlik kullanıcısı bölüm kullanıcısıdır; değerlendirme onun departmanında (Bilgi Teknolojileri) açılır.
+    const a = await h.call('buyer', 'POST', '/api/v1/assessments', { body: { supplierId: h.world.suppliers.s1, templateId: tpl, scope: 'Uzak erişimli bakım (sentetik)', inherentFactors: lowFactors,
+      departmentId: h.world.departments.bt } });
+    expect(a.status).toBe(201);
     expect((await h.call('supplier1', 'GET', `/api/v1/portal/assessments/${a.body.id}`)).status).toBe(404);
     expect((await h.call('supplier1', 'GET', '/api/v1/portal/assessments')).body.items).toEqual([]);
     expect((await h.call('buyer', 'POST', `/api/v1/assessments/${a.body.id}/send-to-supplier`, { body: { due: '2026-12-31' } })).status).toBe(200);
@@ -55,7 +59,7 @@ describe('kategori ağırlık politikası', () => {
   it('inceleme kategorinin yürürlükteki ağırlığını kopyalar; yeni kural eskisini emekliye ayırır; geçersiz toplam reddedilir', async () => {
     const cat = `Lojistik ${randomUUID().slice(0, 4)}`;
     expect((await h.call('legal2', 'PUT', '/api/v1/performance-weights', { body: { category: cat, weights: { quality: 50, delivery: 50, sla: 10, communication: 0, commercial: 0 }, reason: 'Toplamı yanlış (sentetik).' } })).body.error.code).toBe('invalid_weights');
-    expect((await h.call('buyer', 'PUT', '/api/v1/performance-weights', { body: { category: cat, weights: { quality: 20, delivery: 50, sla: 20, communication: 5, commercial: 5 }, reason: 'Yetkisiz deneme.' } })).status).toBe(403);
+    expect((await h.call('techEval', 'PUT', '/api/v1/performance-weights', { body: { category: cat, weights: { quality: 20, delivery: 50, sla: 20, communication: 5, commercial: 5 }, reason: 'Yetkisiz deneme.' } })).status).toBe(403);
     const w = { quality: 20, delivery: 50, sla: 20, communication: 5, commercial: 5 };
     expect((await h.call('legal2', 'PUT', '/api/v1/performance-weights', { body: { category: cat, weights: w, reason: 'Lojistikte teslimat belirleyici (sentetik).' } })).status).toBe(200);
     const r = await h.call('buyer', 'POST', `/api/v1/suppliers/${h.world.suppliers.s1}/performance-reviews`, { body: { periodStart: '2026-01-01', periodEnd: '2026-03-31', category: ` ${cat.toUpperCase()} `,
