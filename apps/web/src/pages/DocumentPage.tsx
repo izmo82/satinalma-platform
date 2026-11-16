@@ -82,7 +82,8 @@ export function DocumentPage() {
 }
 
 function SellerForm({ id, onDone }: { id: string; onDone: () => Promise<void> }) {
-  const [b, setB] = useState({ taxIdType: 'VKN', taxId: '', name: '', iban: '', page: '1' });
+  // v2 Faz 1 (D93): banka bilgisi değişikliği doğrulama akışı kaldırma listesinde; IBAN alanı ve gönderimi kalktı (W-15-08).
+  const [b, setB] = useState({ taxIdType: 'VKN', taxId: '', name: '', page: '1' });
   const [err, setErr] = useState<Record<string, string>>({});
   const [res, setRes] = useState<{ tone: 'info' | 'warn' | 'danger'; msg: string } | null>(null);
   async function submit(e: React.FormEvent) {
@@ -94,7 +95,7 @@ function SellerForm({ id, onDone }: { id: string; onDone: () => Promise<void> })
     if (Object.keys(er).length) return;
     try {
       const r = await api<{ outcome: string; message: string }>(`/api/v1/document-versions/${id}/seller-identity`, { method: 'POST',
-        json: { taxIdType: b.taxIdType, taxId: b.taxId.trim(), name: b.name.trim(), country: 'TR', iban: b.iban.trim() || null, page: Number(b.page) || null } });
+        json: { taxIdType: b.taxIdType, taxId: b.taxId.trim(), name: b.name.trim(), country: 'TR', page: Number(b.page) || null } });
       setRes({ tone: r.data.outcome === 'SELLER_IS_OWN_COMPANY' ? 'warn' : 'info', msg: r.data.message });
       await onDone();
     } catch (e2) { setRes({ tone: 'danger', msg: (e2 as ApiError).message }); }
@@ -107,7 +108,6 @@ function SellerForm({ id, onDone }: { id: string; onDone: () => Promise<void> })
       <Field label="Kimlik türü">{(p) => <select className="input" {...p} value={b.taxIdType} onChange={(e) => setB({ ...b, taxIdType: e.target.value })}><option>VKN</option><option>TCKN</option></select>}</Field>
       <Field label="Vergi kimliği" error={err.taxId}>{(p) => <input className="input mono" inputMode="numeric" {...p} value={b.taxId} onChange={(e) => setB({ ...b, taxId: e.target.value })} />}</Field>
       <Field label="Satıcı ünvanı" error={err.name}>{(p) => <input className="input" {...p} value={b.name} onChange={(e) => setB({ ...b, name: e.target.value })} />}</Field>
-      <Field label="IBAN (varsa)" hint="Mevcut banka bilgisini değiştirmez; farklıysa doğrulama görevi açılır.">{(p) => <input className="input mono" {...p} value={b.iban} onChange={(e) => setB({ ...b, iban: e.target.value })} />}</Field>
       <Field label="Kaynak sayfa">{(p) => <input className="input num" type="number" min={1} style={{ width: 100 }} {...p} value={b.page} onChange={(e) => setB({ ...b, page: e.target.value })} />}</Field>
       <button className="btn btn-primary" type="submit">Kaydet ve eşleştir</button>
     </form>

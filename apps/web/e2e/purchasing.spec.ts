@@ -1,4 +1,4 @@
-// v2 Faz 1 (D93/D95): sipariş/kabul, fatura finans onayı, istisna onayı ve tolerans onaylı kaldırma listesinde (atlanır). Kalanlar yeni yollarından sınanır: Fatura gir ve tekrar gelen fatura, sözleşmeye tahsis (eşleştirme), e-Fatura XML yükleme (/faturalar/yukle), fatura ekranlarının taşmaması.
+// v2 Faz 1 (D93/D95): sipariş/kabul, fatura finans onayı, istisna onayı ve tolerans onaylı kaldırma listesinde (atlanır). Kalanlar yeni yollarından sınanır: Fatura gir ve tekrar gelen fatura, sözleşmeye tahsis (eşleştirme), e-Fatura XML yükleme (/faturalar/yukle), fatura ekranlarının taşmaması. Bulgu metni v2 dilinde ("sözleşmeye tahsis edilmedi").
 import { expect, test, type Page } from '@playwright/test';
 import { syntheticVkn } from '../../../packages/domain/src/taxId.ts';
 
@@ -102,7 +102,7 @@ test('Fatura gir → sözleşmeye tahsis → eşleşti; onay denetimi yok; tekra
   await enter();
   const invoiceUrl = page.url();
   // Tahsis yokken bulgu ve çözen rol (v2 adıyla) görünür; eşleşmedi.
-  await expect(page.getByText('sipariş veya sözleşmeye tahsis edilmedi')).toBeVisible();
+  await expect(page.getByText('sözleşmeye tahsis edilmedi')).toBeVisible();
   await expect(page.getByText('Çözen: Satınalma').first()).toBeVisible();
   await expect(page.getByText('Eşleşmedi', { exact: true }).first()).toBeVisible();
   await page.getByRole('button', { name: 'Tahsisi düzenle' }).click();

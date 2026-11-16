@@ -1,4 +1,4 @@
-import { normalizeRoles } from '@sp/domain';
+import { normalizeRoles, REMOVED_ISSUE_CODES } from '@sp/domain';
 import type { TenantContext, Tx } from './db.ts';
 
 /** Saklanan/gelen rol kodu (eski ya da v2) → v2 rolü; bilinmeyen kod olduğu gibi kalır. Görev ve sorumlu rolleri her zaman v2 saklanır. */
@@ -31,10 +31,13 @@ export const taskRoleSql = (roles: string, t = 't') => `(${t}.assignee_role = AN
 
 /**
  * v2 Faz 1 (D93): kaldırılan işlevlerin görevleri İşlerim'de, sayaçlarda ve bildirimlerde listelenmez (kayıt silinmez):
- * Lira Defteri vakaları, imha partileri ve fatura onay akışının kontrol bulgusu görevleri (faturaya bağlı `invoice_issue`).
- * Tedarikçiye düşen `invoice_issue` (aday tedarikçinin aktivasyonu) ana veri işidir ve kalır.
+ * Lira Defteri vakaları, imha partileri ve fatura bulgularından yalnız kaldırılan kodlar (üçlü eşleştirme, tolerans, sözleşmesiz
+ * istisna; `REMOVED_ISSUE_CODES`). Korunan bulgular (vergi, tahsis, tedarikçi/şirket uyuşmazlığı, limit, imza, avans) görünür kalır.
+ * Bulgu kodu görevin tekil anahtarındadır: `invoice-issue:<faturaId>:<kod>`.
  */
-export const visibleTaskSql = (t = 't') => `(${t}.entity_type NOT IN ('recovery_case', 'disposal_batch') AND NOT (${t}.kind = 'invoice_issue' AND ${t}.entity_type = 'invoice'))`;
+const REMOVED_ISSUE_KEYS = REMOVED_ISSUE_CODES.map((c) => `'${c}'`).join(', ');
+export const visibleTaskSql = (t = 't') => `(${t}.entity_type NOT IN ('recovery_case', 'disposal_batch')
+  AND NOT (${t}.kind = 'invoice_issue' AND split_part(${t}.dedupe_key, ':', 3) IN (${REMOVED_ISSUE_KEYS})))`;
 
 /** Aynı açık görev ikinci kez oluşmaz (BR12/SIG15). Var olanın id'sini döner. */
 export async function openTask(tx: Tx, ctx: TenantContext, t: TaskInput): Promise<{ id: string; created: boolean }> {

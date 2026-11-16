@@ -26,15 +26,17 @@ test('Projeler: onay politikası düğmesi yok (Yönetici, Satınalma, Departman
   }
 });
 
-test('İşlerim: Lira Defteri, imha ve fatura onayı görevleri listelenmez; görev bağlantısı kaldırılan ekrana gitmez', async ({ page }) => {
+test('İşlerim: Lira Defteri, imha ve kaldırılan fatura bulgularının görevleri listelenmez; görev bağlantısı kaldırılan ekrana gitmez', async ({ page }) => {
   await login(page, 'ferda.finans@example.test');
   for (const view of ['Benden beklenen', 'Geciken', 'Rolümdeki tüm işler']) {
     await page.getByRole('tab', { name: new RegExp(view) }).click();
     await expect(page.getByRole('tab', { name: new RegExp(view) })).toHaveAttribute('aria-selected', 'true');
     await page.waitForLoadState('networkidle');
     await noRemovedLinks(page, `İşlerim · ${view}`);
-    // Faturaya bağlı kontrol bulgusu görevleri ("Fatura <no>: …") onay akışına aitti. Tedarikçi kaydına düşen aktivasyon işi kalır.
-    await expect(page.locator('a[href^="/faturalar/"]').filter({ hasText: /^Fatura [A-Z0-9]+: / })).toHaveCount(0);
+    // Kaldırılan bulguların (kabul, sipariş, tolerans, sözleşmesiz istisna) görevleri listelenmez; korunan bulguların görevleri kalır
+    // (API testi: invoiceIssueTasks). Görev başlığı bulgu mesajının ilk bölümüdür.
+    await expect(page.locator('a[href^="/faturalar/"]').filter({ hasText: /kabul kaydı yok|sipariş miktarını|birim fiyat .*sipariş|sipariş birimi|siparişi iptal|sözleşme bağı yok/ })).toHaveCount(0);
+    await expect(page.getByText(/finansa bildirin|istisna isteyin/i)).toHaveCount(0);
   }
 });
 
@@ -51,7 +53,7 @@ test('Faturalar listesi: tolerans bağlantısı ve onay durumu süzgeci yok; eş
   // Kalan işlevler yerinde.
   await expect(page.getByRole('button', { name: 'Fatura gir' })).toBeVisible();
   await expect(page.getByRole('link', { name: 'Fatura yükle' })).toBeVisible();
-  await expect(page.getByText(/Finans/)).toHaveCount(0);
+  await expect(page.getByText(/finans/i)).toHaveCount(0);
   await noRemovedLinks(page, '/faturalar');
 });
 
@@ -64,7 +66,7 @@ test('Fatura detayı: onay, ret ve istisna denetimi yok; eski sipariş bağı nu
   await expect(page.getByText(/İstisna gerekli|Onaya hazır|finans onayı bekliyor/)).toHaveCount(0);
   await expect(page.getByText(/kabul kaydı yok/)).toHaveCount(0); // üçlü eşleştirme bulgusu
   await expect(page.getByText(/Sipariş PO-\d{4}-\d+/).first()).toBeVisible();
-  await expect(page.getByText(/Finans/)).toHaveCount(0);
+  await expect(page.getByText(/finans/i)).toHaveCount(0);
   // Sözleşme limiti paneli ve UBL denetimi kalır.
   await expect(page.getByText('Kullanılabilir')).toBeVisible();
   await noRemovedLinks(page, 'fatura detayı');
@@ -90,4 +92,14 @@ test('Arama ve olay detayı: sipariş sonuç grubu ve sipariş bağlantısı yok
     await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
     await noRemovedLinks(page, 'olay detayı');
   }
+});
+
+test('Belge detayı: satıcı kimliği formunda IBAN alanı yok (banka değişikliği doğrulaması kaldırma listesinde, W-15-08)', async ({ page }) => {
+  await login(page, 'leyla.hukuk@example.test');
+  await page.getByRole('tab', { name: /Rolümdeki tüm işler/ }).click();
+  await page.getByRole('link', { name: 'Fatura alanları girilmeli' }).filter({ visible: true }).first().click();
+  await expect(page.getByRole('heading', { name: 'Satıcı kimliğini girin' })).toBeVisible();
+  await expect(page.getByLabel('Vergi kimliği')).toBeVisible();
+  await expect(page.getByLabel(/IBAN/)).toHaveCount(0);
+  await expect(page.getByText(/doğrulama görevi açılır/)).toHaveCount(0);
 });

@@ -1,4 +1,4 @@
-// v2 Faz 1 (D93/D95): sipariş açma/değişiklik/kapatma, mal kabul, fatura onayı ve tolerans kaldırıldı (testler atlandı); eski (v1) sipariş ve onay durumu gereken korunan testlerde test verisi modül işleviyle
+// v2 Faz 1 (D93/D95): sipariş açma/değişiklik/kapatma, mal kabul, fatura onayı ve tolerans kaldırıldı (testler atlandı); eski (v1) sipariş ve onay durumu gereken korunan testlerde test verisi modül işleviyle Görev 6 düzeltme: korunan bulgunun görevi görünür, kaldırılan kodun görevi açılmaz/listelenmez (sondaki describe).
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { syntheticPdf, ublInvoiceXml } from '../src/devdata.ts';
@@ -897,5 +897,33 @@ describe('v2: atlanan testlerin korunan kısımları', () => {
     const inv = await invoiceFor(h.world.suppliers.s2);
     expect((await allocateTo(inv, { contractVersionId: cv })).body.error?.code).toBe('allocation_supplier_mismatch');
     expect((await allocateTo(inv, { contractVersionId: newId })).status).toBe(200);
+  });
+});
+
+// v2 Faz 1 (D93): korunan bulgunun görevi görünür; kaldırılan bulgu (üçlü eşleştirme, sözleşmesiz istisna) görev açmaz, eski görevi listelenmez.
+describe('fatura bulgusu görevleri: korunan görünür, kaldırılan gizli (v2)', () => {
+  it('UNALLOCATED görevi Satınalma İşlerim\'inde v2 metniyle görünür; NO_CONTRACT görevi açılmaz; eski RECEIPT_MISSING görevi listelenmez', async () => {
+    const r = await call('finance', 'POST', '/api/v1/invoices', { companyId: h.world.companyA1.id, supplierId: h.world.suppliers.s1, kind: 'INVOICE', invoiceNo: `V2T${randomUUID().slice(0, 8)}`,
+      issueDate: '2026-10-20', currency: 'TRY', lines: [{ description: 'Hizmet', quantity: '1', unit: 'ay', unitPrice: '1000', netAmount: '1000.00', taxRate: '20' },
+        { description: 'Kurulum', quantity: '1', unit: 'adet', unitPrice: '500', netAmount: '500.00', taxRate: '20' }] });
+    expect(r.status).toBe(201);
+    const id = r.body.id as string;
+    // Satır 1 hiçbir yere bağlı değil (NO_CONTRACT), satır 2 tahsissiz (UNALLOCATED).
+    expect((await call('finance', 'PUT', `/api/v1/invoices/${id}/allocations`, { allocations: [{ lineNo: 1, poLineId: null, contractVersionId: null, quantity: '1', amount: '1000.00' }] })).status).toBe(200);
+    const codes = await issueCodes(id);
+    expect(codes).toEqual(expect.arrayContaining(['NO_CONTRACT', 'UNALLOCATED']));
+    const keys = (await h.owner.query<{ dedupe_key: string }>(`SELECT dedupe_key FROM tasks WHERE entity_id = $1 AND status = 'OPEN'`, [id])).rows.map((x) => x.dedupe_key);
+    expect(keys).toContain(`invoice-issue:${id}:UNALLOCATED`);
+    expect(keys).not.toContain(`invoice-issue:${id}:NO_CONTRACT`);
+    // v1'den kalmış kaldırılan bulgu görevi (kayıt silinmez) listelenmez.
+    await h.owner.query(`INSERT INTO tasks (tenant_id, company_id, kind, entity_type, entity_id, title, reason, next_action, assignee_role, severity, dedupe_key)
+      VALUES ($1,$2,'invoice_issue','invoice',$3,'Fatura eski: kabul kaydı yok','eski','eski','PROCUREMENT','NORMAL',$4)`, [h.world.tenantA, h.world.companyA1.id, id, `invoice-issue:${id}:RECEIPT_MISSING`]);
+    const tasks = (await call('finance', 'GET', '/api/v1/tasks?view=all')).body as { items: { entityId: string; title: string; nextAction: string }[]; counts: { all: number } };
+    const mine = tasks.items.filter((t) => t.entityId === id);
+    expect(mine).toHaveLength(1);
+    expect(mine[0]!.title).toMatch(/^Fatura V2T/);
+    expect(mine[0]!.nextAction).not.toMatch(/istisna|finans/i);
+    const visible = (await h.owner.query<{ n: number }>(`SELECT count(*)::int AS n FROM tasks WHERE entity_id = $1 AND status = 'OPEN'`, [id])).rows[0]!.n;
+    expect(visible).toBe(2); // UNALLOCATED + eski RECEIPT_MISSING kaydı duruyor; yalnız biri listelenir
   });
 });

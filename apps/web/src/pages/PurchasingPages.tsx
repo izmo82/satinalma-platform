@@ -12,6 +12,7 @@ import { UblFindings, ublTitle, type UblCheck } from '../ui/UblCheck.tsx';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { cn } from '@/lib/utils';
+import { REMOVED_ISSUE_CODES } from '../../../../packages/domain/src/invoiceMatch.ts';
 import { DepartmentFilter, DepartmentName, useDepartmentParam, withDepartment } from '../ui/Departments.tsx';
 
 // UX10 Fatura. v2 (D93/D95): fatura onayı, istisna onayı, tolerans ve üçlü eşleştirme kaldırma listesinde; fatura girişi (elle ve
@@ -28,8 +29,9 @@ const MATCH: Record<'ESLESTI' | 'ESLESMEDI' | 'IPTAL', Label> = {
 };
 /** v1'de verilmiş kararlar salt okunur geçmiş olarak görünür (W-18-11). */
 const PAST_DECISION: Record<string, string> = { APPROVAL: 'Onaylandı (v1 kaydı)', REJECTION: 'Reddedildi (v1 kaydı)', EXCEPTION_APPROVAL: 'İstisna onaylandı (v1 kaydı)' };
-/** Kaldırılan üçlü eşleştirme (sipariş/kabul), tolerans ve istisna bulguları gösterilmez; vergi, tahsis, tedarikçi ve limit bulguları kalır. */
-const REMOVED_ISSUES = new Set(['RECEIPT_MISSING', 'OVER_ORDER', 'PRICE_MISMATCH', 'UNIT_MISMATCH', 'PO_CANCELLED', 'CURRENCY_MISMATCH', 'CREDIT_EXCEEDS', 'NO_CONTRACT']);
+/** Kaldırılan üçlü eşleştirme (sipariş/kabul), tolerans ve istisna bulguları gösterilmez; vergi, tahsis, tedarikçi ve limit bulguları kalır.
+ *  Liste alan adı paketinde tektir (API görevleri de aynı listeyle süzer). */
+const REMOVED_ISSUES = new Set(REMOVED_ISSUE_CODES);
 const ERP: Record<string, string> = { PENDING: 'ERP: aktarım bekliyor', UNKNOWN: 'ERP: belirsiz (zaman aşımı) — sorgulanacak', CONFIRMED: 'ERP: aktarıldı', FAILED: 'ERP: hata', NOT_CONFIGURED: 'ERP bağlantısı yapılandırılmadı' };
 const MATCH_FILTERS = [['', 'Tümü'], ['ESLESMEDI', 'Eşleşmedi'], ['ESLESTI', 'Eşleşti'], ['IPTAL', 'Hukuken iptal/ret']] as const;
 

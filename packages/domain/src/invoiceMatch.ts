@@ -39,6 +39,11 @@ export function allowedVariance(base: string, rule: ToleranceRule | null): strin
 }
 
 export type IssueSeverity = 'BLOCK' | 'EXCEPTION' | 'REVIEW';
+/**
+ * v2 Faz 1 (D93): kaldırma listesindeki üçlü eşleştirme (sipariş/kabul), fiyat toleransı ve sözleşmesiz istisna bulguları.
+ * Hesap değişmez (eski sipariş bağlı faturalar için kayıt doğru kalır); arayüz göstermez, görev açılmaz. Web ve API bu tek listeyi kullanır.
+ */
+export const REMOVED_ISSUE_CODES: readonly string[] = ['RECEIPT_MISSING', 'OVER_ORDER', 'PRICE_MISMATCH', 'UNIT_MISMATCH', 'PO_CANCELLED', 'CURRENCY_MISMATCH', 'CREDIT_EXCEEDS', 'NO_CONTRACT'];
 export interface MatchIssue { code: string; severity: IssueSeverity; message: string; ownerRole: string; lineNo?: number }
 
 export interface PoLineState {
@@ -196,7 +201,7 @@ const sign = (kind: InvoiceCheckInput['kind']) => (kind === 'CREDIT_NOTE' ? -1n 
 export function checkInvoice(i: InvoiceCheckInput): InvoiceCheck {
   const issues: MatchIssue[] = [];
   const push = (x: MatchIssue) => issues.push(x);
-  if (!i.supplierActive) push({ code: 'SUPPLIER_NOT_ACTIVE', severity: 'BLOCK', ownerRole: 'MASTER_DATA', message: 'Satıcı aktif tedarikçi değil; aday firmaya ödeme onayı verilemez (BR02).' });
+  if (!i.supplierActive) push({ code: 'SUPPLIER_NOT_ACTIVE', severity: 'BLOCK', ownerRole: 'MASTER_DATA', message: 'Satıcı aktif tedarikçi değil; aday firmanın faturası işlenmeden önce tedarikçi kaydı aktifleştirilmeli (BR02).' });
   const net = add(...i.lines.map((l) => dec(l.netAmount)));
   const tax = checkTax(i.lines, i.declared, i.currency);
   issues.push(...tax.issues);
@@ -216,7 +221,7 @@ export function checkInvoice(i: InvoiceCheckInput): InvoiceCheck {
     const al = i.allocations.filter((a) => a.lineNo === l.lineNo);
     const sum = add(...al.map((a) => dec(a.amount)));
     if (cmp(sum, dec(l.netAmount)) > 0) push({ code: 'OVER_ALLOCATED', severity: 'BLOCK', ownerRole: 'FINANCE', lineNo: l.lineNo, message: `Satır ${l.lineNo}: tahsis toplamı ${str(sum)} satır tutarını (${l.netAmount}) aşıyor.` });
-    else if (cmp(sum, dec(l.netAmount)) < 0) push({ code: 'UNALLOCATED', severity: 'BLOCK', ownerRole: 'FINANCE', lineNo: l.lineNo, message: `Satır ${l.lineNo}: ${str(dec(l.netAmount) - sum)} ${i.currency} sipariş veya sözleşmeye tahsis edilmedi.` });
+    else if (cmp(sum, dec(l.netAmount)) < 0) push({ code: 'UNALLOCATED', severity: 'BLOCK', ownerRole: 'FINANCE', lineNo: l.lineNo, message: `Satır ${l.lineNo}: ${str(dec(l.netAmount) - sum)} ${i.currency} sözleşmeye tahsis edilmedi.` });
     // Aynı ünvanlı başka bir tüzel kişinin siparişine/sözleşmesine tahsis, tedarikçi sonradan aktifleşse de engel kalır (D84).
     const reversal = (id: string | null) => !!id && !!i.reversalTargets?.includes(id);
     const foreignPo = (id: string | null) => {
@@ -228,12 +233,12 @@ export function checkInvoice(i: InvoiceCheckInput): InvoiceCheck {
       return !reversal(id) && !!i.supplierRootId && roots.length > 0 && !roots.includes(i.supplierRootId);
     };
     if (al.some((a) => foreignPo(a.poLineId) || foreignContract(a.contractVersionId))) {
-      push({ code: 'SUPPLIER_MISMATCH', severity: 'BLOCK', ownerRole: 'FINANCE', lineNo: l.lineNo, message: `Satır ${l.lineNo}: bağlı sipariş veya sözleşme bu faturanın tedarikçisine ait değil (aynı ünvanlı başka bir kayıt olabilir); tahsisi düzenleyip bu bağı kaldırın.` });
+      push({ code: 'SUPPLIER_MISMATCH', severity: 'BLOCK', ownerRole: 'FINANCE', lineNo: l.lineNo, message: `Satır ${l.lineNo}: ${al.some((a) => foreignPo(a.poLineId)) ? 'bağlı eski sipariş bağı' : 'bağlı sözleşme'} bu faturanın tedarikçisine ait değil (aynı ünvanlı başka bir kayıt olabilir); tahsisi düzenleyip bu bağı kaldırın.` });
     }
     // Kapsam dışı hedef RLS nedeniyle yüklenmez; yok saymak kontrolü atlatırdı, engel sayılır (D87).
     const otherCompany = (id: string | null, owner: { companyId?: string | null } | undefined) => !!i.companyId && !!id && !reversal(id) && owner?.companyId !== i.companyId;
     if (al.some((a) => otherCompany(a.poLineId, i.poLines.find((p) => p.poLineId === a.poLineId)) || otherCompany(a.contractVersionId, i.contracts.find((c) => c.contractVersionId === a.contractVersionId)))) {
-      push({ code: 'COMPANY_MISMATCH', severity: 'BLOCK', ownerRole: 'FINANCE', lineNo: l.lineNo, message: `Satır ${l.lineNo}: bağlı sipariş veya sözleşme bu faturanın şirketine ait değil ya da erişiminiz dışında; tahsisi düzenleyip bu bağı kaldırın.` });
+      push({ code: 'COMPANY_MISMATCH', severity: 'BLOCK', ownerRole: 'FINANCE', lineNo: l.lineNo, message: `Satır ${l.lineNo}: ${al.some((a) => otherCompany(a.poLineId, i.poLines.find((p) => p.poLineId === a.poLineId))) ? 'bağlı eski sipariş bağı' : 'bağlı sözleşme'} bu faturanın şirketine ait değil ya da erişiminiz dışında; tahsisi düzenleyip bu bağı kaldırın.` });
     }
     if (i.kind === 'ADVANCE') continue;
     for (const a of al) {
@@ -292,7 +297,7 @@ export function checkInvoice(i: InvoiceCheckInput): InvoiceCheck {
     }
     if (c.signatureUnresolved || c.archiveImport) {
       // T37: eski borç otomatik iptal edilmez; politika incelemesi açılır.
-      push({ code: 'CONTRACT_SIGNATURE_UNRESOLVED', severity: 'REVIEW', ownerRole: 'LEGAL', message: `${c.title}: imza kontrolü tamamlanmamış${c.archiveImport ? ' (arşivden alındı)' : ''}. Fatura iptal edilmez; ödeme politikası hukuk/finans incelemesine bağlıdır.` });
+      push({ code: 'CONTRACT_SIGNATURE_UNRESOLVED', severity: 'REVIEW', ownerRole: 'LEGAL', message: `${c.title}: imza kontrolü tamamlanmamış${c.archiveImport ? ' (arşivden alındı)' : ''}. Fatura iptal edilmez; ödeme politikası Satınalma incelemesine bağlıdır.` });
     }
   }
   const offset = dec(i.advanceOffset);

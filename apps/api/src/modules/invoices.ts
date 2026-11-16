@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import {
-  add, availableLimit, checkInvoice, cmp, dec, div, isDecimal, mul, openCommitment, str, type Dec,
+  add, availableLimit, checkInvoice, cmp, dec, div, isDecimal, mul, openCommitment, REMOVED_ISSUE_CODES, str, type Dec,
   type AllocationInput, type ContractState, type InvoiceCheckInput, type OtherTax, type PoLineState, type ToleranceRule,
 } from '@sp/domain';
 import type { TenantContext, Tx } from '../db.ts';
@@ -591,12 +591,14 @@ export async function rejectInvoice(tx: Tx, ctx: TenantContext, invoiceId: strin
 async function syncIssueTasks(tx: Tx, ctx: TenantContext, invoiceId: string, invoiceNo: string, companyId: string, supplierId: string, supplierStatus: string, issues: { code: string; ownerRole: string; message: string; severity: string }[]) {
   await closeTasks(tx, `invoice-issue:${invoiceId}:`);
   for (const x of issues) {
+    // v2 Faz 1 (D93): kaldırılan bulgular (üçlü eşleştirme, tolerans, sözleşmesiz istisna) görev açmaz.
+    if (REMOVED_ISSUE_CODES.includes(x.code)) continue;
     // Birleşen veya reddedilen tedarikçide ana verinin yapacağı iş kalmaz; engel faturada görünür.
     if (x.code === 'SUPPLIER_NOT_ACTIVE' && ['MERGED', 'REJECTED'].includes(supplierStatus)) continue;
     // Ana veri fatura okuyamaz; kendi işi tedarikçi kaydındadır (D92).
     const onSupplier = x.code === 'SUPPLIER_NOT_ACTIVE';
     await openTask(tx, ctx, { companyId, kind: 'invoice_issue', entityType: onSupplier ? 'supplier' : 'invoice', entityId: onSupplier ? supplierId : invoiceId, title: `Fatura ${invoiceNo}: ${x.message.split(':')[0]}`,
-      reason: x.message, nextAction: onSupplier ? 'Tedarikçinin kimliğini doğrulayıp aktivasyonunu tamamlayın.' : x.code === 'RECEIPT_MISSING' ? 'Teslim aldıysanız kabul kaydını girin; almadıysanız finansa bildirin.' : 'Bulguyu çözün veya yetkili istisna isteyin.',
+      reason: x.message, nextAction: onSupplier ? 'Tedarikçinin kimliğini doğrulayıp aktivasyonunu tamamlayın.' : 'Faturayı açıp bulguyu düzeltin (tahsis, tutar veya sözleşme); düzelince görev kendiliğinden kapanır.',
       assigneeRole: x.ownerRole, severity: x.severity === 'BLOCK' ? 'HIGH' : 'NORMAL', dedupeKey: `invoice-issue:${invoiceId}:${x.code}` });
   }
 }
