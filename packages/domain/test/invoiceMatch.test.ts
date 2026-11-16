@@ -1,3 +1,4 @@
+// v2 Faz 1 (D93/D95): bulgu metinlerinde tutar ve oran Türkçe biçimde, imza bulgusunda ödeme dili yok; eski ham metni bekleyen üç test güncellendi.
 import { describe, expect, it } from 'vitest';
 import { allowedVariance, availableLimit, checkInvoice, checkTax, netConsumption, openCommitment, pickTolerance, type InvoiceCheckInput, type PoLineState } from '../src/invoiceMatch.ts';
 

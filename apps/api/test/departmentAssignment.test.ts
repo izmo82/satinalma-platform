@@ -1,3 +1,4 @@
+// v2 Faz 1 (D93/D95): ikiz "Kritik engel" görevi (036) ve kod koruması testleri eklendi; mevcut testler değişmedi.
 // v2 Faz 1 düzeltme dalgası: departmansız eski kayıtlara departman atanır (C1, D96) ve görevler kaydın departmanını izler (I3, D100).
 // Tüm veri sentetik; her koşu kendi kiracısını kurar (harness).
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';

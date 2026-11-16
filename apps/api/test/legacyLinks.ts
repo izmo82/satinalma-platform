@@ -1,3 +1,4 @@
+// v2 Faz 1 (D93/D95): yeni sipariş bağı PUT'ta reddedildiği için eski (v1) sipariş bağlı fatura durumu bu fikstürle kurulur.
 import type pg from 'pg';
 
 type Allocation = { lineNo: number; poLineId: string | null; contractVersionId: string | null; quantity: string; amount: string };

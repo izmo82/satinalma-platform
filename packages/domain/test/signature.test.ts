@@ -1,3 +1,4 @@
+// v2 Faz 1 (D93/D95): imza yöntemi sınıflandırması Hukuk rolünden Satınalma'ya geçti (D95a); eylem metni testi eklendi.
 import { describe, expect, it } from 'vitest';
 import { deriveSignatureStatus, type SignatureEvidence, type RequirementInput } from '../src/index.ts';
 
