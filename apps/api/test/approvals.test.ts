@@ -68,7 +68,17 @@ describe('onay politikası', () => {
   it('yürürlükteki politika simülasyonda açıklanır; politika okunur ama yönetilemez', async () => {
     const sim = await h.call('buyer', 'POST', '/api/v1/approval-policies/simulate', { body: { action: 'RFQ_PUBLISH', companyId: h.world.companyA1.id, category: null, currency: 'TRY', amount: '10' } });
     expect(sim.body).toMatchObject({ ruleId: 'YAYIN', minInvitees: 2, minResponseDays: 3 });
-    expect(sim.body.explanation).toContain(`Politika v${policyVersion}, kural YAYIN`);
+    // v2 Faz 1 (D93/D95): simülasyon yeni isteğin alacağı tek Satınalma adımını anlatır (D99, planFor ile aynı); önce eski politikanın
+    // iki adımı (Satınalma yöneticisi, Finans) ve "Politika vN, kural YAYIN" açıklaması dönüyordu.
+    expect(sim.body.steps).toEqual([{ role: 'PROCUREMENT', label: 'Satınalma' }]);
+    expect(sim.body.explanation).toBe(`Tek onay: talep edenden farklı bir Satınalma kullanıcısı. Kurum politikası v${policyVersion}, kural YAYIN: en az 2 davetli, en az 3 gün teklif süresi.`);
+    expect(sim.body.explanation).not.toMatch(/satınalma yöneticisi|finans/i);
+    // Yeni yayın isteği simülasyondaki planı alır.
+    const id = await newProject();
+    const ok = await publish(id, [h.world.suppliers.s1, h.world.suppliers.s2], 5);
+    expect(ok.status, JSON.stringify(ok.body)).toBe(201);
+    expect(ok.body.approval.steps).toEqual(sim.body.steps);
+    expect(ok.body.approval.explanation).toBe(sim.body.explanation);
     const list = await h.call('legal2', 'GET', '/api/v1/approval-policies');
     expect(list.body.items.find((p: any) => p.versionNo === policyVersion)).toMatchObject({ status: 'ACTIVE' });
     expect(list.body.can.manage).toBe(false);

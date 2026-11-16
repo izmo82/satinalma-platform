@@ -35,10 +35,15 @@ async function activePolicy(tx: Tx): Promise<{ id: string; policy: ApprovalPolic
  */
 export async function planFor(tx: Tx, c: { action: ApprovalAction; companyId: string; category: string | null; currency: string; amount: string | null }) {
   const a = await activePolicy(tx);
-  const p = planApproval(a?.policy ?? null, c);
+  return { policyId: a?.id ?? null, plan: singleStepPlan(a?.policy ?? null, c) };
+}
+
+/** D95b/D99: tek Satınalma adımı; politikadan yalnız davet sayısı ve teklif süresi alt sınırları gelir. planFor ve simülasyon aynı planı verir. */
+function singleStepPlan(policy: ApprovalPolicy | null, c: { action: ApprovalAction; companyId: string; category: string | null; currency: string; amount: string | null }): ApprovalPlan {
+  const p = planApproval(policy, c);
   const limits = [p.minInvitees ? `en az ${p.minInvitees} davetli` : null, p.minResponseDays ? `en az ${p.minResponseDays} gün teklif süresi` : null].filter(Boolean).join(', ');
   const explanation = `Tek onay: talep edenden farklı bir Satınalma kullanıcısı.${limits ? ` Kurum politikası v${p.policyVersion}${p.ruleId ? `, kural ${p.ruleId}` : ''}: ${limits}.` : ''}`;
-  return { policyId: a?.id ?? null, plan: { ...p, steps: SINGLE_STEP, explanation } };
+  return { ...p, steps: SINGLE_STEP, explanation };
 }
 
 /** Onay gerektiren iş için planı sabitler ve ilk adımın görevini açar. */
@@ -171,7 +176,8 @@ export async function activate(tx: Tx, ctx: TenantContext, id: string) {
   return { ok: true, versionNo: p.version_no };
 }
 
-/** Senaryo simülasyonu: taslak veya yürürlükteki sürümle hangi adımların çıkacağı (yayın öncesi kontrol). */
+/** Senaryo simülasyonu: taslak veya yürürlükteki sürümle yeni bir isteğin alacağı plan. Faz 1 kalan düzeltme (D99): eski çok
+ *  adımlı politikayı değil, planFor'un verdiği tek Satınalma adımını (politikanın davet/süre alt sınırlarıyla) anlatır. */
 export async function simulate(tx: Tx, b: { policyId?: string | null; action: ApprovalAction; companyId: string; category: string | null; currency: string; amount: string | null }) {
   let policy: ApprovalPolicy | null = null;
   if (b.policyId) {
@@ -179,6 +185,6 @@ export async function simulate(tx: Tx, b: { policyId?: string | null; action: Ap
     if (!r) throw notFound();
     policy = { version: r.version_no, rules: r.rules };
   } else policy = (await activePolicy(tx))?.policy ?? null;
-  return planApproval(policy, b);
+  return singleStepPlan(policy, b);
 }
 
