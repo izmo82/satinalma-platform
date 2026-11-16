@@ -917,6 +917,21 @@ describe('v2: atlanan testlerin korunan kısımları', () => {
     expect(c.check.canApprove).toBe(false);
   });
 
+  // Faz 1 kalan düzeltme (liste/detay tutarlılığı): yalnız kaldırılan koddan (PO_CANCELLED) engeli olan eski fatura listede de engelli görünmez.
+  it('kaldırılan koddan engeli olan eski fatura listede blocked değil; detayda görünür engel yok', async () => {
+    const invoiceId = await invoiceFor(h.world.suppliers.s1);
+    const poId = await legacyPo(null, '1', '100');
+    expect((await allocateTo(invoiceId, { poLineId: await legacyPoLine(poId) })).status).toBe(200);
+    await h.owner.query(`UPDATE purchase_orders SET status = 'CANCELLED', cancel_reason = 'v1 iptali (sentetik)' WHERE id = $1`, [poId]);
+    const detail = (await call('finance', 'GET', `/api/v1/invoices/${invoiceId}`)).body;
+    expect(detail.check.issues.filter((x: { severity: string }) => x.severity === 'BLOCK')).toEqual([]);
+    const row = ((await call('finance', 'GET', '/api/v1/invoices')).body.items as { id: string; blocked: boolean }[]).find((x) => x.id === invoiceId)!;
+    expect(row.blocked).toBe(false);
+    // Görünür engel (eksik tahsis) varsa liste hâlâ engelli gösterir.
+    const unallocated = await invoiceFor(h.world.suppliers.s1);
+    expect(((await call('finance', 'GET', '/api/v1/invoices')).body.items as { id: string; blocked: boolean }[]).find((x) => x.id === unallocated)!.blocked).toBe(true);
+  });
+
   it('eski siparişin kendi tedarikçisine tahsis çalışır; fatura detayı tedarikçi kökünü döner (D84)', async () => {
     const invoiceId = await invoiceFor(h.world.suppliers.s1);
     expect((await allocateTo(invoiceId, { poLineId: await legacyPoLine(await legacyPo(null, '1', '100')) })).status).toBe(200);

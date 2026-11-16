@@ -674,7 +674,8 @@ export async function listInvoices(tx: Tx, f: { departmentId?: string } = {}) {
   // bulguları onaylı faturada da aynı hesaplanır (toplu kontrolün onaylı fatura farkı limit ve avans hesabındadır), bu yüzden hepsi için.
   const checks = await unapprovedInvoiceChecks(tx, rows.map((r) => r.id));
   return rows.map(({ hasLines, ...r }) => ({ ...r, matched: allocationMatched(hasLines, checks.get(r.id)?.issues ?? []),
-    blocked: !r.decision && checks.get(r.id)?.canApprove === false }));
+    // v2 Faz 1 (D93): detayla aynı; kaldırılan bulgu kodları (REMOVED_ISSUE_CODES) engel sayılmaz.
+    blocked: !r.decision && !!checks.get(r.id)?.issues.some((x) => x.severity === 'BLOCK' && !REMOVED_ISSUE_CODES.includes(x.code)) }));
 }
 
 export async function listTolerance(tx: Tx) {
