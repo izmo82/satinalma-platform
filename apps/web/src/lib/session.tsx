@@ -114,7 +114,7 @@ const LEGACY_ROLE: Record<string, string> = {
   BUYER: 'PROCUREMENT', PROCUREMENT_MANAGER: 'PROCUREMENT', MASTER_DATA: 'PROCUREMENT', LEGAL: 'PROCUREMENT', FINANCE: 'PROCUREMENT',
   REQUESTER: 'DEPARTMENT_USER', TECH_EVALUATOR: 'DEPARTMENT_USER', SECURITY: 'DEPARTMENT_USER',
 };
-const v2Role = (r: string) => LEGACY_ROLE[r] ?? r;
+export const v2Role = (r: string) => LEGACY_ROLE[r] ?? r;
 /** Oturumdaki rol (v2) verilenlerden biri mi? Eski kodla yazılmış denetimler eşlendiği v2 rolüne göre çalışır. */
 export const hasRole = (me: Me | null, ...roles: string[]) => {
   if (!me) return false;

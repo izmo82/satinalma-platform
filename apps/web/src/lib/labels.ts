@@ -76,6 +76,8 @@ export const originLabel: Record<string, Label> = {
 };
 // v2 (D93): beş rol. Eski kodlar (bulgu çözen rolü, onay geçmişi, görev sorumlusu) eşlendikleri v2 rolünün adıyla görünür;
 // eşleme packages/domain/src/roles.ts LEGACY_ROLE_MAP ile aynı.
+/** v2 (D93): görev/sorumlu rol seçicilerinde sunulan roller (tedarikçi, denetçi ve yönetici iş sahibi olmaz). */
+export const OWNER_ROLES = ['PROCUREMENT', 'DEPARTMENT_USER'] as const;
 export const roleLabel: Record<string, string> = {
   ADMIN: 'Yönetici', PROCUREMENT: 'Satınalma', DEPARTMENT_USER: 'Departman kullanıcısı', SUPPLIER: 'Tedarikçi', AUDITOR: 'Denetçi',
   TENANT_ADMIN: 'Yönetici', PLATFORM_OPS: 'Yönetici',

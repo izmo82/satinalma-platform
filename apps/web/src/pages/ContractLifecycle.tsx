@@ -3,7 +3,7 @@ import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { api, ApiError } from '../lib/api.ts';
 import { useResource } from '../lib/useApi.ts';
 import { fmtDate, fmtDateTime, fmtMoney } from '../lib/format.ts';
-import { roleLabel } from '../lib/labels.ts';
+import { OWNER_ROLES, roleLabel } from '../lib/labels.ts';
 import { Banner, Empty, ErrorState, Field, Loading, Tag } from '../ui/kit.tsx';
 import { Icon } from '../ui/icons.tsx';
 import { Button } from '@/components/ui/button';
@@ -279,8 +279,8 @@ function ObligationsTab({ d, reload }: { d: Lc; reload: () => Promise<void> }) {
           <div className="panel-body grid grid-cols-2 gap-x-4 max-[640px]:grid-cols-1">
             <div className="col-span-full"><Field label="Yükümlülük">{(p) => <input className="input" {...p} value={n.title} onChange={(e) => setN({ ...n, title: e.target.value })} />}</Field></div>
             <Field label="Kimin yükümlülüğü">{(p) => <select className="input" {...p} value={n.counterparty} onChange={(e) => setN({ ...n, counterparty: e.target.value })}><option value="SUPPLIER">Tedarikçi</option><option value="BUYER">Alıcı (biz)</option></select>}</Field>
-            <Field label="Takip eden rol" hint="Boşsa satınalma yöneticisine düşer.">{(p) => <select className="input" {...p} value={n.ownerRole} onChange={(e) => setN({ ...n, ownerRole: e.target.value })}>
-              <option value="">Sahipsiz</option>{['BUYER', 'LEGAL', 'FINANCE', 'SECURITY', 'REQUESTER', 'PROCUREMENT_MANAGER'].map((r) => <option key={r} value={r}>{roleLabel[r]}</option>)}</select>}</Field>
+            <Field label="Takip eden rol" hint="Boşsa Satınalma rolüne düşer.">{(p) => <select className="input" {...p} value={n.ownerRole} onChange={(e) => setN({ ...n, ownerRole: e.target.value })}>
+              <option value="">Sahipsiz</option>{OWNER_ROLES.map((r) => <option key={r} value={r}>{roleLabel[r]}</option>)}</select>}</Field>
             <Field label="İlk tarih">{(p) => <input className="input" type="date" required {...p} value={n.firstDue} onChange={(e) => setN({ ...n, firstDue: e.target.value })} />}</Field>
             <Field label="Tekrar">{(p) => <select className="input" {...p} value={n.recurrence} onChange={(e) => setN({ ...n, recurrence: e.target.value })}>{Object.entries(RECUR).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>}</Field>
             {n.recurrence !== 'NONE' ? <Field label="Son dönem (isteğe bağlı)">{(p) => <input className="input" type="date" {...p} value={n.until} onChange={(e) => setN({ ...n, until: e.target.value })} />}</Field> : <span />}

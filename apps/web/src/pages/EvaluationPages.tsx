@@ -4,7 +4,8 @@ import { api, apiBlob, ApiError } from '../lib/api.ts';
 import { useResource } from '../lib/useApi.ts';
 import { fmtDate, fmtDateTime, fmtMoney } from '../lib/format.ts';
 import { todayLocal } from '../lib/format.ts';
-import { ANSWER_RESPONSE as RESPONSE, roleLabel } from '../lib/labels.ts';
+import { ANSWER_RESPONSE as RESPONSE, OWNER_ROLES, roleLabel } from '../lib/labels.ts';
+import { v2Role } from '../lib/session.tsx';
 import { Banner, Empty, ErrorState, Field, Loading, PageHeader, Tag } from '../ui/kit.tsx';
 import { Icon } from '../ui/icons.tsx';
 import { Button } from '@/components/ui/button';
@@ -301,7 +302,7 @@ function CorrectiveRow({ x, roles, canVerify, run, busy }: { x: IncidentDetail['
       <div className="flex flex-wrap items-baseline gap-2"><strong>{x.title}</strong><span className="text-sm text-ink-subtle">{roleLabel[x.ownerRole] ?? x.ownerRole} · hedef {fmtDate(x.dueDate)}</span>
         <span className="ml-auto">{x.status === 'VERIFIED' ? <Tag label={{ text: `Doğrulandı · ${x.verifiedBy}`, tone: 'human', icon: 'stamp' }} /> : x.status === 'DONE' ? <Tag label={{ text: 'Tamamlandı, doğrulama bekliyor', tone: 'info', icon: 'clock' }} /> : <Tag label={{ text: 'Açık', tone: 'warn', icon: 'clock' }} />}</span></div>
       {x.doneNote && <p className="text-sm">{x.doneNote} <span className="text-ink-subtle">· {x.doneBy}</span></p>}
-      {x.status === 'OPEN' && roles.includes(x.ownerRole) && (doing ? <div className="flex flex-wrap items-end gap-2"><div className="min-w-0 flex-1"><Field label="Ne yapıldı ve kanıtı">{(p) => <input className="input" {...p} value={note} onChange={(e) => setNote(e.target.value)} />}</Field></div>
+      {x.status === 'OPEN' && roles.map(v2Role).includes(v2Role(x.ownerRole)) && (doing ? <div className="flex flex-wrap items-end gap-2"><div className="min-w-0 flex-1"><Field label="Ne yapıldı ve kanıtı">{(p) => <input className="input" {...p} value={note} onChange={(e) => setNote(e.target.value)} />}</Field></div>
         <Button size="sm" disabled={busy || note.trim().length < 10} onClick={() => void run(() => api(`/api/v1/corrective-actions/${x.id}/complete`, { method: 'POST', json: { note } }), 'Faaliyet tamamlandı; bağımsız doğrulama bekliyor.')}>Tamamlandı</Button></div>
         : <Button size="sm" variant="outline" className="justify-self-start" onClick={() => setDoing(true)}>Tamamlandı olarak işaretle</Button>)}
       {x.status === 'DONE' && canVerify && (x.doneByMe ? <p className="text-sm text-ink-subtle">Faaliyeti siz tamamladınız; doğrulama başka bir yetkilinin.</p>
@@ -311,13 +312,13 @@ function CorrectiveRow({ x, roles, canVerify, run, busy }: { x: IncidentDetail['
 }
 
 function NewAction({ incidentId, run }: { incidentId: string; run: (fn: () => Promise<unknown>, ok: string) => Promise<boolean> }) {
-  const [f, setF] = useState({ title: '', ownerRole: 'BUYER', dueDate: '' });
+  const [f, setF] = useState({ title: '', ownerRole: 'PROCUREMENT', dueDate: '' });
   return (
     <form className="grid grid-cols-[minmax(0,1fr)_170px_150px_auto] items-start gap-2 max-[900px]:grid-cols-1" onSubmit={(e) => { e.preventDefault();
-      void run(() => api(`/api/v1/incidents/${incidentId}/actions`, { method: 'POST', json: f }), 'Faaliyet eklendi; sorumluya görev düştü.').then((ok) => ok && setF({ title: '', ownerRole: 'BUYER', dueDate: '' })); }}>
+      void run(() => api(`/api/v1/incidents/${incidentId}/actions`, { method: 'POST', json: f }), 'Faaliyet eklendi; sorumluya görev düştü.').then((ok) => ok && setF({ title: '', ownerRole: 'PROCUREMENT', dueDate: '' })); }}>
       <Field label="Yeni faaliyet">{(p) => <input className="input" required minLength={5} {...p} value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} />}</Field>
       <Field label="Sorumlu rol">{(p) => <select className="input" {...p} value={f.ownerRole} onChange={(e) => setF({ ...f, ownerRole: e.target.value })}>
-        {['BUYER', 'PROCUREMENT_MANAGER', 'SECURITY', 'LEGAL', 'FINANCE', 'MASTER_DATA', 'REQUESTER'].map((k) => <option key={k} value={k}>{roleLabel[k]}</option>)}</select>}</Field>
+        {OWNER_ROLES.map((k) => <option key={k} value={k}>{roleLabel[k]}</option>)}</select>}</Field>
       <Field label="Hedef tarih (zorunlu)">{(p) => <input className="input" type="date" required {...p} value={f.dueDate} onChange={(e) => setF({ ...f, dueDate: e.target.value })} />}</Field>
       <Button type="submit" size="sm" className="mt-6">Ekle</Button>
     </form>

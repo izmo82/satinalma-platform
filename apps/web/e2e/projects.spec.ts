@@ -1,3 +1,4 @@
+// v2 Faz 1 (D93/D95): yükümlülük ekleme formundaki rol seçicisi yalnız v2 rollerini (tekrarsız) sunar.
 import { expect, test, type Page } from '@playwright/test';
 
 // Faz 2 kritik tarayıcı görevleri (sentetik demo verisi: npm run db:seed).
@@ -95,4 +96,8 @@ test('sözleşme: ihbar son günü bitişe değil ihbar kuralına göre; görev 
   await page.getByRole('tab', { name: 'Yükümlülükler' }).click();
   await expect(page.getByRole('heading', { name: 'Yıllık sızma testi raporu' })).toBeVisible();
   await expect(page.getByText(/Sahipsiz/).first()).toBeVisible();
+  // v2: takip eden rol seçicisi Sahipsiz + iki v2 rolü sunar; eski kodlar aynı adla tekrar etmez.
+  await page.getByRole('button', { name: 'Yükümlülük ekle' }).click();
+  await expect(page.getByLabel('Takip eden rol').locator('option')).toHaveText(['Sahipsiz', 'Satınalma', 'Departman kullanıcısı']);
+  await page.getByRole('button', { name: 'Vazgeç' }).click();
 });

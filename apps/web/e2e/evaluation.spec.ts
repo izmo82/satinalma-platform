@@ -1,4 +1,4 @@
-// v2 Faz 1 (D93/D95): Yapay zekâ Yönetim sekmesine, Olaylar ve performans ağırlıkları Tedarikçiler sekmelerine taşındı; testler yeni yerlerden açar.
+// v2 Faz 1 (D93/D95): Yapay zekâ Yönetim sekmesine, Olaylar ve performans ağırlıkları Tedarikçiler sekmelerine taşındı; testler yeni yerlerden açar. Sorumlu rol seçicisi yalnız v2 rollerini (tekrarsız) sunar.
 import { expect, test, type Page } from '@playwright/test';
 
 // Faz 5 kritik tarayıcı görevleri: olay (UX12, T19), değerlendirme ve kritik engel (T20), raporlar (UX13), AI yönetişimi (T23). Sentetik demo verisi.
@@ -55,6 +55,8 @@ test('olay: bildirim iddiadır; bildiren doğrulayamaz; doğrulanınca puan etki
   await expect(page.getByText(/Puan etkisi: −3/)).toBeVisible();
   await expect(page.getByText('Doğrulandı', { exact: true }).first()).toBeVisible();
   await expect(page.getByRole('list').filter({ hasText: 'Ön inceleme başladı' })).toContainText('Doğrulandı');
+  // v2: düzeltici faaliyetin sorumlu rolü yalnız iki v2 rolü; eski kodlar aynı adla tekrar etmez.
+  await expect(page.getByLabel('Sorumlu rol').locator('option')).toHaveText(['Satınalma', 'Departman kullanıcısı']);
 });
 
 test('değerlendirme: kritik kontrolde "hayır" kritik engel gösterir; uyum oranı engeli aşmaz (T20)', async ({ page }, info) => {
