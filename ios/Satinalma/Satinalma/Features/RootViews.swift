@@ -16,29 +16,52 @@ struct RootView: View {
     }
 }
 
-/// Webin küçültülmüş hali değil: görev, tarama, kayıtlar (kabul/olay) ve ayarlar (04 iOS).
+/// Beş sekme (v2 D93, onaylı Figma): İşlerim, Sözleşmeler, Tara (bekleyen taslak rozeti), Tedarikçiler, Faturalar.
+/// Eski "Daha fazla" içeriği her sekme kökündeki profil düğmesinden açılan sayfadadır (dokunuş sayısı aynı).
 struct MainTabs: View {
     @Environment(DraftStore.self) private var drafts
     @Environment(SessionStore.self) private var session
     private var pendingCount: Int { drafts.visible(userId: session.me?.user.id, tenantId: session.tenantId).filter { $0.state != .uploaded }.count }
     var body: some View {
         TabView {
-            Tab("İşlerim", systemImage: "tray") { NavigationStack { TasksView() } }
-            Tab("Tara", systemImage: "doc.viewfinder") { NavigationStack { ScanView() } }
+            Tab("İşlerim", systemImage: "tray") { NavigationStack { TasksView().profileButton() } }
+            Tab("Sözleşmeler", systemImage: "doc.richtext") { NavigationStack { ContractsList().profileButton() } }
+            Tab("Tara", systemImage: "doc.viewfinder") { NavigationStack { ScanView().profileButton() } }
                 .badge(pendingCount)
-            Tab("Kayıtlar", systemImage: "list.bullet.rectangle") { NavigationStack { RecordsView() } }
-            Tab("Daha fazla", systemImage: "ellipsis.circle") { NavigationStack { MoreView() } }
+            Tab("Tedarikçiler", systemImage: "building.2") { NavigationStack { SuppliersList().profileButton() } }
+            Tab("Faturalar", systemImage: "doc.text") { NavigationStack { InvoicesList().profileButton() } }
         }
     }
+}
+
+/// Sekme kökündeki profil düğmesi: oturum, kiracı, cihaz bilgisi ve çıkış sayfasını açar.
+private struct ProfileButton: ViewModifier {
+    @State private var presented = false
+    func body(content: Content) -> some View {
+        content
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { presented = true } label: { Label("Profil ve oturum", systemImage: "person.crop.circle") }
+                }
+            }
+            .sheet(isPresented: $presented) { NavigationStack { ProfileView() } }
+    }
+}
+
+extension View {
+    func profileButton() -> some View { modifier(ProfileButton()) }
 }
 
 struct LoginView: View {
     @Environment(SessionStore.self) private var session
     #if DEBUG
+    /// Sentetik kullanıcılar ve v2 rolleri (apps/api/src/devdata.ts).
     private let users: [(String, String)] = [
-        ("alper.satinalma@example.test", "Satınalmacı + talep sahibi"), ("leyla.hukuk@example.test", "Hukuk"),
-        ("kerem.hukuk@example.test", "Hukuk + satınalma yöneticisi"), ("ferda.finans@example.test", "Finans (fatura girişi)"),
-        ("nur.finansonay@example.test", "Finans (fatura onayı)"), ("selin.guvenlik@example.test", "Bilgi güvenliği"), ("mine.anaveri@example.test", "Ana veri"),
+        ("alper.satinalma@example.test", "Satınalma + Departman kullanıcısı (Bilgi Teknolojileri)"), ("leyla.hukuk@example.test", "Satınalma"),
+        ("kerem.hukuk@example.test", "Satınalma"), ("ferda.finans@example.test", "Satınalma (fatura girişi)"),
+        ("nur.finansonay@example.test", "Satınalma"), ("selin.guvenlik@example.test", "Departman kullanıcısı (Bilgi Teknolojileri)"), ("mine.anaveri@example.test", "Satınalma"),
+        ("tolga.teknik@example.test", "Departman kullanıcısı (Bilgi Teknolojileri)"), ("tamer.yonetici@example.test", "Yönetici"),
+        ("deniz.denetci@example.test", "Denetçi"), ("ece.cokkiracili@example.test", "Satınalma (iki kiracı)"),
     ]
     #endif
 
@@ -86,15 +109,18 @@ struct LoginView: View {
     }
 }
 
-struct MoreView: View {
+/// Profil ve oturum (eski "Daha fazla" sekmesi): kullanıcı, roller, departmanlar, kiracı seçimi, şirket kapsamı, cihaz, çıkış.
+struct ProfileView: View {
     @Environment(SessionStore.self) private var session
     @Environment(DraftStore.self) private var drafts
+    @Environment(\.dismiss) private var dismiss
     var body: some View {
         List {
             if let me = session.me {
                 Section("Oturum") {
                     LabeledContent("Kullanıcı", value: me.user.displayName)
-                    LabeledContent("Roller", value: me.roles.map { Labels.role[$0] ?? $0 }.joined(separator: ", "))
+                    LabeledContent("Roller", value: Labels.roleNames(me.roles))
+                    LabeledContent("Departmanlar", value: me.allDepartments == true ? "Tüm departmanlar" : (me.departments ?? []).map(\.name).joined(separator: ", ").ifEmpty("Departman atanmadı"))
                     if me.memberships.count > 1 {
                         Picker("Kiracı", selection: Binding(get: { me.activeTenantId ?? "" }, set: { id in Task { await session.switchTenant(id) } })) {
                             ForEach(me.memberships) { Text($0.tenantName).tag($0.tenantId) }
@@ -110,9 +136,11 @@ struct MoreView: View {
                 LabeledContent("Bekleyen taslak", value: "\(drafts.visible(userId: session.me?.user.id, tenantId: session.tenantId).filter { $0.state != .uploaded }.count)")
                 Text("Oturum belirteci ve taslak şifreleme anahtarı yalnız bu cihazın anahtar zincirinde tutulur.").font(.footnote).foregroundStyle(.secondary)
             }
-            Button("Çıkış", role: .destructive) { session.logout() }
+            Button("Çıkış", role: .destructive) { dismiss(); session.logout() }
         }
-        .navigationTitle("Daha fazla")
+        .navigationTitle("Profil")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Kapat") { dismiss() } } }
     }
 }
 

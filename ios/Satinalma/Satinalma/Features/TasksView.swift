@@ -11,7 +11,15 @@ struct TasksView: View {
             Loadable(value: tasks, error: error, retry: load) { items in
                 if items.isEmpty { ContentUnavailableView("Bekleyen işiniz yok", systemImage: "tray", description: Text("Rolünüze atanmış işler burada görünür.")) }
                 ForEach(items) { task in
-                    NavigationLink(value: task) { TaskRow(task: task) }
+                    if TaskDestination.opensOnMobile(task.entityType) {
+                        NavigationLink(value: task) { TaskRow(task: task) }
+                    } else {
+                        // Mobil ekranı olmayan ya da bilinmeyen tür: gezinme yok, açıklama satırın içinde (çökme yok).
+                        VStack(alignment: .leading, spacing: 4) {
+                            TaskRow(task: task)
+                            Label("Bu iş web uygulamasında yapılır.", systemImage: "desktopcomputer").font(.footnote).foregroundStyle(.secondary)
+                        }.accessibilityElement(children: .combine)
+                    }
                 }
             }
         }
@@ -47,8 +55,10 @@ struct TaskRow: View {
 }
 
 /// Görevin bağlı olduğu kayıt: aynı API ve yetkiyle mobil ekran (T45); karşılığı olmayan tür için açık mesaj.
+/// Fatura görevi salt okunur fatura ayrıntısını açar (v2: iOS fatura onayı kalktı).
 struct TaskDestination: View {
     let task: TaskItem
+    static func opensOnMobile(_ entityType: String) -> Bool { ["contract_version", "invoice", "incident", "document_version"].contains(entityType) }
     var body: some View {
         switch task.entityType {
         case "contract_version": SignatureView(contractVersionId: task.entityId)

@@ -8,7 +8,7 @@ final class SessionStore {
     var me: Me?
     var isLoading = false
     var lastError: String?
-    /// Ağ durumu: çevrimdışıyken nihai onay, kabul ve imza kararı gönderilmez (T44).
+    /// Ağ durumu: çevrimdışıyken imza kararı ve kayıt yazımı gönderilmez (T44).
     private(set) var isOnline = true
     let api: APIClient
 
@@ -115,6 +115,12 @@ final class SessionStore {
                 let (m2, _): (Me, String?) = try await api.send("/api/v1/me", token: token, tenantId: tenantId)
                 me = m2
             } else {
+                // Sunucu tek üyelikte kiracıyı kendisi seçer; taslaklar kiracıya bağlı saklandığı için yerelde de tutulur
+                // (yoksa tarama taslağı sessizce kaydedilmiyordu).
+                if tenantId == nil, let active = m.activeTenantId {
+                    tenantId = active
+                    Keychain.save(active, account: "tenant")
+                }
                 me = m
             }
             lastError = nil
@@ -143,7 +149,7 @@ final class SessionStore {
         try await api.send(path, token: try await accessToken(), tenantId: tenantId)
     }
 
-    /// Yazma isteği. Çevrimdışıysa hiç gönderilmez: mali kabul, onay ve imza kararı çevrimdışı yapılmaz.
+    /// Yazma isteği. Çevrimdışıysa hiç gönderilmez: imza kararı, olay ve faaliyet kaydı çevrimdışı yapılmaz.
     /// `idempotencyKey`: aynı form için sabit anahtar; yanıtı kaybolan istek tekrar gönderilirse sunucu ikinci kayıt açmaz.
     func post<T: Decodable & Sendable>(_ path: String, body: (any Encodable & Sendable)? = nil, ifMatch: String? = nil, idempotencyKey: String? = nil, method: String = "POST") async throws -> T {
         guard isOnline else { throw APIError(code: "offline", message: "Çevrimdışısınız; bu işlem yalnız bağlantı varken ve güncel kayıt üzerinde yapılır.") }

@@ -1,25 +1,66 @@
 import SwiftUI
 
-/// Kaynaklı onay (04 iOS, T44): tutar, firma, bulgular ve sorumlu rol görünür. Onay, görülen kontrol sonucunun parmak iziyle
-/// (If-Match) gönderilir; arada tahsis/sipariş/kabul değiştiyse sunucu 409 döner. Çevrimdışı onay yok.
+/// Faturalar sekmesi (v2 D93): liste salt okunur; eşleşme durumu web ile aynı (Eşleşti / Eşleşmedi / Hukuken iptal/ret).
+/// Eşleşmeyenler önce, sonra tarih (yeni → eski).
+struct InvoicesList: View {
+    @Environment(SessionStore.self) private var session
+    @State private var items: [InvoiceRow]?
+    @State private var error: Notice?
+    @State private var query = ""
+    var body: some View {
+        List {
+            OfflineBanner().listRowInsets(EdgeInsets())
+            Loadable(value: items, error: error, retry: load) { all in
+                let rows = filtered(all)
+                if rows.isEmpty { ContentUnavailableView(query.isEmpty ? "Fatura yok" : "Eşleşen fatura yok", systemImage: "doc.text") }
+                ForEach(rows.sorted { (rank($0), $1.issueDate) < (rank($1), $0.issueDate) }) { x in
+                    NavigationLink(value: x) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            AdaptiveStack { Text(x.invoiceNo).font(.body.weight(.semibold)); Text(x.matchText).font(.caption).foregroundStyle(x.matched == true ? Color.secondary : Color.orange) }
+                            Text(x.supplierName).font(.subheadline)
+                            if let note = Labels.supplierNote(x.supplierStatus, verified: x.supplierIdentityVerified) { Text(note).font(.caption).foregroundStyle(.orange) }
+                            Text("Departman: \(x.departmentName ?? "Departmansız")").font(.caption).foregroundStyle(.secondary)
+                            Text("\(Fmt.money(x.netAmount, x.currency)) · \(Fmt.date(x.issueDate))").font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
+                        }.accessibilityElement(children: .combine)
+                    }
+                }
+            }
+        }
+        .navigationTitle("Faturalar")
+        .searchable(text: $query, prompt: "Fatura no veya tedarikçi")
+        .navigationDestination(for: InvoiceRow.self) { InvoiceView(invoiceId: $0.id) }
+        .refreshable { await load() }
+        .task { await load() }
+    }
+    private func filtered(_ rows: [InvoiceRow]) -> [InvoiceRow] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        return q.isEmpty ? rows : rows.filter { $0.invoiceNo.localizedStandardContains(q) || $0.supplierName.localizedStandardContains(q) }
+    }
+    private func rank(_ x: InvoiceRow) -> Int { x.legalStatus != "RECEIVED" ? 2 : x.matched == true ? 1 : 0 }
+    private func load() async {
+        do { let (l, _): (InvoiceList, String?) = try await session.get("/api/v1/invoices"); items = l.items; error = nil } catch { self.error = Notice.from(error) }
+    }
+}
+
+/// Fatura ayrıntısı, salt okunur (v2 D93): tutar, firma, departman, tahsis hedefi ve kalan bulgular görünür.
+/// Onay, ret ve istisna kararı bu sistemde verilmez; ödeme ERP'de yürür.
 struct InvoiceView: View {
     let invoiceId: String
     @Environment(SessionStore.self) private var session
     @State private var data: InvoiceDetail?
     @State private var error: Notice?
-    @State private var notice: Notice?
-    @State private var confirming = false
-    @State private var busy = false
 
     var body: some View {
         List {
             OfflineBanner().listRowInsets(EdgeInsets())
-            if let notice { NoticeView(notice: notice) }
             Loadable(value: data, error: error, retry: load) { d in
                 Section {
+                    LabeledContent("Tür", value: Labels.invoiceKind[d.invoice.kind] ?? "Fatura")
                     LabeledContent("Tedarikçi", value: d.invoice.supplierName)
                     if let note = Labels.supplierNote(d.invoice.supplierStatus, verified: d.invoice.supplierIdentityVerified) { LabeledContent("Tedarikçi durumu") { Text(note).foregroundStyle(.orange) } }
-                    LabeledContent("Durum", value: Labels.invoiceStatus[d.status] ?? d.status)
+                    LabeledContent("Departman", value: d.invoice.departmentName ?? "Departmansız")
+                    LabeledContent("Tarih", value: Fmt.date(d.invoice.issueDate))
+                    LabeledContent("Eşleşme", value: d.matchText)
                     LabeledContent("Net", value: Fmt.money(d.check.netAmount, d.invoice.currency))
                     LabeledContent("KDV", value: Fmt.money(d.check.taxTotal, d.invoice.currency))
                     LabeledContent("Vergi dahil", value: Fmt.money(d.check.grossAmount, d.invoice.currency))
@@ -27,55 +68,42 @@ struct InvoiceView: View {
                         NavigationLink("Kaynak belgeyi aç") { DocumentPreview(documentVersionId: doc, expectedSha256: d.invoice.documentSha256, title: d.invoice.invoiceNo) }
                     }
                 }
-                Section("Satırlar") {
-                    ForEach(d.lines) { l in LabeledContent("\(l.lineNo). \(l.description)", value: "\(Fmt.qty(l.quantity)) \(l.unit) · \(Fmt.money(l.netAmount, d.invoice.currency))") }
-                    // Bulguyu çözmek için bağlı siparişe (kabul kaydı) doğrudan geçiş.
-                    ForEach(Array(Set(d.allocations.compactMap { a in a.poId.map { "\($0)|\(a.poCode ?? "")" } })).sorted(), id: \.self) { v in
-                        let parts = v.split(separator: "|", maxSplits: 1).map(String.init)
-                        NavigationLink("Siparişi aç: \(parts.count > 1 ? parts[1] : "")") { PurchaseOrderView(id: parts[0]) }
-                    }
-                }
-                Section("Neden eşleşmedi ve kim çözer") {
-                    if d.check.issues.isEmpty { Text("Bulgu yok.").foregroundStyle(.secondary) }
-                    ForEach(d.check.issues) { x in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("\(Labels.issueSeverity[x.severity] ?? x.severity) · Çözen: \(Labels.role[x.ownerRole] ?? x.ownerRole)").font(.caption.weight(.semibold))
-                                .foregroundStyle(x.severity == "BLOCK" ? Color.red : Color.orange)
-                            Text(x.message).font(.subheadline)
-                            if x.code == "SUPPLIER_MISMATCH" || x.code == "COMPANY_MISMATCH" { Text("Tahsis düzenleme web uygulamasında yapılır.").font(.caption).foregroundStyle(.secondary) }
+                Section("Satırlar ve eşleştirme") {
+                    ForEach(d.lines) { l in
+                        VStack(alignment: .leading, spacing: 4) {
+                            LabeledContent("\(l.lineNo). \(l.description)", value: "\(Fmt.qty(l.quantity)) \(l.unit) · \(Fmt.money(l.netAmount, d.invoice.currency))")
+                            let targets = d.allocations.filter { $0.lineNo == l.lineNo }
+                            if targets.isEmpty { Text("Sözleşmeye bağlanmadı").font(.footnote).foregroundStyle(.secondary) }
+                            // Hedef yalnız metin: eski sipariş bağı numarasıyla görünür, sipariş ekranı yok.
+                            ForEach(Array(targets.enumerated()), id: \.offset) { _, a in Label(a.targetText, systemImage: "arrow.turn.down.right").font(.footnote) }
                         }.accessibilityElement(children: .combine)
                     }
                 }
-                if d.decisions.contains(where: { $0.kind == "APPROVAL" || $0.kind == "REJECTION" }) {
-                    Section("Karar") { ForEach(Array(d.decisions.enumerated()), id: \.offset) { _, x in Text("\(x.kind == "APPROVAL" ? "Finans onayı" : x.kind == "REJECTION" ? "Ret" : "İstisna onayı") · \(x.decidedBy) · \(Fmt.date(x.decidedAt))").font(.footnote) } }
-                } else if d.can.approve {
-                    Section {
-                        if d.invoice.createdByMe { Text("Faturayı siz girdiniz; görev ayrılığı gereği başka bir finans kullanıcısı onaylar.").font(.footnote) }
-                        else {
-                            let enabled = !busy && session.isOnline && d.check.canApprove && d.status != "NEEDS_EXCEPTION"
-                            Button { confirming = true } label: { Label("Finans onayı", systemImage: "checkmark.seal") }
-                                .disabled(!enabled).foregroundStyle(enabled ? Color.accentColor : Color.secondary)
-                            if !session.isOnline { Text("Onay yalnız çevrimiçi ve güncel kayıt üzerinde verilir.").font(.footnote).foregroundStyle(.secondary) }
-                            else if !d.check.canApprove || d.status == "NEEDS_EXCEPTION" { Text("Engel veya istisna gerektiren bulgu varken onaylanamaz.").font(.footnote).foregroundStyle(.secondary) }
-                        }
+                Section {
+                    if d.visibleIssues.isEmpty { Text("Bulgu yok.").foregroundStyle(.secondary) }
+                    ForEach(d.visibleIssues) { x in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("\(Labels.issueSeverity[x.severity] ?? "Bulgu") · Çözen: \(Labels.role[x.ownerRole] ?? "Satınalma")").font(.caption.weight(.semibold))
+                                .foregroundStyle(x.severity == "BLOCK" ? Color.red : Color.orange)
+                            Text(x.message).font(.subheadline)
+                        }.accessibilityElement(children: .combine)
                     }
+                } header: { Text("Bulgular") } footer: { Text("Eşleştirme (tahsis) düzenleme web uygulamasında yapılır.") }
+                if !d.decisions.isEmpty {
+                    Section {
+                        ForEach(Array(d.decisions.enumerated()), id: \.offset) { _, x in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("\(Labels.pastDecision[x.kind] ?? "Karar (v1 kaydı)") · \(x.decidedBy)").font(.subheadline)
+                                Text([Fmt.date(x.decidedAt), x.reason].compactMap { $0 }.joined(separator: " · ")).font(.footnote).foregroundStyle(.secondary)
+                            }.accessibilityElement(children: .combine)
+                        }
+                    } header: { Text("Karar geçmişi") } footer: { Text("Fatura onayı artık bu sistemde verilmez; ödeme ERP'de yürür.") }
                 }
             }
         }
         .navigationTitle(data?.invoice.invoiceNo ?? "Fatura")
         .refreshable { await load() }
         .task { await load() }
-        .confirmationDialog("Faturayı onayla", isPresented: $confirming, titleVisibility: .visible) {
-            Button("Onayla: \(Fmt.money(data?.check.grossAmount, data?.invoice.currency ?? "TRY"))") { Task { await approve() } }
-        } message: { Text("Onay, şu an gördüğünüz kontrol sonucuna bağlıdır. Ödeme bu uygulamadan yapılmaz.") }
-    }
-
-    private func approve() async {
-        guard let d = data else { return }
-        busy = true; defer { busy = false }
-        do { let _: Empty = try await session.post("/api/v1/invoices/\(d.invoice.id)/approve", ifMatch: d.checkFingerprint); notice = Notice(tone: .info, text: "Fatura onaylandı.") }
-        catch { notice = Notice.from(error) }
-        await load()
     }
 
     private func load() async {

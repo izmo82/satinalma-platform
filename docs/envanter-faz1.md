@@ -519,15 +519,15 @@ Dil: yalnız Türkçe sabit metin (yerelleştirme dosyası taranmadı, Bölüm 8
 
 | # | İşlev | Dosya:satır | v2 kararı | v2'deki yeri | ✓ |
 |---|---|---|---|---|---|
-| I-00-01 | Oturum kapısı: oturum varsa sekmeler, yoksa giriş; açılışta oturum yenileme | `RootViews.swift:3-17` | KALIR | Giriş (Entra) | [ ] |
+| I-00-01 | Oturum kapısı: oturum varsa sekmeler, yoksa giriş; açılışta oturum yenileme | `RootViews.swift:3-17` | KALIR | Giriş (Entra) | [x] açılışta oturum yenilendi; çıkışta giriş ekranı (simülatör) |
 | I-00-02 | Bağlantı gelince bekleyen taslakların otomatik yüklenmesi | `RootViews.swift:12-15` | KALIR | Tara | [ ] |
-| I-00-03 | Dört sekme: İşlerim, Tara (bekleyen taslak rozeti), Kayıtlar, Daha fazla | `RootViews.swift:20-33` | KALIR (içerik değişir; sekme sayısı ve erişim azalmamalı) | sekmeler | [ ] |
+| I-00-03 | Dört sekme: İşlerim, Tara (bekleyen taslak rozeti), Kayıtlar, Daha fazla | `RootViews.swift:20-33` | KALIR (içerik değişir; sekme sayısı ve erişim azalmamalı) | sekmeler | [x] beş sekme İşlerim/Sözleşmeler/Tara/Tedarikçiler/Faturalar, Tara rozeti korunur (simülatör) |
 | I-00-04 | Kurumsal giriş "Kurumsal hesapla giriş yap" + açıklama | `RootViews.swift:49-57` | KALIR | Giriş | [ ] |
-| I-00-05 | Geliştirme girişi: 7 sentetik kullanıcı (yalnız DEBUG); yayın derlemesinde açıklama | `RootViews.swift:37-43, 58-74` | KALIR (yalnız geliştirme; liste yeni rollere göre güncellenir) | Giriş (dev) | [ ] |
+| I-00-05 | Geliştirme girişi: 7 sentetik kullanıcı (yalnız DEBUG); yayın derlemesinde açıklama | `RootViews.swift:37-43, 58-74` | KALIR (yalnız geliştirme; liste yeni rollere göre güncellenir) | Giriş (dev) | [x] 11 sentetik kullanıcı v2 rol adlarıyla (simülatör) |
 | I-00-06 | Giriş durumları: ayarlar alınıyor, "Tekrar dene", hata metni | `RootViews.swift:75-81` | KALIR | Giriş | [ ] |
-| I-00-07 | Daha fazla > Oturum: kullanıcı, roller, kiracı seçici (birden çok üyelikte), şirket kapsamı | `RootViews.swift:94-106` | KALIR (yeni rol adları, departman) | Daha fazla | [ ] |
-| I-00-08 | Daha fazla > Cihaz: bağlantı durumu, bekleyen taslak sayısı, anahtar zinciri açıklaması | `RootViews.swift:108-112` | KALIR | Daha fazla | [ ] |
-| I-00-09 | "Çıkış" | `RootViews.swift:113` | KALIR | Daha fazla | [ ] |
+| I-00-07 | Daha fazla > Oturum: kullanıcı, roller, kiracı seçici (birden çok üyelikte), şirket kapsamı | `RootViews.swift:94-106` | KALIR (yeni rol adları, departman) | Daha fazla | [x] profil sayfasında kullanıcı, v2 roller, Departmanlar, kiracı seçici, şirket kapsamı (simülatör) |
+| I-00-08 | Daha fazla > Cihaz: bağlantı durumu, bekleyen taslak sayısı, anahtar zinciri açıklaması | `RootViews.swift:108-112` | KALIR | Daha fazla | [x] profil sayfasında bağlantı, bekleyen taslak, anahtar zinciri metni (simülatör) |
+| I-00-09 | "Çıkış" | `RootViews.swift:113` | KALIR | Daha fazla | [x] profil sayfasında Çıkış çalıştı (simülatör) |
 | I-00-10 | Ortak: çevrimdışı bandı, yükleniyor / "Yüklenemedi" + "Yeniden dene", çakışma (409) ve belirsiz sonuç uyarıları, erişilebilirlik metin boyutunda dikey düzen | `Common.swift:4-84` | KALIR | tüm ekranlar | [ ] |
 
 ### 4.1 İşlerim — `Features/TasksView.swift`
@@ -536,8 +536,8 @@ API: `GET /api/v1/tasks?view=mine`.
 
 | # | İşlev | Dosya:satır | v2 kararı | v2'deki yeri | ✓ |
 |---|---|---|---|---|---|
-| I-01-01 | Görev listesi: önem, kayıt no, son tarih, başlık, neden, sonraki adım; aşağı çekerek yenile; boş durum | `TasksView.swift:8-47` | KALIR (v2: onaylar, hatırlatıcılar, risk görevleri) | İşlerim | [ ] |
-| I-01-02 | Görevden ekrana geçiş: contract_version → İmza kontrolü; invoice → Fatura; incident → Olay; document_version → Belge önizleme | `TasksView.swift:50-58` | KALIR (v2'de sözleşme onayı ekranı eklenir) | İşlerim | [ ] |
+| I-01-01 | Görev listesi: önem, kayıt no, son tarih, başlık, neden, sonraki adım; aşağı çekerek yenile; boş durum | `TasksView.swift:8-47` | KALIR (v2: onaylar, hatırlatıcılar, risk görevleri) | İşlerim | [x] görev listesi PROCUREMENT ve DEPARTMENT_USER ile görüldü (simülatör) |
+| I-01-02 | Görevden ekrana geçiş: contract_version → İmza kontrolü; invoice → Fatura; incident → Olay; document_version → Belge önizleme | `TasksView.swift:50-58` | KALIR (v2'de sözleşme onayı ekranı eklenir) | İşlerim | [x] contract_version → İmza, invoice → salt okunur fatura görüldü (simülatör) |
 | I-01-03 | Karşılığı olmayan tür için "Bu iş webde yapılır" ekranı | `TasksView.swift:58-61` | KALIR | İşlerim | [ ] |
 
 ### 4.2 Tara — `Features/ScanView.swift`
@@ -547,28 +547,28 @@ API: `POST /api/v1/documents` (DraftStore üzerinden; `Core/DraftStore.swift` ay
 | # | İşlev | Dosya:satır | v2 kararı | v2'deki yeri | ✓ |
 |---|---|---|---|---|---|
 | I-02-01 | "Kamerayla tara" (belge kamerası; yoksa açıklama) | `ScanView.swift:25-28, 57, 197-212` | DÖNÜŞÜR | Sözleşme ekle > tarama | [ ] |
-| I-02-02 | "Fotoğraflardan seç" (en çok 30 görsel) | `ScanView.swift:30, 63-69` | DÖNÜŞÜR | Sözleşme ekle > tarama | [ ] |
+| I-02-02 | "Fotoğraflardan seç" (en çok 30 görsel) | `ScanView.swift:30, 63-69` | DÖNÜŞÜR | Sözleşme ekle > tarama | [x] fotoğraf seçildi, sayfa önizlemesi göründü (simülatör) |
 | I-02-03 | "PDF dosyası seç" | `ScanView.swift:31, 58-62` | DÖNÜŞÜR | Sözleşme ekle > tarama | [ ] |
-| I-02-04 | Sayfa önizleme şeridi: döndür, sil, düşük çözünürlük uyarısı | `ScanView.swift:101-117` | KALIR | Sözleşme ekle > tarama | [ ] |
-| I-02-05 | Belge bilgisi: Başlık, Tür (Fatura, Sözleşme, Teklif, Diğer), Şirket | `ScanView.swift:119-124` | DÖNÜŞÜR (sözleşme + proje seçimi; diğer türler K-05) | Sözleşme ekle | [ ] |
-| I-02-06 | "Taslak olarak kaydet ve yükle" (A4 PDF üretimi, 25 MB sınırı), "Vazgeç" | `ScanView.swift:125-138, 141-163` | KALIR | Sözleşme ekle | [ ] |
-| I-02-07 | Şifreli çevrimdışı taslak; bağlantı gelince yükleme; yükleme sonucu mesajı | `ScanView.swift:34-46` | KALIR | Sözleşme ekle | [ ] |
-| I-02-08 | "Taslaklar ve yüklemeler" listesi: durum (Yüklenmedi, Yükleniyor, Hata, Yüklendi), sunucu mesajı, mükerrer notu, sahipsiz eski taslak uyarısı | `ScanView.swift:49-54, 166-195` | KALIR | Tara | [ ] |
+| I-02-04 | Sayfa önizleme şeridi: döndür, sil, düşük çözünürlük uyarısı | `ScanView.swift:101-117` | KALIR | Sözleşme ekle > tarama | [x] döndür/sil ve düşük çözünürlük uyarısı göründü (simülatör) |
+| I-02-05 | Belge bilgisi: Başlık, Tür (Fatura, Sözleşme, Teklif, Diğer), Şirket | `ScanView.swift:119-124` | DÖNÜŞÜR (sözleşme + proje seçimi; diğer türler K-05) | Sözleşme ekle | [x] Başlık, Tür, Şirket alanları (simülatör) |
+| I-02-06 | "Taslak olarak kaydet ve yükle" (A4 PDF üretimi, 25 MB sınırı), "Vazgeç" | `ScanView.swift:125-138, 141-163` | KALIR | Sözleşme ekle | [x] "Taslak olarak kaydet ve yükle" çalıştı (simülatör) |
+| I-02-07 | Şifreli çevrimdışı taslak; bağlantı gelince yükleme; yükleme sonucu mesajı | `ScanView.swift:34-46` | KALIR | Sözleşme ekle | [x] "Yüklendi: Belge sürümü kaydedildi." (simülatör) |
+| I-02-08 | "Taslaklar ve yüklemeler" listesi: durum (Yüklenmedi, Yükleniyor, Hata, Yüklendi), sunucu mesajı, mükerrer notu, sahipsiz eski taslak uyarısı | `ScanView.swift:49-54, 166-195` | KALIR | Tara | [x] listede Yüklendi durumu ve sunucu mesajı (simülatör) |
 | I-02-09 | Taslak işlemleri: "Yükle" / "Tekrar yükle", "Listeden kaldır", "Sil" (onaylı; yüklenirken silinemez) | `ScanView.swift:72-77, 181-187` | KALIR | Tara | [ ] |
 
 ### 4.3 Kayıtlar — `Features/RecordsView.swift`
 
 | # | İşlev | Dosya:satır | v2 kararı | v2'deki yeri | ✓ |
 |---|---|---|---|---|---|
-| I-03-01 | Bölüm seçici: Siparişler, Olaylar, Faturalar (Faturalar yalnız FINANCE, BUYER, PROCUREMENT_MANAGER, LEGAL, AUDITOR) | `RecordsView.swift:4-16` | DÖNÜŞÜR (Siparişler bölümü kalkar) | Kayıtlar | [ ] |
-| I-03-02 | Sipariş listesi (kod, durum, tedarikçi, tutar), boş durum | `RecordsView.swift:51-78` | **KALKAR (onaylı liste)**: siparişler; analizdeki "iOS kayıtlar kalır" satırıyla çelişki için bkz. K-09 | yok | [ ] |
-| I-03-03 | Sipariş detayı: tedarikçi, durum, sözleşme, kalemler (sipariş/kabul/faturalanan), kabul geçmişi | `RecordsView.swift:81-141` | **KALKAR (onaylı liste)** (K-09) | yok | [ ] |
-| I-03-04 | "Mal kabulü kaydet" / "Hizmet kabulü kaydet" sayfası: miktar, not, hizmet dönemi; tekrar anahtarı; belirsiz sonuçta "Tekrar gönder" | `RecordsView.swift:106-108, 128-136, 144-197` | **KALKAR (onaylı liste)**: mal/hizmet kabul | yok | [ ] |
-| I-03-05 | Olay listesi (kod, durum, "İtiraz açık", tedarikçi, şiddet), boş durum | `RecordsView.swift:200-231` | KALIR (analiz: iOS kayıtlar kalır); web'de olaylar tedarikçi kartına birleşiyor, iOS karşılığı bkz. K-10 | Kayıtlar | [ ] |
-| I-03-06 | "Olay bildir" sayfası: tedarikçi, kategori, şiddet, olay tarihi, başlık, açıklama; tekrar anahtarı (`POST /incidents`) | `RecordsView.swift:224-225, 304-356` | KALIR (K-10) | Kayıtlar | [ ] |
-| I-03-07 | Olay detayı: durum, tarih, tedarikçi, kategori, şiddet, puan etkisi, olay metni, zaman çizelgesi | `RecordsView.swift:234-281` | KALIR (K-10) | Kayıtlar | [ ] |
+| I-03-01 | Bölüm seçici: Siparişler, Olaylar, Faturalar (Faturalar yalnız FINANCE, BUYER, PROCUREMENT_MANAGER, LEGAL, AUDITOR) | `RecordsView.swift:4-16` | DÖNÜŞÜR (Siparişler bölümü kalkar) | Kayıtlar | [x] bölüm seçici kalktı; Olaylar Tedarikçiler sekmesinde, Faturalar kendi sekmesinde (simülatör) |
+| I-03-02 | Sipariş listesi (kod, durum, tedarikçi, tutar), boş durum | `RecordsView.swift:51-78` | **KALKAR (onaylı liste)**: siparişler; analizdeki "iOS kayıtlar kalır" satırıyla çelişki için bkz. K-09 | yok | [x] kaldırıldı; iOS'ta sipariş listesi yok (kod + simülatör) |
+| I-03-03 | Sipariş detayı: tedarikçi, durum, sözleşme, kalemler (sipariş/kabul/faturalanan), kabul geçmişi | `RecordsView.swift:81-141` | **KALKAR (onaylı liste)** (K-09) | yok | [x] kaldırıldı; sipariş ayrıntı ekranı yok (kod) |
+| I-03-04 | "Mal kabulü kaydet" / "Hizmet kabulü kaydet" sayfası: miktar, not, hizmet dönemi; tekrar anahtarı; belirsiz sonuçta "Tekrar gönder" | `RecordsView.swift:106-108, 128-136, 144-197` | **KALKAR (onaylı liste)**: mal/hizmet kabul | yok | [x] kaldırıldı; kabul kaydı sayfası yok (kod) |
+| I-03-05 | Olay listesi (kod, durum, "İtiraz açık", tedarikçi, şiddet), boş durum | `RecordsView.swift:200-231` | KALIR (analiz: iOS kayıtlar kalır); web'de olaylar tedarikçi kartına birleşiyor, iOS karşılığı bkz. K-10 | Kayıtlar | [x] Tedarikçiler > Olaylar listesi (simülatör) |
+| I-03-06 | "Olay bildir" sayfası: tedarikçi, kategori, şiddet, olay tarihi, başlık, açıklama; tekrar anahtarı (`POST /incidents`) | `RecordsView.swift:224-225, 304-356` | KALIR (K-10) | Kayıtlar | [x] Olay bildir: tedarikçi seçici sunucu etiketiyle, OLY-2026-0040 bildirildi (simülatör) |
+| I-03-07 | Olay detayı: durum, tarih, tedarikçi, kategori, şiddet, puan etkisi, olay metni, zaman çizelgesi | `RecordsView.swift:234-281` | KALIR (K-10) | Kayıtlar | [x] olay ayrıntısı açıldı (simülatör) |
 | I-03-08 | Düzeltici faaliyet "Tamamlandı olarak işaretle" (not; `POST /corrective-actions/:id/complete`) | `RecordsView.swift:258-268, 285-297` | KALIR (K-10) | Kayıtlar | [ ] |
-| I-03-09 | Fatura listesi: no, durum (karar / "Engelli" / "Karar bekliyor"), tedarikçi + durum notu, tutar; boş durum | `RecordsView.swift:21-48` | SADELEŞİR (durum: eşleşti/eşleşmedi; salt okunur) | Kayıtlar > Faturalar | [ ] |
+| I-03-09 | Fatura listesi: no, durum (karar / "Engelli" / "Karar bekliyor"), tedarikçi + durum notu, tutar; boş durum | `RecordsView.swift:21-48` | SADELEŞİR (durum: eşleşti/eşleşmedi; salt okunur) | Kayıtlar > Faturalar | [x] Faturalar sekmesi: eşleşme durumu, departman, tutar (simülatör) |
 
 ### 4.4 Fatura — `Features/InvoiceView.swift`
 
@@ -576,13 +576,13 @@ API: `GET /api/v1/invoices/:id`, `POST /api/v1/invoices/:id/approve`.
 
 | # | İşlev | Dosya:satır | v2 kararı | v2'deki yeri | ✓ |
 |---|---|---|---|---|---|
-| I-04-01 | Özet: tedarikçi, tedarikçi durum notu, durum, net, KDV, vergi dahil | `InvoiceView.swift:19-25` | KALIR (salt okunur) | Fatura | [ ] |
+| I-04-01 | Özet: tedarikçi, tedarikçi durum notu, durum, net, KDV, vergi dahil | `InvoiceView.swift:19-25` | KALIR (salt okunur) | Fatura | [x] salt okunur özet + departman + eşleşme (simülatör) |
 | I-04-02 | "Kaynak belgeyi aç" (belge önizleme, hash karşılaştırma) | `InvoiceView.swift:26-28` | KALIR | Fatura | [ ] |
-| I-04-03 | "Satırlar" listesi | `InvoiceView.swift:30-31` | KALIR | Fatura | [ ] |
-| I-04-04 | "Siparişi aç: …" bağlantısı (kabul kaydına geçiş) | `InvoiceView.swift:32-36` | **KALKAR (onaylı liste)**: siparişler ve kabul | yok | [ ] |
-| I-04-05 | "Neden eşleşmedi ve kim çözer" bulgu listesi (engel/uyarı, çözen rol) | `InvoiceView.swift:38-48` | **KALKAR (onaylı liste)**: üçlü eşleştirme/tolerans bulguları; yerine sözleşme eşleşme durumu gösterilir | Fatura (eşleşme bilgisi) | [ ] |
+| I-04-03 | "Satırlar" listesi | `InvoiceView.swift:30-31` | KALIR | Fatura | [x] satırlar ve sözleşme/eski sipariş hedefi metin olarak (simülatör) |
+| I-04-04 | "Siparişi aç: …" bağlantısı (kabul kaydına geçiş) | `InvoiceView.swift:32-36` | **KALKAR (onaylı liste)**: siparişler ve kabul | yok | [x] kaldırıldı; eski sipariş bağı düz metin (simülatör) |
+| I-04-05 | "Neden eşleşmedi ve kim çözer" bulgu listesi (engel/uyarı, çözen rol) | `InvoiceView.swift:38-48` | **KALKAR (onaylı liste)**: üçlü eşleştirme/tolerans bulguları; yerine sözleşme eşleşme durumu gösterilir | Fatura (eşleşme bilgisi) | [x] kaldırılan kodlar gizli; kalan bulgular "Bulgular" altında (simülatör) |
 | I-04-06 | "Karar" geçmişi (Finans onayı / Ret / İstisna onayı) | `InvoiceView.swift:49-50` | KALIR (salt okunur geçmiş) | Fatura | [ ] |
-| I-04-07 | "Finans onayı" düğmesi + onay iletişim kutusu (tutarla), If-Match; çevrimdışı ve engel açıklamaları; görev ayrılığı metni | `InvoiceView.swift:51-62, 68-79` | **KALKAR (onaylı liste)**: iOS fatura finans onayı | yok | [ ] |
+| I-04-07 | "Finans onayı" düğmesi + onay iletişim kutusu (tutarla), If-Match; çevrimdışı ve engel açıklamaları; görev ayrılığı metni | `InvoiceView.swift:51-62, 68-79` | **KALKAR (onaylı liste)**: iOS fatura finans onayı | yok | [x] onay düğmesi yok, demo faturalarda karar 0 (simülatör + API) |
 
 ### 4.5 İmza kontrolü — `Features/SignatureView.swift`
 
@@ -590,10 +590,10 @@ API: `GET /api/v1/contract-versions/:id/signature-status`, `POST …/signature-r
 
 | # | İşlev | Dosya:satır | v2 kararı | v2'deki yeri | ✓ |
 |---|---|---|---|---|---|
-| I-05-01 | Durum: sonuç, otomatik tarama, fiziksel asıl; uyarı metni | `SignatureView.swift:20-26` | KALIR | İmza | [ ] |
-| I-05-02 | "Özgün belgeyi aç" (sürüm no, hash karşılaştırma) | `SignatureView.swift:27-31` | KALIR | İmza | [ ] |
-| I-05-03 | Taraflar: gereksinim durumu, imza yuvaları; yuvasız taraf için "web'de yapılır" açıklaması | `SignatureView.swift:32-52` | KALIR | İmza | [ ] |
-| I-05-04 | "Karar ver" sayfası: karar (Görüntü teyit / Eksik / Belirsiz), gözlenen işaret, sayfa, gerekçe (≥3); If-Match + belge SHA | `SignatureView.swift:45-47, 69-84, 103-146` | KALIR (inceleyen rol: K-11) | İmza | [ ] |
+| I-05-01 | Durum: sonuç, otomatik tarama, fiziksel asıl; uyarı metni | `SignatureView.swift:20-26` | KALIR | İmza | [x] Sözleşmeler sekmesinden imza ekranı açıldı (simülatör) |
+| I-05-02 | "Özgün belgeyi aç" (sürüm no, hash karşılaştırma) | `SignatureView.swift:27-31` | KALIR | İmza | [x] "Özgün belgeyi aç" görüldü (simülatör) |
+| I-05-03 | Taraflar: gereksinim durumu, imza yuvaları; yuvasız taraf için "web'de yapılır" açıklaması | `SignatureView.swift:32-52` | KALIR | İmza | [x] taraflar ve yuvalar görüldü (simülatör) |
+| I-05-04 | "Karar ver" sayfası: karar (Görüntü teyit / Eksik / Belirsiz), gözlenen işaret, sayfa, gerekçe (≥3); If-Match + belge SHA | `SignatureView.swift:45-47, 69-84, 103-146` | KALIR (inceleyen rol: K-11) | İmza | [x] karar sayfası açıldı, gönderilmedi (simülatör) |
 | I-05-05 | "Tamamlanmak için" engel listesi | `SignatureView.swift:54-59` | KALIR | İmza | [ ] |
 | I-05-06 | Salt okunur durumlar: kesinleşti / yerini yeni sürüm aldı; çevrimdışıyken karar kapalı | `SignatureView.swift:61-63, 87-89` | KALIR | İmza | [ ] |
 

@@ -36,12 +36,12 @@ struct NoticeView: View {
     }
 }
 
-/// Çevrimdışı uyarısı: okunan veriler gösterilebilir ama karar ve kabul gönderilmez.
+/// Çevrimdışı uyarısı: okunan veriler gösterilebilir ama karar ve kayıt gönderilmez.
 struct OfflineBanner: View {
     @Environment(SessionStore.self) private var session
     var body: some View {
         if !session.isOnline {
-            Label("Çevrimdışı: onay, kabul ve imza kararı gönderilemez. Taramalar şifreli taslak olarak saklanır.", systemImage: "wifi.slash")
+            Label("Çevrimdışı: imza kararı, olay bildirimi ve faaliyet kaydı gönderilemez. Taramalar şifreli taslak olarak saklanır.", systemImage: "wifi.slash")
                 .font(.footnote).padding(10).frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color.orange.opacity(0.15)).accessibilityElement(children: .combine)
         }
