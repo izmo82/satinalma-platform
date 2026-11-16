@@ -131,8 +131,9 @@ final class SessionStore {
         }
     }
 
-    /// Kiracı değişimi sunucunun `/me` onayıyla tamamlanır. `/me` başarısızsa yerel kiracı ve anahtar zinciri önceki kiracıya döner
-    /// (aksi halde istekler yeni kiracıyla giderken ekran eski kiracının `me` bilgisini gösterirdi) ve hata gösterilir.
+    /// Kiracı değişimi sunucunun `/me` onayıyla tamamlanır. `/me` başarısızsa ya da istenen kiracıyı etkin kiracı olarak dönmüyorsa
+    /// (üyelik yok/kaldırıldı: sunucu 200 + `activeTenantId` boş ya da başka kiracı döner) yerel kiracı ve anahtar zinciri önceki
+    /// kiracıya döner (aksi halde istekler yeni kiracıyla giderken ekran eski kiracının `me` bilgisini gösterirdi) ve hata gösterilir.
     func switchTenant(_ id: String) async {
         let previous = tenantId
         guard id != previous else { return }
@@ -141,6 +142,9 @@ final class SessionStore {
         do {
             let token = try await accessToken()
             let (m, _): (Me, String?) = try await api.send("/api/v1/me", token: token, tenantId: id)
+            guard m.activeTenantId == id else {
+                throw APIError(code: "tenant_not_active", message: "Bu kiracıya üyeliğiniz yok ya da kaldırılmış.", status: 403)
+            }
             me = m
             lastError = nil
         } catch let e as APIError where e.status == 401 {
@@ -148,7 +152,10 @@ final class SessionStore {
         } catch {
             tenantId = previous
             if let previous { Keychain.save(previous, account: "tenant") } else { Keychain.delete(account: "tenant") }
-            lastError = "Kiracı değiştirilemedi; önceki kiracıda kaldınız. \((error as? APIError)?.message ?? error.localizedDescription)"
+            let message = "Kiracı değiştirilemedi; önceki kiracıda kaldınız. \((error as? APIError)?.message ?? error.localizedDescription)"
+            // Önceki kiracı yoksa (açılışta kiracı seçilmemiş) eski `refresh()` davranışı: sunucunun seçtiği ya da ilk üyelik.
+            if previous == nil { await refresh() }
+            lastError = message
         }
     }
 
