@@ -120,6 +120,30 @@ describe('T04 eşzamanlı aynı VKN', () => {
   });
 });
 
+// Faz 1 kalan düzeltme: 037 açık görevlerin saklı v1 metnini (ödeme politikası, ana veri onayı, hukuk doğrulaması) v2 diline çevirir.
+describe('037 açık görev metinleri', () => {
+  it('eski metinler değişir, kapalı görev ve diğer metinler değişmez; yeniden çalıştırma aynı sonucu verir', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const sql = await readFile(new URL('../migrations/037_v2_task_text_wording.sql', import.meta.url), 'utf8');
+    const add = async (kind: string, reason: string, status = 'OPEN') => (await h.owner.query<{ id: string }>(
+      `INSERT INTO tasks (tenant_id, company_id, kind, entity_type, entity_id, title, reason, next_action, assignee_role, dedupe_key, status)
+       VALUES ($1, NULL, $2, 'supplier', $3, 'Sentetik', $4, 'Sentetik', 'PROCUREMENT', $5, $6) RETURNING id`,
+      [h.world.tenantA, kind, h.world.suppliers.s1, reason, `t037:${randomUUID()}`, status])).rows[0]!.id;
+    const sig = await add('invoice_issue', 'Sözleşme X: imza kontrolü tamamlanmamış. Fatura iptal edilmez; ödeme politikası Satınalma incelemesine bağlıdır.');
+    const cand = await add('SUPPLIER_CANDIDATE_APPROVAL', 'Kimlik doğrulandı; ana veri onayı gerekiyor.');
+    const terms = await add('contract_terms_verify', 'Bedel, süre ve ihbar kuralı girildi; hukuk doğrulaması olmadan uyarılar planlanmaz.');
+    const closed = await add('SUPPLIER_CANDIDATE_APPROVAL', 'Kimlik doğrulandı; ana veri onayı gerekiyor.', 'DONE');
+    const reason = async (id: string) => (await h.owner.query<{ reason: string }>(`SELECT reason FROM tasks WHERE id = $1`, [id])).rows[0]!.reason;
+    for (let run = 0; run < 2; run++) {
+      await h.owner.query(sql);
+      expect(await reason(sig)).toBe('Sözleşme X: imza kontrolü tamamlanmamış. Fatura iptal edilmez; imza kontrolünü Satınalma tamamlar.');
+      expect(await reason(cand)).toBe('Kimlik doğrulandı; kayıt onayı gerekiyor.');
+      expect(await reason(terms)).toBe('Bedel, süre ve ihbar kuralı girildi; ikinci bir Satınalma kullanıcısının doğrulaması olmadan uyarılar planlanmaz.');
+      expect(await reason(closed)).toBe('Kimlik doğrulandı; ana veri onayı gerekiyor.');
+    }
+  });
+});
+
 describe('T05 alıcı/satıcı ayrımı', () => {
   it('alıcı şirket VKN satıcı diye eşlenmez', async () => {
     const r = await uploadInvoice('buyer', invoice({ sellerVkn: syntheticVkn('300000005') }));
