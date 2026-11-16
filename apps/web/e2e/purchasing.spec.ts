@@ -299,8 +299,9 @@ test('eski sipariş bağı uyuşmazlıkta: bağ kaldırılır ve sözleşmeye ye
   await page.reload();
   await page.getByRole('button', { name: 'Tahsisi düzenle' }).click();
   const t2 = page.getByLabel('Satır 1 hedef');
+  // Sözleşme seçenekleri ayrı istekle gelir: önce en az bir seçenek beklenir (demo verisinde Ege Sistem'in sözleşmesi var).
+  await expect(t2.locator('option', { hasText: 'Sözleşme · ' }).first()).toBeAttached();
   const contract = (await t2.locator('option').allInnerTexts()).find((o) => o.startsWith('Sözleşme · '));
-  test.skip(!contract, 'Ege Sistem için uygun sözleşme yok (demo verisi)');
   await t2.selectOption({ label: contract! });
   await page.getByRole('button', { name: 'Tahsisi kaydet ve kontrol et' }).click();
   await expect(page.getByText(`Sözleşme: ${contract!.replace('Sözleşme · ', '')}`)).toBeVisible();
