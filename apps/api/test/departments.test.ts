@@ -213,6 +213,10 @@ describe('v2 departman kapsamı (RLS)', () => {
       const p = (await h.call('buyer', 'GET', `/api/v1/projects/${r.body.id}`)).body;
       const pub = await h.call('buyer', 'POST', `/api/v1/projects/${r.body.id}/rounds`, { body: { closesAt: inHours(48), supplierIds: [h.world.suppliers.s1] }, headers: { 'if-match': p.project.etag } });
       expect(pub.status).toBe(201);
+      // Düzeltme dalgası (I2, D99): yeni istek yürürlükteki politikanın adımını almaz (tek Satınalma adımı). Göçle DEPARTMENT_USER adımı
+      // almış, zaten açık eski istek test verisiyle sabitlenir (önce politika yeni isteğe bu adımı veriyordu).
+      await h.owner.query(`UPDATE approval_requests SET plan = jsonb_set(plan, '{steps}', $2::jsonb) WHERE entity_id = $1`,
+        [pub.body.roundId, JSON.stringify(rules[0]!.steps)]);
       return pub.body.roundId as string;
     };
     const legacyRound = await open(null);

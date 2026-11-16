@@ -6,7 +6,15 @@ import { closeTasks, openTask, v2Role } from '../tasks.ts';
 
 /** Plan adım rolleri v2 rolüne çevrilir (D93): sabitlenen plan ve karar karşılaştırması v2 kodlarıyla yapılır. Kişi düzeyindeki
  *  görev ayrılığı (talep eden karar veremez, bir adımı onaylayan sonrakini onaylayamaz) değişmez. */
-const v2Plan = (plan: ApprovalPlan): ApprovalPlan => ({ ...plan, steps: plan.steps.map((s) => ({ ...s, role: v2Role(s.role) })) });
+/** Eski adım adları (v1 rol adları) v2 adıyla gösterilir (düzeltme dalgası Y3); sabitlenen planın rolü ve sırası değişmez. */
+const LEGACY_STEP_LABEL: Record<string, string> = { 'Satınalma yöneticisi': 'Satınalma', 'Finans': 'Satınalma', 'Hukuk': 'Satınalma', 'Ana veri': 'Satınalma',
+  'Bilgi güvenliği': 'Departman kullanıcısı', 'Talep eden': 'Departman kullanıcısı' };
+const v2Explanation = (x: string) => x.replace(/satınalma yöneticisi/gi, 'talep edenden farklı bir Satınalma kullanıcısı');
+const v2Plan = (plan: ApprovalPlan): ApprovalPlan => ({ ...plan, explanation: v2Explanation(plan.explanation ?? ''),
+  steps: plan.steps.map((s) => ({ ...s, role: v2Role(s.role), label: LEGACY_STEP_LABEL[s.label] ?? s.label })) });
+
+/** D95b: proje içi onaylar (yayın, kazanan, kaynak istisnası) tek Satınalma onayıdır; talep eden onaylayamaz (kişi düzeyi ayrılık). */
+const SINGLE_STEP = [{ role: 'PROCUREMENT', label: 'Satınalma' }];
 const v2Rules = (rules: ApprovalRule[]): ApprovalRule[] => rules.map((r) => ({ ...r, steps: r.steps.map((s) => ({ ...s, role: v2Role(s.role) })) }));
 
 // Kurallı onay motoru (02 §13). Politika sürümlüdür; yayın ikinci kişi ister. Her onaylı iş başladığı andaki planı saklar
@@ -20,9 +28,17 @@ async function activePolicy(tx: Tx): Promise<{ id: string; policy: ApprovalPolic
   return r ? { id: r.id, policy: { version: r.version_no, rules: r.rules } } : null;
 }
 
+/**
+ * Yeni onay isteğinin planı. Düzeltme dalgası (I2, D99): yürürlükte kalmış eski politika artık onay ADIMLARINI belirlemez; her yeni istek
+ * tek Satınalma adımıdır (D95b). Politikanın davet sayısı ve teklif süresi kuralları (istisna gerektiren alt sınırlar) uygulanmaya devam
+ * eder. Açık (planı sabitlenmiş) istekler kendi planıyla tamamlanır (D70).
+ */
 export async function planFor(tx: Tx, c: { action: ApprovalAction; companyId: string; category: string | null; currency: string; amount: string | null }) {
   const a = await activePolicy(tx);
-  return { policyId: a?.id ?? null, plan: planApproval(a?.policy ?? null, c) };
+  const p = planApproval(a?.policy ?? null, c);
+  const limits = [p.minInvitees ? `en az ${p.minInvitees} davetli` : null, p.minResponseDays ? `en az ${p.minResponseDays} gün teklif süresi` : null].filter(Boolean).join(', ');
+  const explanation = `Tek onay: talep edenden farklı bir Satınalma kullanıcısı.${limits ? ` Kurum politikası v${p.policyVersion}${p.ruleId ? `, kural ${p.ruleId}` : ''}: ${limits}.` : ''}`;
+  return { policyId: a?.id ?? null, plan: { ...p, steps: SINGLE_STEP, explanation } };
 }
 
 /** Onay gerektiren iş için planı sabitler ve ilk adımın görevini açar. */
@@ -48,7 +64,8 @@ async function ensureRequest(tx: Tx, ctx: TenantContext, e: { entityType: Entity
   const existing = (await tx.query<{ id: string }>(`SELECT id FROM approval_requests WHERE entity_type = $1 AND entity_id = $2`, [e.entityType, e.entityId])).rows[0];
   if (existing) return existing.id;
   const plan = v2Plan(planApproval(null, { action: e.action, companyId: e.companyId, category: null, currency: 'TRY', amount: null }));
-  plan.explanation = 'Onay motorundan önce başlatılan iş: önceki kural (tek onay, satınalma yöneticisi) ile tamamlanır.';
+  plan.steps = SINGLE_STEP;
+  plan.explanation = 'Onay motorundan önce başlatılan iş: tek onayla (talep edenden farklı bir Satınalma kullanıcısı) tamamlanır.';
   return (await tx.query<{ id: string }>(`INSERT INTO approval_requests (tenant_id, company_id, entity_type, entity_id, action, policy_id, plan, requested_by)
     VALUES ($1,$2,$3,$4,$5,NULL,$6,$7) RETURNING id`, [ctx.tenantId, e.companyId, e.entityType, e.entityId, e.action, plan, e.requestedBy])).rows[0]!.id;
 }

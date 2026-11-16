@@ -51,6 +51,19 @@ describe('onay politikası', () => {
     expect(sim.body.explanation).toContain(`Politika v${d.body.versionNo}, kural YAYIN`);
   });
 
+  it('I2: yürürlükte çok adımlı eski politika varken yeni onay isteği tek Satınalma adımıdır; talep eden onaylayamaz, ikinci kişi onaylar', async () => {
+    const id = await newProject();
+    const ok = await publish(id, [h.world.suppliers.s1, h.world.suppliers.s2], 5);
+    expect(ok.status, JSON.stringify(ok.body)).toBe(201);
+    expect(ok.body.approval.steps).toEqual([{ role: 'PROCUREMENT', label: 'Satınalma' }]);
+    expect(ok.body.approval.explanation).not.toMatch(/satınalma yöneticisi/i);
+    const pinned = (await h.owner.query(`SELECT plan FROM approval_requests WHERE entity_id = $1`, [ok.body.roundId])).rows[0].plan;
+    expect(pinned.steps).toEqual([{ role: 'PROCUREMENT', label: 'Satınalma' }]);
+    const self = await h.call('buyer', 'POST', `/api/v1/rfq-rounds/${ok.body.roundId}/decision`, { body: { approve: true } });
+    expect(self.body.error.code).toBe('segregation_of_duties');
+    expect((await h.call('legal2', 'POST', `/api/v1/rfq-rounds/${ok.body.roundId}/decision`, { body: { approve: true } })).body.status).toBe('OPEN');
+  });
+
   // Görev 4 ayrımı: simülasyon ve politika okuma korunur (project.read); politika test kurulumunda yazılır.
   it('yürürlükteki politika simülasyonda açıklanır; politika okunur ama yönetilemez', async () => {
     const sim = await h.call('buyer', 'POST', '/api/v1/approval-policies/simulate', { body: { action: 'RFQ_PUBLISH', companyId: h.world.companyA1.id, category: null, currency: 'TRY', amount: '10' } });
@@ -76,19 +89,24 @@ describe('yayın: politika kuralları, istisna ve ardışık adımlar', () => {
     expect((await h.call('legal2', 'POST', `/api/v1/sourcing-exceptions/${ex.body.id}/decision`, { body: { approve: true } })).body.status).toBe('APPROVED');
     const ok = await publish(id, [h.world.suppliers.s1], 5);
     expect(ok.status).toBe(201);
-    // v2 (D93): iki adımın rolü de Satınalma; ayrılık kişi düzeyinde (talep eden ve önceki adımı onaylayan karar veremez).
-    expect(ok.body.approval.steps.map((s: any) => s.role)).toEqual(['PROCUREMENT', 'PROCUREMENT']);
+    // Düzeltme dalgası (I2, D95b/D99): yeni onay isteği yürürlükteki eski politikanın iki adımını değil, tek Satınalma adımını alır
+    // (önce ['PROCUREMENT', 'PROCUREMENT']). Davet ve süre kuralları politikadan uygulanmaya devam eder (yukarıdaki min_invitees).
+    expect(ok.body.approval.steps).toEqual([{ role: 'PROCUREMENT', label: 'Satınalma' }]);
     expect((await detail(id)).exceptions[0].status).toBe('USED');
 
     const round = ok.body.roundId;
+    // Zaten açık (planı sabitlenmiş) eski iki adımlı istek planıyla sürer (D70). Göç öncesi açılmış böyle bir istek test verisiyle kurulur.
+    await h.owner.query(`UPDATE approval_requests SET plan = jsonb_set(plan, '{steps}', $2::jsonb) WHERE entity_id = $1`,
+      [round, JSON.stringify([{ role: 'PROCUREMENT', label: 'Satınalma yöneticisi' }, { role: 'PROCUREMENT', label: 'Finans' }])]);
     // Talep eden (buyer) ilk adımı onaylayamaz.
     const early = await h.call('buyer', 'POST', `/api/v1/rfq-rounds/${round}/decision`, { body: { approve: true } });
     expect(early.body.error.code).toBe('segregation_of_duties');
     expect((await h.call('legal2', 'POST', `/api/v1/rfq-rounds/${round}/decision`, { body: { approve: true } })).body.status).toBe('PENDING_APPROVAL');
     // İlk adımı onaylayan aynı Satınalma kullanıcısı ikinci adımı onaylayamaz.
     expect((await h.call('legal2', 'POST', `/api/v1/rfq-rounds/${round}/decision`, { body: { approve: true } })).body.error.code).toBe('approval_step');
+    // Eski adım adları v2 adıyla gösterilir (Y3): "Finans" → "Satınalma".
     const fin = (await h.call('finance', 'GET', '/api/v1/tasks?view=mine')).body.items;
-    expect(fin.some((t: any) => t.entityId === id && /adım 2\/2: Finans/.test(t.title))).toBe(true);
+    expect(fin.some((t: any) => t.entityId === id && /adım 2\/2: Satınalma/.test(t.title))).toBe(true);
     const st = (await detail(id, 'finance')).round.approval;
     expect(st).toMatchObject({ status: 'OPEN', nextStepNo: 2, canDecide: true });
     expect(st.decisions).toHaveLength(1);
@@ -122,10 +140,9 @@ describe('inceleme bulguları (regresyon)', () => {
     expect((await publish(id, [h.world.suppliers.s2], 5)).body.error.code).toBe('single_source_mismatch');
     const ok = await publish(id, [h.world.suppliers.s1], 3.01);
     expect(ok.status).toBe(201);
-    // Onay sürerken zaman geçti: kapanışa 3 günden az kaldı.
+    // Onay sürerken zaman geçti: kapanışa 3 günden az kaldı. Düzeltme dalgası (I2): tek Satınalma adımı (önce iki adım: legal2, finance).
     await h.owner.query(`UPDATE rfq_rounds SET closes_at = now() + interval '2 days' WHERE id = $1`, [ok.body.roundId]);
-    expect((await h.call('legal2', 'POST', `/api/v1/rfq-rounds/${ok.body.roundId}/decision`, { body: { approve: true } })).body.status).toBe('PENDING_APPROVAL');
-    const fin = await h.call('finance', 'POST', `/api/v1/rfq-rounds/${ok.body.roundId}/decision`, { body: { approve: true } });
+    const fin = await h.call('legal2', 'POST', `/api/v1/rfq-rounds/${ok.body.roundId}/decision`, { body: { approve: true } });
     expect(fin.body.error.code).toBe('closes_at_too_short');
   });
 
