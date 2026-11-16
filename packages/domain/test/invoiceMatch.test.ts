@@ -251,3 +251,15 @@ describe('tahsis edilen sipariş/sözleşme faturanın şirketine ait olmalı (D
     expect(codes({ kind: 'CREDIT_NOTE', companyId: 'A', poLines: [po({ companyId: 'B' })], allocations: toPo, reversalTargets: ['P1'] })).toHaveLength(0);
   });
 });
+
+// Düzeltme dalgası (I5, D93): "Eşleşti" tahsis kontrolünden türer; eksik, fazla ya da yanlış tedarikçi/şirkete tahsis eşleşmiş sayılmaz.
+describe('allocationMatched', () => {
+  it('engelleyici tahsis bulgusu yoksa ve satır varsa eşleşmiş', async () => {
+    const { allocationMatched, MATCH_BLOCKING_CODES } = await import('../src/invoiceMatch.ts');
+    expect(MATCH_BLOCKING_CODES).toEqual(['UNALLOCATED', 'OVER_ALLOCATED', 'SUPPLIER_MISMATCH', 'COMPANY_MISMATCH']);
+    expect(allocationMatched(true, [])).toBe(true);
+    expect(allocationMatched(true, [{ code: 'TAX_LINE_MISMATCH' }])).toBe(true);
+    for (const code of MATCH_BLOCKING_CODES) expect(allocationMatched(true, [{ code }]), code).toBe(false);
+    expect(allocationMatched(false, [])).toBe(false);
+  });
+});

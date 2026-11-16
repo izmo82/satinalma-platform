@@ -12,7 +12,7 @@ import { UblFindings, ublTitle, type UblCheck } from '../ui/UblCheck.tsx';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { cn } from '@/lib/utils';
-import { REMOVED_ISSUE_CODES } from '../../../../packages/domain/src/invoiceMatch.ts';
+import { allocationMatched, REMOVED_ISSUE_CODES } from '../../../../packages/domain/src/invoiceMatch.ts';
 import { DepartmentFilter, DepartmentName, useDepartmentParam, withDepartment } from '../ui/Departments.tsx';
 
 // UX10 Fatura. v2 (D93/D95): fatura onayı, istisna onayı, tolerans ve üçlü eşleştirme kaldırma listesinde; fatura girişi (elle ve
@@ -191,7 +191,8 @@ export function InvoicePage() {
   const decided = d.decisions.some((x) => x.kind === 'APPROVAL' || x.kind === 'REJECTION');
   const issues = d.check.issues.filter((x) => !REMOVED_ISSUES.has(x.code));
   const issuesFor = (lineNo?: number) => issues.filter((x) => x.lineNo === lineNo);
-  const match = d.invoice.legalStatus !== 'RECEIVED' ? 'IPTAL' : d.allocations.length && !d.check.issues.some((x) => x.code === 'UNALLOCATED') ? 'ESLESTI' : 'ESLESMEDI';
+  // I5: eksik, fazla ya da yanlış tedarikçi/şirkete tahsis eşleşme sayılmaz (liste ve iOS ile aynı kural).
+  const match = d.invoice.legalStatus !== 'RECEIVED' ? 'IPTAL' : d.allocations.length && allocationMatched(d.lines.length > 0, d.check.issues) ? 'ESLESTI' : 'ESLESMEDI';
   const supplierNote = supplierRecordNote(d.invoice.supplierStatus, d.invoice.supplierIdentityVerified);
   return (
     <div className="page">
@@ -297,14 +298,16 @@ function Issue({ x }: { x: InvDetail['check']['issues'][number] }) {
 type ContractOption = { id: string; title: string; companyId: string; supplierRootIds: string[] };
 
 /**
- * Tahsis (v2 eşleştirme): fatura satırı sözleşmeye bağlanır. Sipariş kalemine bağlama kaldırma listesinde (D93); eski sipariş bağı
- * numarasıyla salt okunur satır olarak kalır ve kayıtta aynen geri gönderilir (silinmez, değiştirilmez).
+ * Tahsis (v2 eşleştirme): fatura satırı sözleşmeye bağlanır. Sipariş kalemine YENİ bağ kurmak kaldırma listesinde (D93). Eski sipariş
+ * bağı kendi numarasıyla seçenek olarak kalır: aynen bırakılabilir, kaldırılabilir ("Bağı kaldır") ya da bir sözleşmeye yeniden
+ * bağlanabilir (düzeltme dalgası I4: tedarikçi/şirket uyuşmazlığı taşıyan eski bağ aksi halde her kaydı 422 ile durduruyordu).
  */
 function AllocationEditor({ d, onDone }: { d: InvDetail; onDone: () => void }) {
   const cons = useResource<{ items: ContractOption[]; truncated: boolean }>('/api/v1/contract-options');
   const [rows, setRows] = useState(d.allocations.length ? d.allocations.map((x) => ({ lineNo: x.lineNo, target: x.poLineId ? `po:${x.poLineId}` : x.contractVersionId ? `cv:${x.contractVersionId}` : '', quantity: x.quantity, amount: x.amount,
-    legacy: x.poLineId ? `Sipariş ${x.poCode ?? '(erişiminiz dışında)'}${x.poLineDescription ? ` · ${x.poLineDescription}` : ''}` : null }))
-    : d.lines.map((l) => ({ lineNo: l.lineNo, target: '', quantity: l.quantity, amount: l.netAmount, legacy: null as string | null })));
+    legacy: x.poLineId ? `Sipariş ${x.poCode ?? '(erişiminiz dışında)'}${x.poLineDescription ? ` · ${x.poLineDescription}` : ''}` : null,
+    legacyTarget: x.poLineId ? `po:${x.poLineId}` : null }))
+    : d.lines.map((l) => ({ lineNo: l.lineNo, target: '', quantity: l.quantity, amount: l.netAmount, legacy: null as string | null, legacyTarget: null as string | null })));
   const [offset, setOffset] = useState(d.invoice.advanceOffset);
   const [advanceId, setAdvanceId] = useState(d.invoice.advanceInvoiceId ?? '');
   const [err, setErr] = useState<string | null>(null);
@@ -321,22 +324,27 @@ function AllocationEditor({ d, onDone }: { d: InvDetail; onDone: () => void }) {
       <p className="text-sm text-ink-muted">Satırı sözleşmeye bağlayın. Tek satır birden çok sözleşmeye bölünebilir; tahsis toplamı satır tutarını aşamaz.</p>
       {!cons.loading && !options.length && <span className="text-sm text-ink-subtle">Bu şirkette bu tedarikçiye uygun sözleşme yok.</span>}
       {cons.data?.truncated && <span className="text-sm text-ink-subtle">Sözleşme sayısı liste sınırını aştı; aradığınız sözleşme burada görünmeyebilir.</span>}
-      {d.check.issues.some((x) => x.code === 'SUPPLIER_MISMATCH' || x.code === 'COMPANY_MISMATCH') && <p className="text-sm text-warn">Kayıtlı bağ başka bir tedarikçiye veya şirkete ait. Hedefi “Seçin” yapıp kaydederek bağı kaldırın.</p>}
+      {d.check.issues.some((x) => x.code === 'SUPPLIER_MISMATCH' || x.code === 'COMPANY_MISMATCH') && <p className="text-sm text-warn">Kayıtlı bağ başka bir tedarikçiye veya şirkete ait. Hedefi “Seçin” ya da eski sipariş bağında “Bağı kaldır” yapıp kaydederek bağı kaldırın veya bir sözleşme seçin.</p>}
       {rows.map((x, i) => (
         <div key={i} className="grid grid-cols-[60px_minmax(0,1fr)_100px_130px_auto] items-start gap-2 max-[640px]:grid-cols-2">
           <span className="pt-2 text-sm font-semibold">Satır {x.lineNo}</span>
-          {x.legacy ? <>
-            <span className="pt-2 text-sm">{x.legacy} <span className="text-ink-subtle">(eski sipariş bağı, salt okunur)</span></span>
+          {x.legacyTarget && x.target === x.legacyTarget ? <>
+            <select className="input" aria-label={`Satır ${x.lineNo} hedef`} value={x.target} onChange={(e) => setRows(rows.map((y, j) => j === i ? { ...y, target: e.target.value } : y))}>
+              <option value={x.legacyTarget}>{x.legacy} (eski sipariş bağı)</option>
+              <option value="">Bağı kaldır</option>
+              {options.map((c) => <option key={c.id} value={`cv:${c.id}`}>Sözleşme · {c.title}</option>)}
+            </select>
             <span className="tabular pt-2 text-right text-sm">{num(x.quantity)}</span><span className="tabular pt-2 text-right text-sm">{fmtMoney(x.amount, d.invoice.currency)}</span><span />
           </> : <>
             <select className="input" aria-label={`Satır ${x.lineNo} hedef`} value={x.target} onChange={(e) => setRows(rows.map((y, j) => j === i ? { ...y, target: e.target.value } : y))}>
               <option value="">Seçin</option>
+              {x.legacyTarget && <option value={x.legacyTarget}>{x.legacy} (eski sipariş bağı)</option>}
               {current.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
               {options.map((c) => <option key={c.id} value={`cv:${c.id}`}>Sözleşme · {c.title}</option>)}
             </select>
             <input className="input tabular text-right" aria-label="Miktar" value={x.quantity} onChange={(e) => setRows(rows.map((y, j) => j === i ? { ...y, quantity: e.target.value.replace(',', '.') } : y))} />
             <input className="input tabular text-right" aria-label="Tutar" value={x.amount} onChange={(e) => setRows(rows.map((y, j) => j === i ? { ...y, amount: e.target.value.replace(',', '.') } : y))} />
-            <Button type="button" variant="ghost" size="sm" onClick={() => setRows([...rows.slice(0, i + 1), { ...x, target: '', quantity: '', amount: '', legacy: null }, ...rows.slice(i + 1)])}>Böl</Button>
+            <Button type="button" variant="ghost" size="sm" onClick={() => setRows([...rows.slice(0, i + 1), { ...x, target: '', quantity: '', amount: '', legacy: null, legacyTarget: null }, ...rows.slice(i + 1)])}>Böl</Button>
           </>}
         </div>
       ))}

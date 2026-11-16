@@ -240,3 +240,17 @@ describe('Y4 kullanıcı listesi rol başına tutarlı', () => {
     expect(r.body.find((x: any) => x.id === h.world.users.techEval.id).roles).toEqual(['DEPARTMENT_USER']);
   });
 });
+
+describe('I5 "Eşleşti" tahsis kontrolünden türer', () => {
+  it('fazla tahsisli fatura listede eşleşmiş sayılmaz; tam tahsisli sayılır', async () => {
+    const c = await contract(bt);
+    const mk = async () => (await h.call('legal', 'POST', '/api/v1/invoices', { body: { companyId: h.world.companyA1.id, supplierId: h.world.suppliers.s1, kind: 'INVOICE', invoiceNo: `ESL${randomUUID().slice(0, 8)}`,
+      issueDate: '2026-10-20', currency: 'TRY', lines: [{ description: 'Hizmet', quantity: '1', unit: 'adet', unitPrice: '100', netAmount: '100.00' }] } })).body.id as string;
+    const over = await mk(); const exact = await mk();
+    expect((await h.call('legal', 'PUT', `/api/v1/invoices/${over}/allocations`, { body: { allocations: [{ lineNo: 1, poLineId: null, contractVersionId: c.contractVersionId, quantity: '1', amount: '150.00' }] } })).status).toBe(200);
+    expect((await h.call('legal', 'PUT', `/api/v1/invoices/${exact}/allocations`, { body: { allocations: [{ lineNo: 1, poLineId: null, contractVersionId: c.contractVersionId, quantity: '1', amount: '100.00' }] } })).status).toBe(200);
+    const items = (await h.call('legal', 'GET', '/api/v1/invoices')).body.items;
+    expect(items.find((x: any) => x.id === over).matched).toBe(false);
+    expect(items.find((x: any) => x.id === exact).matched).toBe(true);
+  });
+});

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import {
-  add, availableLimit, checkInvoice, cmp, dec, div, isDecimal, mul, openCommitment, REMOVED_ISSUE_CODES, str, type Dec,
+  add, allocationMatched, availableLimit, checkInvoice, cmp, dec, div, isDecimal, mul, openCommitment, REMOVED_ISSUE_CODES, str, type Dec,
   type AllocationInput, type ContractState, type InvoiceCheckInput, type OtherTax, type PoLineState, type ToleranceRule,
 } from '@sp/domain';
 import type { TenantContext, Tx } from '../db.ts';
@@ -649,20 +649,21 @@ export async function getInvoice(tx: Tx, ctx: TenantContext, id: string) {
 }
 
 export async function listInvoices(tx: Tx, f: { departmentId?: string } = {}) {
-  const rows = (await tx.query<{ id: string; decision: string | null }>(`SELECT i.id, i.kind, i.invoice_no AS "invoiceNo", i.issue_date::text AS "issueDate", i.currency, s.legal_name AS "supplierName",
+  const rows = (await tx.query<{ id: string; decision: string | null; hasLines: boolean }>(`SELECT i.id, i.kind, i.invoice_no AS "invoiceNo", i.issue_date::text AS "issueDate", i.currency, s.legal_name AS "supplierName",
       s.status AS "supplierStatus", ${SUPPLIER_VERIFIED_SQL} AS "supplierIdentityVerified",
       (SELECT sum(net_amount)::text FROM invoice_lines WHERE invoice_id = i.id) AS "netAmount", i.legal_status AS "legalStatus", i.payment_status AS "paymentStatus",
       (SELECT kind FROM invoice_decisions d WHERE d.invoice_id = i.id AND d.kind IN ('APPROVAL','REJECTION')) AS decision,
       (SELECT status FROM erp_exports e WHERE e.invoice_id = i.id) AS "erpStatus",
       (SELECT count(*)::int FROM invoice_intake_events e WHERE e.invoice_id = i.id AND e.duplicate) AS "duplicateCount",
       i.department_id AS "departmentId", (SELECT d.name FROM departments d WHERE d.id = i.department_id) AS "departmentName",
-      -- v2 (D93): eşleşme kuyruğu; her satırın tutarı tahsisle (sözleşme ya da eski sipariş bağı) tam karşılanmışsa eşleşmiş sayılır.
-      (EXISTS (SELECT 1 FROM invoice_lines l WHERE l.invoice_id = i.id) AND NOT EXISTS (SELECT 1 FROM invoice_lines l WHERE l.invoice_id = i.id
-        AND l.net_amount > coalesce((SELECT sum(a.amount) FROM invoice_allocations a WHERE a.invoice_id = i.id AND a.line_no = l.line_no), 0))) AS matched
+      EXISTS (SELECT 1 FROM invoice_lines l WHERE l.invoice_id = i.id) AS "hasLines"
     FROM invoices i JOIN suppliers s ON s.id = i.supplier_id WHERE ($1::uuid IS NULL OR i.department_id = $1) ORDER BY i.created_at DESC LIMIT 300`, [f.departmentId ?? null])).rows;
   // Karar bekleyenlerde listede de engel görünsün (D90). Maliyet: fatura başına değil, bağlı sözleşme başına sorgu.
-  const checks = await unapprovedInvoiceChecks(tx, rows.filter((r) => !r.decision).map((r) => r.id));
-  return rows.map((r) => ({ ...r, blocked: checks.get(r.id)?.canApprove === false }));
+  // v2 eşleşme (I5): "Eşleşti" tahsis kontrolünden türer (eksik/fazla/yanlış tedarikçi ya da şirket tahsisi eşleşme sayılmaz). Tahsis
+  // bulguları onaylı faturada da aynı hesaplanır (toplu kontrolün onaylı fatura farkı limit ve avans hesabındadır), bu yüzden hepsi için.
+  const checks = await unapprovedInvoiceChecks(tx, rows.map((r) => r.id));
+  return rows.map(({ hasLines, ...r }) => ({ ...r, matched: allocationMatched(hasLines, checks.get(r.id)?.issues ?? []),
+    blocked: !r.decision && checks.get(r.id)?.canApprove === false }));
 }
 
 export async function listTolerance(tx: Tx) {

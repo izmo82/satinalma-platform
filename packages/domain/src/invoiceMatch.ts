@@ -43,6 +43,14 @@ export type IssueSeverity = 'BLOCK' | 'EXCEPTION' | 'REVIEW';
  * v2 Faz 1 (D93): kaldırma listesindeki üçlü eşleştirme (sipariş/kabul), fiyat toleransı ve sözleşmesiz istisna bulguları.
  * Hesap değişmez (eski sipariş bağlı faturalar için kayıt doğru kalır); arayüz göstermez, görev açılmaz. Web ve API bu tek listeyi kullanır.
  */
+/**
+ * v2 eşleşme durumu (düzeltme dalgası I5): fatura, satırı varsa ve tahsisi engelleyen bulgu (eksik, fazla, başka tedarikçi ya da şirkete
+ * tahsis) yoksa "Eşleşti" sayılır. Liste (API), web ve iOS aynı listeyi kullanır.
+ */
+export const MATCH_BLOCKING_CODES: readonly string[] = ['UNALLOCATED', 'OVER_ALLOCATED', 'SUPPLIER_MISMATCH', 'COMPANY_MISMATCH'];
+export const allocationMatched = (hasLines: boolean, issues: readonly { code: string }[]): boolean =>
+  hasLines && !issues.some((i) => MATCH_BLOCKING_CODES.includes(i.code));
+
 export const REMOVED_ISSUE_CODES: readonly string[] = ['RECEIPT_MISSING', 'OVER_ORDER', 'PRICE_MISMATCH', 'UNIT_MISMATCH', 'PO_CANCELLED', 'CURRENCY_MISMATCH', 'CREDIT_EXCEEDS', 'NO_CONTRACT'];
 export interface MatchIssue { code: string; severity: IssueSeverity; message: string; ownerRole: string; lineNo?: number }
 

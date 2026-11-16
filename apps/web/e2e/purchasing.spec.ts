@@ -254,3 +254,55 @@ test.skip('satınalma tolerans kuralını görür ama değiştiremez; yeni ekran
   await expect(page.getByRole('heading', { level: 1 })).toContainText('PO-');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
 });
+
+// Düzeltme dalgası (I4): eski sipariş bağı (D84 öncesi, başka tedarikçinin siparişine) taşıyan faturada her kayıt 422 dönüyordu; bağ
+// tahsis düzenleyicide kaldırılabilir ya da sözleşmeye yeniden bağlanabilir. Yeni sipariş bağı seçeneği yoktur. Demo faturalara
+// dokunulmaz: sentetik fatura API ile açılır, eski bağ v1 verisini taklit etmek için doğrudan veritabanına yazılır (yalnız yerel geliştirme).
+test('eski sipariş bağı uyuşmazlıkta: bağ kaldırılır ve sözleşmeye yeniden bağlanır; yeni sipariş seçeneği yok', async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop-1440', 'veri değiştirir; yalnız bir projede');
+  const { execFileSync } = await import('node:child_process');
+  const db = process.env.E2E_DATABASE_OWNER_URL ?? 'postgres://sp_owner:local_owner_only@localhost:5544/satinalma';
+  const sql = (q: string) => execFileSync('psql', [db, '-At', '-c', q], { encoding: 'utf8' }).trim();
+  const auth = { authorization: `Bearer ${(await (await page.request.post('/api/v1/dev/token', { data: { email: 'kerem.hukuk@example.test' } })).json()).token}` };
+  // Anadolu Bilişim'in eski sipariş kalemi; fatura başka tedarikçiye (Ege) açılır → SUPPLIER_MISMATCH.
+  const [poLine, companyId, tenantId, poCode] = sql(`SELECT pl.id || '|' || po.company_id || '|' || po.tenant_id || '|' || po.code FROM po_lines pl JOIN purchase_orders po ON po.id = pl.po_id
+    WHERE po.code = 'PO-2026-0001' ORDER BY pl.line_no LIMIT 1`).split('|');
+  const opts = await (await page.request.get('/api/v1/supplier-options', { headers: { ...auth, 'x-tenant-id': tenantId! } })).json();
+  const ege = (opts.items as { id: string; label: string }[]).find((x) => /^Ege Sistem/.test(x.label))!;
+  const no = `I4E2E${Date.now().toString(36).toUpperCase()}`;
+  const inv = await page.request.post('/api/v1/invoices', { headers: { ...auth, 'x-tenant-id': tenantId! }, data: { companyId, supplierId: ege.id, kind: 'INVOICE', invoiceNo: no,
+    issueDate: '2026-11-10', currency: 'TRY', lines: [{ description: 'Sentetik hizmet (I4)', quantity: '1', unit: 'adet', unitPrice: '100', netAmount: '100.00' }] } });
+  expect(inv.status(), await inv.text()).toBe(201);
+  const invoiceId = (await inv.json()).id as string;
+  const creator = sql(`SELECT created_by FROM invoices WHERE id = '${invoiceId}'`);
+  sql(`INSERT INTO invoice_allocations (tenant_id, company_id, invoice_id, line_no, po_line_id, contract_version_id, quantity, amount, created_by)
+    VALUES ('${tenantId}', '${companyId}', '${invoiceId}', 1, '${poLine}', NULL, 1, 100.00, '${creator}')`);
+
+  await login(page, 'kerem.hukuk@example.test');
+  await page.goto(`/faturalar/${invoiceId}`);
+  await expect(page.getByRole('heading', { level: 1 })).toContainText(no);
+  await expect(page.getByText('Eşleşmedi', { exact: true }).first()).toBeVisible();
+  await page.getByRole('button', { name: 'Tahsisi düzenle' }).click();
+  const target = page.getByLabel('Satır 1 hedef');
+  await expect(target.locator('option', { hasText: `Sipariş ${poCode}` })).toHaveCount(1);
+  await expect(target.locator('option', { hasText: 'Bağı kaldır' })).toHaveCount(1);
+  // Yeni sipariş bağı seçeneği yok: sipariş seçeneği yalnız kayıtlı eski bağ.
+  expect((await target.locator('option').allInnerTexts()).filter((o) => o.startsWith('Sipariş ')).length).toBe(1);
+  await target.selectOption({ label: 'Bağı kaldır' });
+  await page.getByRole('button', { name: 'Tahsisi kaydet ve kontrol et' }).click();
+  await expect(page.getByRole('button', { name: 'Tahsisi düzenle' })).toBeVisible();
+  expect(sql(`SELECT count(*) FROM invoice_allocations WHERE invoice_id = '${invoiceId}'`)).toBe('0');
+
+  // Yeniden bağlama: eski bağ tekrar yazılır, bu kez sözleşmeye taşınır.
+  sql(`INSERT INTO invoice_allocations (tenant_id, company_id, invoice_id, line_no, po_line_id, contract_version_id, quantity, amount, created_by)
+    VALUES ('${tenantId}', '${companyId}', '${invoiceId}', 1, '${poLine}', NULL, 1, 100.00, '${creator}')`);
+  await page.reload();
+  await page.getByRole('button', { name: 'Tahsisi düzenle' }).click();
+  const t2 = page.getByLabel('Satır 1 hedef');
+  const contract = (await t2.locator('option').allInnerTexts()).find((o) => o.startsWith('Sözleşme · '));
+  test.skip(!contract, 'Ege Sistem için uygun sözleşme yok (demo verisi)');
+  await t2.selectOption({ label: contract! });
+  await page.getByRole('button', { name: 'Tahsisi kaydet ve kontrol et' }).click();
+  await expect(page.getByText(`Sözleşme: ${contract!.replace('Sözleşme · ', '')}`)).toBeVisible();
+  expect(sql(`SELECT count(*) FROM invoice_allocations WHERE invoice_id = '${invoiceId}' AND po_line_id IS NULL AND contract_version_id IS NOT NULL`)).toBe('1');
+});

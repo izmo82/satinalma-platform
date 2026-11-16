@@ -81,10 +81,12 @@ struct InvoiceDetail: Decodable, Sendable {
     }
     let invoice: Invoice; let lines: [Line]; let allocations: [Allocation]; let check: Check; let decisions: [Decision]
 
-    /// Web ile aynı eşleşme durumu: hukuken iptal/ret ayrı; tam tahsisli fatura "Eşleşti".
+    /// Web ile aynı eşleşme durumu: hukuken iptal/ret ayrı; satırı olan ve tahsisi engelleyen bulgusu (eksik, fazla, başka
+    /// tedarikçi ya da şirkete tahsis) olmayan fatura "Eşleşti" (alan adı paketi `MATCH_BLOCKING_CODES` ile aynı liste).
+    var matched: Bool { !lines.isEmpty && !allocations.isEmpty && !check.issues.contains { Labels.matchBlockingCodes.contains($0.code) } }
     var matchText: String {
         if invoice.legalStatus != "RECEIVED" { return "Hukuken iptal/ret" }
-        return !allocations.isEmpty && !check.issues.contains { $0.code == "UNALLOCATED" } ? "Eşleşti" : "Eşleşmedi"
+        return matched ? "Eşleşti" : "Eşleşmedi"
     }
     /// Kaldırılan üçlü eşleştirme/tolerans bulguları gösterilmez (alan adı paketi `REMOVED_ISSUE_CODES` ile aynı liste).
     var visibleIssues: [Issue] { check.issues.filter { !Labels.removedIssueCodes.contains($0.code) } }
@@ -182,6 +184,7 @@ enum Labels {
     static let pastDecision: [String: String] = ["APPROVAL": "Onaylandı (v1 kaydı)", "REJECTION": "Reddedildi (v1 kaydı)", "EXCEPTION_APPROVAL": "İstisna onaylandı (v1 kaydı)"]
     static let invoiceKind: [String: String] = ["INVOICE": "Fatura", "CREDIT_NOTE": "İade / alacak", "ADVANCE": "Avans"]
     /// Kaldırılan bulgu kodları (packages/domain `REMOVED_ISSUE_CODES`, D93): sipariş/kabul, tolerans ve istisna bulguları.
+    static let matchBlockingCodes: Set<String> = ["UNALLOCATED", "OVER_ALLOCATED", "SUPPLIER_MISMATCH", "COMPANY_MISMATCH"]
     static let removedIssueCodes: Set<String> = ["RECEIPT_MISSING", "OVER_ORDER", "PRICE_MISMATCH", "UNIT_MISMATCH", "PO_CANCELLED", "CURRENCY_MISMATCH", "CREDIT_EXCEEDS", "NO_CONTRACT"]
     static let stage: [String: String] = ["DRAFT": "Taslak", "EXECUTION": "İmza aşaması", "ARCHIVE_IMPORT": "Arşivden alındı"]
     static let issueSeverity: [String: String] = ["BLOCK": "Engel", "EXCEPTION": "İstisna", "REVIEW": "İnceleme"]
