@@ -21,7 +21,8 @@ export const LEGACY_ROLE_MAP: Record<string, Role> = {
 export function normalizeRoles(stored: readonly string[]): Role[] {
   const out = new Set<Role>();
   for (const r of stored) {
-    const v2 = (V2_ROLES as readonly string[]).includes(r) ? (r as Role) : LEGACY_ROLE_MAP[r];
+    // Object.hasOwn: 'constructor', '__proto__' gibi prototip adları eşleme sayılmaz.
+    const v2 = (V2_ROLES as readonly string[]).includes(r) ? (r as Role) : Object.hasOwn(LEGACY_ROLE_MAP, r) ? LEGACY_ROLE_MAP[r] : undefined;
     if (v2) out.add(v2);
   }
   return [...out];
@@ -95,7 +96,8 @@ export const PERMISSIONS = {
   'contract.commercial.propose': ['PROCUREMENT'],
   'contract.commercial.approve': ['PROCUREMENT'],
   'contract.guarantee.manage': ['PROCUREMENT'],
-  'holiday.manage': ['ADMIN', 'PROCUREMENT'],
+  // K-12 (düzeltme dalgası): kiracı tatil listesi kiracı ayarıdır, yalnız Yönetici yönetir.
+  'holiday.manage': ['ADMIN'],
   'po.read': [],
   'po.manage': [],
   'receipt.record': [],

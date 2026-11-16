@@ -44,8 +44,8 @@ describe('T21 ihbar son günü ve uyarılar', () => {
   let cv: string;
   beforeAll(async () => {
     cv = await contract();
-    // Kiracı tatil verisi (sentetik): 29 Ekim.
-    expect((await h.call('legal', 'POST', '/api/v1/holidays', { body: { day: '2027-10-29', name: 'Cumhuriyet Bayramı' } })).status).toBe(201);
+    // Kiracı tatil verisi (sentetik): 29 Ekim. Düzeltme dalgası (K-12): tatil listesini yalnız Yönetici yönetir (önce 'legal').
+    expect((await h.call('tenantAdmin', 'POST', '/api/v1/holidays', { body: { day: '2027-10-29', name: 'Cumhuriyet Bayramı' } })).status).toBe(201);
   });
 
   it('kaynak madde zorunlu; giren doğrulayamaz; doğrulanmadan uyarı planlanmaz', async () => {

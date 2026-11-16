@@ -14,6 +14,10 @@ describe('normalizeRoles (D93)', () => {
   it('bilinmeyen kod düşer', () => {
     expect(normalizeRoles(['NOPE'])).toEqual([]);
   });
+  it('nesne prototipi adları rol sayılmaz (Object.hasOwn)', () => {
+    expect(normalizeRoles(['constructor'])).toEqual([]);
+    expect(normalizeRoles(['toString', '__proto__', 'hasOwnProperty'])).toEqual([]);
+  });
 });
 
 describe('v2 izin tablosu', () => {
@@ -49,6 +53,9 @@ describe('v2 izin tablosu', () => {
     for (const p of ['tenant.export.request', 'ai.policy.manage', 'holiday.manage', 'audit.read', 'project.read', 'contract.read', 'invoice.read'] as const) {
       expect(can(['ADMIN'], p), p).toBe(true);
     }
+  });
+  it('tatil listesi yönetimi yalnız Yönetici (K-12)', () => {
+    for (const r of V2_ROLES) expect(can([r], 'holiday.manage'), r).toBe(r === 'ADMIN');
   });
   it('task.read tedarikçi dışında herkese açık', () => {
     expect(can(['SUPPLIER'], 'task.read')).toBe(false);
