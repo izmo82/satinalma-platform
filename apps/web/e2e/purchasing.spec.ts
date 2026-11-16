@@ -182,7 +182,8 @@ test('e-Fatura XML yüklenince fatura satırlardan açılır; KDV tutmazsa sorum
   await expect(page.getByText(/KDV .* yazıyor/)).toHaveCount(0);
   await expect(page.getByRole('link', { name: 'Kaynak e-Fatura' })).toBeVisible();
   await upload(`XML${tag}B`, '1800.00', '11800.00');
-  await expect(page.getByText(/Satır 1: KDV 1800.00 TRY yazıyor; 10000.00 × %20 = 2000.00/)).toBeVisible();
+  // v2 Faz 1 (D93/D95): bulgu metnindeki tutarlar Türkçe biçimde (önce "KDV 1800.00 TRY yazıyor; 10000.00 × %20 = 2000.00").
+  await expect(page.getByText('Satır 1: KDV 1.800,00 TRY yazıyor; 10.000,00 × %20 = 2.000,00')).toBeVisible();
   await expect(page.getByText('Çözen: Satınalma').first()).toBeVisible();
 });
 
