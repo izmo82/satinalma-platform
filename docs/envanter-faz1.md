@@ -33,47 +33,47 @@ v2 hedefi: 5 rol, 7 menü girişi (İşlerim · Projeler · Sözleşmeler · Ted
 
 ### 2.1 Menü girişleri (eski → v2)
 
-| # | Eski menü girişi | Rota | Görünen roller (`App.tsx`) | Sayaç | v2 kararı | v2 menüdeki yeri |
-|---|---|---|---|---|---|---|
-| M1 | İşlerim | `/islerim` | tüm iç kullanıcılar (`:85`) | açık görev sayısı | KALIR | İşlerim |
-| M2 | Lira Defteri | `/lira-defteri` | BUYER, PROCUREMENT_MANAGER, FINANCE, LEGAL, AUDITOR (`:86`) | `recovery_case` | **KALKAR (onaylı liste)** | yok |
-| M3 | Projeler | `/projeler` | REQUESTER, BUYER, PROCUREMENT_MANAGER, TECH_EVALUATOR, FINANCE, SECURITY, AUDITOR, TENANT_ADMIN (`:89`) | `project` | KALIR | Projeler |
-| M4 | Tedarikçiler | `/tedarikciler` | REQUESTER, BUYER, PROCUREMENT_MANAGER, TECH_EVALUATOR, LEGAL, FINANCE, SECURITY, MASTER_DATA, AUDITOR (`:90`) | `supplier` | KALIR | Tedarikçiler |
-| M5 | Sözleşmeler | `/sozlesmeler` | BUYER, PROCUREMENT_MANAGER, LEGAL, FINANCE, AUDITOR (`:91`) | `contract_version` | KALIR | Sözleşmeler |
-| M6 | Belge girişi | `/belge-girisi` | tüm iç kullanıcılar (`:92`) | `document_version` | BİRLEŞİR | Sözleşmeler > "Sözleşme ekle" 1. adım (Yükle). Fatura/teklif/diğer türü için bkz. K-05 |
-| M7 | Siparişler | `/siparisler` | REQUESTER, BUYER, PROCUREMENT_MANAGER, FINANCE, AUDITOR (`:93`) | yok | **KALKAR (onaylı liste)** | yok (sipariş ERP'den salt okunur referans; ekranı tanımlı değil, bkz. K-09) |
-| M8 | Faturalar | `/faturalar` | BUYER, PROCUREMENT_MANAGER, FINANCE, LEGAL, AUDITOR (`:94`) | `invoice` | SADELEŞİR | Faturalar (liste + eşleştirme kuyruğu) |
-| M9 | Olaylar | `/olaylar` | REQUESTER, BUYER, PROCUREMENT_MANAGER, TECH_EVALUATOR, LEGAL, FINANCE, SECURITY, MASTER_DATA, AUDITOR (`:95`) | `incident` | BİRLEŞİR | Tedarikçiler > tedarikçi kartı > "Aksiyon planları" |
-| M10 | Raporlar | `/raporlar` | BUYER, PROCUREMENT_MANAGER, FINANCE, AUDITOR (`:96`) | yok | SADELEŞİR | Raporlar (tek pano) |
-| M11 | Yapay zekâ | `/yapay-zeka` | TENANT_ADMIN, AUDITOR, PROCUREMENT_MANAGER (`:97`) | `tenant` | DÖNÜŞÜR | Yönetim > Yapay zekâ |
-| M12 | Veri yönetimi | `/veri-yonetimi` | LEGAL, TENANT_ADMIN, AUDITOR (`:98`) | `disposal_batch`, `tenant_export` | **KALKAR (onaylı liste)**: saklama, yasal bekletme, imha. Dışa aktarım sekmesi TAŞINIR | Dışa aktarım: Yönetim (alt giriş adı belirsiz, bkz. K-03) |
-| M13 | Teklif davetleri (portal) | `/portal` | tedarikçi portalı oturumu (`:82`) | yok | KALIR | Portal: Teklif davetleri |
-| M14 | Anketler (portal) | `/portal/anketler` | tedarikçi portalı oturumu (`:83`) | yok | KALIR | Portal: Anketler |
+| # | Eski menü girişi | Rota | Görünen roller (`App.tsx`) | Sayaç | v2 kararı | v2 menüdeki yeri | ✓ |
+|---|---|---|---|---|---|---|---|
+| M1 | İşlerim | `/islerim` | tüm iç kullanıcılar (`:85`) | açık görev sayısı | KALIR | İşlerim | [x] menüde, açılıyor (Satınalma, Yönetici, Denetçi, Departman) |
+| M2 | Lira Defteri | `/lira-defteri` | BUYER, PROCUREMENT_MANAGER, FINANCE, LEGAL, AUDITOR (`:86`) | `recovery_case` | **KALKAR (onaylı liste)** | yok | [x] menüde yok (7 giriş), /lira-defteri kaldırıldı ekranı |
+| M3 | Projeler | `/projeler` | REQUESTER, BUYER, PROCUREMENT_MANAGER, TECH_EVALUATOR, FINANCE, SECURITY, AUDITOR, TENANT_ADMIN (`:89`) | `project` | KALIR | Projeler | [x] menüde, liste açılıyor |
+| M4 | Tedarikçiler | `/tedarikciler` | REQUESTER, BUYER, PROCUREMENT_MANAGER, TECH_EVALUATOR, LEGAL, FINANCE, SECURITY, MASTER_DATA, AUDITOR (`:90`) | `supplier` | KALIR | Tedarikçiler | [x] menüde; Liste, Olaylar, Anketler, Performans ağırlıkları alt sekmeleri |
+| M5 | Sözleşmeler | `/sozlesmeler` | BUYER, PROCUREMENT_MANAGER, LEGAL, FINANCE, AUDITOR (`:91`) | `contract_version` | KALIR | Sözleşmeler | [x] menüde, liste açılıyor |
+| M6 | Belge girişi | `/belge-girisi` | tüm iç kullanıcılar (`:92`) | `document_version` | BİRLEŞİR | Sözleşmeler > "Sözleşme ekle" 1. adım (Yükle). Fatura/teklif/diğer türü için bkz. K-05 | [x] /belge-girisi yönleniyor Sözleşme ekle sayfasına; Fatura yükle ayrı (/faturalar/yukle) |
+| M7 | Siparişler | `/siparisler` | REQUESTER, BUYER, PROCUREMENT_MANAGER, FINANCE, AUDITOR (`:93`) | yok | **KALKAR (onaylı liste)** | yok (sipariş ERP'den salt okunur referans; ekranı tanımlı değil, bkz. K-09) | [x] menüde yok, /siparisler kaldırıldı ekranı |
+| M8 | Faturalar | `/faturalar` | BUYER, PROCUREMENT_MANAGER, FINANCE, LEGAL, AUDITOR (`:94`) | `invoice` | SADELEŞİR | Faturalar (liste + eşleştirme kuyruğu) | [x] menüde, liste açılıyor |
+| M9 | Olaylar | `/olaylar` | REQUESTER, BUYER, PROCUREMENT_MANAGER, TECH_EVALUATOR, LEGAL, FINANCE, SECURITY, MASTER_DATA, AUDITOR (`:95`) | `incident` | BİRLEŞİR | Tedarikçiler > tedarikçi kartı > "Aksiyon planları" | [x] menüde yok; /olaylar yönleniyor Tedarikçiler > Olaylar sekmesine (Faz 1 K-10 varsayılanı; kart içinde Olaylar sekmesi de var) |
+| M10 | Raporlar | `/raporlar` | BUYER, PROCUREMENT_MANAGER, FINANCE, AUDITOR (`:96`) | yok | SADELEŞİR | Raporlar (tek pano) | [x] Satınalma, Yönetici, Denetçi menüsünde; Departman kullanıcısında yok |
+| M11 | Yapay zekâ | `/yapay-zeka` | TENANT_ADMIN, AUDITOR, PROCUREMENT_MANAGER (`:97`) | `tenant` | DÖNÜŞÜR | Yönetim > Yapay zekâ | [x] /yapay-zeka yönleniyor Yönetim > Yapay zekâ sekmesine |
+| M12 | Veri yönetimi | `/veri-yonetimi` | LEGAL, TENANT_ADMIN, AUDITOR (`:98`) | `disposal_batch`, `tenant_export` | **KALKAR (onaylı liste)**: saklama, yasal bekletme, imha. Dışa aktarım sekmesi TAŞINIR | Dışa aktarım: Yönetim (alt giriş adı belirsiz, bkz. K-03) | [x] menüde yok; /veri-yonetimi kaldırıldı ekranı + Yönetim > Denetim izi bağlantısı; dışa aktarım Denetim izi sekmesinde |
+| M13 | Teklif davetleri (portal) | `/portal` | tedarikçi portalı oturumu (`:82`) | yok | KALIR | Portal: Teklif davetleri | [x] portal menüsünde Teklif davetleri, açılıyor |
+| M14 | Anketler (portal) | `/portal/anketler` | tedarikçi portalı oturumu (`:83`) | yok | KALIR | Portal: Anketler | [x] portal menüsünde Anketler, açılıyor |
 
 ### 2.2 Menüde olmayan rotalar
 
-| # | Rota | Sayfa | Nereden açılır | v2 kararı | v2'deki yeri |
-|---|---|---|---|---|---|
-| R1 | `/projeler/yeni` | ProjectWizard | Projeler > "Yeni proje" | SADELEŞİR | Projeler > proje oluşturma (tedarikçi seçimi ve davet eklenir) |
-| R2 | `/projeler/:id` | ProjectWorkspace | proje satırı | SADELEŞİR | Proje detayı (Özet, Teklifler, Değerlendirme, Sözleşmeler, Faturalar, Uyum denetimi) |
-| R3 | `/projeler/onay-politikasi` | ApprovalPolicyPage | Projeler > "Onay politikası" | **KALKAR (onaylı liste)** | yok (sabit üç onaycı; Yönetim > Onaycılar yeni ekran) |
-| R4 | `/tedarikciler/:id` | SupplierDetailPage | tedarikçi satırı | KALIR | Tedarikçi kartı |
-| R5 | `/belgeler/:id` | DocumentPage | Belge girişi sonucu, tedarikçi belgeleri, fatura, değerlendirme kanıtı, imha partisi, görev | KARAR GEREKLİ (K-05) | Sözleşme için: sözleşme detayı "Belge" sekmesi |
-| R6 | `/sozlesmeler/:id` | ContractPage (4 sekme) | sözleşme satırı | KALIR | Sözleşme detayı (Özet, Belge, İnceleme, Onaylar, İmzalar, Faturalar, Hatırlatıcılar, Geçmiş) |
-| R7 | `/siparisler/:id` | PurchaseOrderPage | sipariş satırı, fatura tahsisi, olay | **KALKAR (onaylı liste)** | yok |
-| R8 | `/faturalar/:id` | InvoicePage | fatura satırı | SADELEŞİR | Fatura detayı (salt okunur + eşleştirme) |
-| R9 | `/faturalar/tolerans` | ToleranceRulesPage | Faturalar > "Tolerans kuralları" | **KALKAR (onaylı liste)** | yok |
-| R10 | `/faturalar/erp-mutabakati` | ErpReconciliationPage | Faturalar > "ERP mutabakatı" (FINANCE, AUDITOR) | DÖNÜŞÜR | Yönetim > Entegrasyonlar (özellik başına kayıt) |
-| R11 | `/ara` | SearchPage | üst çubuk araması | KALIR | üst çubuk |
-| R12 | `/lira-defteri/:id` | RecoveryCasePage | bulgu satırı, görev | **KALKAR (onaylı liste)** | yok |
-| R13 | `/olaylar/:id` | IncidentPage | olay satırı, karne, görev | BİRLEŞİR | Tedarikçi kartı > Aksiyon planları |
-| R14 | `/degerlendirmeler/:id` | AssessmentPage | Tedarikçi > Değerlendirme ve risk sekmesi | KALIR | Tedarikçi > Anketler ve risk |
-| R15 | `/anketler` | TemplatesPage | Tedarikçi > Değerlendirme sekmesi > "Anket şablonları" (3 dokunuş) | KALIR | Tedarikçi > Anketler ve risk (dokunuş sayısı artmamalı) |
-| R16 | `/performans-agirliklari` | PerformanceWeightsPage | Anketler > "Performans ağırlıkları"; performans formu bağlantısı | KALIR | Tedarikçi > Anketler ve risk |
-| R17 | `/veri-yonetimi/imha/:id` | DisposalBatchPage | imha partisi satırı, görev | **KALKAR (onaylı liste)** | yok |
-| R18 | `/portal/:id` | PortalRound | portal davet satırı | KALIR | Portal: teklif verme |
-| R19 | `/portal/anketler/:id` | PortalAssessment | portal anket satırı | KALIR | Portal: anket doldurma |
-| R20 | `*` | NotYetPage "Sayfa bulunamadı" | bilinmeyen adres | KALIR | aynı |
+| # | Rota | Sayfa | Nereden açılır | v2 kararı | v2'deki yeri | ✓ |
+|---|---|---|---|---|---|---|
+| R1 | `/projeler/yeni` | ProjectWizard | Projeler > "Yeni proje" | SADELEŞİR | Projeler > proje oluşturma (tedarikçi seçimi ve davet eklenir) | [x] Projeler > Yeni proje açılıyor; v1 5 adımlı sihirbaz (Departman alanı eklenmiş); yöntem, teklif son tarihi, tedarikçi seçimi alanları sonraki faz |
+| R2 | `/projeler/:id` | ProjectWorkspace | proje satırı | SADELEŞİR | Proje detayı (Özet, Teklifler, Değerlendirme, Sözleşmeler, Faturalar, Uyum denetimi) | [x] proje detayı açılıyor; sekmeler hâlâ v1 (Özet, Kalemler, Teklifler, Karşılaştırma, Karar) |
+| R3 | `/projeler/onay-politikasi` | ApprovalPolicyPage | Projeler > "Onay politikası" | **KALKAR (onaylı liste)** | yok (sabit üç onaycı; Yönetim > Onaycılar yeni ekran) | [x] düğme yok, adres kaldırıldı ekranı |
+| R4 | `/tedarikciler/:id` | SupplierDetailPage | tedarikçi satırı | KALIR | Tedarikçi kartı | [x] tedarikçi kartı açılıyor |
+| R5 | `/belgeler/:id` | DocumentPage | Belge girişi sonucu, tedarikçi belgeleri, fatura, değerlendirme kanıtı, imha partisi, görev | KARAR GEREKLİ (K-05) | Sözleşme için: sözleşme detayı "Belge" sekmesi | [x] /belgeler/:id açılıyor (alanlar, UBL-TR, satıcı kimliği formu); sözleşmede Belge sekmesi sonraki faz |
+| R6 | `/sozlesmeler/:id` | ContractPage (4 sekme) | sözleşme satırı | KALIR | Sözleşme detayı (Özet, Belge, İnceleme, Onaylar, İmzalar, Faturalar, Hatırlatıcılar, Geçmiş) | [x] sözleşme detayı açılıyor; 4 v1 sekmesi (İmza kontrolü, Koşullar ve ihbar, Yükümlülükler, Fiyat SLA ve teminat) |
+| R7 | `/siparisler/:id` | PurchaseOrderPage | sipariş satırı, fatura tahsisi, olay | **KALKAR (onaylı liste)** | yok | [x] adres kaldırıldı ekranı, menüde yok |
+| R8 | `/faturalar/:id` | InvoicePage | fatura satırı | SADELEŞİR | Fatura detayı (salt okunur + eşleştirme) | [x] fatura detayı salt okunur + Tahsisi düzenle |
+| R9 | `/faturalar/tolerans` | ToleranceRulesPage | Faturalar > "Tolerans kuralları" | **KALKAR (onaylı liste)** | yok | [x] adres kaldırıldı ekranı, Faturalar sayfasında bağlantı yok |
+| R10 | `/faturalar/erp-mutabakati` | ErpReconciliationPage | Faturalar > "ERP mutabakatı" (FINANCE, AUDITOR) | DÖNÜŞÜR | Yönetim > Entegrasyonlar (özellik başına kayıt) | [x] /faturalar/erp-mutabakati yönleniyor Yönetim > Entegrasyonlar sekmesine; Faturalar sayfasında ERP mutabakatı bağlantısı da var |
+| R11 | `/ara` | SearchPage | üst çubuk araması | KALIR | üst çubuk | [x] üst çubuk araması /ara sayfasını açıyor |
+| R12 | `/lira-defteri/:id` | RecoveryCasePage | bulgu satırı, görev | **KALKAR (onaylı liste)** | yok | [x] adres kaldırıldı ekranı |
+| R13 | `/olaylar/:id` | IncidentPage | olay satırı, karne, görev | BİRLEŞİR | Tedarikçi kartı > Aksiyon planları | [x] /olaylar/:id yönleniyor /tedarikciler/olaylar/:id adresine, açılıyor |
+| R14 | `/degerlendirmeler/:id` | AssessmentPage | Tedarikçi > Değerlendirme ve risk sekmesi | KALIR | Tedarikçi > Anketler ve risk | [x] /degerlendirmeler/:id açılıyor (tedarikçi Değerlendirme sekmesinden) |
+| R15 | `/anketler` | TemplatesPage | Tedarikçi > Değerlendirme sekmesi > "Anket şablonları" (3 dokunuş) | KALIR | Tedarikçi > Anketler ve risk (dokunuş sayısı artmamalı) | [x] Tedarikçiler > Anketler sekmesi (menü + 1 dokunuş), /anketler yönleniyor |
+| R16 | `/performans-agirliklari` | PerformanceWeightsPage | Anketler > "Performans ağırlıkları"; performans formu bağlantısı | KALIR | Tedarikçi > Anketler ve risk | [x] Tedarikçiler > Performans ağırlıkları sekmesi, /performans-agirliklari yönleniyor |
+| R17 | `/veri-yonetimi/imha/:id` | DisposalBatchPage | imha partisi satırı, görev | **KALKAR (onaylı liste)** | yok | [x] adres kaldırıldı ekranı |
+| R18 | `/portal/:id` | PortalRound | portal davet satırı | KALIR | Portal: teklif verme | [x] /portal/:id teklif verme sayfası açılıyor |
+| R19 | `/portal/anketler/:id` | PortalAssessment | portal anket satırı | KALIR | Portal: anket doldurma | [x] /portal/anketler/:id anket doldurma açılıyor |
+| R20 | `*` | NotYetPage "Sayfa bulunamadı" | bilinmeyen adres | KALIR | aynı | [x] bilinmeyen adres Sayfa bulunamadı gösteriyor |
 
 ---
 
@@ -85,25 +85,25 @@ Sütunlar: # · işlev · dosya:satır · v2 kararı · v2'deki yeri · doğrula
 
 | # | İşlev | Dosya:satır | v2 kararı | v2'deki yeri | ✓ |
 |---|---|---|---|---|---|
-| W-00-01 | Oturum kapısı: OIDC dönüşü, "Oturum açılıyor", giriş ekranı, kabuk | `App.tsx:54-60` | KALIR | Giriş (Entra) | [ ] |
-| W-00-02 | Kurumsal giriş düğmesi "Kurumsal hesapla giriş yap" + kimlik sağlayıcı adı | `LoginPage.tsx:63-77` | KALIR | Giriş (Entra) | [ ] |
-| W-00-03 | Giriş hata durumları: "Erişim verilmedi", "Yeniden giriş gerekiyor", "Oturum hizmetine ulaşılamadı" + Tekrar dene | `LoginPage.tsx:50-56` | KALIR | Giriş | [ ] |
-| W-00-04 | OIDC dönüşü: "Oturum doğrulanıyor", hata + "Giriş ekranına dön" | `LoginPage.tsx:79-99` | KALIR | Giriş | [ ] |
-| W-00-05 | Geliştirme girişi: 15 sentetik kullanıcı seçimi (`POST /api/v1/dev/session`), yalnız `mode !== 'oidc'` | `LoginPage.tsx:10-26, 101-141` | KALIR (yalnız geliştirme); kullanıcı listesi 5 yeni role göre güncellenir | Giriş (dev) | [ ] |
-| W-00-06 | Giriş ekranı kanıt kökeni açıklaması (İnsan kararı / Kural ile doğrulandı / Otomatik öneri) | `LoginPage.tsx:40-47` | KALIR | Giriş | [ ] |
-| W-00-07 | "Ana içeriğe geç" atlama bağlantısı; rota değişince ana içeriğe odak | `App.tsx:76, 103` | KALIR | kabuk | [ ] |
-| W-00-08 | Kiracı seçici (aktif kiracı); detaydayken kiracı değişince modül listesine dönüş | `App.tsx:71-75, 107-111` | KALIR (analiz Karar 10: altyapı kalsın) | kabuk | [ ] |
-| W-00-09 | Ana menü, rol bazlı görünürlük, aktif giriş vurgusu, giriş başına bekleyen iş sayacı (`GET /api/v1/tasks?view=mine`) | `App.tsx:78-99, 114-130` | SADELEŞİR (14 → 7 giriş, 5 rol) | yeni menü | [ ] |
-| W-00-10 | Kullanıcı adı ve rol etiketleri (sol alt) | `App.tsx:131-135` | KALIR (yeni rol adlarıyla) | kabuk | [ ] |
-| W-00-11 | Çıkış düğmesi (masaüstü sol alt + ≤900px üstte); çıkış hatası bandı + "Tekrar dene" | `App.tsx:112, 134, 142-143` | KALIR | kabuk | [ ] |
-| W-00-12 | "Şirket kapsamı" üst bandı (erişilen şirketler / "Tedarikçi portalı" / "Şirket belgesi erişimi yok") | `App.tsx:100, 138-139` | KALIR (departman kapsamı eklenir) | kabuk | [ ] |
-| W-00-13 | Genel arama kutusu (en az 2 karakter → `/ara?q=`), portalda gizli | `TopBar.tsx:11-22`, `App.tsx:140` | KALIR | üst çubuk | [ ] |
-| W-00-14 | Bildirim zili: okunmamış sayacı, panel, bildirime tıklayınca kayda gitme, "Tümünü görüldü say" (`POST /api/v1/notifications/seen`), "Bütün işler" bağlantısı, boş durum, Esc/dışarı tıkla kapatma | `TopBar.tsx:27-70` | KALIR (kalkan kayıt türlerine giden bağlantılar ayıklanır) | üst çubuk | [ ] |
-| W-00-15 | Çevrimdışı bandı ("Çevrimdışısınız…") | `App.tsx:144` | KALIR | kabuk | [ ] |
-| W-00-16 | Tedarikçi/iç kullanıcı rota ayrımı: karşı tarafın adresi kendi ana sayfasına döner | `App.tsx:148-156` | KALIR | kabuk | [ ] |
-| W-00-17 | "Sayfa bulunamadı" ekranı | `App.tsx:186`, `NotYetPage.tsx` | KALIR | kabuk | [ ] |
-| W-00-18 | Dar ekran (≤900px) yatay kaydırmalı menü ve üst bant düzeni | `App.tsx:102-115` | KALIR | kabuk | [ ] |
-| W-00-19 | Kayıtlı görünümler bileşeni: kaydet, uygula, sil (`/api/v1/saved-views`); şu an yalnız Projeler ve Faturalar'da kullanılıyor | `ui/SavedViews.tsx:13-48`; `ProjectsPage.tsx:31`; `PurchasingPages.tsx:325` | KALIR | Projeler, Faturalar | [ ] |
+| W-00-01 | Oturum kapısı: OIDC dönüşü, "Oturum açılıyor", giriş ekranı, kabuk | `App.tsx:54-60` | KALIR | Giriş (Entra) | [x] Çıkış sonrası giriş ekranı, girişte kabuk açılıyor; OIDC dönüşü dev modda yok |
+| W-00-02 | Kurumsal giriş düğmesi "Kurumsal hesapla giriş yap" + kimlik sağlayıcı adı | `LoginPage.tsx:63-77` | KALIR | Giriş (Entra) | [ ] görülmedi: geliştirme modunda kurumsal giriş düğmesi çıkmıyor (yalnız OIDC modunda) |
+| W-00-03 | Giriş hata durumları: "Erişim verilmedi", "Yeniden giriş gerekiyor", "Oturum hizmetine ulaşılamadı" + Tekrar dene | `LoginPage.tsx:50-56` | KALIR | Giriş | [ ] görülmedi: hata durumları dev modda tetiklenmedi |
+| W-00-04 | OIDC dönüşü: "Oturum doğrulanıyor", hata + "Giriş ekranına dön" | `LoginPage.tsx:79-99` | KALIR | Giriş | [ ] görülmedi: OIDC dönüşü ekranı dev modda yok |
+| W-00-05 | Geliştirme girişi: 15 sentetik kullanıcı seçimi (`POST /api/v1/dev/session`), yalnız `mode !== 'oidc'` | `LoginPage.tsx:10-26, 101-141` | KALIR (yalnız geliştirme); kullanıcı listesi 5 yeni role göre güncellenir | Giriş (dev) | [x] 15 sentetik kullanıcı v2 rol açıklamalarıyla listeleniyor, giriş çalışıyor |
+| W-00-06 | Giriş ekranı kanıt kökeni açıklaması (İnsan kararı / Kural ile doğrulandı / Otomatik öneri) | `LoginPage.tsx:40-47` | KALIR | Giriş | [x] giriş ekranında üç kanıt kökeni açıklaması |
+| W-00-07 | "Ana içeriğe geç" atlama bağlantısı; rota değişince ana içeriğe odak | `App.tsx:76, 103` | KALIR | kabuk | [x] Ana içeriğe geç bağlantısı (#main) var; rota değişiminde odak denenmedi |
+| W-00-08 | Kiracı seçici (aktif kiracı); detaydayken kiracı değişince modül listesine dönüş | `App.tsx:71-75, 107-111` | KALIR (analiz Karar 10: altyapı kalsın) | kabuk | [x] çok kiracılı kullanıcıyla seçici var; tedarikçi detayındayken kiracı değişince liste sayfasına dönüldü |
+| W-00-09 | Ana menü, rol bazlı görünürlük, aktif giriş vurgusu, giriş başına bekleyen iş sayacı (`GET /api/v1/tasks?view=mine`) | `App.tsx:78-99, 114-130` | SADELEŞİR (14 → 7 giriş, 5 rol) | yeni menü | [x] menü: Satınalma/Yönetici/Denetçi 7 giriş, Departman 5 (Raporlar ve Yönetim yok), portal 2; sayaçlar görünüyor |
+| W-00-10 | Kullanıcı adı ve rol etiketleri (sol alt) | `App.tsx:131-135` | KALIR (yeni rol adlarıyla) | kabuk | [x] kullanıcı adı ve v2 rol etiketi (Satınalma, Yönetici, Denetçi, Departman kullanıcısı, Tedarikçi) |
+| W-00-11 | Çıkış düğmesi (masaüstü sol alt + ≤900px üstte); çıkış hatası bandı + "Tekrar dene" | `App.tsx:112, 134, 142-143` | KALIR | kabuk | [x] Çıkış düğmesi çalışıyor (1280 ve 390 px); çıkış hatası bandı görülmedi |
+| W-00-12 | "Şirket kapsamı" üst bandı (erişilen şirketler / "Tedarikçi portalı" / "Şirket belgesi erişimi yok") | `App.tsx:100, 138-139` | KALIR (departman kapsamı eklenir) | kabuk | [x] Şirket kapsamı bandı: şirket adı, Tedarikçi portalı, Şirket belgesi erişimi yok (Yönetici); departman kapsamı bantta henüz yok |
+| W-00-13 | Genel arama kutusu (en az 2 karakter → `/ara?q=`), portalda gizli | `TopBar.tsx:11-22`, `App.tsx:140` | KALIR | üst çubuk | [x] üst çubuk araması: 2 karakterden kısa gönderilmiyor, Anadolu araması /ara?q=Anadolu açtı; portalda yok |
+| W-00-14 | Bildirim zili: okunmamış sayacı, panel, bildirime tıklayınca kayda gitme, "Tümünü görüldü say" (`POST /api/v1/notifications/seen`), "Bütün işler" bağlantısı, boş durum, Esc/dışarı tıkla kapatma | `TopBar.tsx:27-70` | KALIR (kalkan kayıt türlerine giden bağlantılar ayıklanır) | üst çubuk | [x] zil, sayaç, panel, Tümünü görüldü say, Bütün işler, Esc ile kapanış görüldü (görüldü say tıklanmadı) |
+| W-00-15 | Çevrimdışı bandı ("Çevrimdışısınız…") | `App.tsx:144` | KALIR | kabuk | [ ] görülmedi: çevrimdışı bandı tarayıcıda tetiklenemedi |
+| W-00-16 | Tedarikçi/iç kullanıcı rota ayrımı: karşı tarafın adresi kendi ana sayfasına döner | `App.tsx:148-156` | KALIR | kabuk | [x] tedarikçi /projeler, /islerim, /yonetim adreslerinde /portal e döndü; iç kullanıcı /portal de İşlerim e döndü |
+| W-00-17 | "Sayfa bulunamadı" ekranı | `App.tsx:186`, `NotYetPage.tsx` | KALIR | kabuk | [x] /xyz-yok Sayfa bulunamadı gösteriyor |
+| W-00-18 | Dar ekran (≤900px) yatay kaydırmalı menü ve üst bant düzeni | `App.tsx:102-115` | KALIR | kabuk | [x] 390 px: yatay menü, Çıkış üstte, yatay sayfa kaydırması yok |
+| W-00-19 | Kayıtlı görünümler bileşeni: kaydet, uygula, sil (`/api/v1/saved-views`); şu an yalnız Projeler ve Faturalar'da kullanılıyor | `ui/SavedViews.tsx:13-48`; `ProjectsPage.tsx:31`; `PurchasingPages.tsx:325` | KALIR | Projeler, Faturalar | [x] Projeler: kaydet, uygula, sil denendi (kayıt silindi); Faturalar da Görünümü kaydet düğmesi var |
 
 ### 3.1 İşlerim — `/islerim` — `pages/WorkPage.tsx`
 
@@ -111,15 +111,15 @@ API: `GET /api/v1/tasks?view=mine|overdue|all`.
 
 | # | İşlev | Dosya:satır | v2 kararı | v2'deki yeri | ✓ |
 |---|---|---|---|---|---|
-| W-01-01 | Görünüm sekmeleri: "Benden beklenen", "Geciken", "Rolümdeki tüm işler" + sayaçlar | `WorkPage.tsx:22, 52-59` | KALIR | İşlerim | [ ] |
-| W-01-02 | "Yenile" düğmesi | `WorkPage.tsx:49` | KALIR | İşlerim | [ ] |
-| W-01-03 | Görev tablosu: Kayıt no, Önem, İş, Neden bekliyor, Sonraki adım, Sorumlu rol, Son tarih, "İşi aç" | `WorkPage.tsx:82-102` | KALIR (sorumlu rol yerine unvan/rol) | İşlerim | [ ] |
-| W-01-04 | Dar ekran kart listesi | `WorkPage.tsx:71-81` | KALIR | İşlerim | [ ] |
-| W-01-05 | Görevden kayda geçiş (`entityHref`): supplier (+değerlendirme sekmesi), contract_version, document_version, project, invoice, recovery_case, incident, tenant, disposal_batch, tenant_export | `WorkPage.tsx:15-20` | DÖNÜŞÜR: recovery_case ve disposal_batch hedefleri kalkar; incident → tedarikçi kartı; tenant → Yönetim > Yapay zekâ | İşlerim | [ ] |
-| W-01-06 | Klavye: j/k satır seçer, Enter açar; açıklama satırı | `WorkPage.tsx:32-45, 103-106` | KALIR | İşlerim | [ ] |
-| W-01-07 | "Gecikti" etiketi, "Son tarih yok", "Açıldı …" | `WorkPage.tsx:97, 114-118` | KALIR | İşlerim | [ ] |
-| W-01-08 | Kanıt kökeni açıklama satırı | `WorkPage.tsx:60-66` | KALIR | İşlerim | [ ] |
-| W-01-09 | Durumlar: yükleniyor, hata + yeniden dene, boş ("Bekleyen işiniz yok" / "Geciken işiniz yok") | `WorkPage.tsx:67-68` | KALIR | İşlerim | [ ] |
+| W-01-01 | Görünüm sekmeleri: "Benden beklenen", "Geciken", "Rolümdeki tüm işler" + sayaçlar | `WorkPage.tsx:22, 52-59` | KALIR | İşlerim | [x] üç sekme ve sayaçlar (185 / 3 / 185) |
+| W-01-02 | "Yenile" düğmesi | `WorkPage.tsx:49` | KALIR | İşlerim | [x] Yenile düğmesi var (tıklanmadı) |
+| W-01-03 | Görev tablosu: Kayıt no, Önem, İş, Neden bekliyor, Sonraki adım, Sorumlu rol, Son tarih, "İşi aç" | `WorkPage.tsx:82-102` | KALIR (sorumlu rol yerine unvan/rol) | İşlerim | [x] tablo sütunları: Kayıt no, Önem, İş, Neden bekliyor, Sonraki adım, Sorumlu rol, Son tarih, Eylem |
+| W-01-04 | Dar ekran kart listesi | `WorkPage.tsx:71-81` | KALIR | İşlerim | [x] 390 px kart listesi |
+| W-01-05 | Görevden kayda geçiş (`entityHref`): supplier (+değerlendirme sekmesi), contract_version, document_version, project, invoice, recovery_case, incident, tenant, disposal_batch, tenant_export | `WorkPage.tsx:15-20` | DÖNÜŞÜR: recovery_case ve disposal_batch hedefleri kalkar; incident → tedarikçi kartı; tenant → Yönetim > Yapay zekâ | İşlerim | [x] hedefler çalışıyor: sözleşme, olay (/tedarikciler/olaylar), fatura, tedarikçi, belge; recovery_case ve disposal_batch görevi yok; project, tenant hedefi veride yok |
+| W-01-06 | Klavye: j/k satır seçer, Enter açar; açıklama satırı | `WorkPage.tsx:32-45, 103-106` | KALIR | İşlerim | [x] j j Enter üçüncü görevin sözleşmesini açtı; Enter açıklaması var |
+| W-01-07 | "Gecikti" etiketi, "Son tarih yok", "Açıldı …" | `WorkPage.tsx:97, 114-118` | KALIR | İşlerim | [x] Gecikti etiketi ve Son tarih yok görüldü |
+| W-01-08 | Kanıt kökeni açıklama satırı | `WorkPage.tsx:60-66` | KALIR | İşlerim | [x] Kanıtın kökeni açıklama satırı |
+| W-01-09 | Durumlar: yükleniyor, hata + yeniden dene, boş ("Bekleyen işiniz yok" / "Geciken işiniz yok") | `WorkPage.tsx:67-68` | KALIR | İşlerim | [x] boş durum Bekleyen işiniz yok (Yönetici); yükleniyor ve hata durumları görülmedi |
 
 ### 3.2 Projeler listesi — `/projeler` — `pages/ProjectsPage.tsx`
 
@@ -127,13 +127,13 @@ API: `GET /api/v1/projects`.
 
 | # | İşlev | Dosya:satır | v2 kararı | v2'deki yeri | ✓ |
 |---|---|---|---|---|---|
-| W-02-01 | "Yeni proje" düğmesi (REQUESTER, BUYER, PROCUREMENT_MANAGER) | `ProjectsPage.tsx:24, 28` | KALIR (v2: Satınalma) | Projeler | [ ] |
-| W-02-02 | "Onay politikası" düğmesi (herkese görünür) | `ProjectsPage.tsx:27` | **KALKAR (onaylı liste)** | yok | [ ] |
-| W-02-03 | Kayıtlı görünümler (`page="projects"`) | `ProjectsPage.tsx:31` | KALIR | Projeler | [ ] |
-| W-02-04 | Aşama süzgeci (URL `durum`): Tümü, Taslak, Onayda, Teklife açık, Değerlendirmede, Seçim onayında, Sözleşme aşamasında, İptal, Sonuçsuz + sayaçlar | `ProjectsPage.tsx:15-16, 32-35` | SADELEŞİR (v2 akışı: Taslak → Teklif toplama → Değerlendirme → Kazanan seçildi → Sözleşme → Tamamlandı; "Onayda"/"Seçim onayında" bkz. K-01) | Projeler | [ ] |
-| W-02-05 | Tablo: Proje no, Proje (şirket · kategori), Aşama, Bütçe (+"Bütçe doğrulanmadı"), Kapanış, Teklif sayısı, Sahip, Güncellendi; satırdan detaya geçiş | `ProjectsPage.tsx:50-72` | KALIR (departman sütunu/süzgeci eklenir) | Projeler | [ ] |
-| W-02-06 | Dar ekran kart listesi | `ProjectsPage.tsx:41-49` | KALIR | Projeler | [ ] |
-| W-02-07 | Durumlar: yükleniyor, hata, boş ("Henüz proje yok" / "Bu aşamada proje yok"; role göre metin) | `ProjectsPage.tsx:36-38` | KALIR | Projeler | [ ] |
+| W-02-01 | "Yeni proje" düğmesi (REQUESTER, BUYER, PROCUREMENT_MANAGER) | `ProjectsPage.tsx:24, 28` | KALIR (v2: Satınalma) | Projeler | [x] Yeni proje bağlantısı Satınalma ve Departman kullanıcısında var, Denetçide yok |
+| W-02-02 | "Onay politikası" düğmesi (herkese görünür) | `ProjectsPage.tsx:27` | **KALKAR (onaylı liste)** | yok | [x] Onay politikası düğmesi yok |
+| W-02-03 | Kayıtlı görünümler (`page="projects"`) | `ProjectsPage.tsx:31` | KALIR | Projeler | [x] Görünümü kaydet var (Projeler) |
+| W-02-04 | Aşama süzgeci (URL `durum`): Tümü, Taslak, Onayda, Teklife açık, Değerlendirmede, Seçim onayında, Sözleşme aşamasında, İptal, Sonuçsuz + sayaçlar | `ProjectsPage.tsx:15-16, 32-35` | SADELEŞİR (v2 akışı: Taslak → Teklif toplama → Değerlendirme → Kazanan seçildi → Sözleşme → Tamamlandı; "Onayda"/"Seçim onayında" bkz. K-01) | Projeler | [x] süzgeç çalışıyor (URL durum); aşama adları hâlâ v1: Taslak, Onayda, Teklife açık, Değerlendirmede, Seçim onayında, Sözleşme aşamasında, İptal, Sonuçsuz (v2 adları sonraki faz) |
+| W-02-05 | Tablo: Proje no, Proje (şirket · kategori), Aşama, Bütçe (+"Bütçe doğrulanmadı"), Kapanış, Teklif sayısı, Sahip, Güncellendi; satırdan detaya geçiş | `ProjectsPage.tsx:50-72` | KALIR (departman sütunu/süzgeci eklenir) | Projeler | [x] sütunlar: Proje no, Proje, Departman, Aşama, Bütçe, Kapanış, Teklif, Sahip, Güncellendi; Departman süzgeci eklenmiş |
+| W-02-06 | Dar ekran kart listesi | `ProjectsPage.tsx:41-49` | KALIR | Projeler | [x] 390 px kart listesi |
+| W-02-07 | Durumlar: yükleniyor, hata, boş ("Henüz proje yok" / "Bu aşamada proje yok"; role göre metin) | `ProjectsPage.tsx:36-38` | KALIR | Projeler | [x] boş durum Süzgece uyan proje yok görüldü |
 
 ### 3.3 Yeni proje sihirbazı — `/projeler/yeni` — `pages/ProjectWizard.tsx`
 
@@ -141,16 +141,16 @@ API: `POST /api/v1/projects`.
 
 | # | İşlev | Dosya:satır | v2 kararı | v2'deki yeri | ✓ |
 |---|---|---|---|---|---|
-| W-03-01 | 5 adım: İhtiyaç, Kalemler, Bütçe, Kriterler, Özet; önceki adıma tıklayarak dönüş | `ProjectWizard.tsx:18, 112-122` | SADELEŞİR (v2 zorunlu alanlar: ad, departman, konu/kapsam, yöntem, tahmini tutar + para birimi, teklif son tarihi; tedarikçi seçimi eklenir) | Proje oluşturma | [ ] |
-| W-03-02 | Adım 1: Alıcı şirket, Proje adı, Kategori, İhtiyaç açıklaması, Teslimat yeri, İhtiyaç tarihi | `ProjectWizard.tsx:127-139` | SADELEŞİR | Proje oluşturma | [ ] |
-| W-03-03 | Adım 2: kalemler (Lot, açıklama, Birim, Miktar, Teknik şartname), Kalem ekle/sil | `ProjectWizard.tsx:140-156` | KARAR GEREKLİ (K-02: kalem/lot yapısı v2 zorunlu alanlarında yok) | — | [ ] |
-| W-03-04 | Adım 3: Bütçe, Para birimi, "Bütçe finans tarafından doğrulandı" kutusu, Maliyet merkezi | `ProjectWizard.tsx:157-167` | SADELEŞİR (tahmini tutar + para birimi; "finans doğruladı" kutusu ve maliyet merkezi bkz. K-02) | Proje oluşturma | [ ] |
-| W-03-05 | Adım 4: değerlendirme kriterleri (Kod, Kriter, Tür Fiyat/Puan, Ağırlık), Kriter ekle/sil, toplam 100 denetimi, tam bir fiyat kriteri kuralı | `ProjectWizard.tsx:168-185, 71-79` | SADELEŞİR (v2: teknik ve ticari puan) | Proje oluşturma / Değerlendirme | [ ] |
-| W-03-06 | Adım 5: özet + "Projeyi oluştur" | `ProjectWizard.tsx:186-202` | KALIR | Proje oluşturma | [ ] |
-| W-03-07 | Adım başına doğrulama, hata özeti bandı, ilk hatalı alana odak | `ProjectWizard.tsx:55-90, 123-125` | KALIR | Proje oluşturma | [ ] |
-| W-03-08 | Taslağın bu cihazda otomatik saklanması (localStorage) + "Taslak bu cihazda kaydedildi" | `ProjectWizard.tsx:32-48, 109` | KALIR | Proje oluşturma | [ ] |
-| W-03-09 | "Geri", "Devam", "Taslağı at" | `ProjectWizard.tsx:200-204` | KALIR | Proje oluşturma | [ ] |
-| W-03-10 | Sunucu hatası bandı | `ProjectWizard.tsx:196` | KALIR | Proje oluşturma | [ ] |
+| W-03-01 | 5 adım: İhtiyaç, Kalemler, Bütçe, Kriterler, Özet; önceki adıma tıklayarak dönüş | `ProjectWizard.tsx:18, 112-122` | SADELEŞİR (v2 zorunlu alanlar: ad, departman, konu/kapsam, yöntem, tahmini tutar + para birimi, teklif son tarihi; tedarikçi seçimi eklenir) | Proje oluşturma | [x] 5 adım (İhtiyaç, Kalemler, Bütçe, Kriterler, Özet), adım tıklayınca dönüş; v2 alanları (yöntem, teklif son tarihi, tedarikçi seçimi) sonraki faz |
+| W-03-02 | Adım 1: Alıcı şirket, Proje adı, Kategori, İhtiyaç açıklaması, Teslimat yeri, İhtiyaç tarihi | `ProjectWizard.tsx:127-139` | SADELEŞİR | Proje oluşturma | [x] Alıcı şirket, Departman (yeni), Proje adı, Kategori, İhtiyaç açıklaması, Teslimat yeri, İhtiyaç tarihi |
+| W-03-03 | Adım 2: kalemler (Lot, açıklama, Birim, Miktar, Teknik şartname), Kalem ekle/sil | `ProjectWizard.tsx:140-156` | KARAR GEREKLİ (K-02: kalem/lot yapısı v2 zorunlu alanlarında yok) | — | [x] Lot, kalem, Birim, Miktar, Teknik şartname, Kalem ekle (K-02 yerinde) |
+| W-03-04 | Adım 3: Bütçe, Para birimi, "Bütçe finans tarafından doğrulandı" kutusu, Maliyet merkezi | `ProjectWizard.tsx:157-167` | SADELEŞİR (tahmini tutar + para birimi; "finans doğruladı" kutusu ve maliyet merkezi bkz. K-02) | Proje oluşturma | [x] Bütçe, Para birimi, Bütçe kaynağı doğrulandı kutusu, Maliyet merkezi (v1 hâli) |
+| W-03-05 | Adım 4: değerlendirme kriterleri (Kod, Kriter, Tür Fiyat/Puan, Ağırlık), Kriter ekle/sil, toplam 100 denetimi, tam bir fiyat kriteri kuralı | `ProjectWizard.tsx:168-185, 71-79` | SADELEŞİR (v2: teknik ve ticari puan) | Proje oluşturma / Değerlendirme | [x] Kod, Kriter, Tür, Ağırlık, Kriter ekle, Toplam ağırlık 100/100 |
+| W-03-06 | Adım 5: özet + "Projeyi oluştur" | `ProjectWizard.tsx:186-202` | KALIR | Proje oluşturma | [x] özet + Projeyi oluştur (etkin; tıklanmadı) |
+| W-03-07 | Adım başına doğrulama, hata özeti bandı, ilk hatalı alana odak | `ProjectWizard.tsx:55-90, 123-125` | KALIR | Proje oluşturma | [x] boş Devam hata özeti verdi, ilk hatalı alana (Departman) odaklandı |
+| W-03-08 | Taslağın bu cihazda otomatik saklanması (localStorage) + "Taslak bu cihazda kaydedildi" | `ProjectWizard.tsx:32-48, 109` | KALIR | Proje oluşturma | [x] Taslak bu cihazda kaydedildi notu, localStorage taslağı |
+| W-03-09 | "Geri", "Devam", "Taslağı at" | `ProjectWizard.tsx:200-204` | KALIR | Proje oluşturma | [x] Geri, Devam, Taslağı at çalıştı (taslak atıldı) |
+| W-03-10 | Sunucu hatası bandı | `ProjectWizard.tsx:196` | KALIR | Proje oluşturma | [ ] görülmedi: sunucu hatası bandı tetiklenmedi |
 
 ### 3.4 Proje çalışma alanı — `/projeler/:id` — `pages/ProjectWorkspace.tsx`
 
@@ -158,27 +158,27 @@ API: `GET /api/v1/projects/:id` ve aşağıdaki uçlar.
 
 | # | İşlev | Dosya:satır | v2 kararı | v2'deki yeri | ✓ |
 |---|---|---|---|---|---|
-| W-04-01 | Başlık, durum etiketi, kırıntı, 6 aşamalı ilerleme şeridi, "Sonraki adım" cümlesi | `ProjectWorkspace.tsx:177-215` | KALIR (v2 aşamalarıyla) | Proje detayı | [ ] |
-| W-04-02 | Sekmeler (URL `sekme`): Özet, Kalemler, Teklifler, Karşılaştırma, Karar | `ProjectWorkspace.tsx:174, 216-218` | DÖNÜŞÜR (v2 sekmeleri: Özet, Teklifler, Değerlendirme, Sözleşmeler, Faturalar, Uyum denetimi) | Proje detayı | [ ] |
-| W-04-03 | Özet: Proje kartı (no, kategori, bütçe + doğrulama etiketi, maliyet merkezi, teslimat yeri, ihtiyaç tarihi, ihtiyaç) | `ProjectWorkspace.tsx:244-262` | KALIR | Proje detayı > Özet | [ ] |
-| W-04-04 | Özet: Teklif turu paneli; tedarikçi seç + kapanış tarihi ile "Yayın onayına gönder" (`POST /projects/:id/rounds`); yeni tur açma | `ProjectWorkspace.tsx:271-281, 310-327` | DÖNÜŞÜR (tedarikçi seçimi proje oluşturmaya taşınır; davet e-postası eklenir) | Proje oluşturma / Özet | [ ] |
-| W-04-05 | Tur yayın onayı: "Yayını onayla" / "Geri gönder" (`POST /rfq-rounds/:id/decision`), politika adımları (ApprovalSteps), "Yayını siz başlattınız" görev ayrılığı | `ProjectWorkspace.tsx:51-72, 292-302` | KARAR GEREKLİ (K-01) | — | [ ] |
-| W-04-06 | "Turu şimdi kapat" (gerekçeli, `POST /rfq-rounds/:id/close`) | `ProjectWorkspace.tsx:306` | KALIR (analizde ayrıca anılmıyor; teklif akışının parçası) | Proje detayı | [ ] |
-| W-04-07 | Özet: Kaynak bulma istisnaları; "İstisna iste" (tek kaynak, gerekçe ≥20 karakter, tedarikçi seçimi; `POST /projects/:id/exceptions`), istisna kararı (`POST /sourcing-exceptions/:id/decision`) | `ProjectWorkspace.tsx:137-170` | SADELEŞİR | Proje oluşturma: satınalma yöntemi seçeneği + gerekçe alanı | [ ] |
-| W-04-08 | Özet: Tasarruf bazı paneli; baz öner (`POST /projects/:id/savings-baselines`), "Bazı onayla" / "Reddet" (`POST /savings-baselines/:id/decision`) | `ProjectWorkspace.tsx:83-133` | KARAR GEREKLİ (K-04) | — | [ ] |
-| W-04-09 | Kalemler sekmesi: kalem tablosu, değerlendirme kriterleri + revizyon, "Yayın sonrası değişiklikler" geçmişi | `ProjectWorkspace.tsx:336-357` | KARAR GEREKLİ (K-02; v2'de Kalemler sekmesi yok) | — | [ ] |
-| W-04-10 | Teklifler sekmesi: davet edilen tedarikçiler tablosu, tedarikçi kartına bağlantı, "kapanışa kadar mühürlü" bandı, boş durum | `ProjectWorkspace.tsx:359-378` | KALIR | Proje detayı > Teklifler | [ ] |
-| W-04-11 | Teklifler: Soru ve cevaplar; "Yanıtla ve yayınla" (`POST /rfq-questions/:id/answer`) | `ProjectWorkspace.tsx:380-405` | KALIR | Proje detayı > Teklifler | [ ] |
-| W-04-12 | Karşılaştırma: tur kapanmadan kilit ekranı; teklif karşılaştırma tablosu (`GET /projects/:id/comparison`) | `ProjectWorkspace.tsx:411-495` | KALIR | Proje detayı > Değerlendirme | [ ] |
-| W-04-13 | Karşılaştırma: teklif eki indirme (`GET /bid-files/:id/content`) | `ProjectWorkspace.tsx:448` | KALIR | Değerlendirme | [ ] |
-| W-04-14 | Karşılaştırma: kriter bazında "Puanla" formu (puan + kanıt; `POST /bids/:id/scores`) | `ProjectWorkspace.tsx:486, 497-503` | KALIR (v2: Departman kullanıcısı / Satınalma) | Değerlendirme | [ ] |
-| W-04-15 | Karşılaştırma: "Kur varsayımı" formu, elle kur (`POST /projects/:id/fx-rates`) | `ProjectWorkspace.tsx:507-515` | KARAR GEREKLİ (K-06; TCMB değil, proje içi elle kur) | — | [ ] |
-| W-04-16 | Karşılaştırma: "Değerlendirme sürümü oluştur" (`POST /projects/:id/evaluations`) | `ProjectWorkspace.tsx:520` | KALIR | Değerlendirme | [ ] |
-| W-04-17 | Karar: değerlendirme sürümleri listesi, "XLSX rapor" ve "PDF karar özeti" indirme | `ProjectWorkspace.tsx:557-575` | KALIR (dışa aktarım analizde anılmıyor; teyit K-07) | Değerlendirme | [ ] |
-| W-04-18 | Karar: "Kazanan tahsisi öner" formu (`POST /projects/:id/awards`), kalem bazlı tahsis | `ProjectWorkspace.tsx:604-637` | KALIR (kazanan + gerekçe; en düşük seçilmediyse gerekçe zorunlu) | Değerlendirme | [ ] |
-| W-04-19 | Karar: tahsis onayı "Tahsisi onayla" / "Geri gönder" (`POST /awards/:id/decision`), politika adımları, "Bu öneriyi siz yaptınız", "Dayanak eskidi" | `ProjectWorkspace.tsx:583-598` | KARAR GEREKLİ (K-01) | — | [ ] |
-| W-04-20 | Karar: onaylanan tahsis görünümü ("Kurul kararı" ıstampası) | `ProjectWorkspace.tsx:646-670` | KALIR | Değerlendirme | [ ] |
-| W-04-21 | İşlem geri bildirimi: 409 çakışma uyarısı, başarı bandı | `ProjectWorkspace.tsx:232-241` | KALIR | Proje detayı | [ ] |
+| W-04-01 | Başlık, durum etiketi, kırıntı, 6 aşamalı ilerleme şeridi, "Sonraki adım" cümlesi | `ProjectWorkspace.tsx:177-215` | KALIR (v2 aşamalarıyla) | Proje detayı | [x] başlık, durum, kırıntı, 6 aşamalı şerit (v1 aşamaları), Sonraki adım |
+| W-04-02 | Sekmeler (URL `sekme`): Özet, Kalemler, Teklifler, Karşılaştırma, Karar | `ProjectWorkspace.tsx:174, 216-218` | DÖNÜŞÜR (v2 sekmeleri: Özet, Teklifler, Değerlendirme, Sözleşmeler, Faturalar, Uyum denetimi) | Proje detayı | [x] 5 v1 sekmesi (Özet, Kalemler, Teklifler, Karşılaştırma, Karar); v2 sekmeleri sonraki faz |
+| W-04-03 | Özet: Proje kartı (no, kategori, bütçe + doğrulama etiketi, maliyet merkezi, teslimat yeri, ihtiyaç tarihi, ihtiyaç) | `ProjectWorkspace.tsx:244-262` | KALIR | Proje detayı > Özet | [x] Proje kartı alanları görüldü |
+| W-04-04 | Özet: Teklif turu paneli; tedarikçi seç + kapanış tarihi ile "Yayın onayına gönder" (`POST /projects/:id/rounds`); yeni tur açma | `ProjectWorkspace.tsx:271-281, 310-327` | DÖNÜŞÜR (tedarikçi seçimi proje oluşturmaya taşınır; davet e-postası eklenir) | Proje oluşturma / Özet | [x] Teklif turu paneli: tedarikçi seçimi, Kapanış, Yayın onayına gönder (denendi, geri alındı); Yeni teklif turu |
+| W-04-05 | Tur yayın onayı: "Yayını onayla" / "Geri gönder" (`POST /rfq-rounds/:id/decision`), politika adımları (ApprovalSteps), "Yayını siz başlattınız" görev ayrılığı | `ProjectWorkspace.tsx:51-72, 292-302` | KARAR GEREKLİ (K-01) | — | [x] Yayın onayı: talep eden için Tek onay açıklaması ve düğme yok; ikinci Satınalma kullanıcısında Yayını onayla ve Geri gönder (Geri gönder ile taslağa alındı) |
+| W-04-06 | "Turu şimdi kapat" (gerekçeli, `POST /rfq-rounds/:id/close`) | `ProjectWorkspace.tsx:306` | KALIR (analizde ayrıca anılmıyor; teklif akışının parçası) | Proje detayı | [x] Turu şimdi kapat + Erken kapanış gerekçesi (açık turda) |
+| W-04-07 | Özet: Kaynak bulma istisnaları; "İstisna iste" (tek kaynak, gerekçe ≥20 karakter, tedarikçi seçimi; `POST /projects/:id/exceptions`), istisna kararı (`POST /sourcing-exceptions/:id/decision`) | `ProjectWorkspace.tsx:137-170` | SADELEŞİR | Proje oluşturma: satınalma yöntemi seçeneği + gerekçe alanı | [x] İstisna iste formu açıldı (İstisna, Tedarikçi, Gerekçe, Onaya gönder); karar düğmesi görülmedi (bekleyen istisna yok) |
+| W-04-08 | Özet: Tasarruf bazı paneli; baz öner (`POST /projects/:id/savings-baselines`), "Bazı onayla" / "Reddet" (`POST /savings-baselines/:id/decision`) | `ProjectWorkspace.tsx:83-133` | KARAR GEREKLİ (K-04) | — | [x] Tasarruf bazı: Baz öner formu (Baz türü, tutar, Kaynak); Bazı onayla ve Reddet görülmedi (baz yok) |
+| W-04-09 | Kalemler sekmesi: kalem tablosu, değerlendirme kriterleri + revizyon, "Yayın sonrası değişiklikler" geçmişi | `ProjectWorkspace.tsx:336-357` | KARAR GEREKLİ (K-02; v2'de Kalemler sekmesi yok) | — | [x] Kalemler sekmesi: kalem tablosu ve kriterler + revizyon; Yayın sonrası değişiklikler geçmişi görülmedi |
+| W-04-10 | Teklifler sekmesi: davet edilen tedarikçiler tablosu, tedarikçi kartına bağlantı, "kapanışa kadar mühürlü" bandı, boş durum | `ProjectWorkspace.tsx:359-378` | KALIR | Proje detayı > Teklifler | [x] davetli tedarikçiler tablosu, kartına bağlantı, kapanışa kadar mühürlü bandı |
+| W-04-11 | Teklifler: Soru ve cevaplar; "Yanıtla ve yayınla" (`POST /rfq-questions/:id/answer`) | `ProjectWorkspace.tsx:380-405` | KALIR | Proje detayı > Teklifler | [x] Soru ve cevaplar; portaldan soru gönderilip Yanıtla ve yayınla formu açıldı (gönderilmedi) |
+| W-04-12 | Karşılaştırma: tur kapanmadan kilit ekranı; teklif karşılaştırma tablosu (`GET /projects/:id/comparison`) | `ProjectWorkspace.tsx:411-495` | KALIR | Proje detayı > Değerlendirme | [x] tur kapanmadan kilit ekranı; kapalı turda karşılaştırma tablosu |
+| W-04-13 | Karşılaştırma: teklif eki indirme (`GET /bid-files/:id/content`) | `ProjectWorkspace.tsx:448` | KALIR | Değerlendirme | [x] teklif eki bağlantısı (teknik-foy-sentetik.pdf) var, indirilmedi |
+| W-04-14 | Karşılaştırma: kriter bazında "Puanla" formu (puan + kanıt; `POST /bids/:id/scores`) | `ProjectWorkspace.tsx:486, 497-503` | KALIR (v2: Departman kullanıcısı / Satınalma) | Değerlendirme | [x] Puanla formu açıldı (Puan 0-100, Kanıt, Puanı kaydet) |
+| W-04-15 | Karşılaştırma: "Kur varsayımı" formu, elle kur (`POST /projects/:id/fx-rates`) | `ProjectWorkspace.tsx:507-515` | KARAR GEREKLİ (K-06; TCMB değil, proje içi elle kur) | — | [ ] görülmedi: Kur varsayımı formu yalnız farklı para birimli teklifte çıkıyor, veride yok |
+| W-04-16 | Karşılaştırma: "Değerlendirme sürümü oluştur" (`POST /projects/:id/evaluations`) | `ProjectWorkspace.tsx:520` | KALIR | Değerlendirme | [x] Değerlendirme sürümü oluştur düğmesi var (puanlar eksik, tıklanmadı) |
+| W-04-17 | Karar: değerlendirme sürümleri listesi, "XLSX rapor" ve "PDF karar özeti" indirme | `ProjectWorkspace.tsx:557-575` | KALIR (dışa aktarım analizde anılmıyor; teyit K-07) | Değerlendirme | [x] Karar sekmesi: Değerlendirme sürümleri, XLSX rapor, PDF karar özeti düğmeleri (indirilmedi) |
+| W-04-18 | Karar: "Kazanan tahsisi öner" formu (`POST /projects/:id/awards`), kalem bazlı tahsis | `ProjectWorkspace.tsx:604-637` | KALIR (kazanan + gerekçe; en düşük seçilmediyse gerekçe zorunlu) | Değerlendirme | [ ] görülmedi: Kazanan tahsisi öner formu değerlendirme sürümü ister, sürümlü açık proje yok |
+| W-04-19 | Karar: tahsis onayı "Tahsisi onayla" / "Geri gönder" (`POST /awards/:id/decision`), politika adımları, "Bu öneriyi siz yaptınız", "Dayanak eskidi" | `ProjectWorkspace.tsx:583-598` | KARAR GEREKLİ (K-01) | — | [ ] görülmedi: bekleyen tahsis onayı yok (Seçim onayında 0) |
+| W-04-20 | Karar: onaylanan tahsis görünümü ("Kurul kararı" ıstampası) | `ProjectWorkspace.tsx:646-670` | KALIR | Değerlendirme | [x] Onaylanan tahsis görünümü (Kurul kararı damgası, kalem bazlı tahsis) |
+| W-04-21 | İşlem geri bildirimi: 409 çakışma uyarısı, başarı bandı | `ProjectWorkspace.tsx:232-241` | KALIR | Proje detayı | [x] başarı bandı görüldü (Tur yayın onayına gönderildi); 409 uyarısı görülmedi |
 
 ### 3.5 Onay politikası — `/projeler/onay-politikasi` — `pages/ApprovalPolicyPage.tsx`
 
@@ -186,10 +186,10 @@ API: `/api/v1/approval-policies` (GET, POST, `/:id/activate`, `/simulate`). Yetk
 
 | # | İşlev | Dosya:satır | v2 kararı | v2'deki yeri | ✓ |
 |---|---|---|---|---|---|
-| W-05-01 | Politika sürümleri listesi, durum etiketi, kural tablosu | `ApprovalPolicyPage.tsx:26-91` | **KALKAR (onaylı liste)** | yok | [ ] |
-| W-05-02 | Yeni sürüm taslağı: kural ekle/çıkar, adım ekle/sil, tutar aralığı/kategori/şirket, "Taslağı kaydet" | `ApprovalPolicyPage.tsx:41-48, 92-128` | **KALKAR (onaylı liste)** | yok | [ ] |
-| W-05-03 | "Yayınla" (başka yetkili yayınlar) | `ApprovalPolicyPage.tsx:58` | **KALKAR (onaylı liste)** | yok | [ ] |
-| W-05-04 | Senaryo simülasyonu ("Simüle et") | `ApprovalPolicyPage.tsx:132-156` | **KALKAR (onaylı liste)** | yok | [ ] |
+| W-05-01 | Politika sürümleri listesi, durum etiketi, kural tablosu | `ApprovalPolicyPage.tsx:26-91` | **KALKAR (onaylı liste)** | yok | [x] KALKAR: ekran ve düğme yok, adres kaldırıldı ekranı |
+| W-05-02 | Yeni sürüm taslağı: kural ekle/çıkar, adım ekle/sil, tutar aralığı/kategori/şirket, "Taslağı kaydet" | `ApprovalPolicyPage.tsx:41-48, 92-128` | **KALKAR (onaylı liste)** | yok | [x] KALKAR: ekran ve düğme yok, adres kaldırıldı ekranı |
+| W-05-03 | "Yayınla" (başka yetkili yayınlar) | `ApprovalPolicyPage.tsx:58` | **KALKAR (onaylı liste)** | yok | [x] KALKAR: ekran ve düğme yok, adres kaldırıldı ekranı |
+| W-05-04 | Senaryo simülasyonu ("Simüle et") | `ApprovalPolicyPage.tsx:132-156` | **KALKAR (onaylı liste)** | yok | [x] KALKAR: ekran ve düğme yok, adres kaldırıldı ekranı |
 
 ### 3.6 Tedarikçiler listesi — `/tedarikciler` — `pages/SuppliersPage.tsx`
 
@@ -197,12 +197,12 @@ API: `GET /api/v1/suppliers?status=&q=`.
 
 | # | İşlev | Dosya:satır | v2 kararı | v2'deki yeri | ✓ |
 |---|---|---|---|---|---|
-| W-06-01 | Durum süzgeci (URL `durum`): Tümü, Aday havuzu, Aktif, Askıda, Reddedilen | `SuppliersPage.tsx:14, 33-35` | DÖNÜŞÜR (v2 durumları: Başvuru, Aday, Onaylı, Pasif, Reddedildi) | Tedarikçiler | [ ] |
-| W-06-02 | Ünvan veya VKN/TCKN araması (URL `q`) | `SuppliersPage.tsx:36-40` | KALIR | Tedarikçiler | [ ] |
-| W-06-03 | Tablo: Ünvan, Durum, Vergi kimliği, Belge sayısı, Dikkat, Kayıt tarihi; satırdan karta geçiş | `SuppliersPage.tsx:45-68` | KALIR | Tedarikçiler | [ ] |
-| W-06-04 | "Kimlik incelemesi" dikkat etiketi | `SuppliersPage.tsx:60` | KALIR | Tedarikçiler | [ ] |
-| W-06-05 | "Banka doğrulama" dikkat etiketi (`pendingBankChanges`) | `SuppliersPage.tsx:61` | **KALKAR (onaylı liste)** | yok | [ ] |
-| W-06-06 | Durumlar: yükleniyor, hata, boş (aday süzgecinde ayrı metin) | `SuppliersPage.tsx:42-43` | KALIR | Tedarikçiler | [ ] |
+| W-06-01 | Durum süzgeci (URL `durum`): Tümü, Aday havuzu, Aktif, Askıda, Reddedilen | `SuppliersPage.tsx:14, 33-35` | DÖNÜŞÜR (v2 durumları: Başvuru, Aday, Onaylı, Pasif, Reddedildi) | Tedarikçiler | [x] süzgeç: Tümü, Aday havuzu, Aktif, Askıda, Reddedilen (v1 durumları; v2 durumları sonraki faz) |
+| W-06-02 | Ünvan veya VKN/TCKN araması (URL `q`) | `SuppliersPage.tsx:36-40` | KALIR | Tedarikçiler | [x] Ünvan veya vergi kimliği arama kutusu + Ara |
+| W-06-03 | Tablo: Ünvan, Durum, Vergi kimliği, Belge sayısı, Dikkat, Kayıt tarihi; satırdan karta geçiş | `SuppliersPage.tsx:45-68` | KALIR | Tedarikçiler | [x] sütunlar: Ünvan, Durum, Vergi kimliği, Belge, Dikkat, Kayıt; satırdan karta geçiş |
+| W-06-04 | "Kimlik incelemesi" dikkat etiketi | `SuppliersPage.tsx:60` | KALIR | Tedarikçiler | [x] Kimlik incelemesi etiketi görüldü |
+| W-06-05 | "Banka doğrulama" dikkat etiketi (`pendingBankChanges`) | `SuppliersPage.tsx:61` | **KALKAR (onaylı liste)** | yok | [ ] FARK: KALKAR ama Dikkat sütununda Banka doğrulama etiketi hâlâ görünüyor (Anadolu Endüstriyel Bakım, SuppliersPage.tsx:61) |
+| W-06-06 | Durumlar: yükleniyor, hata, boş (aday süzgecinde ayrı metin) | `SuppliersPage.tsx:42-43` | KALIR | Tedarikçiler | [x] durumlar görüldü (liste); aday süzgeci boş metni denenmedi |
 
 ### 3.7 Tedarikçi detayı — `/tedarikciler/:id` — `pages/SupplierDetailPage.tsx`, `pages/SupplierEvaluation.tsx`
 
@@ -210,23 +210,23 @@ API: `GET /api/v1/suppliers/:id` ve aşağıdaki uçlar.
 
 | # | İşlev | Dosya:satır | v2 kararı | v2'deki yeri | ✓ |
 |---|---|---|---|---|---|
-| W-07-01 | Başlık: ünvan, durum, ülke · kimlik türü · vergi kimliği / "Kimlik doğrulanmadı" | `SupplierDetailPage.tsx:52-60` | KALIR | Tedarikçi kartı | [ ] |
-| W-07-02 | Sekmeler (URL `sekme`): Kayıt ve onay, Değerlendirme ve risk, Olaylar, Performans karnesi | `SupplierDetailPage.tsx:13, 86-91` | DÖNÜŞÜR (v2 kartı: kimlik ve iletişim, belgeler, sözleşmeler, projeler/teklif geçmişi, anket skorları, yıllık risk, aksiyon planları, sorumlu ekip) | Tedarikçi kartı | [ ] |
-| W-07-03 | "Kimliği doğrula" (MASTER_DATA; tür VKN/TCKN/Yabancı, vergi kimliği, gerekçe; aynı kimlik varsa birleştirme; `POST /suppliers/:id/identity`) | `SupplierDetailPage.tsx:63, 154-157, 177-195` | KALIR (v2: Satınalma) | Tedarikçi kartı / başvuru inceleme | [ ] |
-| W-07-04 | "Ana veri onayı ver" / "Reddet" (gerekçeli; `POST /suppliers/:id/approvals`); kaydı açan onaylayamaz | `SupplierDetailPage.tsx:64-65, 149-153, 162-175` | DÖNÜŞÜR (v2: Satınalma başvuruyu onaylar; görev ayrılığı kuralı bkz. K-08) | Başvuru inceleme | [ ] |
-| W-07-05 | "Aktifleştir" (engeller listesi; `POST /suppliers/:id/activate`, `expectedRowVersion`) | `SupplierDetailPage.tsx:38-42, 66-69` | DÖNÜŞÜR (Aday → Onaylı) | Tedarikçi kartı | [ ] |
-| W-07-06 | Aday uyarı bandı ("kesin seçim ve ödeme serbest bırakma engelli" + eksik koşullar) | `SupplierDetailPage.tsx:79-83` | KALIR (ödeme ifadesi çıkar) | Tedarikçi kartı | [ ] |
-| W-07-07 | Birleştirilmiş kayıt bandı + "Güncel kayda git" | `SupplierDetailPage.tsx:84` | KALIR | Tedarikçi kartı | [ ] |
-| W-07-08 | "Kimlik ve kayıt" paneli (ülke, kimlik, kaydı açan, aktivasyon, ret gerekçesi) | `SupplierDetailPage.tsx:94-106` | KALIR | Tedarikçi kartı | [ ] |
-| W-07-09 | "Banka bilgisi" paneli: doğrulanmış hesaplar, "Belgede farklı IBAN okundu — doğrulama bekliyor" bandı | `SupplierDetailPage.tsx:108-119` | **KALKAR (onaylı liste)** | yok | [ ] |
-| W-07-10 | "Kaynak belgeler" tablosu (belge, belgedeki ünvan, "Ünvan farkı", bağlanma zamanı; belgeye bağlantı) | `SupplierDetailPage.tsx:122-136` | KALIR | Tedarikçi kartı > Belgeler | [ ] |
-| W-07-11 | "Onay geçmişi" zaman çizelgesi | `SupplierDetailPage.tsx:138-146` | KALIR | Tedarikçi kartı | [ ] |
-| W-07-12 | İşlem geri bildirimi: başarı, 409'da sayfayı yenileme uyarısı, eksik koşullar | `SupplierDetailPage.tsx:44-48, 74-78` | KALIR | Tedarikçi kartı | [ ] |
-| W-07-13 | Değerlendirme sekmesi: değerlendirme listesi, "Değerlendirme başlat" (şablon, kapsam, inceleme tarihi, içsel risk etkenleri; `POST /assessments`), boş durum | `SupplierEvaluation.tsx:44-110` | KALIR (v2 yıllık risk yöntemine uyarlanır) | Tedarikçi > Anketler ve risk | [ ] |
-| W-07-14 | Değerlendirme sekmesi: "Anket şablonları" bağlantısı | `SupplierEvaluation.tsx:57` | KALIR | Tedarikçi > Anketler ve risk | [ ] |
-| W-07-15 | Olaylar sekmesi: tedarikçinin olay listesi, "Olay bildir" formu (`POST /incidents`), olası mükerrer uyarısı + "Olayı aç" | `SupplierEvaluation.tsx:140-188` | BİRLEŞİR | Tedarikçi kartı > Aksiyon planları | [ ] |
-| W-07-16 | Performans karnesi sekmesi: yıl seçimi, yıl puanı, önceki yıl, özet, açık düzeltici faaliyetler, olaylar ve puan etkisi (`GET /suppliers/:id/scorecard?year=`) | `SupplierEvaluation.tsx:204-256` | KALIR (analiz "anket skorları" diyor; karne adı geçmiyor, teyit Bölüm 8) | Tedarikçi > Anketler ve risk | [ ] |
-| W-07-17 | "Performans incelemesi gir" formu (boyut puanları, kategori ağırlığı; `POST /suppliers/:id/performance-reviews`) + "Ağırlık kuralları" bağlantısı | `SupplierEvaluation.tsx:217, 260-289` | KALIR | Tedarikçi > Anketler ve risk | [ ] |
+| W-07-01 | Başlık: ünvan, durum, ülke · kimlik türü · vergi kimliği / "Kimlik doğrulanmadı" | `SupplierDetailPage.tsx:52-60` | KALIR | Tedarikçi kartı | [x] başlık: ünvan, durum, ülke, kimlik türü, vergi kimliği |
+| W-07-02 | Sekmeler (URL `sekme`): Kayıt ve onay, Değerlendirme ve risk, Olaylar, Performans karnesi | `SupplierDetailPage.tsx:13, 86-91` | DÖNÜŞÜR (v2 kartı: kimlik ve iletişim, belgeler, sözleşmeler, projeler/teklif geçmişi, anket skorları, yıllık risk, aksiyon planları, sorumlu ekip) | Tedarikçi kartı | [x] 4 v1 sekmesi (Kayıt ve onay, Değerlendirme ve risk, Olaylar, Performans karnesi); v2 kartı sonraki faz |
+| W-07-03 | "Kimliği doğrula" (MASTER_DATA; tür VKN/TCKN/Yabancı, vergi kimliği, gerekçe; aynı kimlik varsa birleştirme; `POST /suppliers/:id/identity`) | `SupplierDetailPage.tsx:63, 154-157, 177-195` | KALIR (v2: Satınalma) | Tedarikçi kartı / başvuru inceleme | [x] Kimliği doğrula formu açıldı (Kimlik türü, Vergi kimliği, Gerekçe ve kaynak, Kaydet) |
+| W-07-04 | "Ana veri onayı ver" / "Reddet" (gerekçeli; `POST /suppliers/:id/approvals`); kaydı açan onaylayamaz | `SupplierDetailPage.tsx:64-65, 149-153, 162-175` | DÖNÜŞÜR (v2: Satınalma başvuruyu onaylar; görev ayrılığı kuralı bkz. K-08) | Başvuru inceleme | [x] Kayıt onayı ver ve Reddet (gerekçe formu açıldı); görev ayrılığı denenmedi |
+| W-07-05 | "Aktifleştir" (engeller listesi; `POST /suppliers/:id/activate`, `expectedRowVersion`) | `SupplierDetailPage.tsx:38-42, 66-69` | DÖNÜŞÜR (Aday → Onaylı) | Tedarikçi kartı | [x] Aktifleştir düğmesi var (engeller yazılı, aday için kapalı) |
+| W-07-06 | Aday uyarı bandı ("kesin seçim ve ödeme serbest bırakma engelli" + eksik koşullar) | `SupplierDetailPage.tsx:79-83` | KALIR (ödeme ifadesi çıkar) | Tedarikçi kartı | [ ] FARK: bant metni hâlâ Aday kayıt: kesin seçim ve ödeme serbest bırakma engelli (ödeme ifadesi çıkacaktı) |
+| W-07-07 | Birleştirilmiş kayıt bandı + "Güncel kayda git" | `SupplierDetailPage.tsx:84` | KALIR | Tedarikçi kartı | [ ] görülmedi: birleştirilmiş kayıt veride yok |
+| W-07-08 | "Kimlik ve kayıt" paneli (ülke, kimlik, kaydı açan, aktivasyon, ret gerekçesi) | `SupplierDetailPage.tsx:94-106` | KALIR | Tedarikçi kartı | [x] Kimlik ve kayıt paneli (ülke, kimlik, kaydı açan, aktivasyon) |
+| W-07-09 | "Banka bilgisi" paneli: doğrulanmış hesaplar, "Belgede farklı IBAN okundu — doğrulama bekliyor" bandı | `SupplierDetailPage.tsx:108-119` | **KALKAR (onaylı liste)** | yok | [ ] FARK: KALKAR ama Banka bilgisi paneli ve Belgede farklı IBAN okundu bandı hâlâ görünüyor (Anadolu Endüstriyel Bakım, SupplierDetailPage.tsx:111-119) |
+| W-07-10 | "Kaynak belgeler" tablosu (belge, belgedeki ünvan, "Ünvan farkı", bağlanma zamanı; belgeye bağlantı) | `SupplierDetailPage.tsx:122-136` | KALIR | Tedarikçi kartı > Belgeler | [x] Kaynak belgeler tablosu, Ünvan farkı etiketi, belge bağlantısı |
+| W-07-11 | "Onay geçmişi" zaman çizelgesi | `SupplierDetailPage.tsx:138-146` | KALIR | Tedarikçi kartı | [x] Onay geçmişi görüldü |
+| W-07-12 | İşlem geri bildirimi: başarı, 409'da sayfayı yenileme uyarısı, eksik koşullar | `SupplierDetailPage.tsx:44-48, 74-78` | KALIR | Tedarikçi kartı | [ ] görülmedi: işlem geri bildirimi (başarı, 409) tetiklenmedi; eksik koşullar listesi aday kartında görüldü |
+| W-07-13 | Değerlendirme sekmesi: değerlendirme listesi, "Değerlendirme başlat" (şablon, kapsam, inceleme tarihi, içsel risk etkenleri; `POST /assessments`), boş durum | `SupplierEvaluation.tsx:44-110` | KALIR (v2 yıllık risk yöntemine uyarlanır) | Tedarikçi > Anketler ve risk | [x] Değerlendirme sekmesi: liste, Değerlendirme başlat formu (şablon, kapsam, tarih, departman, 6 risk etkeni) denendi (sentetik kayıt açıldı) |
+| W-07-14 | Değerlendirme sekmesi: "Anket şablonları" bağlantısı | `SupplierEvaluation.tsx:57` | KALIR | Tedarikçi > Anketler ve risk | [x] Anket şablonları bağlantısı |
+| W-07-15 | Olaylar sekmesi: tedarikçinin olay listesi, "Olay bildir" formu (`POST /incidents`), olası mükerrer uyarısı + "Olayı aç" | `SupplierEvaluation.tsx:140-188` | BİRLEŞİR | Tedarikçi kartı > Aksiyon planları | [x] Olaylar sekmesi: liste, Olay bildir formu (Bildir); mükerrer uyarısı görülmedi |
+| W-07-16 | Performans karnesi sekmesi: yıl seçimi, yıl puanı, önceki yıl, özet, açık düzeltici faaliyetler, olaylar ve puan etkisi (`GET /suppliers/:id/scorecard?year=`) | `SupplierEvaluation.tsx:204-256` | KALIR (analiz "anket skorları" diyor; karne adı geçmiyor, teyit Bölüm 8) | Tedarikçi > Anketler ve risk | [x] yıl seçimi, yıl puanı, boyut tablosu, özet, olaylar ve puan etkisi |
+| W-07-17 | "Performans incelemesi gir" formu (boyut puanları, kategori ağırlığı; `POST /suppliers/:id/performance-reviews`) + "Ağırlık kuralları" bağlantısı | `SupplierEvaluation.tsx:217, 260-289` | KALIR | Tedarikçi > Anketler ve risk | [x] Performans incelemesi gir formu (boyut puanları, Kategori, Dayanak) + Ağırlık kuralları bağlantısı |
 
 ### 3.8 Değerlendirme detayı — `/degerlendirmeler/:id` — `pages/EvaluationPages.tsx`
 
@@ -234,14 +234,14 @@ API: `GET /api/v1/assessments/:id` ve aşağıdaki uçlar.
 
 | # | İşlev | Dosya:satır | v2 kararı | v2'deki yeri | ✓ |
 |---|---|---|---|---|---|
-| W-08-01 | Başlık (kapsam, sonuç etiketi), tedarikçiye dönüş kırıntısı | `EvaluationPages.tsx:58-59` | KALIR | Tedarikçi > Anketler ve risk | [ ] |
-| W-08-02 | Soru listesi; "Yanıt gir" / "Yanıtı değiştir" (yanıt, uygulanamaz gerekçesi, not, kanıt belgesi; `PUT /assessments/:id/answers/:q`) | `EvaluationPages.tsx:83, 159-182` | KALIR | Anketler ve risk | [ ] |
-| W-08-03 | Yanıt inceleme: "Kabul" / "Bulgu yaz" (önem + not; `POST …/answers/:q/review`); yanıtlayan inceleyemez | `EvaluationPages.tsx:84, 144-156` | KALIR (v2 rolü: Satınalma; SECURITY kalkıyor) | Anketler ve risk | [ ] |
-| W-08-04 | Kanıt belgesine bağlantı + geçerlilik tarihi | `EvaluationPages.tsx:76` | KALIR | Anketler ve risk | [ ] |
-| W-08-05 | "İçsel risk" paneli | `EvaluationPages.tsx:96` | DÖNÜŞÜR (v2: kritiklik skoru, 6 ölçüt, geometrik ortalama) | Yıllık risk değerlendirmesi | [ ] |
-| W-08-06 | "Kalan risk" paneli + "Kalan riski kabul et" (seviye, gerekçe ≥20; `POST /assessments/:id/residual`); oluşturan kabul edemez | `EvaluationPages.tsx:99-102, 186-196` | DÖNÜŞÜR (v2: risk seviyesi matristen; seviye 4-5 aksiyon planı zorunlu) | Yıllık risk değerlendirmesi | [ ] |
-| W-08-07 | "Sonuç" paneli + "Değerlendirmeyi tamamla" (`POST /assessments/:id/complete`) | `EvaluationPages.tsx:105-112` | KALIR | Anketler ve risk | [ ] |
-| W-08-08 | "Tedarikçi portalı" paneli: son tarihle "Tedarikçiye gönder" (`POST /assessments/:id/send-to-supplier`), gönderim durumu | `EvaluationPages.tsx:119-140` | KALIR | Anketler ve risk | [ ] |
+| W-08-01 | Başlık (kapsam, sonuç etiketi), tedarikçiye dönüş kırıntısı | `EvaluationPages.tsx:58-59` | KALIR | Tedarikçi > Anketler ve risk | [x] başlık, kapsam, sonuç etiketi, tedarikçiye dönüş kırıntısı |
+| W-08-02 | Soru listesi; "Yanıt gir" / "Yanıtı değiştir" (yanıt, uygulanamaz gerekçesi, not, kanıt belgesi; `PUT /assessments/:id/answers/:q`) | `EvaluationPages.tsx:83, 159-182` | KALIR | Anketler ve risk | [x] soru listesi, Yanıt gir formu (Yanıt, Not, Kanıt belgesi, tarihler) açıldı |
+| W-08-03 | Yanıt inceleme: "Kabul" / "Bulgu yaz" (önem + not; `POST …/answers/:q/review`); yanıtlayan inceleyemez | `EvaluationPages.tsx:84, 144-156` | KALIR (v2 rolü: Satınalma; SECURITY kalkıyor) | Anketler ve risk | [x] Kabul ve Bulgu yaz düğmeleri |
+| W-08-04 | Kanıt belgesine bağlantı + geçerlilik tarihi | `EvaluationPages.tsx:76` | KALIR | Anketler ve risk | [ ] görülmedi: kanıt belgesi bağlantısı ve geçerlilik tarihi (kanıtlı yanıt yok) |
+| W-08-05 | "İçsel risk" paneli | `EvaluationPages.tsx:96` | DÖNÜŞÜR (v2: kritiklik skoru, 6 ölçüt, geometrik ortalama) | Yıllık risk değerlendirmesi | [x] İçsel risk paneli (v1 etkenleri; v2 kritiklik skoru sonraki faz) |
+| W-08-06 | "Kalan risk" paneli + "Kalan riski kabul et" (seviye, gerekçe ≥20; `POST /assessments/:id/residual`); oluşturan kabul edemez | `EvaluationPages.tsx:99-102, 186-196` | DÖNÜŞÜR (v2: risk seviyesi matristen; seviye 4-5 aksiyon planı zorunlu) | Yıllık risk değerlendirmesi | [x] Kalan risk paneli var; Kalan riski kabul et düğmesi inceleme tamamlanınca çıkıyor (görülmedi) |
+| W-08-07 | "Sonuç" paneli + "Değerlendirmeyi tamamla" (`POST /assessments/:id/complete`) | `EvaluationPages.tsx:105-112` | KALIR | Anketler ve risk | [x] Sonuç paneli + İncelemeyi tamamla (sorular incelenene kadar kapalı) |
+| W-08-08 | "Tedarikçi portalı" paneli: son tarihle "Tedarikçiye gönder" (`POST /assessments/:id/send-to-supplier`), gönderim durumu | `EvaluationPages.tsx:119-140` | KALIR | Anketler ve risk | [x] Tedarikçiye gönder denendi: durum Tedarikçide Gönderildi (sentetik anket) |
 
 ### 3.9 Anket şablonları — `/anketler` — `pages/EvaluationPages.tsx`
 
@@ -249,10 +249,10 @@ API: `/api/v1/questionnaire-templates` (GET, POST, `/:id/publish`). Yetki: `ques
 
 | # | İşlev | Dosya:satır | v2 kararı | v2'deki yeri | ✓ |
 |---|---|---|---|---|---|
-| W-09-01 | Şablon tablosu (kod, sürüm, ad, kategori, durum, soru ve kritik soru sayısı), boş durum | `EvaluationPages.tsx:343-372` | KALIR | Tedarikçi > Anketler ve risk | [ ] |
-| W-09-02 | "Yeni şablon / sürüm": taslak formu, soru ekle/kaldır, "Taslağı kaydet" (aynı kod = yeni sürüm) | `EvaluationPages.tsx:350, 376-410` | KALIR (v2: sorular ve ağırlıklar yönetici ekranından girilebilir) | Anketler ve risk | [ ] |
-| W-09-03 | "Yayımla" (taslak şablon) | `EvaluationPages.tsx:365-366` | KALIR | Anketler ve risk | [ ] |
-| W-09-04 | "Performans ağırlıkları" bağlantısı | `EvaluationPages.tsx:351` | KALIR | Anketler ve risk | [ ] |
+| W-09-01 | Şablon tablosu (kod, sürüm, ad, kategori, durum, soru ve kritik soru sayısı), boş durum | `EvaluationPages.tsx:343-372` | KALIR | Tedarikçi > Anketler ve risk | [x] Tedarikçiler > Anketler: tablo (Şablon, Kategori, Soru, Durum, Eylem) |
+| W-09-02 | "Yeni şablon / sürüm": taslak formu, soru ekle/kaldır, "Taslağı kaydet" (aynı kod = yeni sürüm) | `EvaluationPages.tsx:350, 376-410` | KALIR (v2: sorular ve ağırlıklar yönetici ekranından girilebilir) | Anketler ve risk | [x] Yeni şablon / sürüm formu (Kod, Ad, Kategori, soru alanları, Soru ekle, Taslağı kaydet) |
+| W-09-03 | "Yayımla" (taslak şablon) | `EvaluationPages.tsx:365-366` | KALIR | Anketler ve risk | [ ] görülmedi: Yayımla düğmesi taslak şablonda çıkıyor, taslak şablon yok |
+| W-09-04 | "Performans ağırlıkları" bağlantısı | `EvaluationPages.tsx:351` | KALIR | Anketler ve risk | [x] Performans ağırlıkları Tedarikçiler alt sekmesi olarak |
 
 ### 3.10 Performans ağırlıkları — `/performans-agirliklari` — `pages/EvaluationPages.tsx`
 
@@ -260,8 +260,8 @@ API: `/api/v1/performance-weights` (GET, PUT). Yetki: `performance.weights.manag
 
 | # | İşlev | Dosya:satır | v2 kararı | v2'deki yeri | ✓ |
 |---|---|---|---|---|---|
-| W-10-01 | "Kategori kuralı ekle" / "Değiştir": kategori, boyut ağırlıkları (toplam 100), gerekçe, "Yürürlüğe al" | `EvaluationPages.tsx:565-583, 592` | KALIR | Tedarikçi > Anketler ve risk | [ ] |
-| W-10-02 | Etkin kurallar tablosu, boş durum ("örnek ağırlık uygulanır"), "Emekli kurallar" açılır listesi | `EvaluationPages.tsx:586-601` | KALIR | Anketler ve risk | [ ] |
+| W-10-01 | "Kategori kuralı ekle" / "Değiştir": kategori, boyut ağırlıkları (toplam 100), gerekçe, "Yürürlüğe al" | `EvaluationPages.tsx:565-583, 592` | KALIR | Tedarikçi > Anketler ve risk | [x] Kategori kuralı ekle formu (beş boyut, Gerekçe, Yürürlüğe al) ve Değiştir düğmeleri |
+| W-10-02 | Etkin kurallar tablosu, boş durum ("örnek ağırlık uygulanır"), "Emekli kurallar" açılır listesi | `EvaluationPages.tsx:586-601` | KALIR | Anketler ve risk | [x] etkin kurallar tablosu; Emekli kurallar listesi görülmedi (emekli kural yok) |
 
 ### 3.11 Olaylar — `/olaylar`, `/olaylar/:id` — `pages/EvaluationPages.tsx`, `pages/SupplierEvaluation.tsx`
 
@@ -269,11 +269,11 @@ API: `/api/v1/incidents`, `/incidents/:id`, `/incidents/:id/transitions`, `/inci
 
 | # | İşlev | Dosya:satır | v2 kararı | v2'deki yeri | ✓ |
 |---|---|---|---|---|---|
-| W-11-01 | Olay listesi; süzgeç Açık / Tümü; tedarikçi sütunu; boş durum | `EvaluationPages.tsx:327-339`; `SupplierEvaluation.tsx:118-137` | BİRLEŞİR | Tedarikçi kartı > Aksiyon planları (kurum geneli liste ihtiyacı bkz. K-10) | [ ] |
-| W-11-02 | Olay detayı: başlık, durum, tedarikçi/sözleşme/sipariş bağlantıları, olay metni, şiddet, mükerrer bağlantısı | `EvaluationPages.tsx:232-246` | BİRLEŞİR (sipariş bağlantısı kalkar) | Aksiyon planları | [ ] |
-| W-11-03 | Durum geçişleri: Ön incelemeyi başlat, Doğrula, Doğrulanmadı, Mükerrer, İtirazı sonuçlandır, Kapat, Yeniden aç, Tedarikçi itirazını kaydet (not ≥10) | `EvaluationPages.tsx:221-230, 258-294` | BİRLEŞİR (durum makinesinin ne kadarının kalacağı bkz. K-10) | Aksiyon planları | [ ] |
-| W-11-04 | Düzeltici faaliyet: ekle (başlık, sorumlu rol, hedef tarih), "Tamamlandı olarak işaretle" (not), "Bağımsız doğrula" | `EvaluationPages.tsx:247-252, 296-324` | BİRLEŞİR (v2: aksiyon sahibi ve tarihi) | Aksiyon planları | [ ] |
-| W-11-05 | Zaman çizelgesi ("Önceki kayıtlar değişmez") | `EvaluationPages.tsx:253-257` | BİRLEŞİR | Aksiyon planları / Geçmiş | [ ] |
+| W-11-01 | Olay listesi; süzgeç Açık / Tümü; tedarikçi sütunu; boş durum | `EvaluationPages.tsx:327-339`; `SupplierEvaluation.tsx:118-137` | BİRLEŞİR | Tedarikçi kartı > Aksiyon planları (kurum geneli liste ihtiyacı bkz. K-10) | [x] Tedarikçiler > Olaylar: Açık / Tümü, tedarikçi sütunu (42 satır) |
+| W-11-02 | Olay detayı: başlık, durum, tedarikçi/sözleşme/sipariş bağlantıları, olay metni, şiddet, mükerrer bağlantısı | `EvaluationPages.tsx:232-246` | BİRLEŞİR (sipariş bağlantısı kalkar) | Aksiyon planları | [x] olay detayı: durum, tedarikçi bağlantısı, olay metni, şiddet; sipariş bağlantısı yok |
+| W-11-03 | Durum geçişleri: Ön incelemeyi başlat, Doğrula, Doğrulanmadı, Mükerrer, İtirazı sonuçlandır, Kapat, Yeniden aç, Tedarikçi itirazını kaydet (not ≥10) | `EvaluationPages.tsx:221-230, 258-294` | BİRLEŞİR (durum makinesinin ne kadarının kalacağı bkz. K-10) | Aksiyon planları | [x] görülen: Ön incelemeyi başlat, Doğrulanmadı, Mükerrer, Kapat, Tedarikçi itirazını kaydet; Doğrula, İtirazı sonuçlandır, Yeniden aç görülmedi (duruma bağlı) |
+| W-11-04 | Düzeltici faaliyet: ekle (başlık, sorumlu rol, hedef tarih), "Tamamlandı olarak işaretle" (not), "Bağımsız doğrula" | `EvaluationPages.tsx:247-252, 296-324` | BİRLEŞİR (v2: aksiyon sahibi ve tarihi) | Aksiyon planları | [x] Düzeltici faaliyet Ekle formu (faaliyet, sorumlu rol, hedef tarih); Tamamlandı ve Bağımsız doğrula görülmedi (faaliyet yok) |
+| W-11-05 | Zaman çizelgesi ("Önceki kayıtlar değişmez") | `EvaluationPages.tsx:253-257` | BİRLEŞİR | Aksiyon planları / Geçmiş | [x] Zaman çizelgesi, Önceki kayıtlar değişmez |
 
 ### 3.12 Sözleşmeler listesi — `/sozlesmeler` — `pages/ContractsPage.tsx`
 
@@ -281,12 +281,12 @@ API: `GET /api/v1/contracts`, `?offset=`.
 
 | # | İşlev | Dosya:satır | v2 kararı | v2'deki yeri | ✓ |
 |---|---|---|---|---|---|
-| W-12-01 | İmza süzgeci (URL `filtre`): Tümü, İnceleme bekleyen, Görüntü bulunamadı, Tarafı eksik, Belirsiz, Aslı beklenen, İstisnalı + sayaçlar | `ContractsPage.tsx:19-27, 57-60` | KALIR (v2 listesinde onay/bitiş süzgeçleri eklenir; imza süzgeçleri kaybolmamalı) | Sözleşmeler | [ ] |
-| W-12-02 | Tablo: Sözleşme (tedarikçi, sürüm, aşama, yöntem), İmza durumu ("Kesinleşti"), Eksik taraf, Otomatik tarama, Fiziksel asıl, Son inceleme | `ContractsPage.tsx:81-100` | KALIR | Sözleşmeler | [ ] |
-| W-12-03 | Dar ekran kart listesi | `ContractsPage.tsx:71-80` | KALIR | Sözleşmeler | [ ] |
-| W-12-04 | "Daha fazla yükle" sayfalama + "Süzgeç sayıları yüklenen N sözleşmeye göredir" + yükleme hatası | `ContractsPage.tsx:44-51, 103-107` | KALIR | Sözleşmeler | [ ] |
-| W-12-05 | Kanıt kökeni açıklama satırı; durumlar: yükleniyor, hata, boş (kısmi yüklemede ayrı metin) | `ContractsPage.tsx:61-68` | KALIR | Sözleşmeler | [ ] |
-| W-12-06 | Not: listede "yeni sözleşme" düğmesi yok; sözleşme Belge girişi (tür: Sözleşme) üzerinden oluşuyor | `ContractsPage.tsx:55-56` | BİRLEŞİR | Sözleşmeler > "Sözleşme ekle" (4 adım) | [ ] |
+| W-12-01 | İmza süzgeci (URL `filtre`): Tümü, İnceleme bekleyen, Görüntü bulunamadı, Tarafı eksik, Belirsiz, Aslı beklenen, İstisnalı + sayaçlar | `ContractsPage.tsx:19-27, 57-60` | KALIR (v2 listesinde onay/bitiş süzgeçleri eklenir; imza süzgeçleri kaybolmamalı) | Sözleşmeler | [x] süzgeç: Tümü 9, İnceleme bekleyen 3, Görüntü bulunamadı 0, Tarafı eksik 2, Belirsiz 0, Aslı beklenen 1, İstisnalı 1 + Departman süzgeci |
+| W-12-02 | Tablo: Sözleşme (tedarikçi, sürüm, aşama, yöntem), İmza durumu ("Kesinleşti"), Eksik taraf, Otomatik tarama, Fiziksel asıl, Son inceleme | `ContractsPage.tsx:81-100` | KALIR | Sözleşmeler | [x] sütunlar: Sözleşme, Departman, İmza durumu, Eksik taraf, Otomatik tarama, Fiziksel asıl, Son inceleme |
+| W-12-03 | Dar ekran kart listesi | `ContractsPage.tsx:71-80` | KALIR | Sözleşmeler | [x] 390 px kart listesi |
+| W-12-04 | "Daha fazla yükle" sayfalama + "Süzgeç sayıları yüklenen N sözleşmeye göredir" + yükleme hatası | `ContractsPage.tsx:44-51, 103-107` | KALIR | Sözleşmeler | [ ] görülmedi: Daha fazla yükle (yalnız 9 sözleşme, sayfalama çıkmıyor) |
+| W-12-05 | Kanıt kökeni açıklama satırı; durumlar: yükleniyor, hata, boş (kısmi yüklemede ayrı metin) | `ContractsPage.tsx:61-68` | KALIR | Sözleşmeler | [x] Kanıtın kökeni satırı; süzgeçte 0 sonuç görüldü |
+| W-12-06 | Not: listede "yeni sözleşme" düğmesi yok; sözleşme Belge girişi (tür: Sözleşme) üzerinden oluşuyor | `ContractsPage.tsx:55-56` | BİRLEŞİR | Sözleşmeler > "Sözleşme ekle" (4 adım) | [x] listede Sözleşme ekle bağlantısı (/sozlesmeler/ekle) |
 
 ### 3.13 Sözleşme detayı — `/sozlesmeler/:id` — `pages/ContractLifecycle.tsx`, `pages/SignatureWorkspace.tsx`, `pages/ContractCommercial.tsx`
 
@@ -294,39 +294,39 @@ Sekmeler (`ContractLifecycle.tsx:15`): İmza kontrolü (varsayılan), Koşullar 
 
 | # | İşlev | Dosya:satır | v2 kararı | v2'deki yeri | ✓ |
 |---|---|---|---|---|---|
-| W-13-01 | Dört sekmeli yapı (URL `sekme`) | `ContractLifecycle.tsx:15-33` | DÖNÜŞÜR (v2: Özet, Belge, İnceleme, Onaylar, İmzalar, Faturalar, Hatırlatıcılar, Geçmiş) | Sözleşme detayı | [ ] |
+| W-13-01 | Dört sekmeli yapı (URL `sekme`) | `ContractLifecycle.tsx:15-33` | DÖNÜŞÜR (v2: Özet, Belge, İnceleme, Onaylar, İmzalar, Faturalar, Hatırlatıcılar, Geçmiş) | Sözleşme detayı | [x] 4 v1 sekme (URL sekme=); v2 sekmeleri sonraki faz |
 | **İmza kontrolü** | | | | | |
-| W-13-02 | Bölünmüş görünüm: PDF görüntüleyici (yakınlaştır/uzaklaştır, sayfa etiketleri, tespit bölgeleri) + yan panel | `SignatureWorkspace.tsx:84-86`; `ui/DocumentViewer.tsx:68-119`; `ui/SplitPanes.tsx` | TAŞINIR | Sözleşme detayı > İmzalar (belge: "Belge" sekmesi) | [ ] |
-| W-13-03 | Başlık: sürüm, aşama, imza yöntemi, SHA-256 | `SignatureWorkspace.tsx:88-94` | TAŞINIR | İmzalar / Özet | [ ] |
-| W-13-04 | Uyarı bantları: yeni sürüm geldi (+bağlantı), imza görüntüsü bulunamadı, otomatik kontrol yapılamadı, arşivden alınan sözleşme | `SignatureWorkspace.tsx:97-100` | TAŞINIR | İmzalar | [ ] |
-| W-13-05 | "Durum" paneli (genel sonuç, türetilmiş) | `SignatureWorkspace.tsx:106-117` | TAŞINIR | İmzalar | [ ] |
-| W-13-06 | "Taraflar ve gereksinimler"; "Gereksinim / yöntem" çekmecesi: belge yöntemi + asıl politikası (`PATCH …/signature-policy`), yeni gereksinim (`POST …/signature-requirements`); boş durum | `SignatureWorkspace.tsx:119-124, 375-410` | TAŞINIR (yetki: LEGAL, PROCUREMENT_MANAGER → bkz. K-11) | İmzalar | [ ] |
-| W-13-07 | İmza yuvası başına "İncele" formu: karar, gözlenen işaret, gerekçe, sayfa, AI adayı seçimi (`POST …/signature-reviews`, If-Match + belge SHA) | `SignatureWorkspace.tsx:140, 157, 255-307` | TAŞINIR | İmzalar | [ ] |
-| W-13-08 | "E-imza doğrula" isteği (`POST …/digital-validation-jobs`) | `SignatureWorkspace.tsx:147-148` | TAŞINIR | İmzalar | [ ] |
-| W-13-09 | "Tamamlanmak için" engel listesi | `SignatureWorkspace.tsx:168-175` | TAŞINIR | İmzalar | [ ] |
-| W-13-10 | "Otomatik tarama": AI adayları listesi (sayfaya git), "Taramayı çalıştır" (`POST …/signature-analysis-jobs`) | `SignatureWorkspace.tsx:177-193` | TAŞINIR | İmzalar | [ ] |
-| W-13-11 | "İstisnalar": "İstisna talep et" çekmecesi (`POST …/signature-exceptions`), "Onayla"/"Reddet" (`POST /signature-exceptions/:id/decision`; karar yalnız LEGAL) | `SignatureWorkspace.tsx:198-210, 310-349` | TAŞINIR (karar veren rol: bkz. K-11) | İmzalar | [ ] |
-| W-13-12 | "Fiziksel asıl": "Kayıt ekle" çekmecesi (`POST …/original-custody-events`; yalnız LEGAL) | `SignatureWorkspace.tsx:215-222, 351-373` | TAŞINIR (rol: K-11) | İmzalar | [ ] |
-| W-13-13 | "İnceleme geçmişi" | `SignatureWorkspace.tsx:224-233` | TAŞINIR | İmzalar / Geçmiş | [ ] |
-| W-13-14 | "Yeni sürüm / zeyilname" çekmecesi: PDF yükle, tür, zeyilnamede tedarikçi ekleme (`POST /documents` + `POST …/versions`) | `SignatureWorkspace.tsx:236, 413-447` | KALIR (analizde ayrıca anılmıyor; "içerik değişirse onay baştan başlar" ile ilişkili) | Sözleşme detayı | [ ] |
-| W-13-15 | "İmza kontrolünü kesinleştir" (`POST …/finalize-signature-review`, If-Match; yalnız LEGAL) | `SignatureWorkspace.tsx:238-242` | TAŞINIR (rol: K-11) | İmzalar | [ ] |
+| W-13-02 | Bölünmüş görünüm: PDF görüntüleyici (yakınlaştır/uzaklaştır, sayfa etiketleri, tespit bölgeleri) + yan panel | `SignatureWorkspace.tsx:84-86`; `ui/DocumentViewer.tsx:68-119`; `ui/SplitPanes.tsx` | TAŞINIR | Sözleşme detayı > İmzalar (belge: "Belge" sekmesi) | [x] bölünmüş görünüm: belge görüntüleyici (Yakınlaştır, Uzaklaştır, sayfa etiketleri) + yan panel; tespit bölgeleri görülmedi |
+| W-13-03 | Başlık: sürüm, aşama, imza yöntemi, SHA-256 | `SignatureWorkspace.tsx:88-94` | TAŞINIR | İmzalar / Özet | [x] başlık: sürüm, departman, imza aşaması, SHA-256 |
+| W-13-04 | Uyarı bantları: yeni sürüm geldi (+bağlantı), imza görüntüsü bulunamadı, otomatik kontrol yapılamadı, arşivden alınan sözleşme | `SignatureWorkspace.tsx:97-100` | TAŞINIR | İmzalar | [x] bantlar: otomatik kontrol yapılamadı, arşivden alınan sözleşme; yeni sürüm ve görüntü bulunamadı bantları görülmedi |
+| W-13-05 | "Durum" paneli (genel sonuç, türetilmiş) | `SignatureWorkspace.tsx:106-117` | TAŞINIR | İmzalar | [x] Durum paneli (Sonuç, Otomatik tarama, Fiziksel asıl, Kesinleştirme) |
+| W-13-06 | "Taraflar ve gereksinimler"; "Gereksinim / yöntem" çekmecesi: belge yöntemi + asıl politikası (`PATCH …/signature-policy`), yeni gereksinim (`POST …/signature-requirements`); boş durum | `SignatureWorkspace.tsx:119-124, 375-410` | TAŞINIR (yetki: LEGAL, PROCUREMENT_MANAGER → bkz. K-11) | İmzalar | [x] Taraflar ve gereksinimler; Gereksinim / yöntem çekmecesi (Yöntem, Taraf, İmzacı rolü, Yöntemi kaydet, Gereksinimi ekle) |
+| W-13-07 | İmza yuvası başına "İncele" formu: karar, gözlenen işaret, gerekçe, sayfa, AI adayı seçimi (`POST …/signature-reviews`, If-Match + belge SHA) | `SignatureWorkspace.tsx:140, 157, 255-307` | TAŞINIR | İmzalar | [x] İncele formu (İmza görüntüsü var / eksik / Belirsiz, Sayfa, Gerekçe); AI adayı seçimi görülmedi |
+| W-13-08 | "E-imza doğrula" isteği (`POST …/digital-validation-jobs`) | `SignatureWorkspace.tsx:147-148` | TAŞINIR | İmzalar | [x] E-imzayı doğrula düğmesi (e-imza sözleşmesinde) |
+| W-13-09 | "Tamamlanmak için" engel listesi | `SignatureWorkspace.tsx:168-175` | TAŞINIR | İmzalar | [x] Tamamlanmak için engel listesi |
+| W-13-10 | "Otomatik tarama": AI adayları listesi (sayfaya git), "Taramayı çalıştır" (`POST …/signature-analysis-jobs`) | `SignatureWorkspace.tsx:177-193` | TAŞINIR | İmzalar | [x] Otomatik tarama paneli + Otomatik tarama iste; AI aday listesi görülmedi (aday yok) |
+| W-13-11 | "İstisnalar": "İstisna talep et" çekmecesi (`POST …/signature-exceptions`), "Onayla"/"Reddet" (`POST /signature-exceptions/:id/decision`; karar yalnız LEGAL) | `SignatureWorkspace.tsx:198-210, 310-349` | TAŞINIR (karar veren rol: bkz. K-11) | İmzalar | [x] İstisna talep et çekmecesi (Gerekçe, Kapsam, Kalan risk, Bitiş, Talebi gönder); Onayla ve Reddet görülmedi (bekleyen istisna yok) |
+| W-13-12 | "Fiziksel asıl": "Kayıt ekle" çekmecesi (`POST …/original-custody-events`; yalnız LEGAL) | `SignatureWorkspace.tsx:215-222, 351-373` | TAŞINIR (rol: K-11) | İmzalar | [x] Fiziksel asıl: Kayıt ekle çekmecesi (Teslim beyan, Muhafaza teyit, Arşiv yeri, Tarih) |
+| W-13-13 | "İnceleme geçmişi" | `SignatureWorkspace.tsx:224-233` | TAŞINIR | İmzalar / Geçmiş | [x] İnceleme geçmişi |
+| W-13-14 | "Yeni sürüm / zeyilname" çekmecesi: PDF yükle, tür, zeyilnamede tedarikçi ekleme (`POST /documents` + `POST …/versions`) | `SignatureWorkspace.tsx:236, 413-447` | KALIR (analizde ayrıca anılmıyor; "içerik değişirse onay baştan başlar" ile ilişkili) | Sözleşme detayı | [x] Yeni sürüm / zeyilname çekmecesi (Tür, Eklenecek tedarikçi tarafı, Belge PDF) |
+| W-13-15 | "İmza kontrolünü kesinleştir" (`POST …/finalize-signature-review`, If-Match; yalnız LEGAL) | `SignatureWorkspace.tsx:238-242` | TAŞINIR (rol: K-11) | İmzalar | [x] İmza kontrolünü kesinleştir düğmesi (Satınalma; eksik varken kapalı, Nakliye sözleşmesinde etkin) |
 | **Koşullar ve ihbar** | | | | | |
-| W-13-16 | "Ticari koşullar" görünümü (bedel türü, tutar, para birimi, ödeme, süre, otomatik yenileme, ihbar, limit esası, kur farkı hükmü, kaynak madde, revizyon) + boş durum | `ContractLifecycle.tsx:92-126` | DÖNÜŞÜR (v2 zorunlu/isteğe bağlı alan seti; yapay zekâ önerir, insan kaydeder) | Sözleşme detayı > Özet | [ ] |
-| W-13-17 | "Değiştir" / "Koşulları gir" formu, yeni revizyon (`POST /contract-versions/:id/terms`) | `ContractLifecycle.tsx:105, 139, 185-231` | DÖNÜŞÜR | Sözleşme ekle 3. adım / Özet | [ ] |
-| W-13-18 | "Hukuk doğrulaması bekleniyor" + "Doğrula" (`POST /contract-terms/:id/verify`; yalnız LEGAL; giren doğrulayamaz) | `ContractLifecycle.tsx:119-121` | KARAR GEREKLİ (K-11) | — | [ ] |
-| W-13-19 | "Değişiklik" paneli (önceki revizyona göre fark) | `ContractLifecycle.tsx:129-136` | KALIR | Sözleşme detayı > Geçmiş | [ ] |
-| W-13-20 | "İhbar son günü" + uyarı tarihleri; "Kiracı tatil listesi boş" uyarısı | `ContractLifecycle.tsx:145-159` | KALIR (v2: 90/60/30/7 gün; tatil listesi bkz. K-12) | Sözleşme detayı > Hatırlatıcılar | [ ] |
-| W-13-21 | "Yenileme kararı": Yenile / Feshet / Yeniden müzakere + gerekçe (`POST …/renewal-decision`; PROCUREMENT_MANAGER) | `ContractLifecycle.tsx:162-180` | DÖNÜŞÜR (v2: yenilenecek / sonlandırılacak / yeni proje açıldı) | Hatırlatıcılar | [ ] |
+| W-13-16 | "Ticari koşullar" görünümü (bedel türü, tutar, para birimi, ödeme, süre, otomatik yenileme, ihbar, limit esası, kur farkı hükmü, kaynak madde, revizyon) + boş durum | `ContractLifecycle.tsx:92-126` | DÖNÜŞÜR (v2 zorunlu/isteğe bağlı alan seti; yapay zekâ önerir, insan kaydeder) | Sözleşme detayı > Özet | [x] Ticari koşullar (tavan, ödeme, kur farkı, süre, yenileme, ihbar, kaynak, revizyon); boş durum görülmedi |
+| W-13-17 | "Değiştir" / "Koşulları gir" formu, yeni revizyon (`POST /contract-versions/:id/terms`) | `ContractLifecycle.tsx:105, 139, 185-231` | DÖNÜŞÜR | Sözleşme ekle 3. adım / Özet | [x] Değiştir formu (Bedel türü, Tutar, Para, Süre, Ödeme, Kur farkı, Yenileme, İhbar, Kaydet) |
+| W-13-18 | "Hukuk doğrulaması bekleniyor" + "Doğrula" (`POST /contract-terms/:id/verify`; yalnız LEGAL; giren doğrulayamaz) | `ContractLifecycle.tsx:119-121` | KARAR GEREKLİ (K-11) | — | [ ] görülmedi: Hukuk doğrulaması bekleniyor / Doğrula (bekleyen koşul yok) |
+| W-13-19 | "Değişiklik" paneli (önceki revizyona göre fark) | `ContractLifecycle.tsx:129-136` | KALIR | Sözleşme detayı > Geçmiş | [ ] görülmedi: Değişiklik paneli (tek revizyon) |
+| W-13-20 | "İhbar son günü" + uyarı tarihleri; "Kiracı tatil listesi boş" uyarısı | `ContractLifecycle.tsx:145-159` | KALIR (v2: 90/60/30/7 gün; tatil listesi bkz. K-12) | Sözleşme detayı > Hatırlatıcılar | [x] İhbar son günü + Uyarılar (90, 60, 30 gün); tatil listesi boş uyarısı görülmedi |
+| W-13-21 | "Yenileme kararı": Yenile / Feshet / Yeniden müzakere + gerekçe (`POST …/renewal-decision`; PROCUREMENT_MANAGER) | `ContractLifecycle.tsx:162-180` | DÖNÜŞÜR (v2: yenilenecek / sonlandırılacak / yeni proje açıldı) | Hatırlatıcılar | [x] Yenileme kararı: Yenile, Feshet, Yeniden müzakere, Gerekçe, Kararı kaydet (v1 seçenekleri) |
 | **Yükümlülükler** | | | | | |
-| W-13-22 | Yükümlülük listesi + dönemler (Bekliyor, Gecikti, Yerine getirildi, Kaçırıldı, Feragat), boş durum | `ContractLifecycle.tsx:235-259` | KALIR | Hatırlatıcılar | [ ] |
-| W-13-23 | "Yükümlülük ekle" formu (`POST …/obligations`) | `ContractLifecycle.tsx:276-292` | KALIR | Hatırlatıcılar | [ ] |
-| W-13-24 | Dönem "Sonucu kaydet" (sonuç, not, kanıt; `POST /obligations/:id/events`) | `ContractLifecycle.tsx:257-271` | KALIR | Hatırlatıcılar | [ ] |
+| W-13-22 | Yükümlülük listesi + dönemler (Bekliyor, Gecikti, Yerine getirildi, Kaçırıldı, Feragat), boş durum | `ContractLifecycle.tsx:235-259` | KALIR | Hatırlatıcılar | [x] yükümlülük listesi + dönemler (Gecikti, Bekliyor) |
+| W-13-23 | "Yükümlülük ekle" formu (`POST …/obligations`) | `ContractLifecycle.tsx:276-292` | KALIR | Hatırlatıcılar | [x] Yükümlülük ekle formu |
+| W-13-24 | Dönem "Sonucu kaydet" (sonuç, not, kanıt; `POST /obligations/:id/events`) | `ContractLifecycle.tsx:257-271` | KALIR | Hatırlatıcılar | [x] Sonucu kaydet formu (Yerine getirildi, Kaçırıldı, Feragat, Açıklama, Kanıt) |
 | **Fiyat, SLA ve teminat** | | | | | |
-| W-13-25 | Fiyat revizyonu: "Kural tanımla/değiştir" (endeks, baz, sınırlar; `POST …/price-rules`), boş durum | `ContractCommercial.tsx:49-86` | SADELEŞİR | Sözleşmede bilgi alanı: fiyat artış koşulu | [ ] |
-| W-13-26 | Fiyat revizyonu: "Revizyon öner" / "Hesapla ve öner" (`POST /price-rules/:id/revisions`), "Onayla" (`POST /price-revisions/:id/approve`) | `ContractCommercial.tsx:98-115` | SADELEŞİR (hesap motoru kalkar) | bilgi alanı | [ ] |
-| W-13-27 | SLA: "SLA ekle" (hedef, kademeler, üst sınır; `POST …/sla-terms`), boş durum | `ContractCommercial.tsx:122-161` | SADELEŞİR | bilgi alanı: SLA ve ceza koşulu | [ ] |
-| W-13-28 | SLA: "Dönem ölçümü gir" / "Hesapla ve kaydet" (`POST /sla-terms/:id/measurements`), ölçüm "Doğrula"/"Reddet" (`POST /sla-measurements/:id/decision`) | `ContractCommercial.tsx:181-200` | SADELEŞİR (kredi hesabı kalkar) | bilgi alanı | [ ] |
-| W-13-29 | Teminatlar: "Teminat kaydet" (`POST …/guarantees`), "İade et" (`POST /guarantees/:id/return`), boş durum | `ContractCommercial.tsx:210-251` | SADELEŞİR (takip kalkar) | bilgi alanı: teminat | [ ] |
+| W-13-25 | Fiyat revizyonu: "Kural tanımla/değiştir" (endeks, baz, sınırlar; `POST …/price-rules`), boş durum | `ContractCommercial.tsx:49-86` | SADELEŞİR | Sözleşmede bilgi alanı: fiyat artış koşulu | [x] Fiyat revizyonu: Kural tanımla formu (endeks, baz, tavan, taban) |
+| W-13-26 | Fiyat revizyonu: "Revizyon öner" / "Hesapla ve öner" (`POST /price-rules/:id/revisions`), "Onayla" (`POST /price-revisions/:id/approve`) | `ContractCommercial.tsx:98-115` | SADELEŞİR (hesap motoru kalkar) | bilgi alanı | [ ] görülmedi: Revizyon öner / Onayla (kural tanımlı değil) |
+| W-13-27 | SLA: "SLA ekle" (hedef, kademeler, üst sınır; `POST …/sla-terms`), boş durum | `ContractCommercial.tsx:122-161` | SADELEŞİR | bilgi alanı: SLA ve ceza koşulu | [x] SLA ekle formu (ölçüt, hedef, eşik, kredi, üst sınır) |
+| W-13-28 | SLA: "Dönem ölçümü gir" / "Hesapla ve kaydet" (`POST /sla-terms/:id/measurements`), ölçüm "Doğrula"/"Reddet" (`POST /sla-measurements/:id/decision`) | `ContractCommercial.tsx:181-200` | SADELEŞİR (kredi hesabı kalkar) | bilgi alanı | [ ] görülmedi: Dönem ölçümü gir (SLA tanımı yok) |
+| W-13-29 | Teminatlar: "Teminat kaydet" (`POST …/guarantees`), "İade et" (`POST /guarantees/:id/return`), boş durum | `ContractCommercial.tsx:210-251` | SADELEŞİR (takip kalkar) | bilgi alanı: teminat | [x] Teminat kaydet formu; İade et görülmedi (teminat yok) |
 
 ### 3.14 Belge girişi — `/belge-girisi` — `pages/IntakePage.tsx`
 
@@ -334,14 +334,14 @@ API: `POST /api/v1/documents` (multipart).
 
 | # | İşlev | Dosya:satır | v2 kararı | v2'deki yeri | ✓ |
 |---|---|---|---|---|---|
-| W-14-01 | Yükleme formu: Şirket, Belge türü (Fatura, Sözleşme, Teklif, Diğer), Dosya (PDF/PNG/JPEG/XML, 25 MB), "Yükle" | `IntakePage.tsx:43-57` | BİRLEŞİR (tür: Sözleşme) | Sözleşme ekle 1. adım (proje seçimi zorunlu) | [ ] |
-| W-14-02 | Fatura / Teklif / Diğer türünde belge yükleme | `IntakePage.tsx:45-46` | KARAR GEREKLİ (K-05) | Fatura için: Faturalar (analiz Karar 9 önerisi: elle ekleme yedek) | [ ] |
-| W-14-03 | "Belge yükleyebileceğiniz şirket yok" durumu | `IntakePage.tsx:39` | KALIR | Sözleşme ekle | [ ] |
-| W-14-04 | Sonuç: işlem mesajı, karantina, tekrar yükleme (aynı dosya yeni kayıt açmaz), antivirüs notu, "Belgeyi aç" | `IntakePage.tsx:66-72` | BİRLEŞİR (v2: aynı dosya uyarısı) | Sözleşme ekle 1. adım | [ ] |
-| W-14-05 | Sonuç: tedarikçi eşleşme bandı, ünvan farkı, benzer isim önerileri, "Tedarikçiyi aç" | `IntakePage.tsx:73-80` | BİRLEŞİR (v2: mevcut kartı seç ya da aday kart aç) | Sözleşme ekle 3. adım | [ ] |
-| W-14-06 | Sonuç: "Belgede kayıtlı olmayan IBAN okundu… doğrulama görevi açıldı" | `IntakePage.tsx:77` | **KALKAR (onaylı liste)** | yok | [ ] |
-| W-14-07 | Sonuç: e-Fatura'dan fatura kaydı açıldı / mükerrer / açılamadı ("Finans görevine düştü"), "Faturayı aç" | `IntakePage.tsx:81-86` | KARAR GEREKLİ (K-05) | Faturalar | [ ] |
-| W-14-08 | Sonuç: UBL-TR kural denetimi bulguları | `IntakePage.tsx:87-91`; `ui/UblCheck.tsx:23-55` | KARAR GEREKLİ (K-05) | — | [ ] |
+| W-14-01 | Yükleme formu: Şirket, Belge türü (Fatura, Sözleşme, Teklif, Diğer), Dosya (PDF/PNG/JPEG/XML, 25 MB), "Yükle" | `IntakePage.tsx:43-57` | BİRLEŞİR (tür: Sözleşme) | Sözleşme ekle 1. adım (proje seçimi zorunlu) | [x] Sözleşme ekle (/sozlesmeler/ekle): Şirket, Belge türü (Fatura, Sözleşme, Teklif, Diğer), Dosya, Yükle |
+| W-14-02 | Fatura / Teklif / Diğer türünde belge yükleme | `IntakePage.tsx:45-46` | KARAR GEREKLİ (K-05) | Fatura için: Faturalar (analiz Karar 9 önerisi: elle ekleme yedek) | [x] Fatura yükle (/faturalar/yukle) ile sentetik XML yüklendi; Teklif ve Diğer türü seçilebiliyor |
+| W-14-03 | "Belge yükleyebileceğiniz şirket yok" durumu | `IntakePage.tsx:39` | KALIR | Sözleşme ekle | [ ] görülmedi: şirketi olmayan kullanıcı durumu |
+| W-14-04 | Sonuç: işlem mesajı, karantina, tekrar yükleme (aynı dosya yeni kayıt açmaz), antivirüs notu, "Belgeyi aç" | `IntakePage.tsx:66-72` | BİRLEŞİR (v2: aynı dosya uyarısı) | Sözleşme ekle 1. adım | [x] sonuç mesajı, antivirüs notu, Belgeyi aç; karantina ve tekrar yükleme görülmedi |
+| W-14-05 | Sonuç: tedarikçi eşleşme bandı, ünvan farkı, benzer isim önerileri, "Tedarikçiyi aç" | `IntakePage.tsx:73-80` | BİRLEŞİR (v2: mevcut kartı seç ya da aday kart aç) | Sözleşme ekle 3. adım | [x] tedarikçi eşleşme bandı, ünvan farkı, Tedarikçiyi aç; benzer isim önerisi görülmedi |
+| W-14-06 | Sonuç: "Belgede kayıtlı olmayan IBAN okundu… doğrulama görevi açıldı" | `IntakePage.tsx:77` | **KALKAR (onaylı liste)** | yok | [x] KALKAR: IBAN içeren XML yüklendi, IBAN mesajı çıkmadı (IntakePage.tsx:90 de ölü metin kalmış) |
+| W-14-07 | Sonuç: e-Fatura'dan fatura kaydı açıldı / mükerrer / açılamadı ("Finans görevine düştü"), "Faturayı aç" | `IntakePage.tsx:81-86` | KARAR GEREKLİ (K-05) | Faturalar | [x] Fatura kaydı açılamadı, Satınalma görevine düştü mesajı görüldü; açılan fatura ve mükerrer sonucu görülmedi |
+| W-14-08 | Sonuç: UBL-TR kural denetimi bulguları | `IntakePage.tsx:87-91`; `ui/UblCheck.tsx:23-55` | KARAR GEREKLİ (K-05) | — | [x] UBL-TR kontrolü 10 hata, Ne yapmalı, teknik ayrıntı |
 
 ### 3.15 Belge detayı — `/belgeler/:id` — `pages/DocumentPage.tsx`
 
@@ -349,14 +349,14 @@ API: `GET /api/v1/document-versions/:id`, `/content`, `POST …/seller-identity`
 
 | # | İşlev | Dosya:satır | v2 kararı | v2'deki yeri | ✓ |
 |---|---|---|---|---|---|
-| W-15-01 | Bölünmüş görünüm: belge görüntüleyici + alanlar; karantina bandı | `DocumentPage.tsx:39-43` | KALIR (sözleşme için) | Sözleşme detayı > Belge; diğer türler K-05 | [ ] |
-| W-15-02 | "İmha edildi" bandı (baytlar silindi, SHA korunur) | `DocumentPage.tsx:40-41` | KALIR (v1'de imha edilmiş belgeler için durum gösterimi sürmeli; yeni imha yapılmaz) | Belge | [ ] |
-| W-15-03 | Kimlik: başlık, sürüm, dosya adı, SHA-256, yüklenme zamanı, antivirüs durumu | `DocumentPage.tsx:45-49` | KALIR | Belge | [ ] |
-| W-15-04 | "Bağlı tedarikçi" (bağlantı, durum, ünvan farkı) | `DocumentPage.tsx:50-54` | KALIR | Belge | [ ] |
-| W-15-05 | "Çıkarılan alanlar" tablosu: alan, değer, köken etiketi, "sayfa N" düğmesiyle belgede o sayfaya gitme, XML kaynağı, "Kural hatası" | `DocumentPage.tsx:55-72` | DÖNÜŞÜR (v2: kaynak sayfa + güven düzeyi; fatura alanları K-05) | Sözleşme ekle 2. ve 3. adım | [ ] |
-| W-15-06 | UBL-TR kontrol bölümü (e-Fatura XML) | `DocumentPage.tsx:73-78` | KARAR GEREKLİ (K-05) | — | [ ] |
-| W-15-07 | "Satıcı kimliğini girin" formu (tür, vergi kimliği, ünvan, kaynak sayfa; `POST …/seller-identity`); fatura belgesi + tedarikçi bağlı değilken | `DocumentPage.tsx:36, 84-114` | KARAR GEREKLİ (K-05) | — | [ ] |
-| W-15-08 | Aynı formdaki "IBAN (varsa)" alanı (farklıysa doğrulama görevi açar) | `DocumentPage.tsx:110` | **KALKAR (onaylı liste)** | yok | [ ] |
+| W-15-01 | Bölünmüş görünüm: belge görüntüleyici + alanlar; karantina bandı | `DocumentPage.tsx:39-43` | KALIR (sözleşme için) | Sözleşme detayı > Belge; diğer türler K-05 | [x] belge görüntüleyici + alanlar; karantina bandı görülmedi |
+| W-15-02 | "İmha edildi" bandı (baytlar silindi, SHA korunur) | `DocumentPage.tsx:40-41` | KALIR (v1'de imha edilmiş belgeler için durum gösterimi sürmeli; yeni imha yapılmaz) | Belge | [ ] görülmedi: İmha edildi bandı (imha edilmiş belge yok) |
+| W-15-03 | Kimlik: başlık, sürüm, dosya adı, SHA-256, yüklenme zamanı, antivirüs durumu | `DocumentPage.tsx:45-49` | KALIR | Belge | [x] başlık, sürüm, dosya adı, SHA-256, yüklenme zamanı, antivirüs durumu |
+| W-15-04 | "Bağlı tedarikçi" (bağlantı, durum, ünvan farkı) | `DocumentPage.tsx:50-54` | KALIR | Belge | [x] Bağlı tedarikçi (bağlantı, durum) |
+| W-15-05 | "Çıkarılan alanlar" tablosu: alan, değer, köken etiketi, "sayfa N" düğmesiyle belgede o sayfaya gitme, XML kaynağı, "Kural hatası" | `DocumentPage.tsx:55-72` | DÖNÜŞÜR (v2: kaynak sayfa + güven düzeyi; fatura alanları K-05) | Sözleşme ekle 2. ve 3. adım | [x] Çıkarılan alanlar: Alan, Değer, Köken (Kaynak XML, Kural ile doğrulandı); sayfa N düğmesi ve Kural hatası görülmedi |
+| W-15-06 | UBL-TR kontrol bölümü (e-Fatura XML) | `DocumentPage.tsx:73-78` | KARAR GEREKLİ (K-05) | — | [x] UBL-TR kontrolü bölümü |
+| W-15-07 | "Satıcı kimliğini girin" formu (tür, vergi kimliği, ünvan, kaynak sayfa; `POST …/seller-identity`); fatura belgesi + tedarikçi bağlı değilken | `DocumentPage.tsx:36, 84-114` | KARAR GEREKLİ (K-05) | — | [x] Satıcı kimliğini girin formu (Kimlik türü, Vergi kimliği, Satıcı ünvanı, Kaynak sayfa; Kaydet ve eşleştir) |
+| W-15-08 | Aynı formdaki "IBAN (varsa)" alanı (farklıysa doğrulama görevi açar) | `DocumentPage.tsx:110` | **KALKAR (onaylı liste)** | yok | [x] KALKAR: satıcı kimliği formunda IBAN alanı yok |
 
 ### 3.16 Siparişler — `/siparisler`, `/siparisler/:id` — `pages/PurchasingPages.tsx`
 
@@ -364,12 +364,12 @@ API: `/api/v1/purchase-orders` (GET, POST, `/:id`, `/:id/changes`, `/:id/close`)
 
 | # | İşlev | Dosya:satır | v2 kararı | v2'deki yeri | ✓ |
 |---|---|---|---|---|---|
-| W-16-01 | Sipariş listesi (kod, tedarikçi, sözleşme, tutar, durum), boş durum | `PurchasingPages.tsx:32-58` | **KALKAR (onaylı liste)** | yok | [ ] |
-| W-16-02 | "Sipariş ver" formu (şirket, tedarikçi, sözleşme, kalemler, KDV; kalem ekle/sil) | `PurchasingPages.tsx:39, 61-112` | **KALKAR (onaylı liste)** | yok | [ ] |
-| W-16-03 | Sipariş detayı: kalemler, sözleşme bağlantısı, değişiklik geçmişi | `PurchasingPages.tsx:129-162, 196-208` | **KALKAR (onaylı liste)** | yok | [ ] |
-| W-16-04 | "Siparişi değiştir" (miktar/fiyat/yeni kalem, gerekçe) | `PurchasingPages.tsx:143, 212-260` | **KALKAR (onaylı liste)** | yok | [ ] |
-| W-16-05 | "Kapat / iptal et" (gerekçe) | `PurchasingPages.tsx:144, 264-282` | **KALKAR (onaylı liste)** | yok | [ ] |
-| W-16-06 | "Kabul kaydet" (miktar, not, hizmet dönemi), "Ters kabul", kabul geçmişi | `PurchasingPages.tsx:163-193` | **KALKAR (onaylı liste)** | yok | [ ] |
+| W-16-01 | Sipariş listesi (kod, tedarikçi, sözleşme, tutar, durum), boş durum | `PurchasingPages.tsx:32-58` | **KALKAR (onaylı liste)** | yok | [x] KALKAR: ekran ve düğme yok, /siparisler kaldırıldı ekranı; faturada sipariş referansı salt metin |
+| W-16-02 | "Sipariş ver" formu (şirket, tedarikçi, sözleşme, kalemler, KDV; kalem ekle/sil) | `PurchasingPages.tsx:39, 61-112` | **KALKAR (onaylı liste)** | yok | [x] KALKAR: ekran ve düğme yok, /siparisler kaldırıldı ekranı; faturada sipariş referansı salt metin |
+| W-16-03 | Sipariş detayı: kalemler, sözleşme bağlantısı, değişiklik geçmişi | `PurchasingPages.tsx:129-162, 196-208` | **KALKAR (onaylı liste)** | yok | [x] KALKAR: ekran ve düğme yok, /siparisler kaldırıldı ekranı; faturada sipariş referansı salt metin |
+| W-16-04 | "Siparişi değiştir" (miktar/fiyat/yeni kalem, gerekçe) | `PurchasingPages.tsx:143, 212-260` | **KALKAR (onaylı liste)** | yok | [x] KALKAR: ekran ve düğme yok, /siparisler kaldırıldı ekranı; faturada sipariş referansı salt metin |
+| W-16-05 | "Kapat / iptal et" (gerekçe) | `PurchasingPages.tsx:144, 264-282` | **KALKAR (onaylı liste)** | yok | [x] KALKAR: ekran ve düğme yok, /siparisler kaldırıldı ekranı; faturada sipariş referansı salt metin |
+| W-16-06 | "Kabul kaydet" (miktar, not, hizmet dönemi), "Ters kabul", kabul geçmişi | `PurchasingPages.tsx:163-193` | **KALKAR (onaylı liste)** | yok | [x] KALKAR: ekran ve düğme yok, /siparisler kaldırıldı ekranı; faturada sipariş referansı salt metin |
 
 ### 3.17 Faturalar listesi — `/faturalar` — `pages/PurchasingPages.tsx`
 
@@ -377,14 +377,14 @@ API: `GET /api/v1/invoices`, `POST /api/v1/invoices`.
 
 | # | İşlev | Dosya:satır | v2 kararı | v2'deki yeri | ✓ |
 |---|---|---|---|---|---|
-| W-17-01 | Fatura tablosu (no, tür, tedarikçi + durum notu, tarih, tutar, ERP/ödeme, mükerrer sayısı), boş durum | `PurchasingPages.tsx:296-357` | SADELEŞİR (proje/sözleşme bağlantısı ve departman süzgeci eklenir) | Faturalar | [ ] |
-| W-17-02 | Durum süzgeci (URL `durum`): Tümü, Karar bekliyor, Engelli, Onaylandı, Reddedildi, Hukuken iptal/ret + sayaçlar | `PurchasingPages.tsx:309-311, 327-330` | DÖNÜŞÜR (onay durumları kalkar; v2: eşleşti / eşleşmedi kuyruğu) | Faturalar | [ ] |
-| W-17-03 | Para birimi süzgeci (URL `para`) | `PurchasingPages.tsx:331-332` | KALIR | Faturalar | [ ] |
-| W-17-04 | Kolon göster/gizle (URL `gizle`): Tedarikçi, ERP / ödeme, Tarih | `PurchasingPages.tsx:305-307, 314, 333-335` | KALIR | Faturalar | [ ] |
-| W-17-05 | Kayıtlı görünümler (`page="invoices"`) | `PurchasingPages.tsx:325` | KALIR | Faturalar | [ ] |
-| W-17-06 | "Fatura gir" formu (FINANCE): tür (fatura/iade), no, ETTN, tarih, tedarikçi, satırlar, KDV; mükerrer denetimi | `PurchasingPages.tsx:321, 360-410` | KARAR GEREKLİ (K-05; analiz Karar 9: "elle ekleme yedek" öneri, karar verilmedi; FINANCE rolü kalkıyor) | Faturalar | [ ] |
-| W-17-07 | "Tolerans kuralları" bağlantısı | `PurchasingPages.tsx:319` | **KALKAR (onaylı liste)** | yok | [ ] |
-| W-17-08 | "ERP mutabakatı" bağlantısı (FINANCE, AUDITOR) | `PurchasingPages.tsx:320` | DÖNÜŞÜR | Yönetim > Entegrasyonlar | [ ] |
+| W-17-01 | Fatura tablosu (no, tür, tedarikçi + durum notu, tarih, tutar, ERP/ödeme, mükerrer sayısı), boş durum | `PurchasingPages.tsx:296-357` | SADELEŞİR (proje/sözleşme bağlantısı ve departman süzgeci eklenir) | Faturalar | [x] tablo: Fatura no, Tedarikçi, Departman, Net, Eşleşme, ERP / ödeme, Tarih; proje/sözleşme bağlantısı sütunu henüz yok |
+| W-17-02 | Durum süzgeci (URL `durum`): Tümü, Karar bekliyor, Engelli, Onaylandı, Reddedildi, Hukuken iptal/ret + sayaçlar | `PurchasingPages.tsx:309-311, 327-330` | DÖNÜŞÜR (onay durumları kalkar; v2: eşleşti / eşleşmedi kuyruğu) | Faturalar | [x] süzgeç: Tümü 164, Eşleşmedi 106, Eşleşti 58, Hukuken iptal/ret 0; onay durumları yok |
+| W-17-03 | Para birimi süzgeci (URL `para`) | `PurchasingPages.tsx:331-332` | KALIR | Faturalar | [x] Para birimi Tümü, TRY, USD |
+| W-17-04 | Kolon göster/gizle (URL `gizle`): Tedarikçi, ERP / ödeme, Tarih | `PurchasingPages.tsx:305-307, 314, 333-335` | KALIR | Faturalar | [x] Kolonlar: Tedarikçi, ERP / ödeme, Tarih |
+| W-17-05 | Kayıtlı görünümler (`page="invoices"`) | `PurchasingPages.tsx:325` | KALIR | Faturalar | [x] Görünümü kaydet var |
+| W-17-06 | "Fatura gir" formu (FINANCE): tür (fatura/iade), no, ETTN, tarih, tedarikçi, satırlar, KDV; mükerrer denetimi | `PurchasingPages.tsx:321, 360-410` | KARAR GEREKLİ (K-05; analiz Karar 9: "elle ekleme yedek" öneri, karar verilmedi; FINANCE rolü kalkıyor) | Faturalar | [x] Fatura gir formu (Şirket, Tedarikçi, Tür, Fatura no, ETTN, Tarih, satırlar, KDV, Faturayı kaydet; Satınalma kullanıcısında) |
+| W-17-07 | "Tolerans kuralları" bağlantısı | `PurchasingPages.tsx:319` | **KALKAR (onaylı liste)** | yok | [x] KALKAR: Tolerans kuralları bağlantısı yok |
+| W-17-08 | "ERP mutabakatı" bağlantısı (FINANCE, AUDITOR) | `PurchasingPages.tsx:320` | DÖNÜŞÜR | Yönetim > Entegrasyonlar | [x] ERP mutabakatı bağlantısı Yönetim > Entegrasyonlar adresine gidiyor |
 
 ### 3.18 Fatura detayı — `/faturalar/:id` — `pages/PurchasingPages.tsx`
 
@@ -392,17 +392,17 @@ API: `GET /api/v1/invoices/:id`, `PUT …/allocations`, `POST …/approve|reject
 
 | # | İşlev | Dosya:satır | v2 kararı | v2'deki yeri | ✓ |
 |---|---|---|---|---|---|
-| W-18-01 | Başlık, durum, tedarikçi kaydına bağlantı, ERP durumu, ödeme durumu (ERP teyidi), tekrar gelen fatura uyarısı | `PurchasingPages.tsx:448-459` | SADELEŞİR (salt okunur) | Fatura detayı | [ ] |
-| W-18-02 | "Satırlar ve tahsis" tablosu (sipariş/sözleşme bağı ya da "Bağsız") | `PurchasingPages.tsx:464-487` | DÖNÜŞÜR (v2: tedarikçi → sözleşme → proje → departman bağı) | Fatura detayı | [ ] |
-| W-18-03 | "Tahsisi düzenle": sipariş kalemlerini yükle, satır böl, avans mahsubu, "Tahsisi kaydet ve kontrol et" (`PUT …/allocations`) | `PurchasingPages.tsx:464, 561-610` | DÖNÜŞÜR (sipariş kalemi/avans tahsisi kalkar; yerine sözleşmeye elle bağlama) | Faturalar > eşleştirme kuyruğu | [ ] |
-| W-18-04 | "Tutar" paneli (net, KDV, vergi dahil; satırlardan yeniden hesap), "Kaynak e-Fatura" bağlantısı | `PurchasingPages.tsx:490-500` | KALIR | Fatura detayı | [ ] |
-| W-18-05 | UBL-TR kontrol paneli | `PurchasingPages.tsx:504-507` | KARAR GEREKLİ (K-05) | — | [ ] |
-| W-18-06 | "Limit · sözleşme" paneli (sözleşme limiti kullanımı) | `PurchasingPages.tsx:510-516` | DÖNÜŞÜR (v2: toplam fatura / sözleşme tutarı kullanım çubuğu, aşım yalnız bilgi) | Sözleşme detayı > Faturalar; Fatura detayı | [ ] |
-| W-18-07 | Kontrol bulguları (sipariş/kabul eşleşmesi, tolerans, limit; engel/uyarı, çözen rol) | `PurchasingPages.tsx:519-531, 550-559` | **KALKAR (onaylı liste)**: üçlü eşleştirme ve tolerans bulguları | yok | [ ] |
-| W-18-08 | "İstisnayı onayla" (gerekçe ≥10; PROCUREMENT_MANAGER) + "İstisna eskidi" uyarısı | `PurchasingPages.tsx:527, 534` | **KALKAR (onaylı liste)** | yok | [ ] |
-| W-18-09 | "Finans onayı" (If-Match parmak izi; FINANCE; giren onaylayamaz) | `PurchasingPages.tsx:536` | **KALKAR (onaylı liste)** | yok | [ ] |
-| W-18-10 | "Reddet" (gerekçe ≥10) | `PurchasingPages.tsx:537` | **KALKAR (onaylı liste)** | yok | [ ] |
-| W-18-11 | Karar geçmişi (Finans onayı / İstisna onayı / Ret ıstampaları), ERP son hata | `PurchasingPages.tsx:521-523, 541` | KALIR (salt okunur geçmiş; v1'de karar verilmiş faturalarda görünmeli) | Fatura detayı | [ ] |
+| W-18-01 | Başlık, durum, tedarikçi kaydına bağlantı, ERP durumu, ödeme durumu (ERP teyidi), tekrar gelen fatura uyarısı | `PurchasingPages.tsx:448-459` | SADELEŞİR (salt okunur) | Fatura detayı | [x] başlık, durum (Eşleşti), tedarikçi bağlantısı, Hukuki durum, ERP, Ödeme, tekrar gelen uyarısı |
+| W-18-02 | "Satırlar ve tahsis" tablosu (sipariş/sözleşme bağı ya da "Bağsız") | `PurchasingPages.tsx:464-487` | DÖNÜŞÜR (v2: tedarikçi → sözleşme → proje → departman bağı) | Fatura detayı | [x] Satırlar ve tahsis; sözleşme bağı, sipariş yalnız salt metin referans |
+| W-18-03 | "Tahsisi düzenle": sipariş kalemlerini yükle, satır böl, avans mahsubu, "Tahsisi kaydet ve kontrol et" (`PUT …/allocations`) | `PurchasingPages.tsx:464, 561-610` | DÖNÜŞÜR (sipariş kalemi/avans tahsisi kalkar; yerine sözleşmeye elle bağlama) | Faturalar > eşleştirme kuyruğu | [ ] FARK: tahsis yalnız sözleşmeye ve Böl var, ama Avans faturası kimliği (mahsup) ve Mahsup tutarı alanları duruyor (avans tahsisi kalkacaktı) |
+| W-18-04 | "Tutar" paneli (net, KDV, vergi dahil; satırlardan yeniden hesap), "Kaynak e-Fatura" bağlantısı | `PurchasingPages.tsx:490-500` | KALIR | Fatura detayı | [x] Tutar paneli, Kaynak e-Fatura bağlantısı |
+| W-18-05 | UBL-TR kontrol paneli | `PurchasingPages.tsx:504-507` | KARAR GEREKLİ (K-05) | — | [x] UBL-TR kontrol paneli |
+| W-18-06 | "Limit · sözleşme" paneli (sözleşme limiti kullanımı) | `PurchasingPages.tsx:510-516` | DÖNÜŞÜR (v2: toplam fatura / sözleşme tutarı kullanım çubuğu, aşım yalnız bilgi) | Sözleşme detayı > Faturalar; Fatura detayı | [x] Limit · sözleşme paneli (Tavan, Net tüketim, Açık taahhüt, Kullanılabilir; Aşım yalnız bilgidir) |
+| W-18-07 | Kontrol bulguları (sipariş/kabul eşleşmesi, tolerans, limit; engel/uyarı, çözen rol) | `PurchasingPages.tsx:519-531, 550-559` | **KALKAR (onaylı liste)**: üçlü eşleştirme ve tolerans bulguları | yok | [x] KALKAR: ekranda sipariş, kabul, tolerans bulgusu yok (API check.issues hâlâ RECEIPT_MISSING üretiyor, ANB2026000102) |
+| W-18-08 | "İstisnayı onayla" (gerekçe ≥10; PROCUREMENT_MANAGER) + "İstisna eskidi" uyarısı | `PurchasingPages.tsx:527, 534` | **KALKAR (onaylı liste)** | yok | [x] KALKAR: İstisnayı onayla düğmesi yok |
+| W-18-09 | "Finans onayı" (If-Match parmak izi; FINANCE; giren onaylayamaz) | `PurchasingPages.tsx:536` | **KALKAR (onaylı liste)** | yok | [x] KALKAR: Finans onayı düğmesi yok |
+| W-18-10 | "Reddet" (gerekçe ≥10) | `PurchasingPages.tsx:537` | **KALKAR (onaylı liste)** | yok | [x] KALKAR: Reddet düğmesi yok |
+| W-18-11 | Karar geçmişi (Finans onayı / İstisna onayı / Ret ıstampaları), ERP son hata | `PurchasingPages.tsx:521-523, 541` | KALIR (salt okunur geçmiş; v1'de karar verilmiş faturalarda görünmeli) | Fatura detayı | [x] Karar geçmişi (Onaylandı v1 kaydı) ve ERP son hatası salt okunur |
 
 ### 3.19 Tolerans kuralları — `/faturalar/tolerans` — `pages/PurchasingPages.tsx`
 
@@ -410,9 +410,9 @@ API: `/api/v1/tolerance-rules` (GET, PUT, DELETE). Yetki: `tolerance.manage` (FI
 
 | # | İşlev | Dosya:satır | v2 kararı | v2'deki yeri | ✓ |
 |---|---|---|---|---|---|
-| W-19-01 | Kural tablosu, boş durum ("sıfır toleransla kontrol edilir") | `PurchasingPages.tsx:619-634, 654-672` | **KALKAR (onaylı liste)** | yok | [ ] |
-| W-19-02 | "Kural ekle" / "Değiştir" (para birimi, kategori, mutlak tutar, yüzde, birleştirme) | `PurchasingPages.tsx:631, 635-651, 669` | **KALKAR (onaylı liste)** | yok | [ ] |
-| W-19-03 | "Kaldır" (onaylı silme) | `PurchasingPages.tsx:666-670` | **KALKAR (onaylı liste)** | yok | [ ] |
+| W-19-01 | Kural tablosu, boş durum ("sıfır toleransla kontrol edilir") | `PurchasingPages.tsx:619-634, 654-672` | **KALKAR (onaylı liste)** | yok | [x] KALKAR: /faturalar/tolerans kaldırıldı ekranı, bağlantı yok |
+| W-19-02 | "Kural ekle" / "Değiştir" (para birimi, kategori, mutlak tutar, yüzde, birleştirme) | `PurchasingPages.tsx:631, 635-651, 669` | **KALKAR (onaylı liste)** | yok | [x] KALKAR: /faturalar/tolerans kaldırıldı ekranı, bağlantı yok |
+| W-19-03 | "Kaldır" (onaylı silme) | `PurchasingPages.tsx:666-670` | **KALKAR (onaylı liste)** | yok | [x] KALKAR: /faturalar/tolerans kaldırıldı ekranı, bağlantı yok |
 
 ### 3.20 ERP mutabakatı — `/faturalar/erp-mutabakati` — `pages/GovernancePages.tsx`
 
@@ -420,11 +420,11 @@ API: `/api/v1/integration/erp/reconciliation`, `/batch.csv`, `/results`, `/expor
 
 | # | İşlev | Dosya:satır | v2 kararı | v2'deki yeri | ✓ |
 |---|---|---|---|---|---|
-| W-20-01 | Dönem süzgeci (başlangıç, bitiş, "Uygula") | `GovernancePages.tsx:344, 369-373` | DÖNÜŞÜR | Yönetim > Entegrasyonlar: son çalışmalar ve hata kaydı | [ ] |
-| W-20-02 | "Durum ve toplamlar" paneli (veri anı, gelen ERP olayı, tekrar sayısı) | `GovernancePages.tsx:377-382` | DÖNÜŞÜR | Entegrasyonlar | [ ] |
-| W-20-03 | "İlgilenilmesi gerekenler" tablosu, faturaya bağlantı, "Tekrar gönder" (gerekçe ≥10) | `GovernancePages.tsx:383-399` | DÖNÜŞÜR (onaylı fatura aktarımı v2'de yok; yeniden deneme özellik kartına taşınır) | Entegrasyonlar | [ ] |
-| W-20-04 | "Aktarım dosyası (CSV)" indirme | `GovernancePages.tsx:354-356, 403` | DÖNÜŞÜR (bkz. K-07) | Entegrasyonlar | [ ] |
-| W-20-05 | Sonuç dosyası (CSV) yükleme: "Önce dene" (kuru çalışma), "Sonuç dosyasını uygula", sonuç özeti | `GovernancePages.tsx:361, 405-411, 422-434` | DÖNÜŞÜR (bkz. K-07) | Entegrasyonlar | [ ] |
+| W-20-01 | Dönem süzgeci (başlangıç, bitiş, "Uygula") | `GovernancePages.tsx:344, 369-373` | DÖNÜŞÜR | Yönetim > Entegrasyonlar: son çalışmalar ve hata kaydı | [x] Yönetim > Entegrasyonlar: Onay tarihi başı, sonu, Uygula |
+| W-20-02 | "Durum ve toplamlar" paneli (veri anı, gelen ERP olayı, tekrar sayısı) | `GovernancePages.tsx:377-382` | DÖNÜŞÜR | Entegrasyonlar | [x] Durum ve toplamlar (veri anı, gelen ERP olayı) |
+| W-20-03 | "İlgilenilmesi gerekenler" tablosu, faturaya bağlantı, "Tekrar gönder" (gerekçe ≥10) | `GovernancePages.tsx:383-399` | DÖNÜŞÜR (onaylı fatura aktarımı v2'de yok; yeniden deneme özellik kartına taşınır) | Entegrasyonlar | [x] İlgilenilmesi gerekenler tablosu + fatura bağlantısı; Tekrar gönder görülmedi (ERP bağdaştırıcısı yapılandırılmamış, kodda koşullu) |
+| W-20-04 | "Aktarım dosyası (CSV)" indirme | `GovernancePages.tsx:354-356, 403` | DÖNÜŞÜR (bkz. K-07) | Entegrasyonlar | [x] Aktarım dosyası (CSV) düğmesi (indirilmedi) |
+| W-20-05 | Sonuç dosyası (CSV) yükleme: "Önce dene" (kuru çalışma), "Sonuç dosyasını uygula", sonuç özeti | `GovernancePages.tsx:361, 405-411, 422-434` | DÖNÜŞÜR (bkz. K-07) | Entegrasyonlar | [x] sonuç dosyası yükleme + Önce dene (dosya seçilene kadar kapalı) |
 
 ### 3.21 Raporlar — `/raporlar` — `pages/EvaluationPages.tsx`
 
@@ -432,10 +432,10 @@ API: `GET /api/v1/reports/summary?from&to&fresh`, `/summary.csv`.
 
 | # | İşlev | Dosya:satır | v2 kararı | v2'deki yeri | ✓ |
 |---|---|---|---|---|---|
-| W-21-01 | Dönem süzgeci (başlangıç, bitiş, "Uygula") | `EvaluationPages.tsx:441-445` | SADELEŞİR | Raporlar | [ ] |
-| W-21-02 | Gösterge tablosu: gösterge + tanım, değer, pay/payda, kaynak; "Veri yok" / "Hesaplanmıyor" | `EvaluationPages.tsx:453-466` | SADELEŞİR (v2 panosu: biten sözleşmeler, risk matrisi, uyum puanları, açık onaylar) | Raporlar | [ ] |
-| W-21-03 | "Yeniden hesapla" + veri anı ve kapsam notu | `EvaluationPages.tsx:449-452` | SADELEŞİR | Raporlar | [ ] |
-| W-21-04 | "CSV indir" | `EvaluationPages.tsx:428-438` | KARAR GEREKLİ (K-07) | — | [ ] |
+| W-21-01 | Dönem süzgeci (başlangıç, bitiş, "Uygula") | `EvaluationPages.tsx:441-445` | SADELEŞİR | Raporlar | [x] dönem başı, sonu, Uygula |
+| W-21-02 | Gösterge tablosu: gösterge + tanım, değer, pay/payda, kaynak; "Veri yok" / "Hesaplanmıyor" | `EvaluationPages.tsx:453-466` | SADELEŞİR (v2 panosu: biten sözleşmeler, risk matrisi, uyum puanları, açık onaylar) | Raporlar | [x] gösterge tablosu (5 gösterge, pay/payda, kaynak, Veri yok) |
+| W-21-03 | "Yeniden hesapla" + veri anı ve kapsam notu | `EvaluationPages.tsx:449-452` | SADELEŞİR | Raporlar | [x] Yeniden hesapla + veri anı ve kapsam notu |
+| W-21-04 | "CSV indir" | `EvaluationPages.tsx:428-438` | KARAR GEREKLİ (K-07) | — | [x] CSV indir düğmesi (indirilmedi) |
 
 ### 3.22 Yapay zekâ — `/yapay-zeka` — `pages/EvaluationPages.tsx`
 
@@ -443,11 +443,11 @@ API: `/api/v1/ai/overview`, `/ai/policy` (PUT, DELETE), `/ai/runs/:id/retry`. Ye
 
 | # | İşlev | Dosya:satır | v2 kararı | v2'deki yeri | ✓ |
 |---|---|---|---|---|---|
-| W-22-01 | "Görev matrisi" paneli | `EvaluationPages.tsx:499-501` | DÖNÜŞÜR | Yönetim > Yapay zekâ | [ ] |
-| W-22-02 | "Son çalıştırmalar" (durum, sebep, maliyet, denetim bayrakları) + "Yeniden dene" | `EvaluationPages.tsx:502-510` | DÖNÜŞÜR | Yönetim > Yapay zekâ (kullanım kaydı) | [ ] |
-| W-22-03 | "Kiracı politikası": "Düzenle" (sağlayıcı, bölge, aylık bütçe, günlük çağrı sınırı, yükseltme izni), "Kaldır" | `EvaluationPages.tsx:512-518, 533-548` | DÖNÜŞÜR | Yönetim > Yapay zekâ ayarları | [ ] |
-| W-22-04 | "Kullanım" paneli (ay harcaması, bugünkü çağrı) | `EvaluationPages.tsx:520-522` | DÖNÜŞÜR | Yönetim > Yapay zekâ | [ ] |
-| W-22-05 | "Model kaydı" paneli | `EvaluationPages.tsx:523-529` | DÖNÜŞÜR (v2: model adı tek ayardan) | Yönetim > Yapay zekâ | [ ] |
+| W-22-01 | "Görev matrisi" paneli | `EvaluationPages.tsx:499-501` | DÖNÜŞÜR | Yönetim > Yapay zekâ | [x] Yönetim > Yapay zekâ: Görev matrisi |
+| W-22-02 | "Son çalıştırmalar" (durum, sebep, maliyet, denetim bayrakları) + "Yeniden dene" | `EvaluationPages.tsx:502-510` | DÖNÜŞÜR | Yönetim > Yapay zekâ (kullanım kaydı) | [x] Son çalıştırmalar + Yeniden dene |
+| W-22-03 | "Kiracı politikası": "Düzenle" (sağlayıcı, bölge, aylık bütçe, günlük çağrı sınırı, yükseltme izni), "Kaldır" | `EvaluationPages.tsx:512-518, 533-548` | DÖNÜŞÜR | Yönetim > Yapay zekâ ayarları | [x] Kiracı politikası + Düzenle (Yönetici); Kaldır görülmedi (politika yok) |
+| W-22-04 | "Kullanım" paneli (ay harcaması, bugünkü çağrı) | `EvaluationPages.tsx:520-522` | DÖNÜŞÜR | Yönetim > Yapay zekâ | [x] Kullanım paneli |
+| W-22-05 | "Model kaydı" paneli | `EvaluationPages.tsx:523-529` | DÖNÜŞÜR (v2: model adı tek ayardan) | Yönetim > Yapay zekâ | [x] Model kaydı paneli |
 
 ### 3.23 Lira Defteri — `/lira-defteri`, `/lira-defteri/:id` — `pages/LedgerPages.tsx`
 
@@ -455,15 +455,15 @@ API: `/api/v1/ledger`, `/recovery/cases`, `/recovery/scan`, `/recovery/settings`
 
 | # | İşlev | Dosya:satır | v2 kararı | v2'deki yeri | ✓ |
 |---|---|---|---|---|---|
-| W-23-01 | Altı özet kutusu: Geri alınabilir, Geri alınan, Önlenebilir kayıp, Risk altındaki teminat, Kanıtlı harcama, Kanıtsız harcama | `LedgerPages.tsx:103-114` | **KALKAR (onaylı liste)** | yok | [ ] |
-| W-23-02 | "Taramayı çalıştır", son tarama bilgisi, dönem süzgeci, uyarı bantları | `LedgerPages.tsx:85-121` | **KALKAR (onaylı liste)** | yok | [ ] |
-| W-23-03 | Sekme "Geri alınacak para": bulgu listesi, süzgeç Açık işler / Geri alınan / Kapanan / Tümü, boş durum | `LedgerPages.tsx:135-158` | **KALKAR (onaylı liste)** | yok | [ ] |
-| W-23-04 | Sekme "Kanıtsız harcama": eksik halkalar, en büyük kanıtsız faturalar | `LedgerPages.tsx:161-178` | **KALKAR (onaylı liste)** | yok | [ ] |
-| W-23-05 | Sekme "Kur ve ayarlar": kur tablosu, elle kur ekle/sil | `LedgerPages.tsx:181-221` | **KALKAR (onaylı liste)** | yok | [ ] |
-| W-23-06 | "TCMB'den al" (tarihli; `POST /fx-rates/tcmb`) | `LedgerPages.tsx:200-203` | **KALKAR (onaylı liste)** | yok | [ ] |
-| W-23-07 | "Sermaye maliyeti" ayarı (`PUT /recovery/settings`) | `LedgerPages.tsx:222-229` | **KALKAR (onaylı liste)** | yok | [ ] |
-| W-23-08 | Bulgu detayı: hesap dayanağı, talep yazısı taslağı + "Kopyala", geçmiş, tutar, bağlı kayıtlar | `LedgerPages.tsx:279-335` | **KALKAR (onaylı liste)** | yok | [ ] |
-| W-23-09 | Bulgu işlemleri: Doğrula, "Talep edildi olarak işaretle", "Tahsil edildi" (tutar), "Kapat" (gerekçe) | `LedgerPages.tsx:337-364` | **KALKAR (onaylı liste)** | yok | [ ] |
+| W-23-01 | Altı özet kutusu: Geri alınabilir, Geri alınan, Önlenebilir kayıp, Risk altındaki teminat, Kanıtlı harcama, Kanıtsız harcama | `LedgerPages.tsx:103-114` | **KALKAR (onaylı liste)** | yok | [x] KALKAR: menüde yok, /lira-defteri kaldırıldı ekranı |
+| W-23-02 | "Taramayı çalıştır", son tarama bilgisi, dönem süzgeci, uyarı bantları | `LedgerPages.tsx:85-121` | **KALKAR (onaylı liste)** | yok | [x] KALKAR: menüde yok, /lira-defteri kaldırıldı ekranı |
+| W-23-03 | Sekme "Geri alınacak para": bulgu listesi, süzgeç Açık işler / Geri alınan / Kapanan / Tümü, boş durum | `LedgerPages.tsx:135-158` | **KALKAR (onaylı liste)** | yok | [x] KALKAR: menüde yok, /lira-defteri kaldırıldı ekranı |
+| W-23-04 | Sekme "Kanıtsız harcama": eksik halkalar, en büyük kanıtsız faturalar | `LedgerPages.tsx:161-178` | **KALKAR (onaylı liste)** | yok | [x] KALKAR: menüde yok, /lira-defteri kaldırıldı ekranı |
+| W-23-05 | Sekme "Kur ve ayarlar": kur tablosu, elle kur ekle/sil | `LedgerPages.tsx:181-221` | **KALKAR (onaylı liste)** | yok | [x] KALKAR: menüde yok, /lira-defteri kaldırıldı ekranı |
+| W-23-06 | "TCMB'den al" (tarihli; `POST /fx-rates/tcmb`) | `LedgerPages.tsx:200-203` | **KALKAR (onaylı liste)** | yok | [x] KALKAR: menüde yok, /lira-defteri kaldırıldı ekranı |
+| W-23-07 | "Sermaye maliyeti" ayarı (`PUT /recovery/settings`) | `LedgerPages.tsx:222-229` | **KALKAR (onaylı liste)** | yok | [x] KALKAR: menüde yok, /lira-defteri kaldırıldı ekranı |
+| W-23-08 | Bulgu detayı: hesap dayanağı, talep yazısı taslağı + "Kopyala", geçmiş, tutar, bağlı kayıtlar | `LedgerPages.tsx:279-335` | **KALKAR (onaylı liste)** | yok | [x] KALKAR: menüde yok, /lira-defteri kaldırıldı ekranı |
+| W-23-09 | Bulgu işlemleri: Doğrula, "Talep edildi olarak işaretle", "Tahsil edildi" (tutar), "Kapat" (gerekçe) | `LedgerPages.tsx:337-364` | **KALKAR (onaylı liste)** | yok | [x] KALKAR: menüde yok, /lira-defteri kaldırıldı ekranı |
 
 ### 3.24 Veri yönetimi — `/veri-yonetimi`, `/veri-yonetimi/imha/:id` — `pages/GovernancePages.tsx`
 
@@ -471,14 +471,14 @@ API: `/api/v1/retention`, `/retention/candidates`, `/retention/policies/:kind`, 
 
 | # | İşlev | Dosya:satır | v2 kararı | v2'deki yeri | ✓ |
 |---|---|---|---|---|---|
-| W-24-01 | Sekmeler: Saklama ve imha, Hukuki saklama, Dışa aktarım | `GovernancePages.tsx:56-75` | **KALKAR (onaylı liste)**: ilk iki sekme; üçüncü TAŞINIR | bkz. W-24-08 | [ ] |
-| W-24-02 | Saklama politikası tablosu: belge türü başına süre + yasal dayanak, "Düzenle/Tanımla", "Kaldır" | `GovernancePages.tsx:92-106, 147-158` | **KALKAR (onaylı liste)** | yok | [ ] |
-| W-24-03 | İmha adayları listesi, belge seçimi, "Seçilen N belge için imha öner" (gerekçe ≥10) | `GovernancePages.tsx:108-131` | **KALKAR (onaylı liste)** | yok | [ ] |
-| W-24-04 | İmha adayında "Saklamaya al" iletişim kutusu | `GovernancePages.tsx:123, 160-179` | **KALKAR (onaylı liste)** | yok | [ ] |
-| W-24-05 | İmha partileri listesi ve parti detayı: belgeler, "Onayla ve imha et" (iki adımlı onay), "Reddet" | `GovernancePages.tsx:134-142, 278-318` | **KALKAR (onaylı liste)** | yok | [ ] |
-| W-24-06 | Hukuki saklama: etkin/kaldırılan listeleri, "Yeni hukuki saklama" (kapsam belge/şirket, dosya no, gerekçe) | `GovernancePages.tsx:182-222` | **KALKAR (onaylı liste)** | yok | [ ] |
-| W-24-07 | "Saklamayı kaldır" (gerekçe ≥10) | `GovernancePages.tsx:198-201` | **KALKAR (onaylı liste)** | yok | [ ] |
-| W-24-08 | Dışa aktarım: "Dışa aktarım iste" (gerekçe; TENANT_ADMIN), talepler listesi + "Yenile", hukuk onayı/ret (not zorunlu), isteyen için "Paketi indir" | `GovernancePages.tsx:228-272` | TAŞINIR (analiz: "denetim izi ve dışa aktarım Yönetici altında kalır"); onaylayan rol ve alt giriş bkz. K-03 | Yönetim | [ ] |
+| W-24-01 | Sekmeler: Saklama ve imha, Hukuki saklama, Dışa aktarım | `GovernancePages.tsx:56-75` | **KALKAR (onaylı liste)**: ilk iki sekme; üçüncü TAŞINIR | bkz. W-24-08 | [x] KALKAR: /veri-yonetimi kaldırıldı ekranı; dışa aktarım Yönetim > Denetim izi sekmesinde |
+| W-24-02 | Saklama politikası tablosu: belge türü başına süre + yasal dayanak, "Düzenle/Tanımla", "Kaldır" | `GovernancePages.tsx:92-106, 147-158` | **KALKAR (onaylı liste)** | yok | [x] KALKAR: ekran yok, /veri-yonetimi kaldırıldı ekranı |
+| W-24-03 | İmha adayları listesi, belge seçimi, "Seçilen N belge için imha öner" (gerekçe ≥10) | `GovernancePages.tsx:108-131` | **KALKAR (onaylı liste)** | yok | [x] KALKAR: ekran yok, /veri-yonetimi kaldırıldı ekranı |
+| W-24-04 | İmha adayında "Saklamaya al" iletişim kutusu | `GovernancePages.tsx:123, 160-179` | **KALKAR (onaylı liste)** | yok | [x] KALKAR: ekran yok, /veri-yonetimi kaldırıldı ekranı |
+| W-24-05 | İmha partileri listesi ve parti detayı: belgeler, "Onayla ve imha et" (iki adımlı onay), "Reddet" | `GovernancePages.tsx:134-142, 278-318` | **KALKAR (onaylı liste)** | yok | [x] KALKAR: ekran yok, /veri-yonetimi kaldırıldı ekranı |
+| W-24-06 | Hukuki saklama: etkin/kaldırılan listeleri, "Yeni hukuki saklama" (kapsam belge/şirket, dosya no, gerekçe) | `GovernancePages.tsx:182-222` | **KALKAR (onaylı liste)** | yok | [x] KALKAR: ekran yok, /veri-yonetimi kaldırıldı ekranı |
+| W-24-07 | "Saklamayı kaldır" (gerekçe ≥10) | `GovernancePages.tsx:198-201` | **KALKAR (onaylı liste)** | yok | [x] KALKAR: ekran yok, /veri-yonetimi kaldırıldı ekranı |
+| W-24-08 | Dışa aktarım: "Dışa aktarım iste" (gerekçe; TENANT_ADMIN), talepler listesi + "Yenile", hukuk onayı/ret (not zorunlu), isteyen için "Paketi indir" | `GovernancePages.tsx:228-272` | TAŞINIR (analiz: "denetim izi ve dışa aktarım Yönetici altında kalır"); onaylayan rol ve alt giriş bkz. K-03 | Yönetim | [ ] FARK: Yönetim > Denetim izi: Dışa aktarım iste (Yönetici), Talepler, Yenile, İndir görüldü; ama Faz 1 sonrası bütün yeni talepler FAILED (Talep eden kişinin kiracı yöneticisi rolü kalmamış), onay/ret görülmedi; dev worker eski kodla çalışıyor olabilir |
 
 ### 3.25 Arama — `/ara` — `pages/SearchPage.tsx`
 
@@ -486,8 +486,8 @@ API: `GET /api/v1/search?q=`.
 
 | # | İşlev | Dosya:satır | v2 kararı | v2'deki yeri | ✓ |
 |---|---|---|---|---|---|
-| W-25-01 | Türe göre gruplanmış sonuçlar (Projeler, Tedarikçiler, Sözleşmeler, Siparişler, Faturalar, Belgeler, Olaylar), eşleşen alan, kayda bağlantı | `SearchPage.tsx:6-11, 24-36` | KALIR (Siparişler grubu kalkar; Olaylar tedarikçi kartına yönlenir) | üst çubuk araması | [ ] |
-| W-25-02 | Durumlar: 2 karakterden kısa, yükleniyor, hata, "Sonuç yok" | `SearchPage.tsx:21-23` | KALIR | Arama | [ ] |
+| W-25-01 | Türe göre gruplanmış sonuçlar (Projeler, Tedarikçiler, Sözleşmeler, Siparişler, Faturalar, Belgeler, Olaylar), eşleşen alan, kayda bağlantı | `SearchPage.tsx:6-11, 24-36` | KALIR (Siparişler grubu kalkar; Olaylar tedarikçi kartına yönlenir) | üst çubuk araması | [x] gruplar: Projeler, Tedarikçiler, Sözleşmeler, Faturalar, Belgeler, Olaylar (Siparişler yok); olay /tedarikciler/olaylar/:id e gidiyor |
+| W-25-02 | Durumlar: 2 karakterden kısa, yükleniyor, hata, "Sonuç yok" | `SearchPage.tsx:21-23` | KALIR | Arama | [x] 2 karakter uyarısı ve Sonuç yok görüldü; yükleniyor ve hata görülmedi |
 
 ### 3.26 Tedarikçi portalı — `pages/PortalPages.tsx`
 
@@ -495,17 +495,17 @@ API: `/api/v1/portal/rounds`, `/portal/rounds/:id` (+ `/files`, `/bids`, `/quest
 
 | # | İşlev | Dosya:satır | v2 kararı | v2'deki yeri | ✓ |
 |---|---|---|---|---|---|
-| W-26-01 | Teklif davetleri listesi; satırda "Teklif ver" / "Teklifi güncelle" / "Görüntüle"; boş durum | `PortalPages.tsx:17-40` | KALIR | Portal: Teklif davetleri | [ ] |
-| W-26-02 | Tur başlığı: alıcı, tur no, kategori, kapanış zamanı, sunucu saatine göre geri sayım, geçerli sürüm | `PortalPages.tsx:59-70, 169-175` | KALIR | Portal: teklif verme | [ ] |
-| W-26-03 | Fiyat tablosu: kalem başına kapsam, birim, miktar, birim fiyat; birim farkı uyarısı; önizleme toplamı | `PortalPages.tsx:184-206` | KALIR | Portal: teklif verme | [ ] |
-| W-26-04 | Ek maliyetler: ekle/sil | `PortalPages.tsx:209-218` | KALIR | Portal: teklif verme | [ ] |
-| W-26-05 | Ekler: dosya yükle (PDF/PNG/JPEG/XML), durum, "İndir" | `PortalPages.tsx:115, 220-233` | KALIR | Portal: teklif verme | [ ] |
-| W-26-06 | "Teklifi gönder" / "Yeni sürüm gönder"; alındı bandı (sunucu zamanı, tekrar gönderim), bağlantı koptu uyarısı, form hata özeti | `PortalPages.tsx:151, 176-183, 243` | KALIR | Portal: teklif verme | [ ] |
-| W-26-07 | Yan panel: Değerlendirme kriterleri ve ağırlıkları, teslimat/ihtiyaç tarihi, "Gönderimlerim" sürüm listesi | `PortalPages.tsx:249-263` | KALIR | Portal: teklif verme | [ ] |
-| W-26-08 | Soru ve cevaplar: soru gönder (tur açıkken), yanıtları gör | `PortalPages.tsx:264-274` | KALIR | Portal: teklif verme | [ ] |
-| W-26-09 | Anketler listesi; "Yanıtla" / "Görüntüle"; boş durum | `PortalPages.tsx:285-306` | KALIR | Portal: Anketler | [ ] |
-| W-26-10 | Anket yanıtlama: soru başına yanıt, uygulanamaz gerekçesi, "Yanıtı kaydet", "Değiştir" | `PortalPages.tsx:336-343, 360-400` | KALIR | Portal: anket doldurma | [ ] |
-| W-26-11 | "Kuruma gönder" + onay adımı ("Evet, gönder" / "Vazgeç"); tüm sorular yanıtlanmadan kapalı | `PortalPages.tsx:329, 345-354` | KALIR | Portal: anket doldurma | [ ] |
+| W-26-01 | Teklif davetleri listesi; satırda "Teklif ver" / "Teklifi güncelle" / "Görüntüle"; boş durum | `PortalPages.tsx:17-40` | KALIR | Portal: Teklif davetleri | [x] Teklif ver ve Görüntüle bağlantıları; Teklifi güncelle görülmedi |
+| W-26-02 | Tur başlığı: alıcı, tur no, kategori, kapanış zamanı, sunucu saatine göre geri sayım, geçerli sürüm | `PortalPages.tsx:59-70, 169-175` | KALIR | Portal: teklif verme | [x] alıcı, tur no, kategori, kapanış, sunucu saatine göre kalan süre, Geçerli teklifiniz: Sürüm 1 |
+| W-26-03 | Fiyat tablosu: kalem başına kapsam, birim, miktar, birim fiyat; birim farkı uyarısı; önizleme toplamı | `PortalPages.tsx:184-206` | KALIR | Portal: teklif verme | [x] fiyat tablosu (Kapsam, Birim, Miktar, Birim fiyat) + Önizleme toplamı |
+| W-26-04 | Ek maliyetler: ekle/sil | `PortalPages.tsx:209-218` | KALIR | Portal: teklif verme | [x] Ek maliyet ekle ve Ek maliyeti sil |
+| W-26-05 | Ekler: dosya yükle (PDF/PNG/JPEG/XML), durum, "İndir" | `PortalPages.tsx:115, 220-233` | KALIR | Portal: teklif verme | [x] Ekler: Ek yükle (PDF, PNG, JPEG, XML); İndir görülmedi |
+| W-26-06 | "Teklifi gönder" / "Yeni sürüm gönder"; alındı bandı (sunucu zamanı, tekrar gönderim), bağlantı koptu uyarısı, form hata özeti | `PortalPages.tsx:151, 176-183, 243` | KALIR | Portal: teklif verme | [x] Teklifi gönder / Yeni sürüm gönder (kapalı turda kilitli); alındı bandı görülmedi |
+| W-26-07 | Yan panel: Değerlendirme kriterleri ve ağırlıkları, teslimat/ihtiyaç tarihi, "Gönderimlerim" sürüm listesi | `PortalPages.tsx:249-263` | KALIR | Portal: teklif verme | [x] Değerlendirme kriterleri ve ağırlıkları, Gönderimlerim; teslimat/ihtiyaç tarihi görülmedi |
+| W-26-08 | Soru ve cevaplar: soru gönder (tur açıkken), yanıtları gör | `PortalPages.tsx:264-274` | KALIR | Portal: teklif verme | [x] soru gönderildi, Yanıt bekleniyor görüldü |
+| W-26-09 | Anketler listesi; "Yanıtla" / "Görüntüle"; boş durum | `PortalPages.tsx:285-306` | KALIR | Portal: Anketler | [x] Anketler listesi: Yanıtla ve Görüntüle |
+| W-26-10 | Anket yanıtlama: soru başına yanıt, uygulanamaz gerekçesi, "Yanıtı kaydet", "Değiştir" | `PortalPages.tsx:336-343, 360-400` | KALIR | Portal: anket doldurma | [x] anket yanıtlama: Evet, Kısmen, Hayır, Uygulanamaz, Açıklama, Yanıtı kaydet, Değiştir (5 soru yanıtlandı) |
+| W-26-11 | "Kuruma gönder" + onay adımı ("Evet, gönder" / "Vazgeç"); tüm sorular yanıtlanmadan kapalı | `PortalPages.tsx:329, 345-354` | KALIR | Portal: anket doldurma | [x] Kuruma gönder 5/5 yanıttan önce kapalı; onay adımı Evet, gönder / Vazgeç görüldü (Vazgeç ile çıkıldı) |
 
 Web envanter satırı: 235 (Bölüm 3; Bölüm 2'deki 34 menü/rota satırı ayrıca). Toplam doğrulanacak satır: 235 web + 47 iOS + 34 menü/rota = 316 (roller eşlemesindeki 12 satır hariç).
 
