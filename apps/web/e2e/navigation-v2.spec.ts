@@ -191,3 +191,18 @@ test('Yönetim: Yönetici departman kullanıcısına departman atar; yenileyince
   await page.reload();
   await expect(ik).toBeChecked({ checked: before });
 });
+
+// Düzeltme dalgası (Y5): Departman kullanıcısı /raporlar adresini yazarsa standart "rolünüze açık değil" ekranı; yarım sayfa
+// (tarih süzgeci, CSV düğmesi) ve 403 isteği yok.
+test('Departman kullanıcısı /raporlar: rolünüze açık değil ekranı', async ({ page }) => {
+  const reportCalls: string[] = [];
+  page.on('request', (r) => { if (r.url().includes('/api/v1/reports/')) reportCalls.push(r.url()); });
+  await login(page, 'tolga.teknik@example.test');
+  await page.goto('/raporlar');
+  await expect(page.getByText('Raporlar rolünüze açık değil')).toBeVisible();
+  await expect(page.getByRole('link', { name: "İşlerim'e dön" })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'CSV indir' })).toHaveCount(0);
+  await expect(page.getByLabel('Dönem başı')).toHaveCount(0);
+  expect(reportCalls).toEqual([]);
+  expect(await fits(page)).toBe(true);
+});

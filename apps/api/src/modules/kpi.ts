@@ -38,12 +38,19 @@ export class ReportCache {
 }
 interface Computed { indicators: Indicator[]; dataAsOf: string }
 
+/**
+ * Düzeltme dalgası (Y2, D93): kaldırılan işlevlere dayanan göstergeler (fatura istisna onayı → istisna oranı; siparişler → açık taahhüt)
+ * rapor ekranında ve CSV'de gösterilmez. Veri ve hesap yerinde kalır; yalnız yanıttan çıkarılır.
+ */
+export const REMOVED_KPI_KEYS: readonly string[] = ['invoice_exception_rate', 'open_commitment'];
+
 export async function summary(tx: Tx, ctx: TenantContext, q: { from: string; to: string; fresh?: boolean }, cache?: ReportCache) {
   if (q.to < q.from) throw unprocessable('invalid_period', 'Dönem sonu başlangıçtan önce olamaz.');
   const key = [ctx.tenantId, ctx.supplierId ?? '', [...ctx.companyIds].sort().join(','), q.from, q.to].join('|');
   const r = cache ? await cache.get(key, !!q.fresh, () => indicators(tx, q)) : await indicators(tx, q);
   await audit(tx, ctx, 'report.viewed', 'tenant', ctx.tenantId, { report: 'summary', from: q.from, to: q.to });
-  return { period: { from: q.from, to: q.to }, scope: { companyIds: ctx.companyIds, note: 'Yalnız erişiminiz olan şirketlerin verisi.' }, dataAsOf: r.dataAsOf, indicators: r.indicators };
+  return { period: { from: q.from, to: q.to }, scope: { companyIds: ctx.companyIds, note: 'Yalnız erişiminiz olan şirketlerin verisi.' }, dataAsOf: r.dataAsOf,
+    indicators: r.indicators.filter((i) => !REMOVED_KPI_KEYS.includes(i.key)) };
 }
 
 async function indicators(tx: Tx, q: { from: string; to: string }): Promise<Computed> {

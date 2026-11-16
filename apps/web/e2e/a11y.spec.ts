@@ -51,7 +51,9 @@ test('finans: faturalar, fatura detayı, raporlar', async ({ page }) => {
   await audit(page, 'Tahsis düzenleyicisi');
   await page.getByRole('button', { name: 'Vazgeç' }).click();
   await nav(page, 'Raporlar');
-  await expect(page.getByText('Fatura istisna oranı')).toBeVisible();
+  // Düzeltme dalgası (Y2): kaldırılan işlevlerin göstergesi (fatura istisna oranı) gösterilmez; diğer göstergeler aynen.
+  await expect(page.getByText('Sözleşme kapsamı')).toBeVisible();
+  await expect(page.getByText('Fatura istisna oranı')).toHaveCount(0);
   await audit(page, 'Raporlar');
 });
 

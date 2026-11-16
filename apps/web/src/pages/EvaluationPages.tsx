@@ -5,7 +5,7 @@ import { useResource } from '../lib/useApi.ts';
 import { fmtDate, fmtDateTime, fmtMoney } from '../lib/format.ts';
 import { todayLocal } from '../lib/format.ts';
 import { ANSWER_RESPONSE as RESPONSE, OWNER_ROLES, roleLabel } from '../lib/labels.ts';
-import { v2Role } from '../lib/session.tsx';
+import { hasRole, useSession, v2Role } from '../lib/session.tsx';
 import { Banner, Empty, ErrorState, Field, Loading, PageHeader, Tag } from '../ui/kit.tsx';
 import { DepartmentName } from '../ui/Departments.tsx';
 import { Icon } from '../ui/icons.tsx';
@@ -417,7 +417,22 @@ interface Summary { period: { from: string; to: string }; scope: { note: string 
   indicators: { key: string; label: string; definition: string; status: 'OK' | 'NO_DATA' | 'NOT_AVAILABLE'; values: { currency: string | null; numerator: string; denominator: string; ratio: string | null }[]; note: string | null; source: string }[] }
 const AMOUNT_KEYS = ['contract_coverage', 'open_commitment'];
 
+/** Raporlar yalnız Yönetici, Satınalma ve Denetçi rolüne açık (report.read). Diğer rol adresi yazarsa standart "rolünüze açık değil"
+ *  ekranını görür (düzeltme dalgası Y5); yarım sayfa ve 403 isteği oluşmaz. */
 export function ReportsPage() {
+  const { me } = useSession();
+  if (!hasRole(me, 'ADMIN', 'PROCUREMENT', 'AUDITOR')) return (
+    <div className="page">
+      <PageHeader title="Raporlar" />
+      <div className="rounded-md border border-border bg-surface">
+        <Empty icon="lock" title="Raporlar rolünüze açık değil">Raporları Yönetici, Satınalma ve Denetçi rolleri görür. <Link to="/islerim">İşlerim'e dön</Link></Empty>
+      </div>
+    </div>
+  );
+  return <ReportsContent />;
+}
+
+function ReportsContent() {
   const y = new Date().getFullYear();
   const [p, setP] = useState({ from: `${y}-01-01`, to: todayLocal() });
   const [q, setQ] = useState(p);

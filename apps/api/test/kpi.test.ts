@@ -16,8 +16,15 @@ describe('yönetim göstergeleri', () => {
     const r = await h.call('auditor', 'GET', '/api/v1/reports/summary?from=2026-10-01&to=2026-10-31');
     expect(r.status).toBe(200);
     const by = Object.fromEntries(r.body.indicators.map((i: any) => [i.key, i]));
-    // Tahsis edilmemiş fatura açık uyumsuzluktur.
-    expect(by.invoice_exception_rate).toMatchObject({ status: 'OK', values: [{ numerator: '1', denominator: '1', ratio: '100.0' }] });
+    // Düzeltme dalgası (Y2): kaldırılan işlevlerin göstergeleri (fatura istisna oranı, sipariş açık taahhüdü) raporda ve CSV'de yok;
+    // veri silinmez (önce invoice_exception_rate 1/1 bekleniyordu). Diğer göstergeler aynen.
+    expect(by.invoice_exception_rate).toBeUndefined();
+    expect(by.open_commitment).toBeUndefined();
+    expect(Object.keys(by).sort()).toEqual(['automation_reliability', 'contract_coverage', 'renewal_discipline', 'savings', 'supplier_incidents']);
+    const csvText = (await h.call('auditor', 'GET', '/api/v1/reports/summary.csv?from=2026-10-01&to=2026-10-31')).raw.toString('utf8');
+    expect(csvText).not.toContain('Fatura istisna oranı');
+    expect(csvText).not.toContain('Açık taahhüt');
+    expect(csvText).toContain('Sözleşme kapsamı');
     expect(by.savings).toMatchObject({ status: 'NO_DATA' }); // onaylı baz yok
     expect(by.savings.note).toContain('en pahalı teklif');
     expect(by.automation_reliability.status).toBe('NO_DATA');
@@ -46,14 +53,15 @@ describe('rapor önbelleği (Faz 7 performans)', () => {
   beforeAll(async () => { c = await makeHarness({ reportCacheSeconds: 120 }); });
   afterAll(async () => { await c.close(); });
   const url = '/api/v1/reports/summary?from=2025-03-01&to=2025-03-31';
-  const den = (r: any) => r.body.indicators.find((i: any) => i.key === 'invoice_exception_rate').values[0].denominator;
+  // Düzeltme dalgası (Y2): fatura istisna oranı rapordan çıktı; önbellek bayatlığı olay göstergesinin paydasıyla (dönemdeki olay sayısı) sınanır.
+  const den = (r: any) => r.body.indicators.find((i: any) => i.key === 'supplier_incidents').values[0].denominator;
 
   it('aynı kapsam paylaşır ve veri anını söyler; fresh yeniden hesaplar; farklı şirket kapsamı paylaşmaz; her görüntüleme denetimde', async () => {
     const before = (await c.owner.query(`SELECT count(*)::int AS n FROM audit_events WHERE action = 'report.viewed' AND tenant_id = $1`, [c.world.tenantA])).rows[0].n;
     const a = await c.call('auditor', 'GET', url);
-    const inv = await c.call('finance', 'POST', '/api/v1/invoices', { body: { companyId: c.world.companyA1.id, supplierId: c.world.suppliers.s1, kind: 'INVOICE', invoiceNo: `RC${randomUUID().slice(0, 8)}`,
-      issueDate: '2025-03-10', currency: 'TRY', lines: [{ description: 'Hizmet', quantity: '1', unit: 'ay', unitPrice: '10', netAmount: '10.00' }] } });
-    expect(inv.status).toBe(201);
+    const inc = await c.call('finance', 'POST', '/api/v1/incidents', { body: { supplierId: c.world.suppliers.s1, category: 'SLA', severity: 'LOW', title: 'Gecikmeli müdahale',
+      description: 'Önbellek sınaması için sentetik olay.', occurredOn: '2025-03-10' }, headers: { 'idempotency-key': randomUUID() } });
+    expect(inc.status).toBe(201);
     // Finans ile denetçinin şirket kapsamı aynı (A1): önbellekteki sonuç, eski veri anıyla.
     const b = await c.call('finance', 'GET', url);
     expect(b.body.dataAsOf).toBe(a.body.dataAsOf);

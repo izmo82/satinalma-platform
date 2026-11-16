@@ -86,7 +86,10 @@ test('raporlar: tanım ve kaynakla göstergeler; CSV aynı yetkiyle iner (UX13)'
   await login(page, 'ferda.finans@example.test');
   await page.getByRole('link', { name: 'Raporlar' }).click();
   await expect(page.getByRole('heading', { name: 'Raporlar' })).toBeVisible();
-  await expect(page.getByText('Fatura istisna oranı')).toBeVisible();
+  // Düzeltme dalgası (Y2): fatura istisna oranı ve açık taahhüt (kaldırılan işlevler) gösterilmez; diğer göstergeler aynen.
+  await expect(page.getByText('Sözleşme kapsamı')).toBeVisible();
+  await expect(page.getByText('Fatura istisna oranı')).toHaveCount(0);
+  await expect(page.getByText('Açık taahhüt')).toHaveCount(0);
   await expect(page.getByText(/en pahalı teklif farkı tasarruf diye raporlanmaz/)).toBeVisible();
   await expect(page.getByText(/veri anı/).first()).toBeVisible();
   const download = page.waitForEvent('download');
