@@ -221,7 +221,8 @@ describe('T37 arşiv sözleşmesi', () => {
     const inv = await invoice('1', '750');
     await allocate(inv.id, { contractVersionId: cv, quantity: '1', amount: inv.net });
     const d = (await call('finance', 'GET', `/api/v1/invoices/${inv.id}`)).body;
-    expect(d.check.issues).toEqual([expect.objectContaining({ code: 'CONTRACT_SIGNATURE_UNRESOLVED', severity: 'REVIEW', ownerRole: 'LEGAL' })]);
+    // Düzeltme dalgası (Y3): sorumlu rol API'de v2 koduyla (önce eski 'LEGAL').
+    expect(d.check.issues).toEqual([expect.objectContaining({ code: 'CONTRACT_SIGNATURE_UNRESOLVED', severity: 'REVIEW', ownerRole: 'PROCUREMENT' })]);
     expect(d.invoice.legalStatus).toBe('RECEIVED');
     expect(d.status).toBe('NEEDS_EXCEPTION');
     expect((await approve(inv.id)).body.error.code).toBe('exception_required');
@@ -395,7 +396,8 @@ describe('v2: korunan ERP aktarımı, arşiv sözleşmesi bulgusu ve toplu kontr
     const inv = await invoice('1', '750');
     await allocate(inv.id, { contractVersionId: cv, quantity: '1', amount: inv.net });
     const d = (await call('finance', 'GET', `/api/v1/invoices/${inv.id}`)).body;
-    expect(d.check.issues).toEqual([expect.objectContaining({ code: 'CONTRACT_SIGNATURE_UNRESOLVED', severity: 'REVIEW', ownerRole: 'LEGAL' })]);
+    // Düzeltme dalgası (Y3): sorumlu rol API'de v2 koduyla (önce eski 'LEGAL').
+    expect(d.check.issues).toEqual([expect.objectContaining({ code: 'CONTRACT_SIGNATURE_UNRESOLVED', severity: 'REVIEW', ownerRole: 'PROCUREMENT' })]);
     expect(d.invoice.legalStatus).toBe('RECEIVED');
     expect(d.status).toBe('NEEDS_EXCEPTION');
   });

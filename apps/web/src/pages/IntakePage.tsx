@@ -86,7 +86,7 @@ function ResultView({ r }: { r: Result }) {
       {r.supplier && (
         <Banner tone={['SELLER_IS_OWN_COMPANY', 'IDENTITY_REVIEW_REQUIRED', 'MATCHED_RESTRICTED'].includes(r.supplier.outcome) ? 'warn' : 'info'} title={r.supplier.message}
           action={r.supplier.supplierId ? <Link className="btn btn-sm" to={`/tedarikciler/${r.supplier.supplierId}`}>Tedarikçiyi aç</Link> : undefined}>
-          {r.supplier.nameMismatch && 'Belgedeki ünvan kayıtlı ünvandan farklı; ana veri incelemesi açıldı. '}
+          {r.supplier.nameMismatch && 'Belgedeki ünvan kayıtlı ünvandan farklı; tedarikçi kaydı incelemesi açıldı. '}
           {r.supplier.bankChangeRequestId && 'Belgede kayıtlı olmayan IBAN okundu; banka bilgisi değiştirilmedi, doğrulama görevi açıldı. '}
           {r.supplier.suggestions.length > 0 && `Benzer isimli kayıtlar (yalnız öneri): ${r.supplier.suggestions.map((s) => s.legalName).join(', ')}.`}
         </Banner>

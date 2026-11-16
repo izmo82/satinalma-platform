@@ -146,7 +146,7 @@ function ExceptionsPanel({ d, reload }: { d: Detail; reload: () => Promise<void>
       <div className="panel-head"><h2>Kaynak bulma istisnaları</h2>
         {d.can.requestException && !f && !['CONTRACTING', 'CANCELLED', 'NO_AWARD'].includes(d.project.status) && <Button size="sm" variant="outline" className="ml-auto" onClick={() => setF({ kind: 'SINGLE_SOURCE', reason: '', supplierId: '' })}>İstisna iste</Button>}</div>
       <div className="panel-body grid gap-3">
-        {!d.exceptions.length && !f && <p className="text-sm text-ink-muted">Tek kaynak, acil alım, iptal veya sonuçsuz kapanış gerekçeyle istenir ve onay politikasına göre onaylanır.</p>}
+        {!d.exceptions.length && !f && <p className="text-sm text-ink-muted">Tek kaynak, acil alım, iptal veya sonuçsuz kapanış gerekçeyle istenir; talep edenden farklı bir Satınalma kullanıcısı onaylar.</p>}
         {f && (
           <form className="grid gap-2" onSubmit={(e) => { e.preventDefault(); void a.run(() => api(`/api/v1/projects/${d.project.id}/exceptions`, { method: 'POST',
             json: { kind: f.kind, reason: f.reason, supplierId: f.kind === 'SINGLE_SOURCE' ? f.supplierId : null } }), `${EX_KIND[f.kind]} istisnası onaya gönderildi.`).then(() => setF(null)); }}>
@@ -302,7 +302,7 @@ function RoundPanel({ d, reload }: { d: Detail; reload: () => Promise<void> }) {
             </div>
           </div>
         )}
-        {round?.status === 'PENDING_APPROVAL' && !round.approval && round.requestedByMe && <Banner tone="neutral" icon="lock" title="Yayını siz başlattınız">Görev ayrılığı gereği onayı başka bir satınalma yöneticisi verir.</Banner>}
+        {round?.status === 'PENDING_APPROVAL' && !round.approval && round.requestedByMe && <Banner tone="neutral" icon="lock" title="Yayını siz başlattınız">Görev ayrılığı gereği onayı başka bir Satınalma kullanıcısı verir.</Banner>}
         {round?.status === 'OPEN' && d.can.approvePublish && (
           <div className="grid gap-2 border-t border-border pt-3">
             <Field label="Erken kapanış gerekçesi">{(p) => <textarea className="input" rows={2} {...p} value={note} onChange={(e) => setNote(e.target.value)} />}</Field>
@@ -598,7 +598,7 @@ function Decision({ d, reload }: { d: Detail; reload: () => Promise<void> }) {
                   <Button variant="outline" disabled={a.busy} onClick={() => void a.run(() => api(`/api/v1/awards/${open.id}/decision`, { method: 'POST', json: { approve: false, note } }), 'Öneri geri gönderildi.')}>Geri gönder</Button>
                 </div>
               </div>
-            ) : open.proposedByMe ? <Banner tone="neutral" icon="lock" title="Bu öneriyi siz yaptınız">Görev ayrılığı gereği onayı başka bir satınalma yöneticisi verir.</Banner> : null}
+            ) : open.proposedByMe ? <Banner tone="neutral" icon="lock" title="Bu öneriyi siz yaptınız">Görev ayrılığı gereği onayı başka bir Satınalma kullanıcısı verir.</Banner> : null}
           </div>
         </section>
       )}

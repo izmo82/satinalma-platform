@@ -77,7 +77,8 @@ async function load(tx: Tx, requestId: string, lock: boolean) {
   r.plan = v2Plan(r.plan);
   const decisions = (await tx.query<{ stepNo: number; role: string; decision: 'APPROVE' | 'REJECT'; note: string | null; decidedBy: string; decidedByName: string; decidedAt: Date }>(
     `SELECT d.step_no AS "stepNo", d.role, d.decision, d.note, d.decided_by AS "decidedBy", u.display_name AS "decidedByName", d.decided_at AS "decidedAt"
-     FROM approval_decisions d JOIN users u ON u.id = d.decided_by WHERE d.request_id = $1 ORDER BY d.step_no`, [requestId])).rows;
+     FROM approval_decisions d JOIN users u ON u.id = d.decided_by WHERE d.request_id = $1 ORDER BY d.step_no`, [requestId])).rows
+    .map((d) => ({ ...d, role: v2Role(d.role) })); // eski kararların rolü v2 koduyla gösterilir (Y3)
   return { r, decisions, progress: approvalProgress(r.plan.steps, decisions, r.requested_by) };
 }
 

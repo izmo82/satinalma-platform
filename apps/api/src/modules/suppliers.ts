@@ -110,7 +110,7 @@ export async function resolveSeller(
     await openTask(tx, ctx, {
       companyId: null, kind: 'SUPPLIER_CANDIDATE_APPROVAL', entityType: 'supplier', entityId: supplierId,
       title: 'Aday tedarikçi onay bekliyor', reason: 'Belgedeki satıcı kiracıda kayıtlı değil; aday kayıt açıldı.',
-      nextAction: 'Kimlik ve kanıtı inceleyip ana veri onayı verin.', assigneeRole: 'MASTER_DATA',
+      nextAction: 'Kimlik ve kanıtı inceleyip kayıt onayı verin.', assigneeRole: 'MASTER_DATA',
       dedupeKey: `supplier:${supplierId}:activation`,
     });
   } else {
@@ -254,7 +254,7 @@ export async function resolveIdentity(tx: Tx, ctx: TenantContext, supplierId: st
   await openTask(tx, ctx, {
     companyId: null, kind: 'SUPPLIER_CANDIDATE_APPROVAL', entityType: 'supplier', entityId: supplierId,
     title: 'Aday tedarikçi onay bekliyor', reason: 'Kimlik doğrulandı; ana veri onayı gerekiyor.',
-    nextAction: 'Kanıtı inceleyip ana veri onayı verin.', assigneeRole: 'MASTER_DATA', dedupeKey: `supplier:${supplierId}:activation`,
+    nextAction: 'Kanıtı inceleyip kayıt onayı verin.', assigneeRole: 'MASTER_DATA', dedupeKey: `supplier:${supplierId}:activation`,
   });
   await audit(tx, ctx, 'supplier.identity.resolved', 'supplier', supplierId, {}, body.rationale);
   return { mergedInto: null };

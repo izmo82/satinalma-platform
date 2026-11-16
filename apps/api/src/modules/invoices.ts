@@ -6,7 +6,7 @@ import {
 import type { TenantContext, Tx } from '../db.ts';
 import { audit } from '../audit.ts';
 import { nextCode } from '../codes.ts';
-import { closeTasks, openTask, rederiveTaskDepartments } from '../tasks.ts';
+import { closeTasks, openTask, rederiveTaskDepartments, v2Role } from '../tasks.ts';
 import { ApiError, conflict, forbidden, notFound, unprocessable } from '../errors.ts';
 import { ErpTimeout, erpAdapter } from '../erp/adapter.ts';
 import { criticalBlocks } from './supplierEval.ts';
@@ -470,7 +470,9 @@ async function evaluate(tx: Tx, invoiceId: string) {
   for (const c of cvIds) { const s = await contractState(tx, c, invoiceId); if (s) contracts.push(s); }
   const tolerances = (await tx.query<ToleranceRule>(`${TOLERANCE_SQL} WHERE currency = $1`, [inv.currency])).rows;
   const advanceBalance = inv.advance_invoice_id ? (await tx.query<{ v: string | null }>(ADVANCE_SQL, [inv.advance_invoice_id, invoiceId])).rows[0]!.v ?? '0' : '0';
-  const check = checkInvoice(checkInput(inv, lines, allocations, poLines, contracts, tolerances, advanceBalance));
+  const raw = checkInvoice(checkInput(inv, lines, allocations, poLines, contracts, tolerances, advanceBalance));
+  // Sorumlu rol v2 koduyla döner (düzeltme dalgası Y3: alan kuralları eski rol kodlarını taşır; ekran ve API ham eski kod göstermez).
+  const check = { ...raw, issues: raw.issues.map((x) => ({ ...x, ownerRole: v2Role(x.ownerRole) })) };
   // Parmak izi, istisnanın dayandığı sipariş kalemi durumunu da kapsar: sipariş fiyatı/miktarı veya kabul değişirse istisna eskir.
   const fingerprint = sha(JSON.stringify({ a: allocations, o: inv.advance_offset, i: check.issues.map((x) => [x.code, x.lineNo ?? null]),
     p: [...poLines].sort((x, y) => x.poLineId.localeCompare(y.poLineId)).map((x) => [x.poLineId, x.orderedQty, x.unitPrice, x.receivedQty, x.invoicedQty, x.poStatus]),

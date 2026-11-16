@@ -119,7 +119,7 @@ export interface SupplierOption { id: string; legalName: string; status: string;
 export function supplierPickHint(o: SupplierOption | undefined): string | undefined {
   if (!o) return undefined;
   const status = supplierStatus[o.status]?.text ?? o.status;
-  if (o.identityVerified === false) return `${status} · vergi kimliği doğrulanmadı; ödeme için ana veri onayı gerekir.`;
+  if (o.identityVerified === false) return `${status} · vergi kimliği doğrulanmadı; tedarikçi kayıt onayı gerekir.`;
   return `${status}${o.taxIdTail ? ` · ${o.taxIdTail}` : ''}`;
 }
 

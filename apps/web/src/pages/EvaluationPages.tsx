@@ -102,7 +102,7 @@ export function AssessmentPage() {
             <div className="panel-body grid gap-2">{d.assessment.residual ? <p className="text-sm">{d.assessment.residual.reason}<span className="block text-ink-subtle">{d.assessment.residual.acceptedBy} · {fmtDateTime(d.assessment.residual.acceptedAt)}</span></p>
               : d.assessment.status !== 'REVIEWED' ? <p className="text-sm text-ink-muted">İnceleme tamamlandıktan sonra risk sahibi kabul eder.</p>
                 : d.can.acceptRisk && !d.assessment.createdByMe ? <ResidualForm initial={d.inherent.level} onSubmit={(b) => a.run(() => api(`/api/v1/assessments/${d.assessment.id}/residual`, { method: 'POST', json: b }), 'Kalan risk kabul edildi.')} busy={a.busy} />
-                  : <p className="text-sm text-ink-muted">Kalan riski, değerlendirmeyi açan kişi dışında güvenlik veya satınalma yöneticisi kabul eder.</p>}
+                  : <p className="text-sm text-ink-muted">Kalan riski, değerlendirmeyi açan kişi dışında bir Satınalma veya Departman kullanıcısı kabul eder.</p>}
               <p className="text-sm text-ink-subtle">Belgesiz indirim yok: içsel riskin altına inmek için değerlendiricinin kabul ettiği, kanıt belgesi eklenmiş ve süresi geçmemiş en az bir kontrol gerekir.</p></div></section>
           <section className="panel"><div className="panel-head"><h2>Sonuç</h2></div>
             <div className="panel-body grid gap-2"><p><Tag label={OUTCOME[d.outcome]} /> {d.complianceRate !== null && <span className="tabular text-sm text-ink-muted">uyum %{d.complianceRate} (yanıtlara göre, bilgi amaçlı)</span>}</p>

@@ -442,7 +442,7 @@ export async function requestDigitalValidation(tx: Tx, ctx: TenantContext, cvId:
     await openTask(tx, ctx, {
       companyId: cv.company_id, kind: 'ESIGN_VALIDATION_BLOCKED', entityType: 'contract_version', entityId: cvId,
       title: `E-imza doğrulanamadı: ${cv.title}`, reason: 'E-imza doğrulama servisi yapılandırılmadı. Görsel e-imza işareti doğrulama sayılmaz.',
-      nextAction: 'Doğrulayıcı entegrasyonu tamamlanana kadar hukuk yetkilisi karar verir veya istisna talep edilir.',
+      nextAction: 'Doğrulayıcı entegrasyonu tamamlanana kadar Satınalma karar verir veya istisna talep edilir.',
       assigneeRole: 'LEGAL', dedupeKey: `sig:${cvId}:esign-blocked`,
     });
     await audit(tx, ctx, 'signature.digital_validation.blocked', 'contract_version', cvId, { requirementId });

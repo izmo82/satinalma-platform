@@ -94,7 +94,9 @@ test('sözleşme: ihbar son günü bitişe değil ihbar kuralına göre; görev 
   await page.getByRole('tab', { name: 'Koşullar ve ihbar' }).click();
   await expect(page.getByText('30 Eki 2026')).toBeVisible();
   await expect(page.getByText(/önceki iş günü 30\.10\.2026/)).toBeVisible();
-  await expect(page.getByText(/Hukuk doğruladı/)).toBeVisible();
+  // Düzeltme dalgası (Y3): doğrulama etiketi v2 dilinde (Hukuk rolü yok; doğrulayan ikinci Satınalma kullanıcısı). Önce /Hukuk doğruladı/.
+  await expect(page.getByText(/^Doğrulandı · /)).toBeVisible();
+  await expect(page.getByText(/Hukuk doğruladı/)).toHaveCount(0);
   await page.getByRole('tab', { name: 'Yükümlülükler' }).click();
   await expect(page.getByRole('heading', { name: 'Yıllık sızma testi raporu' })).toBeVisible();
   await expect(page.getByText(/Sahipsiz/).first()).toBeVisible();

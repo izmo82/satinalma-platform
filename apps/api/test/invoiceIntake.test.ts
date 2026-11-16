@@ -58,7 +58,8 @@ describe('e-Fatura XML → fatura (deterministik)', () => {
     expect(codes).toEqual(expect.arrayContaining(['TAX_LINE_MISMATCH', 'PAYABLE_MISMATCH']));
     const inv = (await call('finance', 'GET', `/api/v1/invoices/${up.body.invoice.invoiceId}`)).body;
     expect(inv.check.canApprove).toBe(false);
-    expect(inv.check.issues.find((x: any) => x.code === 'TAX_LINE_MISMATCH').ownerRole).toBe('FINANCE');
+    // Düzeltme dalgası (Y3): sorumlu rol API'de v2 koduyla (önce eski 'FINANCE').
+    expect(inv.check.issues.find((x: any) => x.code === 'TAX_LINE_MISMATCH').ownerRole).toBe('PROCUREMENT');
   });
 
   it('tevkifatlı fatura: ödenecek = net + KDV − tevkifat', async () => {

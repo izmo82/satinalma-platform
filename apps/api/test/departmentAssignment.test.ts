@@ -254,3 +254,13 @@ describe('I5 "Eşleşti" tahsis kontrolünden türer', () => {
     expect(items.find((x: any) => x.id === exact).matched).toBe(true);
   });
 });
+
+describe('Y3 API yanıtlarında eski rol kodu yok', () => {
+  it('fatura bulgularının sorumlu rolü v2 kodudur', async () => {
+    const inv = await h.call('legal', 'POST', '/api/v1/invoices', { body: { companyId: h.world.companyA1.id, supplierId: h.world.suppliers.s1, kind: 'INVOICE', invoiceNo: `ROL${randomUUID().slice(0, 8)}`,
+      issueDate: '2026-10-20', currency: 'TRY', lines: [{ description: 'Hizmet', quantity: '1', unit: 'adet', unitPrice: '100', netAmount: '100.00' }] } });
+    const d = (await h.call('legal', 'GET', `/api/v1/invoices/${inv.body.id}`)).body;
+    expect(d.check.issues.length).toBeGreaterThan(0);
+    for (const i of d.check.issues) expect(['ADMIN', 'PROCUREMENT', 'DEPARTMENT_USER', 'AUDITOR'], i.code).toContain(i.ownerRole);
+  });
+});

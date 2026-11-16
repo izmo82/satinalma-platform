@@ -107,7 +107,7 @@ function NewAssessment({ supplierId, onCancel }: { supplierId: string; onCancel:
           {FACTORS.map(([k, l]) => <Field key={k} label={l}>{(p) => <select className="input" {...p} value={factors[k]} onChange={(e) => setFactors({ ...factors, [k]: e.target.value })}>
             {LMH.map(([v, t]) => <option key={v} value={v}>{t}</option>)}</select>}</Field>)}
         </fieldset>
-        {!published.length && !t.loading && <Banner tone="warn" title="Yayımlanmış anket şablonu yok">Önce güvenlik veya satınalma yöneticisi şablon yayımlamalı.</Banner>}
+        {!published.length && !t.loading && <Banner tone="warn" title="Yayımlanmış anket şablonu yok">Önce bir Satınalma veya Departman kullanıcısı şablon yayımlamalı.</Banner>}
         <div className="flex gap-2"><Button type="submit">Başlat</Button><Button type="button" variant="ghost" onClick={onCancel}>Vazgeç</Button></div>
         {err && <Banner tone="danger" title={err} />}
       </div>

@@ -115,10 +115,10 @@ function TermsTab({ d, reload }: { d: Lc; reload: () => Promise<void> }) {
                 <dt>Kaynak</dt><dd>{t.sourceRef}</dd>
               </dl>
               <p className="text-sm text-ink-subtle">Giren: {t.enteredBy} · {fmtDateTime(t.enteredAt)}</p>
-              {t.verifiedBy ? <p><Tag label={{ text: `Hukuk doğruladı · ${t.verifiedBy}`, tone: 'human', icon: 'stamp' }} /> <span className="text-sm text-ink-subtle">{fmtDateTime(t.verifiedAt)}</span></p> : (
-                <Banner tone="warn" title="Hukuk doğrulaması bekleniyor" action={d.can.verify && !t.enteredByMe ? <Button size="sm" disabled={a.busy}
+              {t.verifiedBy ? <p><Tag label={{ text: `Doğrulandı · ${t.verifiedBy}`, tone: 'human', icon: 'stamp' }} /> <span className="text-sm text-ink-subtle">{fmtDateTime(t.verifiedAt)}</span></p> : (
+                <Banner tone="warn" title="İkinci kişi doğrulaması bekleniyor" action={d.can.verify && !t.enteredByMe ? <Button size="sm" disabled={a.busy}
                   onClick={() => void a.run(() => api(`/api/v1/contract-terms/${t.id}/verify`, { method: 'POST' }), 'Koşullar doğrulandı; ihbar uyarıları planlandı.')}><Icon name="stamp" />Doğrula</Button> : undefined}>
-                  {t.enteredByMe ? 'Koşulları siz girdiniz; görev ayrılığı gereği başka bir hukuk yetkilisi doğrular.' : 'Doğrulanmadan ihbar uyarıları planlanmaz ve yenileme kararı verilemez.'}
+                  {t.enteredByMe ? 'Koşulları siz girdiniz; görev ayrılığı gereği başka bir Satınalma kullanıcısı doğrular.' : 'Doğrulanmadan ihbar uyarıları planlanmaz ve yenileme kararı verilemez.'}
                 </Banner>
               )}
             </div>
@@ -136,7 +136,7 @@ function TermsTab({ d, reload }: { d: Lc; reload: () => Promise<void> }) {
           </section>
         )}
         {editing && canEdit && <TermsForm initial={t} onCancel={t ? () => setEditing(false) : undefined}
-          onSave={(body) => a.run(() => api(`/api/v1/contract-versions/${d.contract.id}/terms`, { method: 'POST', json: body }), t ? 'Yeni revizyon kaydedildi; hukuk doğrulaması bekleniyor.' : 'Koşullar kaydedildi; hukuk doğrulaması bekleniyor.').then((ok) => { if (ok) setEditing(false); })}
+          onSave={(body) => a.run(() => api(`/api/v1/contract-versions/${d.contract.id}/terms`, { method: 'POST', json: body }), t ? 'Yeni revizyon kaydedildi; ikinci kişi doğrulaması bekleniyor.' : 'Koşullar kaydedildi; ikinci kişi doğrulaması bekleniyor.').then((ok) => { if (ok) setEditing(false); })}
           busy={a.busy} />}
         {a.feedback}
       </div>
@@ -153,7 +153,7 @@ function TermsTab({ d, reload }: { d: Lc; reload: () => Promise<void> }) {
               <div><h3 className="mb-1.5 text-base">Uyarılar</h3>
                 <ul className="grid gap-1">{d.notice.reminders.map((m) => <li key={m.offset} className="flex justify-between gap-2 text-sm"><span>{m.offset} gün önce</span>
                   <span className="tabular">{fmtDate(m.date)}{m.due ? ' · zamanı geldi' : ''}</span></li>)}</ul>
-                {!t?.verifiedBy && <p className="mt-1 text-sm text-warn">Hukuk doğrulaması olmadan planlanmaz.</p>}
+                {!t?.verifiedBy && <p className="mt-1 text-sm text-warn">Koşullar doğrulanmadan planlanmaz.</p>}
               </div>
             </>}
           </div>
@@ -173,7 +173,7 @@ function TermsTab({ d, reload }: { d: Lc; reload: () => Promise<void> }) {
                 <Field label="Gerekçe" hint="Performans, risk ve mali durumu birlikte değerlendirin.">{(p) => <textarea className="input" rows={3} {...p} value={rationale} onChange={(e) => setRationale(e.target.value)} />}</Field>
                 <Button type="submit" className="justify-self-start" disabled={a.busy}><Icon name="stamp" />Kararı kaydet</Button>
               </form>
-            ) : <p className="text-ink-muted">{t?.verifiedBy ? 'Kararı satınalma yöneticisi verir.' : 'Karar, doğrulanmış koşullara bağlanır.'}</p>}
+            ) : <p className="text-ink-muted">{t?.verifiedBy ? 'Kararı Satınalma verir.' : 'Karar, doğrulanmış koşullara bağlanır.'}</p>}
           </div>
         </section>
       </aside>
@@ -224,7 +224,7 @@ function TermsForm({ initial, onSave, onCancel, busy }: { initial: Terms | null;
         </div> : <span />}
         {f.hasNotice && <div className="col-span-full"><Field label="Son gün hafta sonu veya tatile denk gelirse">{(p) => <select className="input" {...p} value={f.nonWorkingDay} onChange={(e) => set('nonWorkingDay', e.target.value)}>
           <option value="PREVIOUS_WORKING_DAY">Önceki iş günü (sözleşmede böyle yazıyorsa)</option><option value="AS_IS">Takvim günü olduğu gibi</option></select>}</Field></div>}
-        <div className="col-span-full"><Field label="Kaynak madde ve sayfa" hint="Tarihlerin ve bedelin dayandığı yer; doğrulayan hukuk bunu kontrol eder.">{(p) => <input className="input" {...p} value={f.sourceRef} onChange={(e) => set('sourceRef', e.target.value)} />}</Field></div>
+        <div className="col-span-full"><Field label="Kaynak madde ve sayfa" hint="Tarihlerin ve bedelin dayandığı yer; doğrulayan kişi bunu kontrol eder.">{(p) => <input className="input" {...p} value={f.sourceRef} onChange={(e) => set('sourceRef', e.target.value)} />}</Field></div>
         {initial && <div className="col-span-full"><Field label="Değişiklik gerekçesi" hint="Bedel, süre veya ihbar değişikliği yeniden doğrulama ister.">{(p) => <textarea className="input" rows={2} {...p} value={f.changeReason} onChange={(e) => set('changeReason', e.target.value)} />}</Field></div>}
         <div className="col-span-full flex gap-2"><Button type="submit" disabled={busy}>Kaydet</Button>{onCancel && <Button type="button" variant="outline" onClick={onCancel}>Vazgeç</Button>}</div>
       </div>
@@ -240,12 +240,12 @@ function ObligationsTab({ d, reload }: { d: Lc; reload: () => Promise<void> }) {
   const active = d.obligations.filter((o) => !o.retired);
   return (
     <div className="grid gap-5">
-      <p className="max-w-[75ch] text-ink-muted">Her yükümlülüğün sahibi, tarihi ve kanıtı vardır. Görev son tarihten 14 gün önce açılır; sahibi olmayan yükümlülük satınalma yöneticisine düşer. Dönem kaydı değişmez.</p>
+      <p className="max-w-[75ch] text-ink-muted">Her yükümlülüğün sahibi, tarihi ve kanıtı vardır. Görev son tarihten 14 gün önce açılır; sahibi olmayan yükümlülük Satınalma'ya düşer. Dönem kaydı değişmez.</p>
       {!active.length && !adding && <div className="rounded-md border border-border bg-surface"><Empty icon="file" title="Yükümlülük yok">Bakım ziyareti, güvenlik raporu, lisans sayımı veya eğitim gibi tarihli taahhütleri ekleyin.</Empty></div>}
       {active.map((o) => (
         <section key={o.id} className="panel">
           <div className="panel-head flex-wrap"><h2 className="min-w-0 flex-1">{o.title}</h2>
-            <span className="text-sm text-ink-subtle">{o.counterparty === 'SUPPLIER' ? 'Tedarikçi yükümlülüğü' : 'Alıcı yükümlülüğü'} · {RECUR[o.recurrence as keyof typeof RECUR]} · {o.ownerRole ? roleLabel[o.ownerRole] ?? o.ownerRole : 'Sahipsiz → satınalma yöneticisi'}</span></div>
+            <span className="text-sm text-ink-subtle">{o.counterparty === 'SUPPLIER' ? 'Tedarikçi yükümlülüğü' : 'Alıcı yükümlülüğü'} · {RECUR[o.recurrence as keyof typeof RECUR]} · {o.ownerRole ? roleLabel[o.ownerRole] ?? o.ownerRole : 'Sahipsiz → Satınalma'}</span></div>
           <div className="panel-body grid gap-2">
             <p className="text-sm text-ink-subtle">Kaynak: {o.sourceRef}{o.evidenceRequired ? ' · kanıt zorunlu' : ''}</p>
             <ul className="grid gap-1.5">{o.periods.slice(0, 8).map((p) => {

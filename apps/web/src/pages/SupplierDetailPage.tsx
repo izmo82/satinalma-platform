@@ -21,6 +21,9 @@ interface Supplier {
   bankChangeRequests: { id: string; proposedIban: string; source: string; status: string; createdAt: string }[];
 }
 
+/** Tedarikçi onay türleri (v1 rol adları yerine v2 dilinde, düzeltme dalgası Y3). */
+const APPROVAL_KIND: Record<string, string> = { MASTER_DATA: 'Kayıt onayı', SECURITY: 'Güvenlik onayı', FINANCE: 'Banka ve ödeme bilgisi onayı' };
+
 export function SupplierDetailPage() {
   const { id } = useParams();
   const { me } = useSession();
@@ -38,7 +41,7 @@ export function SupplierDetailPage() {
   const approvedNow = s.approvals.some((a) => a.kind === 'MASTER_DATA' && a.decision === 'APPROVED' && a.rowVersion === s.rowVersion);
   const blockers: string[] = [];
   if (!s.taxId || s.identityReviewRequired) blockers.push('Vergi kimliği doğrulanmadı');
-  if (!approvedNow) blockers.push('Bağımsız ana veri onayı yok');
+  if (!approvedNow) blockers.push('Bağımsız kayıt onayı yok');
   if (s.isCreator) blockers.push('Bu adayı siz açtınız; görev ayrılığı gereği onay ve aktivasyon başka bir yetkiliye aittir');
 
   async function run(fn: () => Promise<unknown>, ok: string) {
@@ -62,7 +65,7 @@ export function SupplierDetailPage() {
           <div className="btn-row">
             {(!s.taxId || s.identityReviewRequired) && <button className="btn" onClick={() => setDialog('identity')}>Kimliği doğrula</button>}
             <button className="btn btn-danger" onClick={() => setDialog('reject')} disabled={s.isCreator}>Reddet</button>
-            <button className="btn" onClick={() => setDialog('approve')} disabled={s.isCreator || approvedNow}>Ana veri onayı ver</button>
+            <button className="btn" onClick={() => setDialog('approve')} disabled={s.isCreator || approvedNow}>Kayıt onayı ver</button>
             <button className="btn btn-primary" disabled={blockers.length > 0}
               onClick={() => void run(() => api(`/api/v1/suppliers/${s.id}/activate`, { method: 'POST', json: { expectedRowVersion: s.rowVersion } }), 'Tedarikçi aktifleştirildi.')}>
               Aktifleştir
@@ -139,7 +142,7 @@ export function SupplierDetailPage() {
         <div className="panel-head"><h2 id="onaylar">Onay geçmişi</h2></div>
         <div className="panel-body">
           {s.approvals.length ? <ol className="timeline">{s.approvals.map((a, i) => (
-            <li key={i}><strong>{a.kind === 'MASTER_DATA' ? 'Ana veri' : a.kind} · {a.decision === 'APPROVED' ? 'Onaylandı' : 'Reddedildi'}</strong>
+            <li key={i}><strong>{APPROVAL_KIND[a.kind] ?? 'Onay'} · {a.decision === 'APPROVED' ? 'Onaylandı' : 'Reddedildi'}</strong>
               <span>{a.rationale}</span><span className="subtle">{a.approverName} · {fmtDateTime(a.at)} · kayıt sürümü {a.rowVersion}</span></li>))}</ol>
             : <p className="muted">Henüz onay yok.</p>}
         </div>
@@ -149,7 +152,7 @@ export function SupplierDetailPage() {
       {(dialog === 'approve' || dialog === 'reject') && (
         <DecisionDialog kind={dialog} onClose={() => setDialog(null)} onSubmit={(rationale) => run(() => api(`/api/v1/suppliers/${s.id}/approvals`, {
           method: 'POST', json: { kind: 'MASTER_DATA', decision: dialog === 'approve' ? 'APPROVED' : 'REJECTED', rationale, expectedRowVersion: s.rowVersion } }),
-          dialog === 'approve' ? 'Ana veri onayı kaydedildi.' : 'Aday reddedildi; belge ve gerekçe korunur.')} />
+          dialog === 'approve' ? 'Kayıt onayı kaydedildi.' : 'Aday reddedildi; belge ve gerekçe korunur.')} />
       )}
       {dialog === 'identity' && (
         <IdentityDialog onClose={() => setDialog(null)} onSubmit={(b) => run(() => api(`/api/v1/suppliers/${s.id}/identity`, {
@@ -163,7 +166,7 @@ function DecisionDialog({ kind, onClose, onSubmit }: { kind: 'approve' | 'reject
   const [rationale, setRationale] = useState('');
   const [err, setErr] = useState<string | null>(null);
   return (
-    <Modal title={kind === 'approve' ? 'Ana veri onayı' : 'Adayı reddet'} onClose={onClose} footer={<>
+    <Modal title={kind === 'approve' ? 'Kayıt onayı' : 'Adayı reddet'} onClose={onClose} footer={<>
       <button className="btn" onClick={onClose}>Vazgeç</button>
       <button className={kind === 'approve' ? 'btn btn-primary' : 'btn btn-danger'} onClick={() => { if (rationale.trim().length < 3) { setErr('Gerekçe yazın.'); return; } void onSubmit(rationale.trim()); }}>
         {kind === 'approve' ? 'Onayı kaydet' : 'Reddet'}</button></>}>

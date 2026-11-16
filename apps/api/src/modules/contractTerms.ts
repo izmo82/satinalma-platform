@@ -157,7 +157,7 @@ export async function processNoticeReminder(tx: Tx, ctx: TenantContext, jobId: s
 export async function decideRenewal(tx: Tx, ctx: TenantContext, cvId: string, body: { decision: 'RENEW' | 'TERMINATE' | 'RENEGOTIATE'; rationale: string }) {
   const cv = await loadCv(tx, cvId);
   const t = await latestTerms(tx, cvId);
-  if (!t || !t.verified_by) throw conflict('terms_not_verified', 'Yenileme kararı hukukça doğrulanmış koşullara bağlanır.');
+  if (!t || !t.verified_by) throw conflict('terms_not_verified', 'Yenileme kararı doğrulanmış koşullara bağlanır.');
   if (body.rationale.trim().length < 10) throw unprocessable('rationale_required', 'Karar gerekçesi gerekli (en az 10 karakter).');
   const d = (await tx.query<{ id: string }>(`INSERT INTO renewal_decisions (tenant_id, company_id, contract_version_id, terms_id, decision, rationale, decided_by)
     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`, [ctx.tenantId, cv.company_id, cvId, t.id, body.decision, body.rationale.trim(), ctx.userId])).rows[0]!;
@@ -227,7 +227,7 @@ export async function processObligationDue(tx: Tx, ctx: TenantContext, jobId: st
   await openTask(tx, ctx, {
     companyId: o.company_id, kind: 'contract_obligation', entityType: 'contract_version', entityId: cv.id,
     title: `Yükümlülük ${trDate(j.payload.dueDate)}: ${o.title}`,
-    reason: `${cv.title} · ${o.source_ref}${o.owner_role ? '' : ' · Sahipsiz yükümlülük: satınalma yöneticisine düştü.'}`,
+    reason: `${cv.title} · ${o.source_ref}${o.owner_role ? '' : ' · Sahipsiz yükümlülük: Satınalma\'ya düştü.'}`,
     nextAction: 'Yerine getirildiyse kanıtıyla kaydedin; getirilmediyse kaçırıldı olarak işaretleyin.',
     assigneeRole: o.owner_role ?? 'PROCUREMENT_MANAGER', dueAt: new Date(`${j.payload.dueDate}T23:59:59+03:00`), dedupeKey: `obl:${o.id}:${j.payload.dueDate}`,
   });

@@ -247,7 +247,7 @@ export function SignatureWorkspace() {
         </div>
       </>} />
 
-      {drawer === 'exception' && <ExceptionDrawer s={s} onClose={() => setDrawer(null)} onSubmit={(b) => act(() => api(`/api/v1/contract-versions/${cv.id}/signature-exceptions`, { method: 'POST', json: b }), 'İstisna talebi kaydedildi; başka bir hukuk yetkilisinin kararı gerekir.').then((ok) => { if (ok) setDrawer(null); })} />}
+      {drawer === 'exception' && <ExceptionDrawer s={s} onClose={() => setDrawer(null)} onSubmit={(b) => act(() => api(`/api/v1/contract-versions/${cv.id}/signature-exceptions`, { method: 'POST', json: b }), 'İstisna talebi kaydedildi; başka bir Satınalma kullanıcısının kararı gerekir.').then((ok) => { if (ok) setDrawer(null); })} />}
       {drawer === 'custody' && <CustodyDrawer onClose={() => setDrawer(null)} onSubmit={(b) => act(() => api(`/api/v1/contract-versions/${cv.id}/original-custody-events`, { method: 'POST', json: b }), 'Fiziksel asıl kaydı eklendi.').then((ok) => { if (ok) setDrawer(null); })} />}
       {drawer === 'requirements' && <RequirementsDrawer s={s} etag={r.etag} onClose={() => setDrawer(null)} onDone={async (msg) => { setFeedback({ tone: 'info', title: msg }); await r.reload(); setDrawer(null); }} />}
       {drawer === 'version' && <VersionDrawer s={s} etag={r.etag} onClose={() => setDrawer(null)} />}
