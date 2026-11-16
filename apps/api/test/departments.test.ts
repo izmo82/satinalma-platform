@@ -415,5 +415,12 @@ describe('v2 departman alanı ve uçları (Görev 3)', () => {
     const notes = (await h.call('legal', 'GET', '/api/v1/notifications')).body.items.map((x: any) => x.id);
     expect(notes).toContain(legacy);
     expect(notes).not.toContain(scoped);
+    // Departmansız kayıt yalnız tüm departmanı görenlere: bölüm kullanıcısı eski kaydın görevini ne listede ne bildirimde görür.
+    expect((await h.call('techEval', 'GET', '/api/v1/tasks?view=all')).body.items.map((x: any) => x.id)).not.toContain(legacy);
+    expect((await h.call('techEval', 'GET', '/api/v1/notifications')).body.items.map((x: any) => x.id)).not.toContain(legacy);
+    // Departmansız kayda bağlı olmayan görev (tedarikçi) bölüm kullanıcısına rolle açık kalır.
+    const supplierTask = (await withTenant(h.pool, sysCtx(), (tx) => openTask(tx, sysCtx(), { companyId: null, kind: 'dept_test', entityType: 'supplier',
+      entityId: h.world.suppliers.s1, title: 'Tedarikçi görevi', reason: 'Sentetik', nextAction: 'İnceleyin', assigneeRole: 'DEPARTMENT_USER', dedupeKey: `dept-test:sup:${randomUUID()}` }))).id;
+    expect((await h.call('techEval', 'GET', '/api/v1/tasks?view=all')).body.items.map((x: any) => x.id)).toContain(supplierTask);
   });
 });
