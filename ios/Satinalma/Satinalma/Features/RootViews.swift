@@ -133,6 +133,7 @@ struct ProfileView: View {
                     LabeledContent("Şirket kapsamı", value: (me.companies ?? []).map(\.name).joined(separator: ", ").ifEmpty("Şirket erişimi yok"))
                 }
             }
+            if let err = session.lastError { Section { Text(err).foregroundStyle(.red) } }
             Section("Cihaz") {
                 LabeledContent("Bağlantı", value: session.isOnline ? "Çevrimiçi" : "Çevrimdışı")
                 LabeledContent("Bekleyen taslak", value: "\(drafts.visible(userId: session.me?.user.id, tenantId: session.tenantId).filter { $0.state != .uploaded }.count)")
