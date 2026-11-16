@@ -6,7 +6,9 @@ struct RootView: View {
 
     var body: some View {
         Group {
-            if session.me != nil { MainTabs() } else { LoginView() }
+            // Kimlik etkin kiracıya bağlı: kiracı değişince sekmeler, gezinme yığınları ve profil sayfası yeniden kurulur;
+            // her liste yeni kiracı için yüklenir, eski kiracının satırı ya da açık ayrıntı ekranı kalmaz.
+            if let me = session.me { MainTabs().id(me.activeTenantId) } else { LoginView() }
         }
         .task { await session.refresh() }
         // Bağlantı gelince bekleyen taslaklar yüklenir; sunucu aynı dosyayı tekilleştirir.
