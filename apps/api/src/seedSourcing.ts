@@ -197,9 +197,16 @@ export async function ensurePurchasingDemo(owner: pg.Pool, app: App, auth: DevAu
     (await call('ferda.finans', 'POST', '/api/v1/invoices', { companyId: cv.company_id, supplierId, kind: 'INVOICE', invoiceNo, issueDate: '2026-10-20', currency: 'TRY',
       lines: l.map((x) => ({ ...x, netAmount: (Number(x.quantity) * Number(x.unitPrice)).toFixed(2), taxRate: '20' })) })).id as string;
   const a = await inv(s1, 'ANB2026000101', [{ description: 'Ekim bakım hizmeti', quantity: '1', unit: 'ay', unitPrice: '50000' }]);
-  await call('ferda.finans', 'PUT', `/api/v1/invoices/${a}/allocations`, { allocations: [{ lineNo: 1, poLineId: lines[1]!.poLineId, contractVersionId: null, quantity: '1', amount: '50000.00' }] });
+  // v2 Faz 1 (D93): yeni sipariş bağı kurulamaz; demo faturaların eski (v1) sipariş bağı kayıt olarak yazılır, PUT aynı bağı korur
+  // (değerlendirme, departman ve denetim izi API yolundan). Fatura onaylanmaz, reddedilmez.
+  const legacyLink = async (invoiceId: string, poLineId: string, quantity: string, amount: string) => {
+    await owner.query(`INSERT INTO invoice_allocations (tenant_id, company_id, invoice_id, line_no, po_line_id, contract_version_id, quantity, amount, created_by)
+      SELECT tenant_id, company_id, id, 1, $2, NULL, $3, $4, created_by FROM invoices WHERE id = $1`, [invoiceId, poLineId, quantity, amount]);
+    await call('ferda.finans', 'PUT', `/api/v1/invoices/${invoiceId}/allocations`, { allocations: [{ lineNo: 1, poLineId, contractVersionId: null, quantity, amount }] });
+  };
+  await legacyLink(a, lines[1]!.poLineId, '1', '50000.00');
   const b = await inv(s1, 'ANB2026000102', [{ description: 'Yedek disk 2 TB', quantity: '8', unit: 'adet', unitPrice: '4000' }]);
-  await call('ferda.finans', 'PUT', `/api/v1/invoices/${b}/allocations`, { allocations: [{ lineNo: 1, poLineId: lines[0]!.poLineId, contractVersionId: null, quantity: '8', amount: '32000.00' }] });
+  await legacyLink(b, lines[0]!.poLineId, '8', '32000.00');
   await inv(s2, 'EGE2026000877', [{ description: 'Acil saha desteği', quantity: '6', unit: 'saat', unitPrice: '2500' }]);
   log('Faz 4 demo: sipariş, kabuller ve 3 fatura oluşturuldu (onay kullanıcıda).');
 }

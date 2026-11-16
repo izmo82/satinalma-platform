@@ -399,6 +399,11 @@ export async function setAllocations(tx: Tx, ctx: TenantContext, invoiceId: stri
   if (!inv) throw notFound();
   if (await finalDecision(tx, invoiceId)) throw conflict('invoice_decided', 'Karar verilmiş faturanın tahsisi değişmez; iade/alacak belgesi kullanın.');
   for (const a of b.allocations) if (!isDecimal(a.quantity) || !isDecimal(a.amount) || Number(a.amount) <= 0) throw unprocessable('invalid_number', 'Tahsis miktarı ve tutarı pozitif olmalı.');
+  // v2 Faz 1 (D93): siparişler kalktı; yeni sipariş bağı kurulamaz. Faturanın mevcut eski (v1) sipariş bağı korunabilir veya kaldırılabilir.
+  const linked = new Set((await tx.query<{ id: string }>(`SELECT DISTINCT po_line_id AS id FROM invoice_allocations WHERE invoice_id = $1 AND po_line_id IS NOT NULL`, [invoiceId])).rows.map((r) => r.id));
+  if (b.allocations.some((a) => a.poLineId && !linked.has(a.poLineId))) {
+    throw unprocessable('po_link_removed', 'Siparişler kaldırıldı; faturaya yeni sipariş bağı eklenemez. Satırı bir sözleşmeye tahsis edin; mevcut eski sipariş bağı korunabilir veya kaldırılabilir.');
+  }
   if (b.advanceInvoiceId) {
     const adv = (await tx.query(`SELECT 1 FROM invoices i WHERE i.id = $1 AND i.kind = 'ADVANCE' AND i.supplier_id = $2 AND i.company_id = $3 AND ${APPROVED}`, [b.advanceInvoiceId, inv.supplier_id, inv.company_id])).rowCount;
     if (!adv) throw unprocessable('advance_invalid', 'Mahsup için aynı şirket ve tedarikçinin onaylı avans faturası seçilmeli.');
@@ -641,9 +646,13 @@ export async function getInvoice(tx: Tx, ctx: TenantContext, id: string) {
   const final = decisions.find((d: any) => d.kind === 'APPROVAL' || d.kind === 'REJECTION') ?? null;
   const exception = [...decisions].reverse().find((d: any) => d.kind === 'EXCEPTION_APPROVAL') ?? null;
   if (!final) await syncIssueTasks(tx, ctx, id, inv.invoiceNo, inv.companyId, inv.supplierId, inv.supplierStatus, check.issues);
+  // v2 Faz 1 (D93): fatura onayı ve istisnası kalktı. Yanıt kaldırılan bulguları (sipariş/kabul, tolerans, sözleşmesiz istisna;
+  // REMOVED_ISSUE_CODES) taşımaz, onay bayrağı her zaman false. Hesap ve parmak izi değişmez (eski kayıtlar için doğru kalır).
+  const issues = check.issues.filter((x) => !REMOVED_ISSUE_CODES.includes(x.code));
+  const shown = { ...check, issues, canApprove: false, needsException: false };
   return {
-    invoice: inv, lines, allocations, decisions, intake, erp, check, contracts, poLines, ublCheck,
-    status: final ? final.kind : check.canApprove ? (check.needsException ? (exception?.checkHash === fingerprint ? 'EXCEPTION_APPROVED' : 'NEEDS_EXCEPTION') : 'READY') : 'BLOCKED',
+    invoice: inv, lines, allocations, decisions, intake, erp, check: shown, contracts, poLines, ublCheck,
+    status: final ? final.kind : issues.some((x) => x.severity === 'BLOCK') ? 'BLOCKED' : 'OPEN',
     exceptionCurrent: exception ? exception.checkHash === fingerprint : null,
     /** Onay isteği If-Match ile bu değeri gönderir (görülen kontrol sonucu). */
     checkFingerprint: fingerprint,

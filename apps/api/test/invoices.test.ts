@@ -6,6 +6,7 @@ import { processJobs } from '../src/worker.ts';
 import { withTenant, type TenantContext } from '../src/db.ts';
 import { approveInvoice, createPo, recordReceipt } from '../src/modules/invoices.ts';
 import { fakeErp, makeHarness } from './harness.ts';
+import { legacyLinkPut } from './legacyLinks.ts';
 
 // Faz 4 kabul testleri (T13–T18, T37) gerçek PostgreSQL + RLS üzerinde. Tüm veri sentetik; ERP bağdaştırıcısı yalnız testte.
 let h: Awaited<ReturnType<typeof makeHarness>>;
@@ -43,8 +44,10 @@ async function invoice(qty: string, price = '1000', kind = 'INVOICE', extra: Rec
   expect(r.status, JSON.stringify(r.body)).toBe(201);
   return { id: r.body.id as string, net };
 }
+// v2 Faz 1 (D93): PUT yeni sipariş bağını reddeder (po_link_removed); eski (v1) sipariş bağlı fatura durumu legacyLinkPut ile kurulur.
 const allocate = (id: string, a: { poLineId?: string | null; contractVersionId?: string | null; quantity: string; amount: string }, extra: Record<string, unknown> = {}) =>
-  call('finance', 'PUT', `/api/v1/invoices/${id}/allocations`, { allocations: [{ lineNo: 1, poLineId: a.poLineId ?? null, contractVersionId: a.contractVersionId ?? null, quantity: a.quantity, amount: a.amount }], ...extra });
+  legacyLinkPut(h.owner, (b) => call('finance', 'PUT', `/api/v1/invoices/${id}/allocations`, b), id,
+    { allocations: [{ lineNo: 1, poLineId: a.poLineId ?? null, contractVersionId: a.contractVersionId ?? null, quantity: a.quantity, amount: a.amount }], ...extra });
 // Onay incelenen sürüme bağlıdır (If-Match = kontrol parmak izi).
 const approve = async (id: string, who: Who = 'finance2') => {
   const fp = (await call(who, 'GET', `/api/v1/invoices/${id}`)).body.checkFingerprint as string;
@@ -399,7 +402,9 @@ describe('v2: korunan ERP aktarımı, arşiv sözleşmesi bulgusu ve toplu kontr
     // Düzeltme dalgası (Y3): sorumlu rol API'de v2 koduyla (önce eski 'LEGAL').
     expect(d.check.issues).toEqual([expect.objectContaining({ code: 'CONTRACT_SIGNATURE_UNRESOLVED', severity: 'REVIEW', ownerRole: 'PROCUREMENT' })]);
     expect(d.invoice.legalStatus).toBe('RECEIVED');
-    expect(d.status).toBe('NEEDS_EXCEPTION');
+    // v2 Faz 1 (D93/D95): fatura onayı ve istisnası kalktı; detay istisna/onay durumu dönmez (önce 'NEEDS_EXCEPTION').
+    expect(d.status).toBe('OPEN');
+    expect(d.check.canApprove).toBe(false);
   });
 
   it('toplu kontrol, onaylanmamış her faturada tek tek kontrolle aynı sonucu verir (sipariş olmadan)', async () => {
