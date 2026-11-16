@@ -12,7 +12,7 @@ interface CvRow {
   id: string; company_id: string; family_id: string; version_no: number; document_version_id: string; stage: string;
   signature_method: SignatureMethod; original_custody_required: boolean; superseded_by_id: string | null;
   signature_finalized_at: Date | null; signature_finalized_status: string | null; row_version: number; sha256: string;
-  page_count: number | null; title: string; department_id: string | null; department_name: string | null;
+  page_count: number | null; title: string; department_id: string | null; department_name: string | null; created_by: string;
 }
 
 export const etagOf = (cv: { id: string; row_version: number }) => `"cv-${cv.id}-${cv.row_version}"`;
@@ -230,6 +230,7 @@ export async function getSignatureStatus(tx: Tx, ctx: TenantContext, cvId: strin
       originalCustodyRequired: cv.original_custody_required, documentVersionId: cv.document_version_id, documentSha256: cv.sha256,
       pageCount: cv.page_count, supersededById: cv.superseded_by_id, finalizedAt: cv.signature_finalized_at,
       finalizedStatus: cv.signature_finalized_status, etag: etagOf(cv), departmentId: cv.department_id, departmentName: cv.department_name,
+      createdBy: cv.created_by,
     },
     status,
     requirements: reqs.rows.map((r) => ({ id: r.id, partyId: r.party_id, partyName: r.display_name, partyRole: r.party_role, signerRole: r.signer_role,
@@ -491,6 +492,10 @@ export async function finalizeSignatureReview(tx: Tx, ctx: TenantContext, cvId: 
   const cv = await loadCv(tx, cvId, true);
   assertCurrent(cv, ifMatch);
   if (cv.signature_finalized_at) throw conflict('already_finalized', 'İmza kontrolü bu sürüm için zaten kesinleşti.');
+  // D95a: imza kesinleştirmesi Satınalma'ya geçti; görev ayrılığı sürer — sözleşme sürümünü ekleyen kendi kaydını kesinleştiremez.
+  if (cv.created_by === ctx.userId) {
+    throw new ApiError(403, 'segregation_of_duties', 'Görev ayrılığı: sözleşmeyi ekleyen kişi imza kontrolünü kesinleştiremez; başka bir Satınalma kullanıcısı kesinleştirir.');
+  }
   const s = await getSignatureStatus(tx, ctx, cvId);
   if (!s.status.canFinalize) {
     throw unprocessable('unresolved_requirements', 'Gerekli imza kanıtları tamamlanmadı.', {

@@ -31,7 +31,7 @@ interface Status {
   exceptions: { id: string; requirementIds: string[]; status: string; expiresAt: string; reason: string; residualRisk: string; scope: string; decidedAt: string | null; expired: boolean }[];
   custodyEvents: { status: string; location: string; occurred_at: string; recorded_at: string }[];
   parties: { id: string; role: string; displayName: string }[];
-  can: Record<'review' | 'defineRequirement' | 'analyze' | 'custody' | 'requestException' | 'decideException' | 'finalize' | 'manage', boolean>;
+  can: Record<'review' | 'defineRequirement' | 'analyze' | 'custody' | 'requestException' | 'decideException' | 'finalize' | 'manage', boolean> & { finalizeOwnRecord?: boolean };
 }
 
 const blockerCodeText: Record<string, string> = {
@@ -242,6 +242,7 @@ export function SignatureWorkspace() {
                 İmza kontrolünü kesinleştir</button>
             )}
           </div>
+          {s.can.finalizeOwnRecord && !readOnly && <p className="subtle" style={{ marginTop: 6 }}>Bu sözleşmeyi siz eklediniz; imza kontrolünü başka bir Satınalma kullanıcısı kesinleştirir (görev ayrılığı).</p>}
           {s.can.finalize && !readOnly && !s.status.canFinalize && <p id="finalize-hint" className="subtle" style={{ marginTop: 6 }}>Kesinleştirme için yukarıdaki eksikler giderilmeli veya yetkili istisna onaylanmalı.</p>}
         </div>
       </>} />

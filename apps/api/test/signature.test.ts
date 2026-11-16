@@ -47,9 +47,10 @@ async function review(cv: string, requirementId: string, decision: string, obser
     body: { requirementId, decision, observedMark, rationale: 'Kaynak sayfa 2 incelendi', documentSha256: st.body.contractVersion.documentSha256, page: 2 } });
 }
 
-const finalize = async (cv: string, etag?: string) => {
+// D95a (v2 düzeltme dalgası): sözleşmeyi ekleyen (legal) kesinleştiremez; kesinleştirme ikinci bir Satınalma kullanıcısıdır (legal2).
+const finalize = async (cv: string, etag?: string, who: Who = 'legal2') => {
   const st = await status(cv);
-  return h.call('legal', 'POST', `/api/v1/contract-versions/${cv}/finalize-signature-review`, { headers: etag === '' ? {} : { 'if-match': etag ?? (st.headers.etag as string) } });
+  return h.call(who, 'POST', `/api/v1/contract-versions/${cv}/finalize-signature-review`, { headers: etag === '' ? {} : { 'if-match': etag ?? (st.headers.etag as string) } });
 };
 
 const openTasks = async (cv: string, kind?: string) =>
@@ -171,6 +172,23 @@ describe('İnsan incelemesi ve kesinleştirme', () => {
     // v2 (D93): Satınalma kesinleştirir; kesinleştirme yetkisi olmayan rol bölüm kullanıcısıdır.
     const r = await h.call('techEval', 'POST', `/api/v1/contract-versions/${cv}/finalize-signature-review`, { headers: { 'if-match': st.headers.etag as string } });
     expect(r.status).toBe(403);
+  });
+
+  it('D95a görev ayrılığı: ekleyen ve inceleyen kesinleştiremez; ikinci Satınalma kullanıcısı kesinleştirir', async () => {
+    const { cv, reqIds } = await setupContract();
+    // legal sözleşmeyi ekledi ve iki imzayı inceledi.
+    await review(cv, reqIds.BUYER!, 'IMAGE_CONFIRMED', 'FULL_SIGNATURE');
+    await review(cv, reqIds.SUPPLIER!, 'IMAGE_CONFIRMED', 'FULL_SIGNATURE');
+    const self = await finalize(cv, undefined, 'legal');
+    expect(self.status).toBe(403);
+    expect(self.body.error.code).toBe('segregation_of_duties');
+    expect((await h.owner.query(`SELECT signature_finalized_at FROM contract_versions WHERE id = $1`, [cv])).rows[0].signature_finalized_at).toBeNull();
+    // Ekleyen için ekran düğmesi de kapalı; ikinci kişi için açık.
+    expect((await status(cv)).body.can.finalize).toBe(false);
+    expect((await status(cv, 'legal2')).body.can.finalize).toBe(true);
+    const other = await finalize(cv, undefined, 'legal2');
+    expect(other.status).toBe(200);
+    expect(other.body.finalizedStatus).toBe('COMPLETE');
   });
 });
 

@@ -481,7 +481,9 @@ export async function buildApp(deps: AppDeps) {
         review: can(ctx.roles, 'signature.review'), defineRequirement: can(ctx.roles, 'signature.requirement.define'),
         analyze: can(ctx.roles, 'signature.analyze'), custody: can(ctx.roles, 'signature.custody.record'),
         requestException: can(ctx.roles, 'signature.exception.request'), decideException: can(ctx.roles, 'signature.exception.decide'),
-        finalize: can(ctx.roles, 'signature.finalize'), manage: can(ctx.roles, 'contract.manage'),
+        // D95a: ekleyen kesinleştiremez (sunucu da 403 segregation_of_duties döner).
+        finalize: can(ctx.roles, 'signature.finalize') && status.contractVersion.createdBy !== ctx.userId, manage: can(ctx.roles, 'contract.manage'),
+        finalizeOwnRecord: can(ctx.roles, 'signature.finalize') && status.contractVersion.createdBy === ctx.userId,
       } };
     });
     return reply.header('ETag', s.contractVersion.etag).send(s);
