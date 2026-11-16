@@ -1,8 +1,28 @@
 # Uygulama durumu ve izlenebilirlik
 
-Son güncelleme: 2026-10-28 · Kapsam kaynağı: `project-specs/procurement/` (paket v1.2)
+Son güncelleme: 2026-11-16 (v2 bölümü; v1 tabloları 2026-10-28 – 2026-11-10) · Kapsam kaynağı: v2 için `docs/analiz-v2.md`, v1 için `project-specs/procurement/` (paket v1.2)
 Durum anahtarı: **PASS** = bu oturumda çalıştırılıp geçti · **FAIL** · **BLOCKED** = dış bağımlılık yok · **NOT_RUN** = test yazılmadı/çalıştırılmadı · **PARTIAL** = kısmen uygulandı (açıklama zorunlu).
 Kalan P0 varken ürün "tamamlandı" sayılmaz. Şu an **Faz 0–2 + Faz 3 (imza çekirdeği, koşullar/ihbar/yükümlülük/yenileme) + Faz 4 (sipariş, kabul, fatura tahsisi, eşleştirme, vergi, limit, ERP aktarım sözleşmesi) + Faz 5 çekirdeği (tedarikçi değerlendirmesi, olay, karne, AI yönetişimi, raporlar; gerçek AI sağlayıcısı BLOCKED) + Faz 7 yayın hazırlığı (saklama/hukuki saklama/iki kişi onaylı imha, kiracı dışa aktarımı, ERP mutabakatı ve CSV gidiş-dönüş, performans ölçümü, yedek/geri yükleme ve migration tatbikatı, sır/SAST/DAST taraması) + Faz 6 (native iOS: tarama, şifreli çevrimdışı taslak, kabul, olay, imza incelemesi, fatura onayı; web erişilebilirlik denetimi; sürüm/tekrar korumalı yazma) + sağlayıcıdan bağımsız dağıtım + web arayüzünün yeniden tasarımı (Tailwind 4 + shadcn/ui, "Mor Istampa")** uygulandı.
+
+## v2 yeniden kapsam (D93, 2026-11-16)
+
+Kapsam kaynağı artık `docs/analiz-v2.md` (ONAYLANDI 16.11.2026); `project-specs/procurement/` değişmedi, çeliştiği yerde v2 analizi geçerli. Aşağıdaki v1 tabloları mevcut kodun durumunu göstermeye devam eder; v2 fazları kapandıkça bu bölüm güncellenir. Bu bölümde yazan hiçbir şey kod değişikliği değildir.
+
+| Faz | İçerik | Durum | Not |
+|---|---|---|---|
+| 0 | Figma ekran tasarımları + tasarım onayı | TAMAM (kullanıcı onayı, 2026-11-16) | 33 çerçeve çizildi (web 23, portal 6, iOS 4). 2026-11-16'da 31 çerçeve ekran görüntüsüyle tek tek görüldü (01 ve 02 önceki oturumda), bulunan kusurlar düzeltilip yeniden bakıldı. Kullanıcı tasarımları onayladı ("Onaylıyorum", D94). Dosya: https://www.figma.com/design/V6jh1q5ZK11eRhVeKgHe6O |
+| 1 | Sadeleştirme: roller, menü, departman alanı ve görünürlük, onaylı kaldırma listesi | NOT_RUN | İşlev envanteri `docs/envanter-faz1.md`. `v1` etiketi ve v2 dalı kullanıcı onayı bekliyor |
+| 2 | Entra: giriş, kapsam, eşitleme, onaycı ataması | NOT_RUN | Gerçek Entra kiracısı gerekir |
+| 3 | Sözleşme: ekleme akışı, taslak kütüphanesi, üç onay, hatırlatıcılar | NOT_RUN | |
+| 4 | Yapay zekâ: alan okuma, taslak karşılaştırma, hukuk ön incelemesi | NOT_RUN / BLOCKED | Gerçek sağlayıcı ücretli kaynak; kanal, bütçe ve KVKK kararı kullanıcıda |
+| 5 | Tedarikçi portalı: başvuru, belge, davet bağlantısıyla teklif, skor/risk | NOT_RUN | |
+| 6 | Yıllık risk değerlendirmesi, 5×5 matris, Excel içe/dışa aktarım | NOT_RUN | 26 soruluk şablon dosyası verilmedi; sorular yönetici ekranından girilebilir kurulacak |
+| 7 | Fatura eşleştirme, uyum denetimi, kural kataloğu | NOT_RUN | |
+| 8 | Oracle ERP: özellik başına uç nokta kartı | NOT_RUN / BLOCKED | Gerçek Oracle test ortamı yok; EBS varsayıldı, teyit bekliyor |
+
+Faz 0 Figma denetiminde düzeltilenler (2026-11-16): 07 sözleşme listesinde kırpılan ad sütunu ve taşan durum etiketi; 15 başvuru ekranında telefonun üstüne binen e-posta; 20 kullanıcı tablosunda kırpılan e-postalar; 09'da sütuna taşan taslak adı; P2'de tarihe değen anket adı; 10, 14 ve 18'de yüzdesiyle uyuşmayan ilerleme çubukları (100 puan dolu görünmüyordu); 02, 06, 08, 17, 23, P1, P2'de boş eylem kutusundan gelen fazla üst boşluk; 10'da yapay zekâ karşılaştırma sonucunun kural yeşiliyle basılması (nötr etikete çevrildi, "Three-Ink" kuralı); satınalma yöntemi adlarının analizle hizalanması ("Davetli teklif", "Tek kaynak"); 18 denetçi özetinin 06'daki kazanan gerekçesiyle çelişmesi; 22 entegrasyon özellik listesinin analiz 3.8 ile hizalanması (7 özellik); P1 örnek verisinin 15 ile tutarlılığı; P2'de tedarikçiye kritiklik girdisi yerine beklenen aksiyon (analiz 3.3 ve Karar 7); iOS onay ekranındaki bulgu özetinin web ile tutarlılığı.
+
+Faz 0'da bilinen açıklar (tasarım kararı, kusur değil): 08 "Tamamla ve doğrula" ekranı zorunlu alanların yalnız bir bölümünü örnekler (tür, sorumlu, imza tarihi, para birimi, KDV çizilmedi); 14 tedarikçi kartı özetinde prosedür envanter alanları (VPN, SLA, sorumlu ekip) ayrı sekmede varsayıldı, çizilmedi; Raporlar panosu ve Denetim izi için ayrı çerçeve yok; iOS sekme çubuğunda Projeler yok (mevcut iOS kapsamıyla aynı).
 
 ## Çalıştırılan kontroller (2026-10-28; BFF ve ortam yenilemesi 2026-11-04 Mac Studio'da yeniden koşuldu, macOS, Node 24.14, PostgreSQL 17 Docker, S3 emülatörü adobe/s3mock 4.6.0)
 
