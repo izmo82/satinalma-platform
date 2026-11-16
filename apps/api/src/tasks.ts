@@ -16,16 +16,29 @@ export interface TaskInput {
   severity?: 'NORMAL' | 'HIGH' | 'CRITICAL';
   dueAt?: Date | null;
   dedupeKey: string;
+  /** Görevin departmanı. Verilmezse bağlı kayıttan çözülür (proje, sözleşme, fatura, değerlendirme ve alt kayıtları); diğerlerinde boş. */
+  departmentId?: string | null;
 }
+
+/**
+ * Görev görünürlüğü (rol): kullanıcının rolüne atanmış görevler. Göç (D93) eski bölüm adımlarını DEPARTMENT_USER'a çevirdi;
+ * departmanı atanmamış eski kayıttaki bu görevleri hiçbir bölüm kullanıcısı açamaz. Onay motorundaki istisnanın aynısı:
+ * Satınalma bu görevleri de görür (departmanlı kayıtta görmez). `roles` SQL parametre yeri (ör. `$1`).
+ */
+export const taskRoleSql = (roles: string, t = 't') => `(${t}.assignee_role = ANY(${roles}::text[]) OR ('PROCUREMENT' = ANY(${roles}::text[])
+  AND ${t}.assignee_role = 'DEPARTMENT_USER' AND ${t}.department_id IS NULL AND app_task_departmental(${t}.entity_type)
+  AND app_task_department(${t}.entity_type, ${t}.entity_id) IS NULL))`;
 
 /** Aynı açık görev ikinci kez oluşmaz (BR12/SIG15). Var olanın id'sini döner. */
 export async function openTask(tx: Tx, ctx: TenantContext, t: TaskInput): Promise<{ id: string; created: boolean }> {
+  const departmentId = t.departmentId !== undefined ? t.departmentId
+    : (await tx.query<{ d: string | null }>(`SELECT app_task_department($1, $2) AS d`, [t.entityType, t.entityId])).rows[0]?.d ?? null;
   const ins = await tx.query<{ id: string }>(
-    `INSERT INTO tasks (tenant_id, company_id, kind, entity_type, entity_id, title, reason, next_action, assignee_role, severity, due_at, dedupe_key)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+    `INSERT INTO tasks (tenant_id, company_id, kind, entity_type, entity_id, title, reason, next_action, assignee_role, severity, due_at, dedupe_key, department_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
      ON CONFLICT (tenant_id, dedupe_key) WHERE status = 'OPEN' DO NOTHING RETURNING id`,
     [ctx.tenantId, t.companyId, t.kind, t.entityType, t.entityId, t.title, t.reason, t.nextAction, v2Role(t.assigneeRole),
-      t.severity ?? 'NORMAL', t.dueAt ?? null, t.dedupeKey],
+      t.severity ?? 'NORMAL', t.dueAt ?? null, t.dedupeKey, departmentId],
   );
   if (ins.rows[0]) return { id: ins.rows[0].id, created: true };
   const existing = await tx.query<{ id: string }>(

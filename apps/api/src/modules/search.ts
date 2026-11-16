@@ -1,6 +1,7 @@
 import { can, type Permission } from '@sp/domain';
 import type { TenantContext, Tx } from '../db.ts';
 import { notFound, unprocessable } from '../errors.ts';
+import { taskRoleSql } from '../tasks.ts';
 
 // Üst çubuk araması (04 §Bilgi mimarisi, 03 FR13 "kaynaklı arama"): yalnız kullanıcının okuma izni olan türler, satırlar RLS ile
 // süzülür (şirket kapsamı dışı kayıt hiç dönmez). Her sonuç neyle eşleştiğini söyler. Sayılar yalnız görünen sonuçlardır.
@@ -53,9 +54,9 @@ export async function notifications(tx: Tx, ctx: TenantContext) {
   // Bildirim metni görev başlığıdır (hassas içerik yok: belge metni/tutar ayrıntısı görev açıklamasında kalır).
   const items = (await tx.query(`SELECT t.id, t.title, t.entity_type AS "entityType", t.entity_id AS "entityId", t.severity, t.created_at AS "createdAt",
       ($3::timestamptz IS NULL OR t.created_at > $3) AS unread
-    FROM tasks t WHERE t.status = 'OPEN' AND t.assignee_role = ANY($1::text[]) AND (t.assignee_user_id IS NULL OR t.assignee_user_id = $2)
+    FROM tasks t WHERE t.status = 'OPEN' AND ${taskRoleSql('$1')} AND (t.assignee_user_id IS NULL OR t.assignee_user_id = $2)
     ORDER BY t.created_at DESC LIMIT 20`, [ctx.roles, ctx.userId, seen])).rows;
-  const unread = (await tx.query<{ n: number }>(`SELECT count(*)::int AS n FROM tasks t WHERE t.status = 'OPEN' AND t.assignee_role = ANY($1::text[])
+  const unread = (await tx.query<{ n: number }>(`SELECT count(*)::int AS n FROM tasks t WHERE t.status = 'OPEN' AND ${taskRoleSql('$1')}
     AND (t.assignee_user_id IS NULL OR t.assignee_user_id = $2) AND ($3::timestamptz IS NULL OR t.created_at > $3)`, [ctx.roles, ctx.userId, seen])).rows[0]!.n;
   return { items, unread, lastSeenAt: seen };
 }

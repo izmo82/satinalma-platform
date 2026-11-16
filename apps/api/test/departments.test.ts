@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { withTenant, type TenantContext } from '../src/db.ts';
 import { syntheticPdf } from '../src/devdata.ts';
+import { openTask } from '../src/tasks.ts';
 import { makeHarness } from './harness.ts';
 
 // v2 Faz 1 (D93): departman kapsamı RLS'de. Bölüm kullanıcısı yalnız kendi departmanının kayıtlarını görür; Yönetici, Satınalma
@@ -140,9 +141,9 @@ describe('v2 departman kapsamı (RLS)', () => {
 
   it('write_check', async () => {
     const before = (await h.owner.query<{ n: number }>(`SELECT count(*)::int AS n FROM projects WHERE tenant_id = $1`, [h.world.tenantA])).rows[0]!.n;
-    // API'de departman alanı henüz yok (Task 3): bölüm kullanıcısının açtığı kayıt kendi departmanında olmadığından RLS reddeder.
+    // Görev 3: departmansız kayıt bölüm kullanıcısı için API'de reddedilir (department_required); RLS ayrıca aşağıda sınanır.
     const r = await h.call('techEval', 'POST', '/api/v1/projects', { body: { companyId: h.world.companyA1.id, title: 'Başka departmana proje denemesi', category: 'Genel', lines, criteria } });
-    expect([403, 404, 409]).toContain(r.status);
+    expect([403, 404, 409, 422]).toContain(r.status);
     // Doğrudan SQL: başka departmana ekleme WITH CHECK'e takılır; başka departmanın projesi güncellenemez (USING gizler).
     const insert = (dep: string) => withTenant(h.pool, deptCtx([bt]), (tx) => tx.query(
       `INSERT INTO projects (tenant_id, company_id, code, title, category, owner_user_id, created_by, department_id) VALUES ($1,$2,$3,'RLS denemesi','Genel',$4,$4,$5)`,
@@ -225,5 +226,194 @@ describe('v2 departman kapsamı (RLS)', () => {
     expect(denied.status).toBe(403);
     expect(denied.body.error.code).toBe('approval_step');
     await h.owner.query(`UPDATE approval_policies SET status = 'RETIRED' WHERE tenant_id = $1 AND version_no = $2`, [h.world.tenantA, v]);
+  });
+});
+
+// v2 Faz 1 Görev 3: departman alanı API'de, departman uçları ve görev kapsamı. Bölüm kullanıcısı için departman zorunlu ve kendi
+// departmanlarından biri; tüm departmanı görenler için isteğe bağlı (boş = departmansız, yalnız onlara görünür).
+describe('v2 departman alanı ve uçları (Görev 3)', () => {
+  const projectBody = (extra: Record<string, unknown> = {}) => ({ companyId: h.world.companyA1.id, title: `Departman alanı ${randomUUID().slice(0, 4)}`, category: 'BT hizmetleri',
+    need: 'Sentetik', currency: 'TRY', budget: '1000.00', budgetVerified: false, lines, criteria, ...extra });
+  const deptOf = async (table: string, id: string) => (await h.owner.query<{ d: string | null }>(`SELECT department_id AS d FROM ${table} WHERE id = $1`, [id])).rows[0]!.d;
+  async function contractIn(dep: string | undefined) {
+    const up = await h.upload('legal', { name: 'd.pdf', mime: 'application/pdf', data: syntheticPdf([[`SENTETIK ${randomUUID()}`]]) },
+      { companyId: h.world.companyA1.id, kind: 'CONTRACT', title: `Departman sözleşmesi ${randomUUID().slice(0, 4)} (SENTETİK)` });
+    const c = await h.call('legal', 'POST', '/api/v1/contracts', { body: { title: `Departman sözleşmesi ${randomUUID().slice(0, 4)} (SENTETİK)`, documentVersionId: up.body.documentVersionId,
+      stage: 'EXECUTION', signatureMethod: 'NOT_REQUIRED', originalCustodyRequired: false, ...(dep ? { departmentId: dep } : {}),
+      parties: [{ role: 'BUYER', displayName: h.world.companyA1.name, legalEntityId: h.world.companyA1.id }], supplierId: h.world.suppliers.s1 } });
+    expect(c.status, JSON.stringify(c.body)).toBe(201);
+    return c.body as { familyId: string; contractVersionId: string };
+  }
+
+  it('create_requires_department', async () => {
+    const r = await h.call('techEval', 'POST', '/api/v1/projects', { body: projectBody() });
+    expect(r.status).toBe(422);
+    expect(r.body.error.code).toBe('department_required');
+    // Tüm departmanı gören (Satınalma) için isteğe bağlı: departmansız kayıt.
+    const p = await h.call('legal', 'POST', '/api/v1/projects', { body: projectBody() });
+    expect(p.status).toBe(201);
+    expect(await deptOf('projects', p.body.id)).toBeNull();
+    // Kiracıda olmayan departman reddedilir.
+    const unknown = await h.call('legal', 'POST', '/api/v1/projects', { body: projectBody({ departmentId: randomUUID() }) });
+    expect(unknown.status).toBe(422);
+    expect(unknown.body.error.code).toBe('department_unknown');
+    // Bölüm kullanıcısı kendi departmanıyla açar; detay ve listede departman görünür.
+    const own = await h.call('techEval', 'POST', '/api/v1/projects', { body: projectBody({ departmentId: bt }) });
+    expect(own.status).toBe(201);
+    expect(await deptOf('projects', own.body.id)).toBe(bt);
+    const d = (await h.call('techEval', 'GET', `/api/v1/projects/${own.body.id}`)).body.project;
+    expect(d).toMatchObject({ departmentId: bt, departmentName: 'Bilgi Teknolojileri' });
+    // Değerlendirme de departman alır; bölüm kullanıcısı departmansız başlatamaz.
+    const tpl = (await h.owner.query<{ id: string }>(`INSERT INTO questionnaire_templates (tenant_id, code, version, name, category, status, created_by)
+      VALUES ($1, $2, 1, 'Departman şablonu (sentetik)', 'Genel', 'PUBLISHED', $3) RETURNING id`, [h.world.tenantA, `DEP${randomUUID().slice(0, 6)}`, h.world.users.legal.id])).rows[0]!.id;
+    const factors = { dataSensitivity: 'LOW', accessLevel: 'LOW', criticality: 'LOW', substitutability: 'LOW', subcontractorDependence: 'LOW' };
+    const noDep = await h.call('techEval', 'POST', '/api/v1/assessments', { body: { supplierId: h.world.suppliers.s1, templateId: tpl, scope: 'Departman kapsamı', inherentFactors: factors } });
+    expect(noDep.status).toBe(422);
+    expect(noDep.body.error.code).toBe('department_required');
+    const a = await h.call('techEval', 'POST', '/api/v1/assessments', { body: { supplierId: h.world.suppliers.s1, templateId: tpl, scope: 'Departman kapsamı', inherentFactors: factors, departmentId: bt } });
+    expect(a.status, JSON.stringify(a.body)).toBe(201);
+    expect(await deptOf('supplier_assessments', a.body.id)).toBe(bt);
+    expect((await h.call('techEval', 'GET', `/api/v1/assessments/${a.body.id}`)).body.assessment).toMatchObject({ departmentId: bt, departmentName: 'Bilgi Teknolojileri' });
+    const listed = (await h.call('legal', 'GET', `/api/v1/suppliers/${h.world.suppliers.s1}/assessments?departmentId=${bt}`)).body.items;
+    expect(listed.map((x: any) => x.id)).toContain(a.body.id);
+    expect(listed.every((x: any) => x.departmentId === bt)).toBe(true);
+  });
+
+  it('dept_user_cannot_pick_foreign_department', async () => {
+    const before = (await h.owner.query<{ n: number }>(`SELECT count(*)::int AS n FROM projects WHERE tenant_id = $1`, [h.world.tenantA])).rows[0]!.n;
+    const r = await h.call('techEval', 'POST', '/api/v1/projects', { body: projectBody({ departmentId: ik }) });
+    expect(r.status).toBe(403);
+    expect(r.body.error.code).toBe('department_forbidden');
+    expect((await h.owner.query<{ n: number }>(`SELECT count(*)::int AS n FROM projects WHERE tenant_id = $1`, [h.world.tenantA])).rows[0]!.n).toBe(before);
+  });
+
+  it('list_filter_by_department', async () => {
+    const items = (await h.call('buyer', 'GET', `/api/v1/projects?departmentId=${bt}`)).body.items;
+    const ids = items.map((x: any) => x.id);
+    expect(ids).toContain(btProject);
+    expect(ids).not.toContain(ikProject);
+    expect(ids).not.toContain(nullProject);
+    expect(items.find((x: any) => x.id === btProject)).toMatchObject({ departmentId: bt, departmentName: 'Bilgi Teknolojileri' });
+    // Süzgeçsiz liste hepsini (departmansız dahil) döner.
+    const all = (await h.call('buyer', 'GET', '/api/v1/projects')).body.items;
+    expect(all.find((x: any) => x.id === nullProject)).toMatchObject({ departmentId: null, departmentName: null });
+    // Sözleşme: oluşturmada departman; liste süzgeci ve alanları.
+    const c = await contractIn(ik);
+    expect(await deptOf('contract_families', c.familyId)).toBe(ik);
+    const cl = (await h.call('legal', 'GET', `/api/v1/contracts?departmentId=${ik}`)).body;
+    expect(cl.items.map((x: any) => x.id)).toContain(c.contractVersionId);
+    expect(cl.items.every((x: any) => x.departmentId === ik)).toBe(true);
+    expect(cl.items.find((x: any) => x.id === c.contractVersionId)).toMatchObject({ departmentName: 'İnsan Kaynakları' });
+    expect((await h.call('legal', 'GET', `/api/v1/contracts?departmentId=${bt}`)).body.items.map((x: any) => x.id)).not.toContain(c.contractVersionId);
+    expect((await h.call('legal', 'GET', `/api/v1/contract-versions/${c.contractVersionId}/signature-status`)).body.contractVersion).toMatchObject({ departmentId: ik });
+  });
+
+  it('invoice_inherits_department_from_contract', async () => {
+    const ikC = await contractIn(ik);
+    const btC = await contractIn(bt);
+    const newInvoice = async () => {
+      const r = await h.call('finance', 'POST', '/api/v1/invoices', { body: { companyId: h.world.companyA1.id, supplierId: h.world.suppliers.s1, kind: 'INVOICE', invoiceNo: `DEP${randomUUID().slice(0, 8)}`,
+        issueDate: '2026-10-20', currency: 'TRY', lines: [{ description: 'Hizmet', quantity: '1', unit: 'adet', unitPrice: '100', netAmount: '100.00' },
+          { description: 'Hizmet 2', quantity: '1', unit: 'adet', unitPrice: '100', netAmount: '100.00' }] } });
+      expect(r.status, JSON.stringify(r.body)).toBe(201);
+      return r.body.id as string;
+    };
+    const alloc = (cv1: string, cv2: string) => [{ lineNo: 1, poLineId: null, contractVersionId: cv1, quantity: '1', amount: '100.00' },
+      { lineNo: 2, poLineId: null, contractVersionId: cv2, quantity: '1', amount: '100.00' }];
+    const inv = await newInvoice();
+    expect(await deptOf('invoices', inv)).toBeNull();
+    expect((await h.call('finance', 'PUT', `/api/v1/invoices/${inv}/allocations`, { body: { allocations: alloc(ikC.contractVersionId, ikC.contractVersionId) } })).status).toBe(200);
+    expect(await deptOf('invoices', inv)).toBe(ik);
+    expect((await h.call('finance', 'GET', `/api/v1/invoices/${inv}`)).body.invoice).toMatchObject({ departmentId: ik, departmentName: 'İnsan Kaynakları' });
+    expect((await h.call('finance', 'GET', `/api/v1/invoices?departmentId=${ik}`)).body.items.map((x: any) => x.id)).toContain(inv);
+    expect((await h.call('finance', 'GET', `/api/v1/invoices?departmentId=${bt}`)).body.items.map((x: any) => x.id)).not.toContain(inv);
+    // Farklı departmanlı iki sözleşme: tahmin yok, departman boş kalır.
+    const mixed = await newInvoice();
+    expect((await h.call('finance', 'PUT', `/api/v1/invoices/${mixed}/allocations`, { body: { allocations: alloc(ikC.contractVersionId, btC.contractVersionId) } })).status).toBe(200);
+    expect(await deptOf('invoices', mixed)).toBeNull();
+  });
+
+  it('admin_assigns_membership_departments', async () => {
+    // Departman listesi iç rollere açık; tedarikçiye kapalı.
+    const list = await h.call('techEval', 'GET', '/api/v1/departments');
+    expect(list.status).toBe(200);
+    expect(list.body.items).toEqual(expect.arrayContaining([{ id: bt, name: 'Bilgi Teknolojileri' }, { id: ik, name: 'İnsan Kaynakları' }]));
+    expect((await h.call('supplier1', 'GET', '/api/v1/departments')).status).toBe(403);
+    // Departman oluşturma yalnız Yönetici.
+    const name = `Finans ${randomUUID().slice(0, 4)}`;
+    expect((await h.call('buyer', 'POST', '/api/v1/departments', { body: { name } })).status).toBe(403);
+    const created = await h.call('tenantAdmin', 'POST', '/api/v1/departments', { body: { name } });
+    expect(created.status).toBe(201);
+    expect(created.body).toMatchObject({ name });
+    expect((await h.call('tenantAdmin', 'POST', '/api/v1/departments', { body: { name } })).status).toBe(409);
+    const ev = async (action: string, entityId: string) => (await h.owner.query(`SELECT 1 FROM audit_events WHERE tenant_id = $1 AND action = $2 AND entity_id = $3`, [h.world.tenantA, action, entityId])).rowCount;
+    expect(await ev('department.created', created.body.id)).toBe(1);
+    // Üyelik departmanları: Yönetici atar; başkası 403.
+    const target = h.world.users.security.id;
+    expect((await h.call('buyer', 'PUT', `/api/v1/memberships/${target}/departments`, { body: { departmentIds: [ik] } })).status).toBe(403);
+    const set = await h.call('tenantAdmin', 'PUT', `/api/v1/memberships/${target}/departments`, { body: { departmentIds: [ik, created.body.id] } });
+    expect(set.status, JSON.stringify(set.body)).toBe(200);
+    const stored = (await h.owner.query<{ d: string[] }>(`SELECT department_ids AS d FROM memberships WHERE tenant_id = $1 AND user_id = $2`, [h.world.tenantA, target])).rows[0]!.d;
+    expect([...stored].sort()).toEqual([ik, created.body.id].sort());
+    expect(await ev('membership.departments.set', target)).toBe(1);
+    // Başka kiracının departmanı reddedilir; başka kiracıdaki üyelik dokunulmaz (404).
+    const foreign = (await h.owner.query<{ id: string }>(`INSERT INTO departments (tenant_id, name) VALUES ($1, $2) RETURNING id`, [h.world.tenantB, `Yabancı ${randomUUID().slice(0, 4)}`])).rows[0]!.id;
+    const bad = await h.call('tenantAdmin', 'PUT', `/api/v1/memberships/${target}/departments`, { body: { departmentIds: [foreign] } });
+    expect(bad.status).toBe(422);
+    expect(bad.body.error.code).toBe('department_unknown');
+    expect((await h.call('tenantAdmin', 'PUT', `/api/v1/memberships/${h.world.users.buyerB.id}/departments`, { body: { departmentIds: [ik] } })).status).toBe(404);
+    const other = (await h.owner.query<{ d: string[] }>(`SELECT department_ids AS d FROM memberships WHERE tenant_id = $1 AND user_id = $2`, [h.world.tenantB, h.world.users.buyerB.id])).rows[0]!.d;
+    expect(other).toEqual([]);
+    // Yeni departman bağlamı sonraki istekte geçerli: kullanıcı İK projesini görür.
+    expect((await h.call('security', 'GET', `/api/v1/projects/${ikProject}`)).status).toBe(200);
+  });
+
+  it('me_returns_departments', async () => {
+    const me = await h.call('techEval', 'GET', '/api/v1/me');
+    expect(me.status).toBe(200);
+    expect(me.body.roles).toEqual(['DEPARTMENT_USER']);
+    expect(me.body.departments).toEqual([{ id: bt, name: 'Bilgi Teknolojileri' }]);
+    expect(me.body.allDepartments).toBe(false);
+    const buyer = (await h.call('legal', 'GET', '/api/v1/me')).body;
+    expect(buyer.departments).toEqual([]);
+    expect(buyer.allDepartments).toBe(true);
+  });
+
+  /** Görev açma (tüm departmanı gören sistem bağlamı); departman varlıktan çözülür. */
+  const sysCtx = (): TenantContext => ({ tenantId: h.world.tenantA, userId: h.world.users.legal.id, roles: ['PROCUREMENT'],
+    companyIds: [h.world.companyA1.id], departmentIds: [], allDepartments: true, correlationId: 'v2-dept-task' });
+  const taskFor = (projectId: string, tag: string) => withTenant(h.pool, sysCtx(), (tx) => openTask(tx, sysCtx(),
+    { companyId: h.world.companyA1.id, kind: 'dept_test', entityType: 'project', entityId: projectId, title: `Bölüm görevi ${tag}`, reason: 'Sentetik',
+      nextAction: 'İnceleyin', assigneeRole: 'DEPARTMENT_USER', dedupeKey: `dept-test:${tag}:${randomUUID()}` }));
+
+  it('tasks_department_scoped', async () => {
+    const ikTask = (await taskFor(ikProject, 'ik')).id;
+    const btTask = (await taskFor(btProject, 'bt')).id;
+    expect(await deptOf('tasks', ikTask)).toBe(ik);
+    expect(await deptOf('tasks', btTask)).toBe(bt);
+    const ids = (await h.call('techEval', 'GET', '/api/v1/tasks?view=all')).body.items.map((x: any) => x.id);
+    expect(ids).toContain(btTask);
+    expect(ids).not.toContain(ikTask);
+    const notes = (await h.call('techEval', 'GET', '/api/v1/notifications')).body.items.map((x: any) => x.id);
+    expect(notes).toContain(btTask);
+    expect(notes).not.toContain(ikTask);
+    // SQL düzeyi: İK görevi BT kullanıcısına kapalı, İK kapsamıyla açık.
+    const seen = (deps: string[]) => withTenant(h.pool, deptCtx(deps), async (tx) => (await tx.query('SELECT 1 FROM tasks WHERE id = $1', [ikTask])).rowCount);
+    expect(await seen([bt])).toBe(0);
+    expect(await seen([ik])).toBe(1);
+  });
+
+  it('legacy_department_user_task_visible_to_procurement', async () => {
+    const legacy = (await taskFor(nullProject, 'eski')).id;
+    const scoped = (await taskFor(btProject, 'kapsamli')).id;
+    expect(await deptOf('tasks', legacy)).toBeNull();
+    // Saf Satınalma kullanıcısı (bölüm rolü yok) departmansız eski kaydın bölüm görevini görür; departmanlı olanı görmez.
+    const r = (await h.call('legal', 'GET', '/api/v1/tasks?view=all')).body;
+    const ids = r.items.map((x: any) => x.id);
+    expect(ids).toContain(legacy);
+    expect(ids).not.toContain(scoped);
+    const notes = (await h.call('legal', 'GET', '/api/v1/notifications')).body.items.map((x: any) => x.id);
+    expect(notes).toContain(legacy);
+    expect(notes).not.toContain(scoped);
   });
 });

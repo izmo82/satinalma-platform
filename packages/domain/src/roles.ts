@@ -137,6 +137,9 @@ export const PERMISSIONS = {
   'recovery.settle': [],
   'recovery.settings': [],
   'task.read': ['ADMIN', 'PROCUREMENT', 'DEPARTMENT_USER', 'AUDITOR'],
+  // v2 (D93): departman listesi iç rollere açık; departman tanımı ve üyelik departmanı ataması yalnız Yönetici.
+  'department.read': ['ADMIN', 'PROCUREMENT', 'DEPARTMENT_USER', 'AUDITOR'],
+  'department.manage': ['ADMIN'],
 } as const satisfies Record<string, readonly Role[]>;
 
 export type Permission = keyof typeof PERMISSIONS;

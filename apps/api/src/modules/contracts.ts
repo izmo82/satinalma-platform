@@ -6,19 +6,20 @@ import { nextCode } from '../codes.ts';
 import { closeTasks, openTask } from '../tasks.ts';
 import { ApiError, conflict, notFound, unprocessable } from '../errors.ts';
 import { selectDetector } from '../signature/detector.ts';
+import { resolveDepartment } from './departments.ts';
 
 interface CvRow {
   id: string; company_id: string; family_id: string; version_no: number; document_version_id: string; stage: string;
   signature_method: SignatureMethod; original_custody_required: boolean; superseded_by_id: string | null;
   signature_finalized_at: Date | null; signature_finalized_status: string | null; row_version: number; sha256: string;
-  page_count: number | null; title: string;
+  page_count: number | null; title: string; department_id: string | null; department_name: string | null;
 }
 
 export const etagOf = (cv: { id: string; row_version: number }) => `"cv-${cv.id}-${cv.row_version}"`;
 
 async function loadCv(tx: Tx, id: string, lock = false): Promise<CvRow> {
   const r = await tx.query<CvRow>(
-    `SELECT cv.*, dv.sha256, dv.page_count, f.title FROM contract_versions cv
+    `SELECT cv.*, dv.sha256, dv.page_count, f.title, f.department_id, (SELECT d.name FROM departments d WHERE d.id = f.department_id) AS department_name FROM contract_versions cv
      JOIN document_versions dv ON dv.id = cv.document_version_id
      JOIN contract_families f ON f.id = cv.family_id
      WHERE cv.id = $1 ${lock ? 'FOR UPDATE OF cv' : ''}`, [id]);
@@ -43,6 +44,8 @@ export interface PartyInput { role: 'BUYER' | 'SUPPLIER' | 'OTHER'; displayName:
 export async function createContract(tx: Tx, ctx: TenantContext, body: {
   title: string; documentVersionId: string; supplierId?: string | null; stage: 'DRAFT' | 'EXECUTION' | 'ARCHIVE_IMPORT';
   signatureMethod: SignatureMethod; originalCustodyRequired: boolean; effectiveDate?: string | null; parties: PartyInput[];
+  /** v2 (D93): bölüm kullanıcısı için zorunlu (kendi departmanı); tüm departmanı görenler için isteğe bağlı. */
+  departmentId?: string | null;
 }) {
   const dv = await tx.query<{ company_id: string; basic_check_status: string }>(
     `SELECT dv.company_id, dv.basic_check_status FROM document_versions dv JOIN documents d ON d.id = dv.document_id
@@ -50,9 +53,10 @@ export async function createContract(tx: Tx, ctx: TenantContext, body: {
   const doc = dv.rows[0];
   if (!doc) throw notFound();
   if (doc.basic_check_status !== 'PASSED') throw unprocessable('document_quarantined', 'Karantinadaki belgeyle sözleşme oluşturulamaz.');
+  const departmentId = await resolveDepartment(tx, ctx, body.departmentId);
   const fam = await tx.query<{ id: string }>(
-    `INSERT INTO contract_families (tenant_id, company_id, title, supplier_id, created_by, code) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
-    [ctx.tenantId, doc.company_id, body.title, body.supplierId ?? null, ctx.userId, await nextCode(tx, ctx, 'contract', 'SZL')]);
+    `INSERT INTO contract_families (tenant_id, company_id, title, supplier_id, created_by, code, department_id) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+    [ctx.tenantId, doc.company_id, body.title, body.supplierId ?? null, ctx.userId, await nextCode(tx, ctx, 'contract', 'SZL'), departmentId]);
   const cv = await tx.query<{ id: string }>(
     `INSERT INTO contract_versions (tenant_id, company_id, family_id, version_no, document_version_id, stage, signature_method,
        original_custody_required, effective_date, created_by)
@@ -66,7 +70,7 @@ export async function createContract(tx: Tx, ctx: TenantContext, body: {
        VALUES ($1,$2,$3,$4,$5,$6,$7)`,
       [ctx.tenantId, doc.company_id, cvId, p.role, p.legalEntityId ?? null, p.supplierId ?? null, p.displayName]);
   }
-  await audit(tx, ctx, 'contract.created', 'contract_version', cvId, { familyId: fam.rows[0]!.id, stage: body.stage, method: body.signatureMethod });
+  await audit(tx, ctx, 'contract.created', 'contract_version', cvId, { familyId: fam.rows[0]!.id, stage: body.stage, method: body.signatureMethod, departmentId });
   return { familyId: fam.rows[0]!.id, contractVersionId: cvId };
 }
 
@@ -225,7 +229,7 @@ export async function getSignatureStatus(tx: Tx, ctx: TenantContext, cvId: strin
       id: cv.id, companyId: cv.company_id, familyId: cv.family_id, title: cv.title, versionNo: cv.version_no, stage: cv.stage, signatureMethod: cv.signature_method,
       originalCustodyRequired: cv.original_custody_required, documentVersionId: cv.document_version_id, documentSha256: cv.sha256,
       pageCount: cv.page_count, supersededById: cv.superseded_by_id, finalizedAt: cv.signature_finalized_at,
-      finalizedStatus: cv.signature_finalized_status, etag: etagOf(cv),
+      finalizedStatus: cv.signature_finalized_status, etag: etagOf(cv), departmentId: cv.department_id, departmentName: cv.department_name,
     },
     status,
     requirements: reqs.rows.map((r) => ({ id: r.id, partyId: r.party_id, partyName: r.display_name, partyRole: r.party_role, signerRole: r.signer_role,

@@ -181,6 +181,96 @@
         }
       }
     },
+    "/api/v1/departments": {
+      "get": {
+        "tags": [
+          "departments"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "departments"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 200
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/memberships/{userId}/departments": {
+      "put": {
+        "tags": [
+          "departments"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "departmentIds"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "departmentIds": {
+                    "type": "array",
+                    "maxItems": 100,
+                    "items": {
+                      "type": "string",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "path",
+            "name": "userId",
+            "required": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
     "/api/v1/search": {
       "get": {
         "tags": [
@@ -739,6 +829,15 @@
             "in": "query",
             "name": "offset",
             "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "query",
+            "name": "departmentId",
+            "required": false
           }
         ],
         "responses": {
@@ -798,6 +897,11 @@
                       "NOT_REQUIRED",
                       "PENDING_CLASSIFICATION"
                     ]
+                  },
+                  "departmentId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "nullable": true
                   },
                   "originalCustodyRequired": {
                     "type": "boolean",
@@ -1928,6 +2032,17 @@
       "get": {
         "tags": [
           "invoices"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "query",
+            "name": "departmentId",
+            "required": false
+          }
         ],
         "responses": {
           "200": {
@@ -3508,6 +3623,17 @@
         "tags": [
           "projects"
         ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "in": "query",
+            "name": "departmentId",
+            "required": false
+          }
+        ],
         "responses": {
           "200": {
             "description": "Default Response"
@@ -3652,6 +3778,11 @@
                         }
                       }
                     }
+                  },
+                  "departmentId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "nullable": true
                   }
                 }
               }
@@ -4652,6 +4783,8 @@
                               "role": {
                                 "type": "string",
                                 "enum": [
+                                  "PROCUREMENT",
+                                  "DEPARTMENT_USER",
                                   "PROCUREMENT_MANAGER",
                                   "FINANCE",
                                   "LEGAL",
@@ -4929,6 +5062,15 @@
               "type": "string",
               "format": "uuid"
             },
+            "in": "query",
+            "name": "departmentId",
+            "required": false
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
             "in": "path",
             "name": "id",
             "required": true
@@ -4976,6 +5118,11 @@
                   "reviewDue": {
                     "type": "string",
                     "format": "date",
+                    "nullable": true
+                  },
+                  "departmentId": {
+                    "type": "string",
+                    "format": "uuid",
                     "nullable": true
                   },
                   "inherentFactors": {
@@ -5909,6 +6056,8 @@
                   "ownerRole": {
                     "type": "string",
                     "enum": [
+                      "PROCUREMENT",
+                      "DEPARTMENT_USER",
                       "REQUESTER",
                       "BUYER",
                       "PROCUREMENT_MANAGER",

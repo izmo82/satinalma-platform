@@ -6,6 +6,7 @@ import {
 } from '@sp/domain';
 import type { TenantContext, Tx } from '../db.ts';
 import { audit } from '../audit.ts';
+import { resolveDepartment } from './departments.ts';
 import { closeTasks, openTask, v2Role } from '../tasks.ts';
 import { ApiError, conflict, forbidden, notFound, unprocessable } from '../errors.ts';
 
@@ -70,24 +71,27 @@ export async function getTemplate(tx: Tx, id: string) {
 
 // --- Değerlendirme -------------------------------------------------------------------------------
 
-export async function createAssessment(tx: Tx, ctx: TenantContext, b: { supplierId: string; templateId: string; scope: string; inherentFactors: InherentFactors; reviewDue?: string | null }) {
+export async function createAssessment(tx: Tx, ctx: TenantContext, b: { supplierId: string; templateId: string; scope: string; inherentFactors: InherentFactors; reviewDue?: string | null;
+  departmentId?: string | null }) {
   const t = (await tx.query<{ status: string; code: string }>(`SELECT status, code FROM questionnaire_templates WHERE id = $1`, [b.templateId])).rows[0];
   if (!t) throw notFound();
   if (t.status !== 'PUBLISHED') throw conflict('template_not_published', 'Değerlendirme yalnız yayımlanmış şablonla başlatılır.');
   if (!(await tx.query(`SELECT 1 FROM suppliers WHERE id = $1`, [b.supplierId])).rowCount) throw notFound();
   for (const k of Object.keys(b.inherentFactors) as (keyof InherentFactors)[]) if (!LEVELS.includes(b.inherentFactors[k])) throw unprocessable('invalid_factor', 'Risk faktörü LOW/MEDIUM/HIGH olmalı.');
-  const a = (await tx.query<{ id: string }>(`INSERT INTO supplier_assessments (tenant_id, supplier_id, template_id, scope, inherent_factors, review_due, created_by)
-    VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`, [ctx.tenantId, b.supplierId, b.templateId, b.scope.trim(), b.inherentFactors, b.reviewDue ?? null, ctx.userId])).rows[0]!;
-  await audit(tx, ctx, 'assessment.created', 'supplier_assessment', a.id, { supplierId: b.supplierId, templateId: b.templateId, inherent: inherentRisk(b.inherentFactors).level });
+  const departmentId = await resolveDepartment(tx, ctx, b.departmentId);
+  const a = (await tx.query<{ id: string }>(`INSERT INTO supplier_assessments (tenant_id, supplier_id, template_id, scope, inherent_factors, review_due, created_by, department_id)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`, [ctx.tenantId, b.supplierId, b.templateId, b.scope.trim(), b.inherentFactors, b.reviewDue ?? null, ctx.userId, departmentId])).rows[0]!;
+  await audit(tx, ctx, 'assessment.created', 'supplier_assessment', a.id, { supplierId: b.supplierId, templateId: b.templateId, inherent: inherentRisk(b.inherentFactors).level, departmentId });
   return { id: a.id };
 }
 
 async function loadAssessment(tx: Tx, id: string) {
   const a = (await tx.query<{ id: string; supplier_id: string; supplier_name: string; template_id: string; scope: string; status: string; inherent_factors: InherentFactors;
     residual_level: Level | null; residual_reason: string | null; residual_accepted_at: Date | null; accepted_by_name: string | null; review_due: string | null;
-    created_by: string; created_by_name: string; created_at: Date; reviewed_by_name: string | null; reviewed_at: Date | null }>(
+    created_by: string; created_by_name: string; created_at: Date; reviewed_by_name: string | null; reviewed_at: Date | null; department_id: string | null; department_name: string | null }>(
     `SELECT a.id, a.supplier_id, s.legal_name AS supplier_name, a.template_id, a.scope, a.status, a.inherent_factors, a.residual_level, a.residual_reason, a.residual_accepted_at,
-      ua.display_name AS accepted_by_name, a.review_due::text, a.created_by, uc.display_name AS created_by_name, a.created_at, ur.display_name AS reviewed_by_name, a.reviewed_at
+      ua.display_name AS accepted_by_name, a.review_due::text, a.created_by, uc.display_name AS created_by_name, a.created_at, ur.display_name AS reviewed_by_name, a.reviewed_at,
+      a.department_id, (SELECT d.name FROM departments d WHERE d.id = a.department_id) AS department_name
      FROM supplier_assessments a JOIN suppliers s ON s.id = a.supplier_id JOIN users uc ON uc.id = a.created_by
      LEFT JOIN users ua ON ua.id = a.residual_accepted_by LEFT JOIN users ur ON ur.id = a.reviewed_by WHERE a.id = $1`, [id])).rows[0];
   if (!a) throw notFound();
@@ -113,6 +117,7 @@ export async function getAssessment(tx: Tx, ctx: TenantContext, id: string) {
   return {
     assessment: { id: a.id, supplierId: a.supplier_id, supplierName: a.supplier_name, scope: a.scope, status: a.status, inherentFactors: a.inherent_factors, reviewDue: a.review_due,
       createdBy: a.created_by_name, createdByMe: a.created_by === ctx.userId, createdAt: a.created_at, reviewedBy: a.reviewed_by_name, reviewedAt: a.reviewed_at,
+      departmentId: a.department_id, departmentName: a.department_name,
       residual: a.residual_level ? { level: a.residual_level, reason: a.residual_reason, acceptedBy: a.accepted_by_name, acceptedAt: a.residual_accepted_at } : null },
     template: (await tx.query(`SELECT id, code, version, name, category FROM questionnaire_templates WHERE id = $1`, [a.template_id])).rows[0],
     portal: (await tx.query(`SELECT portal_status AS status, portal_sent_at AS "sentAt", portal_due::text AS due, portal_submitted_at AS "submittedAt" FROM supplier_assessments WHERE id = $1`, [id])).rows[0],
@@ -200,15 +205,17 @@ export async function acceptResidual(tx: Tx, ctx: TenantContext, id: string, b: 
 }
 
 /** Tedarikçinin güncel (yerini başkası almamış) değerlendirmeleri ve türetilmiş sonuçları. */
-export async function supplierAssessments(tx: Tx, ctx: TenantContext, supplierId: string) {
-  const ids = (await tx.query<{ id: string }>(`SELECT id FROM supplier_assessments WHERE supplier_id = $1 ORDER BY created_at DESC LIMIT 50`, [supplierId])).rows;
+export async function supplierAssessments(tx: Tx, ctx: TenantContext, supplierId: string, f: { departmentId?: string } = {}) {
+  const ids = (await tx.query<{ id: string }>(`SELECT id FROM supplier_assessments WHERE supplier_id = $1 AND ($2::uuid IS NULL OR department_id = $2)
+    ORDER BY created_at DESC LIMIT 50`, [supplierId, f.departmentId ?? null])).rows;
   const out = [];
   for (const { id } of ids) {
     const r = await evaluateAssessment(tx, id);
     const t = (await tx.query<{ name: string; version: number; category: string }>(`SELECT name, version, category FROM questionnaire_templates WHERE id = $1`, [r.a.template_id])).rows[0]!;
     out.push({ id, scope: r.a.scope, status: r.a.status, template: `${t.name} v${t.version}`, category: t.category, outcome: r.result.outcome, complianceRate: r.result.complianceRate,
       blockers: r.result.items.filter((x) => x.kind === 'BLOCKER').length, findings: r.result.items.filter((x) => x.kind === 'FINDING').length,
-      inherent: r.inherent.level, residual: r.a.residual_level, createdAt: r.a.created_at, reviewDue: r.a.review_due });
+      inherent: r.inherent.level, residual: r.a.residual_level, createdAt: r.a.created_at, reviewDue: r.a.review_due,
+      departmentId: r.a.department_id, departmentName: r.a.department_name });
   }
   void ctx;
   return out;

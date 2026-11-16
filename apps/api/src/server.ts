@@ -27,6 +27,8 @@ import * as commercial from './modules/commercial.ts';
 import * as approvals from './modules/approvals.ts';
 import * as search from './modules/search.ts';
 import * as recovery from './modules/recovery.ts';
+import * as departments from './modules/departments.ts';
+import { taskRoleSql } from './tasks.ts';
 import { decisionSummaryPdf, evaluationWorkbook } from './reports.ts';
 import { RateLimiter, rateLimited } from './rateLimit.ts';
 
@@ -39,6 +41,9 @@ export interface AppDeps {
 
 const uuid = { type: 'string', format: 'uuid' } as const;
 const idParams = { type: 'object', required: ['id'], properties: { id: uuid } } as const;
+/** v2 (D93): oluşturmada departman (bölüm kullanıcısı için zorunluluk modülde) ve liste süzgeci. */
+const optDepartment = { anyOf: [uuid, { type: 'null' }] } as const;
+const departmentFilter = { type: 'object', properties: { departmentId: uuid } } as const;
 const sigMethod = { type: 'string', enum: ['WET_IMAGE_REVIEW', 'QUALIFIED_ELECTRONIC', 'ELECTRONIC_OTHER', 'HYBRID', 'NOT_REQUIRED', 'PENDING_CLASSIFICATION'] } as const;
 const stage = { type: 'string', enum: ['DRAFT', 'EXECUTION', 'ARCHIVE_IMPORT'] } as const;
 const text = (max = 2000) => ({ type: 'string', minLength: 1, maxLength: max }) as const;
@@ -200,15 +205,20 @@ export async function buildApp(deps: AppDeps) {
     bindUser(req, identity.userId);
     let active: TenantContext | null = null;
     try { active = tenantContext(identity, req); } catch { active = null; }
-    const companies = active ? await withTenant(deps.pool, active, async (tx) =>
-      (await tx.query(`SELECT id, name, country, default_currency FROM legal_entities WHERE id = ANY($1::uuid[]) ORDER BY name`, [active!.companyIds])).rows) : [];
+    const scope = active ? await withTenant(deps.pool, active, async (tx) => ({
+      companies: (await tx.query(`SELECT id, name, country, default_currency FROM legal_entities WHERE id = ANY($1::uuid[]) ORDER BY name`, [active!.companyIds])).rows,
+      departments: await departments.departmentsOf(tx, active!.departmentIds),
+    })) : { companies: [], departments: [] };
     return {
       user: { id: identity.userId, email: identity.email, displayName: identity.displayName },
       memberships: identity.memberships.map((m) => ({ tenantId: m.tenantId, tenantName: m.tenantName, roles: m.roles })),
       activeTenantId: active?.tenantId ?? null,
       roles: active?.roles ?? [],
       supplierPortal: !!active?.supplierId,
-      companies,
+      companies: scope.companies,
+      // v2 (D93): aktif üyeliğin departmanları; allDepartments rolden türetilir (Yönetici, Satınalma, Denetçi).
+      departments: scope.departments,
+      allDepartments: active?.allDepartments ?? false,
     };
   });
 
@@ -218,6 +228,15 @@ export async function buildApp(deps: AppDeps) {
     internalOnly(ctx);
     return (await tx.query(`SELECT u.id, u.display_name AS "displayName" FROM users u JOIN memberships m ON m.user_id = u.id ORDER BY u.display_name`)).rows;
   }));
+
+  // --- Departmanlar (v2 D93) ------------------------------------------------------
+  app.get('/api/v1/departments', { schema: { tags: ['departments'] } }, async (req) =>
+    scoped(req, 'department.read', async (tx) => ({ items: await departments.listDepartments(tx) })));
+  app.post('/api/v1/departments', { schema: { tags: ['departments'], body: { type: 'object', required: ['name'], additionalProperties: false, properties: { name: text(200) } } } },
+    async (req, reply) => reply.status(201).send(await scoped(req, 'department.manage', (tx, ctx) => departments.createDepartment(tx, ctx, req.body as { name: string }))));
+  app.put('/api/v1/memberships/:userId/departments', { schema: { tags: ['departments'], params: { type: 'object', required: ['userId'], properties: { userId: uuid } },
+    body: { type: 'object', required: ['departmentIds'], additionalProperties: false, properties: { departmentIds: { type: 'array', maxItems: 100, items: uuid } } } } }, async (req) =>
+    scoped(req, 'department.manage', (tx, ctx) => departments.setMembershipDepartments(tx, ctx, (req.params as { userId: string }).userId, req.body as { departmentIds: string[] })));
 
   // --- İşlerim (UX01) -----------------------------------------------------------
   // --- Üst çubuk: arama, bildirim, kayıtlı görünümler (izin türe göre modül içinde) ---
@@ -256,7 +275,7 @@ export async function buildApp(deps: AppDeps) {
                 WHEN 'incident' THEN (SELECT x.code FROM supplier_incidents x WHERE x.id = t.entity_id)
                 WHEN 'recovery_case' THEN (SELECT x.code FROM recovery_cases x WHERE x.id = t.entity_id)
               END AS "refNo"
-       FROM tasks t WHERE t.status = 'OPEN' AND t.assignee_role = ANY($1::text[])
+       FROM tasks t WHERE t.status = 'OPEN' AND ${taskRoleSql('$1')}
          AND ($2 <> 'overdue' OR (t.due_at IS NOT NULL AND t.due_at < now()))
          AND ($2 <> 'mine' OR t.assignee_user_id IS NULL OR t.assignee_user_id = $3)
        ORDER BY CASE t.severity WHEN 'CRITICAL' THEN 0 WHEN 'HIGH' THEN 1 ELSE 2 END, t.due_at NULLS LAST, t.created_at
@@ -265,7 +284,7 @@ export async function buildApp(deps: AppDeps) {
     const c = (await tx.query<{ mine: number; overdue: number; all: number }>(
       `SELECT count(*) FILTER (WHERE assignee_user_id IS NULL OR assignee_user_id = $2)::int AS mine,
               count(*) FILTER (WHERE due_at IS NOT NULL AND due_at < now())::int AS overdue, count(*)::int AS "all"
-       FROM tasks WHERE status = 'OPEN' AND assignee_role = ANY($1::text[])`, [ctx.roles, ctx.userId])).rows[0];
+       FROM tasks t WHERE t.status = 'OPEN' AND ${taskRoleSql('$1')}`, [ctx.roles, ctx.userId])).rows[0];
     return { items: r.rows, counts: c };
   }));
 
@@ -416,12 +435,13 @@ export async function buildApp(deps: AppDeps) {
 
   // --- Sözleşmeler ve imza kontrolü (UX09/UX14) -------------------------------------
   app.get('/api/v1/contracts', { schema: { tags: ['contracts'], querystring: { type: 'object', additionalProperties: false, properties: {
-    limit: { type: 'integer', minimum: 1, maximum: 100 }, offset: { type: 'integer', minimum: 0 } } } } }, async (req) => scoped(req, 'contract.read', async (tx, ctx) => {
-    const { limit = 100, offset = 0 } = req.query as { limit?: number; offset?: number };
+    limit: { type: 'integer', minimum: 1, maximum: 100 }, offset: { type: 'integer', minimum: 0 }, departmentId: uuid } } } }, async (req) => scoped(req, 'contract.read', async (tx, ctx) => {
+    const { limit = 100, offset = 0, departmentId = null } = req.query as { limit?: number; offset?: number; departmentId?: string };
     // İmza durumu satır başına türetilir; sayfa boyutu bu maliyeti sınırlar (D89).
-    const total = (await tx.query<{ n: number }>(`SELECT count(*)::int AS n FROM contract_versions cv WHERE cv.superseded_by_id IS NULL`)).rows[0]!.n;
+    const deptSql = `($1::uuid IS NULL OR EXISTS (SELECT 1 FROM contract_families f WHERE f.id = cv.family_id AND f.department_id = $1))`;
+    const total = (await tx.query<{ n: number }>(`SELECT count(*)::int AS n FROM contract_versions cv WHERE cv.superseded_by_id IS NULL AND ${deptSql}`, [departmentId])).rows[0]!.n;
     const r = await tx.query<{ id: string }>(
-      `SELECT cv.id FROM contract_versions cv WHERE cv.superseded_by_id IS NULL ORDER BY cv.created_at DESC, cv.id LIMIT $1 OFFSET $2`, [limit, offset]);
+      `SELECT cv.id FROM contract_versions cv WHERE cv.superseded_by_id IS NULL AND ${deptSql} ORDER BY cv.created_at DESC, cv.id LIMIT $2 OFFSET $3`, [departmentId, limit, offset]);
     const items = [];
     const parties = (await tx.query<{ id: string; names: string[] }>(`SELECT contract_version_id AS id, array_agg(display_name ORDER BY display_name) AS names FROM contract_parties
       WHERE party_role = 'SUPPLIER' AND contract_version_id = ANY($1::uuid[]) GROUP BY contract_version_id`, [r.rows.map((x) => x.id)])).rows;
@@ -444,7 +464,7 @@ export async function buildApp(deps: AppDeps) {
   app.get('/api/v1/contract-options', { schema: { tags: ['contracts'] } }, async (req) => scoped(req, 'contract.read', (tx) => invoices.contractOptions(tx)));
   app.post('/api/v1/contracts', {
     schema: { tags: ['contracts'], body: { type: 'object', required: ['title', 'documentVersionId', 'stage', 'signatureMethod', 'parties'], additionalProperties: false,
-      properties: { title: text(300), documentVersionId: uuid, supplierId: { type: ['string', 'null'], format: 'uuid' }, stage, signatureMethod: sigMethod,
+      properties: { title: text(300), documentVersionId: uuid, supplierId: { type: ['string', 'null'], format: 'uuid' }, stage, signatureMethod: sigMethod, departmentId: optDepartment,
         originalCustodyRequired: { type: 'boolean', default: false }, effectiveDate: { type: ['string', 'null'], format: 'date' },
         parties: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'object', required: ['role', 'displayName'], additionalProperties: false,
           properties: { role: { type: 'string', enum: ['BUYER', 'SUPPLIER', 'OTHER'] }, displayName: text(300),
@@ -576,7 +596,8 @@ export async function buildApp(deps: AppDeps) {
       if (!can(ctx.roles, 'contract.read') && !can(ctx.roles, 'invoice.read')) throw forbidden('contract.read');
       return invoices.contractLimit(tx, (req.params as any).id);
     }));
-  app.get('/api/v1/invoices', { schema: { tags: ['invoices'] } }, async (req) => scoped(req, 'invoice.read', async (tx) => ({ items: await invoices.listInvoices(tx) })));
+  app.get('/api/v1/invoices', { schema: { tags: ['invoices'], querystring: departmentFilter } }, async (req) => scoped(req, 'invoice.read', async (tx) =>
+    ({ items: await invoices.listInvoices(tx, req.query as { departmentId?: string }) })));
   app.get('/api/v1/invoices/:id', { schema: { tags: ['invoices'], params: idParams } }, async (req) => scoped(req, 'invoice.read', async (tx, ctx) =>
     ({ ...(await invoices.getInvoice(tx, ctx, (req.params as any).id)), can: { manage: can(ctx.roles, 'invoice.manage'), approve: can(ctx.roles, 'invoice.approve'),
       approveException: can(ctx.roles, 'invoice.exception.approve') } })));
@@ -717,8 +738,10 @@ export async function buildApp(deps: AppDeps) {
     neededBy: { type: ['string', 'null'], format: 'date' }, lines: { type: 'array', minItems: 1, maxItems: 500, items: lineSchema },
     criteria: { type: 'array', minItems: 1, maxItems: 20, items: criterionSchema } } } as const;
 
-  app.get('/api/v1/projects', { schema: { tags: ['projects'] } }, async (req) => scoped(req, 'project.read', async (tx) => ({ items: await sourcing.listProjects(tx) })));
-  app.post('/api/v1/projects', { schema: { tags: ['projects'], body: { ...projectBody, required: [...projectBody.required, 'companyId'] } } }, async (req, reply) => {
+  app.get('/api/v1/projects', { schema: { tags: ['projects'], querystring: departmentFilter } }, async (req) => scoped(req, 'project.read', async (tx) =>
+    ({ items: await sourcing.listProjects(tx, req.query as { departmentId?: string }) })));
+  app.post('/api/v1/projects', { schema: { tags: ['projects'], body: { ...projectBody, required: [...projectBody.required, 'companyId'],
+    properties: { ...projectBody.properties, departmentId: optDepartment } } } }, async (req, reply) => {
     const r = await scoped(req, 'project.manage', (tx, ctx) => sourcing.createProject(tx, ctx, req.body as sourcing.ProjectInput));
     return reply.status(201).header('etag', r.etag).send(r);
   });
@@ -827,10 +850,10 @@ export async function buildApp(deps: AppDeps) {
     reply.status(201).send(await scoped(req, 'questionnaire.manage', (tx, ctx) => evals.createTemplate(tx, ctx, req.body as any))));
   app.post('/api/v1/questionnaire-templates/:id/publish', { schema: { tags: ['evaluation'], params: idParams } }, async (req) =>
     scoped(req, 'questionnaire.manage', (tx, ctx) => evals.publishTemplate(tx, ctx, (req.params as any).id)));
-  app.get('/api/v1/suppliers/:id/assessments', { schema: { tags: ['evaluation'], params: idParams } }, async (req) => scoped(req, 'assessment.read', async (tx, ctx) =>
-    ({ items: await evals.supplierAssessments(tx, ctx, (req.params as any).id), can: { manage: can(ctx.roles, 'assessment.manage') } })));
+  app.get('/api/v1/suppliers/:id/assessments', { schema: { tags: ['evaluation'], params: idParams, querystring: departmentFilter } }, async (req) => scoped(req, 'assessment.read', async (tx, ctx) =>
+    ({ items: await evals.supplierAssessments(tx, ctx, (req.params as any).id, req.query as { departmentId?: string }), can: { manage: can(ctx.roles, 'assessment.manage') } })));
   app.post('/api/v1/assessments', { schema: { tags: ['evaluation'], body: { type: 'object', required: ['supplierId', 'templateId', 'scope', 'inherentFactors'], additionalProperties: false,
-    properties: { supplierId: uuid, templateId: uuid, scope: { type: 'string', minLength: 3, maxLength: 300 }, reviewDue: optDate,
+    properties: { supplierId: uuid, templateId: uuid, scope: { type: 'string', minLength: 3, maxLength: 300 }, reviewDue: optDate, departmentId: optDepartment,
       inherentFactors: { type: 'object', required: ['dataSensitivity', 'accessLevel', 'criticality', 'substitutability', 'subcontractorDependence'], additionalProperties: false,
         properties: { dataSensitivity: lmh, accessLevel: lmh, criticality: lmh, substitutability: lmh, subcontractorDependence: lmh } } } } } }, async (req, reply) =>
     reply.status(201).send(await scoped(req, 'assessment.manage', (tx, ctx) => evals.createAssessment(tx, ctx, req.body as any))));

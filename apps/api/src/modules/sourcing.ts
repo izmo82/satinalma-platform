@@ -12,6 +12,7 @@ import { ApiError, conflict, forbidden, notFound, unprocessable } from '../error
 import { inspectUpload } from '../files.ts';
 import { objectKey, type ObjectStore } from '../storage.ts';
 import * as approvals from './approvals.ts';
+import { resolveDepartment } from './departments.ts';
 
 /**
  * Faz 2: proje → RFQ turu (görev ayrılıklı yayın onayı) → tedarikçi portalı (mühürlü teklif, sunucu saati)
@@ -24,12 +25,14 @@ export interface CriterionInput { code: string; name: string; kind: 'PRICE' | 'S
 export interface ProjectInput {
   companyId: string; title: string; category: string; need?: string; currency?: string; budget?: string | null; budgetVerified?: boolean;
   costCenter?: string | null; deliveryLocation?: string | null; neededBy?: string | null; lines: LineInput[]; criteria: CriterionInput[];
+  /** v2 (D93): bölüm kullanıcısı için zorunlu (kendi departmanı); tüm departmanı görenler için isteğe bağlı. */
+  departmentId?: string | null;
 }
 
 interface ProjectRow {
   id: string; company_id: string; code: string; title: string; category: string; need: string; currency: string; budget: string | null;
   budget_verified: boolean; cost_center: string | null; delivery_location: string | null; needed_by: string | null; status: string;
-  owner_user_id: string; created_by: string; row_version: number; created_at: Date; updated_at: Date;
+  owner_user_id: string; created_by: string; row_version: number; created_at: Date; updated_at: Date; department_id: string | null;
 }
 
 export const projectEtag = (p: { id: string; row_version: number }) => `"prj-${p.id}-${p.row_version}"`;
@@ -83,15 +86,16 @@ export async function createProject(tx: Tx, ctx: TenantContext, body: ProjectInp
   checkLines(body.lines);
   checkCriteria(body.criteria);
   if (body.budget != null && !isDecimal(body.budget)) throw unprocessable('invalid_budget', 'Bütçe ondalık sayı olmalı.');
+  const departmentId = await resolveDepartment(tx, ctx, body.departmentId);
   const code = await nextCode(tx, ctx, 'project', 'PRJ');
   const p = (await tx.query<ProjectRow>(
-    `INSERT INTO projects (tenant_id, company_id, code, title, category, need, currency, budget, budget_verified, cost_center, delivery_location, needed_by, owner_user_id, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13) RETURNING *`,
+    `INSERT INTO projects (tenant_id, company_id, code, title, category, need, currency, budget, budget_verified, cost_center, delivery_location, needed_by, owner_user_id, created_by, department_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$13,$14) RETURNING *`,
     [ctx.tenantId, body.companyId, code, body.title.trim(), body.category.trim(), body.need ?? '', (body.currency ?? 'TRY').toUpperCase(),
-      body.budget ?? null, body.budgetVerified ?? false, body.costCenter ?? null, body.deliveryLocation ?? null, body.neededBy ?? null, ctx.userId])).rows[0]!;
+      body.budget ?? null, body.budgetVerified ?? false, body.costCenter ?? null, body.deliveryLocation ?? null, body.neededBy ?? null, ctx.userId, departmentId])).rows[0]!;
   await insertLines(tx, ctx, p, body.lines);
   await insertCriteria(tx, ctx, p, body.criteria, null);
-  await audit(tx, ctx, 'project.created', 'project', p.id, { code, lines: body.lines.length });
+  await audit(tx, ctx, 'project.created', 'project', p.id, { code, lines: body.lines.length, departmentId });
   return { id: p.id, code, etag: projectEtag(p) };
 }
 
@@ -306,13 +310,15 @@ export async function closeRoundEarly(tx: Tx, ctx: TenantContext, roundId: strin
 
 // --- Okuma (alıcı) --------------------------------------------------------------------------
 
-export async function listProjects(tx: Tx) {
+export async function listProjects(tx: Tx, f: { departmentId?: string } = {}) {
   return (await tx.query(`SELECT p.id, p.code, p.title, p.category, p.status, p.currency, p.budget, p.budget_verified AS "budgetVerified",
       p.updated_at AS "updatedAt", le.name AS "companyName", u.display_name AS "ownerName",
+      p.department_id AS "departmentId", (SELECT d.name FROM departments d WHERE d.id = p.department_id) AS "departmentName",
       (SELECT closes_at FROM rfq_rounds r WHERE r.project_id = p.id AND r.status IN ('OPEN','PENDING_APPROVAL') ORDER BY round_no DESC LIMIT 1) AS "closesAt",
       (SELECT count(*)::int FROM bids b WHERE b.project_id = p.id AND b.status = 'SUBMITTED') AS "bidCount"
     FROM projects p JOIN legal_entities le ON le.id = p.company_id JOIN users u ON u.id = p.owner_user_id
-    WHERE p.company_id = ANY (app_company_ids()) ORDER BY p.updated_at DESC LIMIT 200`)).rows;
+    WHERE p.company_id = ANY (app_company_ids()) AND ($1::uuid IS NULL OR p.department_id = $1)
+    ORDER BY p.updated_at DESC LIMIT 200`, [f.departmentId ?? null])).rows;
 }
 
 async function latestRound(tx: Tx, projectId: string) {
@@ -401,6 +407,8 @@ export async function getProject(tx: Tx, ctx: TenantContext, id: string) {
       id: p.id, code: p.code, title: p.title, category: p.category, need: p.need, currency: p.currency, budget: p.budget, budgetVerified: p.budget_verified,
       costCenter: p.cost_center, deliveryLocation: p.delivery_location, neededBy: p.needed_by, status: p.status, companyId: p.company_id,
       ownedByMe: p.owner_user_id === ctx.userId, etag: projectEtag(p), updatedAt: p.updated_at,
+      departmentId: p.department_id,
+      departmentName: p.department_id ? (await tx.query<{ name: string }>(`SELECT name FROM departments WHERE id = $1`, [p.department_id])).rows[0]?.name ?? null : null,
     },
     lines: await currentLines(tx, id), criteria: await currentCriteria(tx, id), criteriaHistory,
     round: round && { id: round.id, roundNo: round.round_no, closesAt: round.closes_at, status: round.status, requestedByMe: round.requested_by === ctx.userId, closeReason: round.close_reason, approval: roundApproval },

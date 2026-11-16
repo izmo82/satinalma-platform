@@ -406,12 +406,30 @@ export async function setAllocations(tx: Tx, ctx: TenantContext, invoiceId: stri
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, [ctx.tenantId, inv.company_id, invoiceId, a.lineNo, a.poLineId, a.contractVersionId, a.quantity, a.amount, ctx.userId]);
   }
   await tx.query(`UPDATE invoices SET advance_offset = $2, advance_invoice_id = $3 WHERE id = $1`, [invoiceId, b.advanceOffset ?? '0', b.advanceInvoiceId ?? null]);
+  const departmentId = await inheritDepartment(tx, invoiceId);
   const result = await evaluate(tx, invoiceId);
   // Atılan hata işlemi geri alır; önceki tahsis yerinde kalır.
   if (result.check.issues.some((x) => x.code === 'COMPANY_MISMATCH')) throw unprocessable('allocation_company_mismatch', 'Seçilen sipariş veya sözleşme bu faturanın şirketine ait değil ya da erişiminiz dışında.');
   if (result.check.issues.some((x) => x.code === 'SUPPLIER_MISMATCH')) throw unprocessable('allocation_supplier_mismatch', 'Seçilen sipariş veya sözleşme bu faturanın tedarikçisine ait değil; aynı ünvanlı başka bir kayıt olabilir.');
-  await audit(tx, ctx, 'invoice.allocated', 'invoice', invoiceId, { allocations: b.allocations.length, advanceOffset: b.advanceOffset ?? '0' });
+  await audit(tx, ctx, 'invoice.allocated', 'invoice', invoiceId, { allocations: b.allocations.length, advanceOffset: b.advanceOffset ?? '0',
+    ...(departmentId !== undefined ? { departmentId } : {}) });
   return result;
+}
+
+/**
+ * v2 (analiz-v2 §2.3): fatura departmanını eşleştiği sözleşmeden devralır (doğrudan sözleşme tahsisi ya da sözleşmeli sipariş kalemi).
+ * Tüm sözleşmeler aynı departmandaysa o departman; farklıysa tahmin yok, departman boş. Sözleşmesiz tahsiste departman değişmez.
+ * Tahsisle aynı transaction'da yazılır. Dönüş: yazılan departman (değişmediyse undefined).
+ */
+async function inheritDepartment(tx: Tx, invoiceId: string): Promise<string | null | undefined> {
+  const deps = (await tx.query<{ d: string | null }>(`SELECT DISTINCT f.department_id AS d FROM invoice_allocations a
+      LEFT JOIN po_lines pl ON pl.id = a.po_line_id LEFT JOIN purchase_orders po ON po.id = pl.po_id
+      JOIN contract_versions cv ON cv.id = coalesce(a.contract_version_id, po.contract_version_id) JOIN contract_families f ON f.id = cv.family_id
+    WHERE a.invoice_id = $1`, [invoiceId])).rows;
+  if (!deps.length) return undefined;
+  const departmentId = deps.length === 1 ? deps[0]!.d : null;
+  await tx.query(`UPDATE invoices SET department_id = $2 WHERE id = $1`, [invoiceId, departmentId]);
+  return departmentId;
 }
 
 /** Kontrol girdisini güncel veriden kurar ve domain kontrolünü çalıştırır. */
@@ -592,7 +610,8 @@ export async function getInvoice(tx: Tx, ctx: TenantContext, id: string) {
       i.supplier_id AS "supplierId", s.legal_name AS "supplierName", s.status AS "supplierStatus", ${SUPPLIER_VERIFIED_SQL} AS "supplierIdentityVerified", ${SUPPLIER_ROOT_SQL} AS "supplierRootId", i.legal_status AS "legalStatus", i.payment_status AS "paymentStatus",
       i.original_invoice_id AS "originalInvoiceId", i.advance_invoice_id AS "advanceInvoiceId", i.advance_offset::text AS "advanceOffset", i.document_version_id AS "documentVersionId", (SELECT sha256 FROM document_versions dv WHERE dv.id = i.document_version_id) AS "documentSha256",
       i.declared_tax_total::text AS "declaredTaxTotal", i.declared_withholding::text AS "declaredWithholding", i.declared_payable::text AS "declaredPayable", i.declared_other_tax_total::text AS "declaredOtherTaxTotal",
-      i.created_by = $2 AS "createdByMe", u.display_name AS "createdBy", i.created_at AS "createdAt"
+      i.created_by = $2 AS "createdByMe", u.display_name AS "createdBy", i.created_at AS "createdAt",
+      i.department_id AS "departmentId", (SELECT d.name FROM departments d WHERE d.id = i.department_id) AS "departmentName"
     FROM invoices i JOIN suppliers s ON s.id = i.supplier_id JOIN users u ON u.id = i.created_by WHERE i.id = $1`, [id, ctx.userId])).rows[0];
   if (!inv) throw notFound();
   const lines = (await tx.query(`SELECT line_no AS "lineNo", description, trim_scale(quantity)::text AS quantity, unit, trim_scale(unit_price)::text AS "unitPrice", net_amount::text AS "netAmount", trim_scale(tax_rate)::text AS "taxRate",
@@ -622,14 +641,15 @@ export async function getInvoice(tx: Tx, ctx: TenantContext, id: string) {
   };
 }
 
-export async function listInvoices(tx: Tx) {
+export async function listInvoices(tx: Tx, f: { departmentId?: string } = {}) {
   const rows = (await tx.query<{ id: string; decision: string | null }>(`SELECT i.id, i.kind, i.invoice_no AS "invoiceNo", i.issue_date::text AS "issueDate", i.currency, s.legal_name AS "supplierName",
       s.status AS "supplierStatus", ${SUPPLIER_VERIFIED_SQL} AS "supplierIdentityVerified",
       (SELECT sum(net_amount)::text FROM invoice_lines WHERE invoice_id = i.id) AS "netAmount", i.legal_status AS "legalStatus", i.payment_status AS "paymentStatus",
       (SELECT kind FROM invoice_decisions d WHERE d.invoice_id = i.id AND d.kind IN ('APPROVAL','REJECTION')) AS decision,
       (SELECT status FROM erp_exports e WHERE e.invoice_id = i.id) AS "erpStatus",
-      (SELECT count(*)::int FROM invoice_intake_events e WHERE e.invoice_id = i.id AND e.duplicate) AS "duplicateCount"
-    FROM invoices i JOIN suppliers s ON s.id = i.supplier_id ORDER BY i.created_at DESC LIMIT 300`)).rows;
+      (SELECT count(*)::int FROM invoice_intake_events e WHERE e.invoice_id = i.id AND e.duplicate) AS "duplicateCount",
+      i.department_id AS "departmentId", (SELECT d.name FROM departments d WHERE d.id = i.department_id) AS "departmentName"
+    FROM invoices i JOIN suppliers s ON s.id = i.supplier_id WHERE ($1::uuid IS NULL OR i.department_id = $1) ORDER BY i.created_at DESC LIMIT 300`, [f.departmentId ?? null])).rows;
   // Karar bekleyenlerde listede de engel görünsün (D90). Maliyet: fatura başına değil, bağlı sözleşme başına sorgu.
   const checks = await unapprovedInvoiceChecks(tx, rows.filter((r) => !r.decision).map((r) => r.id));
   return rows.map((r) => ({ ...r, blocked: checks.get(r.id)?.canApprove === false }));
