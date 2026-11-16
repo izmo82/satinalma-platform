@@ -65,6 +65,9 @@ for (const [name, reply] of [['502', { status: 502, body: '' }], ['bozuk gövde'
     await page.route('**/api/v1/projects/*/comparison', (route) => route.fulfill(reply));
     await page.getByRole('tab', { name: 'Karşılaştırma' }).click();
     await expect(page.getByRole('button', { name: 'Yeniden dene' })).toBeVisible();
+    // Sunucu yanıt verdi ama geçersiz: "Bağlantı yok" değil, genel hata başlığı.
+    await expect(page.getByRole('heading', { name: 'İşlem tamamlanamadı' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Bağlantı yok' })).toHaveCount(0);
     await expect(page.getByRole('heading', { name: 'BT altyapı bakım hizmeti 2027' })).toBeVisible();
     expect(errors).toEqual([]);
     await page.unroute('**/api/v1/projects/*/comparison');

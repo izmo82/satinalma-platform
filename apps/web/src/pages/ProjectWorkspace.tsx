@@ -425,7 +425,7 @@ function ComparisonTab({ d, reload }: { d: Detail; reload: () => Promise<void> }
   // Hata ya da gövdesiz/bozuk yanıt (ör. ağ geçidi 502 sayfası): beyaz ekran yerine standart hata durumu ve yeniden deneme.
   if (r.error || !r.data?.comparison) {
     return <div className="rounded-md border border-border bg-surface"><ErrorState onRetry={r.reload}
-      error={r.error ?? new ApiError(0, 'invalid_response', 'Karşılaştırma yüklenemedi; sunucudan geçerli yanıt gelmedi. Yeniden deneyin.')} /></div>;
+      error={r.error ?? new ApiError(502, 'invalid_response', 'Karşılaştırma yüklenemedi; sunucudan geçerli yanıt gelmedi. Yeniden deneyin.')} /></div>;
   }
   const c = r.data;
   const bids = c.comparison.bids;
