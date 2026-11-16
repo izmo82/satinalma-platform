@@ -51,3 +51,21 @@ export function str(v: Dec, places = 2): string {
   const f = (a % p).toString().padStart(places, '0');
   return `${neg ? '-' : ''}${i}${places ? `.${f}` : ''}`;
 }
+
+/**
+ * Kullanıcıya giden metinde tutar Türkçe biçimde (binlik nokta, ondalık virgül, 2 basamak): "1500.00" → "1.500,00".
+ * Geçersiz girdi (ör. bozuk belge değeri) olduğu gibi döner; uydurma değer gösterilmez.
+ */
+export function trAmount(v: Dec | string): string {
+  if (typeof v === 'string' && !isDecimal(v)) return v;
+  const s = str(typeof v === 'string' ? dec(v) : v);
+  const neg = s.startsWith('-');
+  const [i, f] = (neg ? s.slice(1) : s).split('.');
+  return `${neg ? '-' : ''}${i!.replace(/\B(?=(\d{3})+(?!\d))/g, '.')},${f}`;
+}
+
+/** Oran (yüzde) Türkçe biçimde: "20.00" → "20", "7.50" → "7,5". */
+export function trRate(v: string): string {
+  if (!isDecimal(v)) return v;
+  return str(dec(v)).replace(/\.?0+$/, '').replace('.', ',');
+}

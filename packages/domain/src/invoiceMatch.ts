@@ -1,4 +1,4 @@
-import { add, cmp, dec, div, isDecimal as isDec, mul, str, type Dec } from './money.ts';
+import { add, cmp, dec, div, isDecimal as isDec, mul, str, trAmount, trRate, type Dec } from './money.ts';
 
 /**
  * Fatura–sipariş–kabul eşleştirmesi ve sözleşme limiti (FR10, 02 §12–13, T13–T16, T37). Saf ve deterministik.
@@ -162,7 +162,7 @@ export function checkTax(lines: InvoiceLineInput[], declared: DeclaredTotals | u
       const partSum = add(...parts.map((p) => (isDec(p.amount) ? dec(p.amount) : 0n)));
       if (!l.otherTax) other = partSum;
       else if (cmp(absd(partSum - other), KURUS) > 0) issues.push({ code: 'OTHER_TAX_MISMATCH', severity: 'BLOCK', ownerRole: 'FINANCE', lineNo: l.lineNo,
-        message: `Satır ${l.lineNo}: KDV dışı vergilerin toplamı ${l.otherTax} ${currency}, kalemlerin toplamı ${str(partSum)}.` });
+        message: `Satır ${l.lineNo}: KDV dışı vergilerin toplamı ${trAmount(l.otherTax)} ${currency}, kalemlerin toplamı ${trAmount(partSum)}.` });
       for (const p of parts) {
         const label = p.name || p.code || 'KDV dışı vergi';
         if (!isDec(p.amount) || dec(p.amount) < 0n) { issues.push({ code: 'OTHER_TAX_INVALID', severity: 'BLOCK', ownerRole: 'FINANCE', lineNo: l.lineNo, message: `Satır ${l.lineNo}: ${label} tutarı geçersiz (${p.amount}).` }); continue; }
@@ -171,7 +171,7 @@ export function checkTax(lines: InvoiceLineInput[], declared: DeclaredTotals | u
         // KDV dışı vergilerin matrahı satırın net tutarıdır (ÖTV/ÖİV oransal).
         const exp = dec(str(div(mul(dec(l.netAmount), dec(p.rate)), dec('100'))));
         if (cmp(absd(dec(p.amount) - exp), KURUS) > 0) issues.push({ code: 'OTHER_TAX_RATE_MISMATCH', severity: 'BLOCK', ownerRole: 'FINANCE', lineNo: l.lineNo,
-          message: `Satır ${l.lineNo}: ${label} ${p.amount} ${currency} yazıyor; ${l.netAmount} × %${str(dec(p.rate)).replace(/\.00$/, '')} = ${str(exp)}. Satıcıdan düzeltme istenir.` });
+          message: `Satır ${l.lineNo}: ${label} ${trAmount(p.amount)} ${currency} yazıyor; ${trAmount(l.netAmount)} × %${trRate(p.rate)} = ${trAmount(exp)}. Satıcıdan düzeltme istenir.` });
       }
     }
     otherSum += other;
@@ -181,7 +181,7 @@ export function checkTax(lines: InvoiceLineInput[], declared: DeclaredTotals | u
     if (l.taxAmount != null && l.taxAmount !== '') {
       const d = dec(l.taxAmount);
       if (cmp(absd(d - expected), KURUS) > 0) issues.push({ code: 'TAX_LINE_MISMATCH', severity: 'BLOCK', ownerRole: 'FINANCE', lineNo: l.lineNo,
-        message: `Satır ${l.lineNo}: KDV ${l.taxAmount} ${currency} yazıyor; ${str(base)} × %${str(dec(rate)).replace(/\.00$/, '')} = ${str(expected)}. Satıcıdan düzeltme istenir.` });
+        message: `Satır ${l.lineNo}: KDV ${trAmount(l.taxAmount)} ${currency} yazıyor; ${trAmount(base)} × %${trRate(rate)} = ${trAmount(expected)}. Satıcıdan düzeltme istenir.` });
       tax += d;
       lineGross.set(l.lineNo, dec(l.netAmount) + other + d);
     } else { tax += expected; lineGross.set(l.lineNo, dec(l.netAmount) + other + expected); }
@@ -189,17 +189,17 @@ export function checkTax(lines: InvoiceLineInput[], declared: DeclaredTotals | u
   const net = add(...lines.map((l) => dec(l.netAmount)));
   const slack = KURUS * BigInt(Math.max(lines.length, 1));
   if (declared?.taxTotal != null && cmp(absd(dec(declared.taxTotal) - tax), slack) > 0) {
-    issues.push({ code: 'TAX_TOTAL_MISMATCH', severity: 'BLOCK', ownerRole: 'FINANCE', message: `Belgedeki KDV toplamı ${declared.taxTotal} ${currency}, satırların toplamı ${str(tax)}.` });
+    issues.push({ code: 'TAX_TOTAL_MISMATCH', severity: 'BLOCK', ownerRole: 'FINANCE', message: `Belgedeki KDV toplamı ${trAmount(declared.taxTotal)} ${currency}, satırların toplamı ${trAmount(tax)}.` });
   }
   const withholding = declared?.withholding != null ? dec(declared.withholding) : 0n;
-  if (withholding < 0n || cmp(withholding, tax) > 0) issues.push({ code: 'WITHHOLDING_INVALID', severity: 'BLOCK', ownerRole: 'FINANCE', message: `Tevkifat ${declared!.withholding} ${currency}, KDV toplamını (${str(tax)}) aşamaz.` });
+  if (withholding < 0n || cmp(withholding, tax) > 0) issues.push({ code: 'WITHHOLDING_INVALID', severity: 'BLOCK', ownerRole: 'FINANCE', message: `Tevkifat ${trAmount(declared?.withholding ?? withholding)} ${currency}, KDV toplamını (${trAmount(tax)}) aşamaz.` });
   if (declared?.otherTaxTotal != null && cmp(absd(dec(declared.otherTaxTotal) - otherSum), slack) > 0) {
-    issues.push({ code: 'OTHER_TAX_MISMATCH', severity: 'BLOCK', ownerRole: 'FINANCE', message: `Belgedeki KDV dışı vergi toplamı (ÖTV/ÖİV vb.) ${declared.otherTaxTotal} ${currency}, satırların toplamı ${str(otherSum)}.` });
+    issues.push({ code: 'OTHER_TAX_MISMATCH', severity: 'BLOCK', ownerRole: 'FINANCE', message: `Belgedeki KDV dışı vergi toplamı (ÖTV/ÖİV vb.) ${trAmount(declared.otherTaxTotal)} ${currency}, satırların toplamı ${trAmount(otherSum)}.` });
   }
   const gross = net + otherSum + tax - withholding;
   if (declared?.payable != null && cmp(absd(dec(declared.payable) - gross), slack) > 0) {
     issues.push({ code: 'PAYABLE_MISMATCH', severity: 'BLOCK', ownerRole: 'FINANCE',
-      message: `Belgedeki ödenecek tutar ${declared.payable} ${currency}; net ${str(net)}${otherSum ? ` + diğer vergiler ${str(otherSum)}` : ''} + KDV ${str(tax)}${withholding ? ` − tevkifat ${str(withholding)}` : ''} = ${str(gross)}.` });
+      message: `Belgedeki ödenecek tutar ${trAmount(declared.payable)} ${currency}; net ${trAmount(net)}${otherSum ? ` + diğer vergiler ${trAmount(otherSum)}` : ''} + KDV ${trAmount(tax)}${withholding ? ` − tevkifat ${trAmount(withholding)}` : ''} = ${trAmount(gross)}.` });
   }
   return { issues, taxTotal: str(tax), otherTaxTotal: str(otherSum), grossAmount: str(gross), lineGross };
 }
@@ -228,8 +228,8 @@ export function checkInvoice(i: InvoiceCheckInput): InvoiceCheck {
   for (const l of i.lines) {
     const al = i.allocations.filter((a) => a.lineNo === l.lineNo);
     const sum = add(...al.map((a) => dec(a.amount)));
-    if (cmp(sum, dec(l.netAmount)) > 0) push({ code: 'OVER_ALLOCATED', severity: 'BLOCK', ownerRole: 'FINANCE', lineNo: l.lineNo, message: `Satır ${l.lineNo}: tahsis toplamı ${str(sum)} satır tutarını (${l.netAmount}) aşıyor.` });
-    else if (cmp(sum, dec(l.netAmount)) < 0) push({ code: 'UNALLOCATED', severity: 'BLOCK', ownerRole: 'FINANCE', lineNo: l.lineNo, message: `Satır ${l.lineNo}: ${str(dec(l.netAmount) - sum)} ${i.currency} sözleşmeye tahsis edilmedi.` });
+    if (cmp(sum, dec(l.netAmount)) > 0) push({ code: 'OVER_ALLOCATED', severity: 'BLOCK', ownerRole: 'FINANCE', lineNo: l.lineNo, message: `Satır ${l.lineNo}: tahsis toplamı ${trAmount(sum)} ${i.currency}, satır tutarını (${trAmount(l.netAmount)} ${i.currency}) aşıyor.` });
+    else if (cmp(sum, dec(l.netAmount)) < 0) push({ code: 'UNALLOCATED', severity: 'BLOCK', ownerRole: 'FINANCE', lineNo: l.lineNo, message: `Satır ${l.lineNo}: ${trAmount(dec(l.netAmount) - sum)} ${i.currency} sözleşmeye tahsis edilmedi.` });
     // Aynı ünvanlı başka bir tüzel kişinin siparişine/sözleşmesine tahsis, tedarikçi sonradan aktifleşse de engel kalır (D84).
     const reversal = (id: string | null) => !!id && !!i.reversalTargets?.includes(id);
     const foreignPo = (id: string | null) => {
@@ -301,15 +301,15 @@ export function checkInvoice(i: InvoiceCheckInput): InvoiceCheck {
     if (c.ceiling !== null && amt > 0n) {
       const avail = dec(availableLimit(c.ceiling, c.netConsumption, c.openCommitment));
       const basis = c.limitBasis === 'GROSS' ? ' (vergi dahil)' : '';
-      if (cmp(amt, avail) > 0) push({ code: 'LIMIT_EXCEEDED', severity: 'BLOCK', ownerRole: 'PROCUREMENT_MANAGER', message: `${c.title}: kullanılabilir limit${basis} ${str(avail)} ${c.currency}, bu fatura ${str(amt)}. Zeyilname veya yetkili karar gerekir.` });
+      if (cmp(amt, avail) > 0) push({ code: 'LIMIT_EXCEEDED', severity: 'BLOCK', ownerRole: 'PROCUREMENT_MANAGER', message: `${c.title}: kullanılabilir limit${basis} ${trAmount(avail)} ${c.currency}, bu fatura ${trAmount(amt)} ${c.currency}. Zeyilname veya yetkili karar gerekir.` });
     }
     if (c.signatureUnresolved || c.archiveImport) {
       // T37: eski borç otomatik iptal edilmez; politika incelemesi açılır.
-      push({ code: 'CONTRACT_SIGNATURE_UNRESOLVED', severity: 'REVIEW', ownerRole: 'LEGAL', message: `${c.title}: imza kontrolü tamamlanmamış${c.archiveImport ? ' (arşivden alındı)' : ''}. Fatura iptal edilmez; ödeme politikası Satınalma incelemesine bağlıdır.` });
+      push({ code: 'CONTRACT_SIGNATURE_UNRESOLVED', severity: 'REVIEW', ownerRole: 'LEGAL', message: `${c.title}: imza kontrolü tamamlanmamış${c.archiveImport ? ' (arşivden alındı)' : ''}. Fatura iptal edilmez; imza kontrolünü Satınalma tamamlar.` });
     }
   }
   const offset = dec(i.advanceOffset);
-  if (offset < 0n || cmp(offset, dec(i.advanceBalance)) > 0) push({ code: 'ADVANCE_OFFSET_INVALID', severity: 'BLOCK', ownerRole: 'FINANCE', message: `Avans mahsubu ${i.advanceOffset}, kullanılabilir avans bakiyesi ${i.advanceBalance}.` });
+  if (offset < 0n || cmp(offset, dec(i.advanceBalance)) > 0) push({ code: 'ADVANCE_OFFSET_INVALID', severity: 'BLOCK', ownerRole: 'FINANCE', message: `Avans mahsubu ${trAmount(i.advanceOffset)} ${i.currency}, kullanılabilir avans bakiyesi ${trAmount(i.advanceBalance)} ${i.currency}.` });
   if (i.kind !== 'INVOICE' && offset !== 0n) push({ code: 'ADVANCE_OFFSET_INVALID', severity: 'BLOCK', ownerRole: 'FINANCE', message: 'Avans mahsubu yalnız normal faturada yapılır.' });
   if (cmp(offset, net) > 0) push({ code: 'ADVANCE_OFFSET_INVALID', severity: 'BLOCK', ownerRole: 'FINANCE', message: 'Mahsup fatura tutarını aşamaz.' });
   return {

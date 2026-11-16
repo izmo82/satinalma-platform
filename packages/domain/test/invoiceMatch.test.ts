@@ -104,7 +104,8 @@ describe('vergi aritmetiği: belgedeki değer doğru kabul edilmez', () => {
     const r = checkTax(bad, { taxTotal: '300.00', withholding: null, payable: '2500.00' }, 'TRY');
     expect(r.issues.map((x) => x.code)).toEqual(['TAX_LINE_MISMATCH', 'TAX_TOTAL_MISMATCH', 'PAYABLE_MISMATCH']);
     expect(r.issues.every((x) => x.severity === 'BLOCK' && x.ownerRole === 'FINANCE')).toBe(true);
-    expect(r.issues[0]!.message).toContain('999.99 × %20 = 200.00');
+    // v2 Faz 1 (D93/D95): bulgu metnindeki tutarlar Türkçe biçimde gösterilir (önce '999.99 × %20 = 200.00').
+    expect(r.issues[0]!.message).toContain('999,99 × %20 = 200,00');
   });
   it('tevkifat ödenecekten düşer, KDV\'yi aşamaz; belgede toplam yoksa yalnız satır kontrolü', () => {
     expect(checkTax(lines, { taxTotal: '300.00', withholding: '100.00', payable: '2199.99' }, 'TRY').issues).toEqual([]);
@@ -159,7 +160,8 @@ describe('Faz 4: KDV dışı vergilerin oran kontrolü', () => {
     expect(checkTax([line([{ code: '4080', name: 'ÖİV', rate: '7.5', amount: '75.00' }])], undefined, 'TRY').issues).toEqual([]);
     const bad = checkTax([line([{ code: '4080', name: 'ÖİV', rate: '7.5', amount: '80.00' }])], undefined, 'TRY');
     expect(bad.issues.map((x) => x.code)).toEqual(['OTHER_TAX_RATE_MISMATCH']);
-    expect(bad.issues[0]!.message).toContain('1000.00 × %7.50 = 75.00');
+    // v2 Faz 1 (D93/D95): tutar ve oran Türkçe biçimde (önce '1000.00 × %7.50 = 75.00').
+    expect(bad.issues[0]!.message).toContain('1.000,00 × %7,5 = 75,00');
   });
   it('maktu (oransız) vergi beyan olarak kalır; kalem toplamı satır toplamıyla tutmalı; KDV matrahına girer', () => {
     const r = checkTax([line([{ code: '0071', name: 'ÖTV', rate: null, amount: '150.00' }, { code: '4080', name: 'ÖİV', rate: '10', amount: '100.00' }], '250.00')], undefined, 'TRY');
@@ -180,7 +182,8 @@ describe('Faz 4: sözleşme limiti vergi dahil (GROSS)', () => {
     expect(checkInvoice(direct('100000.00')).limitImpact).toEqual({ C1: '120000.00' });
     expect(checkInvoice(direct('100000.00')).issues.some((x) => x.code === 'LIMIT_EXCEEDED')).toBe(false);
     const over = checkInvoice(direct('100001.00'));
-    expect(over.issues.find((x) => x.code === 'LIMIT_EXCEEDED')!.message).toContain('kullanılabilir limit (vergi dahil) 120000.00');
+    // v2 Faz 1 (D93/D95): tutar Türkçe biçimde (önce '120000.00').
+    expect(over.issues.find((x) => x.code === 'LIMIT_EXCEEDED')!.message).toContain('kullanılabilir limit (vergi dahil) 120.000,00 TRY');
     // Aynı tutar NET limitte sığar.
     expect(checkInvoice({ ...direct('100001.00'), contracts: [contract({ limitBasis: 'NET' })] }).issues.some((x) => x.code === 'LIMIT_EXCEEDED')).toBe(false);
   });
@@ -261,5 +264,27 @@ describe('allocationMatched', () => {
     expect(allocationMatched(true, [{ code: 'TAX_LINE_MISMATCH' }])).toBe(true);
     for (const code of MATCH_BLOCKING_CODES) expect(allocationMatched(true, [{ code }]), code).toBe(false);
     expect(allocationMatched(false, [])).toBe(false);
+  });
+});
+
+// Faz 1 kalan düzeltme: kullanıcıya giden bulgu metninde ham ondalık ("1500.00") ve kaldırılan ödeme dili yok.
+describe('bulgu metni: Türkçe tutar, ödeme dili yok', () => {
+  it('fazla tahsis tutarları Türkçe biçimde; imza bulgusunda ödeme politikası geçmez', async () => {
+    const { trAmount, trRate } = await import('../src/money.ts');
+    expect(trAmount('1500.00')).toBe('1.500,00');
+    expect(trAmount('-1234567.891')).toBe('-1.234.567,89');
+    expect(trAmount('0')).toBe('0,00');
+    expect(trAmount('abc')).toBe('abc');
+    expect(trRate('7.50')).toBe('7,5');
+    expect(trRate('20')).toBe('20');
+    const over = checkInvoice(base({ poLines: [], contracts: [], lines: [{ lineNo: 1, description: 'Hizmet', quantity: '1', unit: 'ay', unitPrice: '1000', netAmount: '1000.00' }],
+      allocations: [{ lineNo: 1, poLineId: null, contractVersionId: 'C1', quantity: '1', amount: '1500.00' }] }));
+    const msg = over.issues.find((x) => x.code === 'OVER_ALLOCATED')!.message;
+    expect(msg).toBe('Satır 1: tahsis toplamı 1.500,00 TRY, satır tutarını (1.000,00 TRY) aşıyor.');
+    expect(msg).not.toMatch(/\d\.\d{2}\b/);
+    const arch = checkInvoice(base({ poLines: [po({ receivedQty: '100' })], contracts: [{ contractVersionId: 'C1', title: 'Eski temizlik', currency: 'TRY', ceiling: null, netConsumption: '0', openCommitment: '0', signatureUnresolved: true, archiveImport: true }] }));
+    const sig = arch.issues.find((x) => x.code === 'CONTRACT_SIGNATURE_UNRESOLVED')!.message;
+    expect(sig).not.toMatch(/ödeme/i);
+    expect(sig).toContain('imza kontrolünü Satınalma tamamlar');
   });
 });

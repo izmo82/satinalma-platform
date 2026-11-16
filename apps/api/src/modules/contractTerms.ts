@@ -83,7 +83,7 @@ export async function saveTerms(tx: Tx, ctx: TenantContext, cvId: string, body: 
   await closeTasks(tx, `terms-verify:${cvId}`);
   await openTask(tx, ctx, {
     companyId: cv.company_id, kind: 'contract_terms_verify', entityType: 'contract_version', entityId: cvId,
-    title: `Koşulları doğrula: ${cv.title}`, reason: prev ? `Revizyon ${revision}: ${diff.map((d) => d.label).join(', ') || 'değişiklik'} — ${body.changeReason}` : 'Bedel, süre ve ihbar kuralı girildi; hukuk doğrulaması olmadan uyarılar planlanmaz.',
+    title: `Koşulları doğrula: ${cv.title}`, reason: prev ? `Revizyon ${revision}: ${diff.map((d) => d.label).join(', ') || 'değişiklik'} — ${body.changeReason}` : 'Bedel, süre ve ihbar kuralı girildi; ikinci bir Satınalma kullanıcısının doğrulaması olmadan uyarılar planlanmaz.',
     nextAction: 'Değerleri kaynak maddeyle karşılaştırıp doğrulayın.', assigneeRole: 'LEGAL', dedupeKey: `terms-verify:${cvId}:${revision}`,
   });
   await audit(tx, ctx, prev ? 'contract.terms_revised' : 'contract.terms_entered', 'contract_version', cvId, { revision, diff }, body.changeReason ?? undefined);

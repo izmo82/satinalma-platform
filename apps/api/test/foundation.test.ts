@@ -113,6 +113,10 @@ describe('T04 eşzamanlı aynı VKN', () => {
     const s = await h.call('masterData', 'GET', `/api/v1/suppliers/${[...ids][0]}`);
     expect(s.body.documents).toHaveLength(5);
     expect(s.body.status).toBe('CANDIDATE');
+    // Faz 1 kalan düzeltme (D93): ana veri rolü Satınalma'ya katıldı; metin web düğmesiyle aynı "kayıt onayı".
+    const created = results.find((r) => r.body.supplier.outcome === 'CANDIDATE_CREATED')!.body.supplier.message as string;
+    const attached = results.find((r) => r.body.supplier.outcome === 'ATTACHED_TO_CANDIDATE')!.body.supplier.message as string;
+    for (const m of [created, attached]) { expect(m).toContain('kayıt onayı bekleniyor'); expect(m).not.toMatch(/ana veri/i); }
   });
 });
 

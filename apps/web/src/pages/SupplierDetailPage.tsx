@@ -80,7 +80,7 @@ export function SupplierDetailPage() {
         {actionError.status === 409 && 'Sayfa güncel bilgilerle yenilendi; kararınızı yeniden gözden geçirin.'}
       </Banner>}
       {s.status === 'CANDIDATE' && (
-        <Banner tone="warn" title="Aday kayıt: kesin seçim ve ödeme serbest bırakma engelli">
+        <Banner tone="warn" title="Aday kayıt: kayıt onayına kadar kesin seçim engelli">
           {blockers.length ? <>Aktivasyon için: {blockers.join(' · ')}.</> : 'Aktivasyon koşulları tamam.'}
         </Banner>
       )}

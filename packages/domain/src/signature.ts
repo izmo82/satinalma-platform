@@ -132,7 +132,7 @@ export function deriveSignatureStatus(e: SignatureEvidence): SignatureStatus {
     underlying = 'NOT_REQUIRED';
   } else {
     if (e.method === 'PENDING_CLASSIFICATION') {
-      blockers.unshift({ code: 'METHOD_NOT_CLASSIFIED', action: 'Hukuk imza yöntemini sınıflandırmalı.' });
+      blockers.unshift({ code: 'METHOD_NOT_CLASSIFIED', action: 'Satınalma imza yöntemini sınıflandırmalı.' });
     }
     if (required.length === 0) {
       blockers.unshift({ code: 'NO_REQUIREMENTS_DEFINED', action: 'Taraf ve imzacı gereksinimlerini tanımlayın.' });

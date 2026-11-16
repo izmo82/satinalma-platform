@@ -127,6 +127,13 @@ describe('deriveSignatureStatus', () => {
     expect(deriveSignatureStatus(ev({ method: 'NOT_REQUIRED', requirements: [] })).overall).toBe('NOT_REQUIRED');
   });
 
+  // Faz 1 kalan düzeltme (D95a): yöntem sınıflandırma işi Hukuk rolünden Satınalma'ya geçti; eylem metni bunu söyler.
+  it('sınıflanmamış yöntemde eylem Satınalma\'ya yazılır, Hukuk geçmez', () => {
+    const b = deriveSignatureStatus(ev({ method: 'PENDING_CLASSIFICATION', reviews: [confirm('r-buyer'), confirm('r-sup')] })).blockers.find((x) => x.code === 'METHOD_NOT_CLASSIFIED')!;
+    expect(b.action).toBe('Satınalma imza yöntemini sınıflandırmalı.');
+    expect(b.action).not.toMatch(/hukuk/i);
+  });
+
   it('çok slotlu gereksinim: tüm imzacılar gerekli', () => {
     const two = { ...buyer, requirementCount: 2 };
     const s = deriveSignatureStatus(ev({ requirements: [two], reviews: [confirm('r-buyer')] }));

@@ -180,7 +180,7 @@ export async function decideDisposal(tx: Tx, ctx: TenantContext, id: string, b: 
   if (batch.proposed_by === ctx.userId) throw new ApiError(403, 'segregation_of_duties', 'İmhayı öneren kişi onaylayamaz.');
   const items = (await tx.query<{ document_id: string }>(`SELECT document_id FROM disposal_items WHERE batch_id = $1`, [id])).rows.map((r) => r.document_id);
   const { policies, holds, docs } = await loadRetentionInputs(tx, items);
-  if (docs.length !== items.length) throw new ApiError(403, 'scope_incomplete', 'Partide erişim kapsamınız dışında belge var; tüm şirketlere erişimi olan bir hukuk yetkilisi karar vermeli.');
+  if (docs.length !== items.length) throw new ApiError(403, 'scope_incomplete', 'Partide erişim kapsamınız dışında belge var; tüm şirketlere erişimi olan yetkili bir Satınalma kullanıcısı karar vermeli.');
   if (b.decision === 'REJECT') {
     await tx.query(`UPDATE disposal_batches SET status = 'REJECTED', decided_by = $2, decided_at = now(), decision_note = $3 WHERE id = $1`, [id, ctx.userId, b.note.trim()]);
     await closeTasks(tx, `disposal:${id}`);

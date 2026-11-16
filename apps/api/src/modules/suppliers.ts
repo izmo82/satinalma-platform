@@ -146,8 +146,8 @@ export async function resolveSeller(
   await audit(tx, ctx, 'supplier.resolve', 'supplier', supplierId, { outcome, documentVersionId, nameMismatch });
   const messages: Record<string, string> = {
     MATCHED_ACTIVE: 'Belge mevcut aktif tedarikçiye bağlandı.',
-    ATTACHED_TO_CANDIDATE: 'Bekleyen aday kayda belge eklendi; ana veri onayı bekleniyor.',
-    CANDIDATE_CREATED: 'Firma bulunamadı. Aday kaydı oluşturuldu; ana veri onayı bekleniyor.',
+    ATTACHED_TO_CANDIDATE: 'Bekleyen aday kayda belge eklendi; kayıt onayı bekleniyor.',
+    CANDIDATE_CREATED: 'Firma bulunamadı. Aday kaydı oluşturuldu; kayıt onayı bekleniyor.',
     MATCHED_RESTRICTED: 'Tedarikçi kısıtlı durumda; belge yetkili çözüm akışına alındı.',
   };
   return { outcome, supplierId, nameMismatch, bankChangeRequestId, suggestions: [], message: messages[outcome]! };
@@ -253,7 +253,7 @@ export async function resolveIdentity(tx: Tx, ctx: TenantContext, supplierId: st
   await closeTasks(tx, `supplier:${supplierId}:identity`);
   await openTask(tx, ctx, {
     companyId: null, kind: 'SUPPLIER_CANDIDATE_APPROVAL', entityType: 'supplier', entityId: supplierId,
-    title: 'Aday tedarikçi onay bekliyor', reason: 'Kimlik doğrulandı; ana veri onayı gerekiyor.',
+    title: 'Aday tedarikçi onay bekliyor', reason: 'Kimlik doğrulandı; kayıt onayı gerekiyor.',
     nextAction: 'Kanıtı inceleyip kayıt onayı verin.', assigneeRole: 'MASTER_DATA', dedupeKey: `supplier:${supplierId}:activation`,
   });
   await audit(tx, ctx, 'supplier.identity.resolved', 'supplier', supplierId, {}, body.rationale);
