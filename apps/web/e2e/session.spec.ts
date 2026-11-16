@@ -1,3 +1,4 @@
+// v2 Faz 1 (D93/D95): Belge girişi menüden kalktı; belge detayından kiracı değişince yükleme ekranının yeni adresi /sozlesmeler/ekle'ye dönülür.
 import { expect, test, type Page } from '@playwright/test';
 
 // Web oturumu sunucuda (BFF, D78): çerez sekmeler arasında ortak. Bir sekmede kullanıcı değişince öteki sekme eski kullanıcının
@@ -51,11 +52,11 @@ test('kiracı değişince kayıt detayından modül listesine dönülür; tedari
   await expect(page.getByRole('heading', { name: 'Tedarikçiler' })).toBeVisible();
   await expect(page.getByText('Kayıt bulunamadı')).toHaveCount(0);
   await tenant.selectOption(before);
-  // Belge detayının kendi listesi yok: belge girişine dönülür ("Sayfa bulunamadı" değil).
+  // Belge detayının kendi listesi yok: belge yükleme ekranına (Sözleşmeler > Sözleşme ekle) dönülür ("Sayfa bulunamadı" değil).
   await expect(page.getByRole('heading', { name: 'Tedarikçiler' })).toBeVisible();
   await page.goto('/belgeler/00000000-0000-4000-8000-000000000000');
   await tenant.selectOption(other);
-  await expect(page).toHaveURL(/\/belge-girisi$/);
+  await expect(page).toHaveURL(/\/sozlesmeler\/ekle$/);
   await expect(page.getByText('Sayfa bulunamadı')).toHaveCount(0);
   await tenant.selectOption(before);
 

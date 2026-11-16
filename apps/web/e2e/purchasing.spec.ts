@@ -1,3 +1,4 @@
+// v2 Faz 1 (D93/D95): e-Fatura XML yükleme kalır (D95 c); Belge girişi menüden kalktığı için yükleme Faturalar > Fatura yükle adresinden (/faturalar/yukle) yapılır; eski FINANCE çözen rolü v2 adıyla (Satınalma) görünür. Onay ve sipariş bölümleri Görev 6'da.
 import { expect, test, type Page } from '@playwright/test';
 import { syntheticVkn } from '../../../packages/domain/src/taxId.ts';
 
@@ -119,7 +120,7 @@ test('e-Fatura XML yüklenince fatura satırlardan açılır; KDV tutmazsa sorum
   test.skip(info.project.name !== 'desktop-1440', 'veri değiştirir; yalnız bir projede');
   await login(page, 'ferda.finans@example.test');
   const upload = async (no: string, tax: string, payable: string) => {
-    await page.goto('/belge-girisi');
+    await page.goto('/faturalar/yukle');
     await page.getByLabel('Belge türü').selectOption('INVOICE');
     await page.locator('input[type=file]').setInputFiles({ name: `${no}.xml`, mimeType: 'application/xml', buffer: efatura(no, tax, payable) });
     await page.getByRole('button', { name: 'Yükle' }).click();
@@ -136,7 +137,7 @@ test('e-Fatura XML yüklenince fatura satırlardan açılır; KDV tutmazsa sorum
   await expect(page.getByRole('link', { name: 'Kaynak e-Fatura' })).toBeVisible();
   await upload(`XML${tag}B`, '1800.00', '11800.00');
   await expect(page.getByText(/Satır 1: KDV 1800.00 TRY yazıyor; 10000.00 × %20 = 2000.00/)).toBeVisible();
-  await expect(page.getByText('Çözen: Finans').first()).toBeVisible();
+  await expect(page.getByText('Çözen: Satınalma').first()).toBeVisible();
 });
 
 test('sipariş değişikliği gerekçeyle kaydedilir; kısmi kabul sonrası kapatılır ve yeni kabul kapanır', async ({ page }, info) => {

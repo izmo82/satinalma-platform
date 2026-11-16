@@ -16,8 +16,8 @@ export const entityHref = (t: { entityType: string; entityId: string; kind?: str
   t.entityType === 'supplier' ? `/tedarikciler/${t.entityId}${['assessment_blocker', 'risk_rereview', 'new_business_hold'].includes(t.kind ?? '') ? '?sekme=degerlendirme' : ''}` : t.entityType === 'contract_version' ? `/sozlesmeler/${t.entityId}`
     : t.entityType === 'document_version' ? `/belgeler/${t.entityId}` : t.entityType === 'project' ? `/projeler/${t.entityId}`
     : t.entityType === 'invoice' ? `/faturalar/${t.entityId}` : t.entityType === 'recovery_case' ? `/lira-defteri/${t.entityId}`
-    : t.entityType === 'incident' ? `/olaylar/${t.entityId}` : t.entityType === 'tenant' ? '/yapay-zeka'
-    : t.entityType === 'disposal_batch' ? `/veri-yonetimi/imha/${t.entityId}` : t.entityType === 'tenant_export' ? '/veri-yonetimi?sekme=disa-aktarim' : '/islerim';
+    : t.entityType === 'incident' ? `/tedarikciler/olaylar/${t.entityId}` : t.entityType === 'tenant' ? '/yonetim/yapay-zeka'
+    : t.entityType === 'disposal_batch' ? `/veri-yonetimi/imha/${t.entityId}` : t.entityType === 'tenant_export' ? '/yonetim/denetim-izi' : '/islerim';
 
 const VIEWS = [['mine', 'Benden beklenen'], ['overdue', 'Geciken'], ['all', 'Rolümdeki tüm işler']] as const;
 

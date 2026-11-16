@@ -7,19 +7,20 @@ import { Banner, Loading, Tag } from '../ui/kit.tsx';
 import { Button } from '@/components/ui/button';
 
 // Yalnız geliştirme: sentetik kullanıcılarla oturum. Üretimde OIDC yönlendirmesi kullanılır.
+// v2 (D93): açıklamalar beş role göre; parantez içi kullanıcının eski görevi (sentetik verideki senaryosu).
 const DEMO = [
-  ['alper.satinalma@example.test', 'Satınalmacı'],
-  ['mine.anaveri@example.test', 'Ana veri sorumlusu'],
-  ['leyla.hukuk@example.test', 'Hukuk'],
-  ['kerem.hukuk@example.test', 'Hukuk + satınalma yöneticisi'],
-  ['ferda.finans@example.test', 'Finans (fatura girişi)'],
-  ['nur.finansonay@example.test', 'Finans (fatura onayı)'],
-  ['selin.guvenlik@example.test', 'Bilgi güvenliği'],
-  ['tamer.yonetici@example.test', 'Kiracı yöneticisi (belge erişimi yok)'],
+  ['alper.satinalma@example.test', 'Satınalma + departman kullanıcısı (Bilgi Teknolojileri)'],
+  ['mine.anaveri@example.test', 'Satınalma (ana veri işleri)'],
+  ['leyla.hukuk@example.test', 'Satınalma (hukuk işleri)'],
+  ['kerem.hukuk@example.test', 'Satınalma (hukuk ve satınalma yöneticisi işleri)'],
+  ['ferda.finans@example.test', 'Satınalma (fatura girişi)'],
+  ['nur.finansonay@example.test', 'Satınalma (eski fatura onayı kullanıcısı)'],
+  ['selin.guvenlik@example.test', 'Departman kullanıcısı (Bilgi Teknolojileri; bilgi güvenliği)'],
+  ['tamer.yonetici@example.test', 'Yönetici'],
   ['deniz.denetci@example.test', 'Denetçi'],
-  ['bora.baskakiraci@example.test', 'Başka kiracı kullanıcısı'],
-  ['ece.cokkiracili@example.test', 'İki kiracıya üye kullanıcı'],
-  ['tolga.teknik@example.test', 'Teknik değerlendirici'],
+  ['bora.baskakiraci@example.test', 'Başka kiracı kullanıcısı (Satınalma)'],
+  ['ece.cokkiracili@example.test', 'İki kiracıya üye kullanıcı (Satınalma)'],
+  ['tolga.teknik@example.test', 'Departman kullanıcısı (Bilgi Teknolojileri; teknik değerlendirme)'],
   ['teklif.anadolu@example.test', 'Tedarikçi portalı: Anadolu Bilişim'],
   ['teklif.ege@example.test', 'Tedarikçi portalı: Ege Sistem'],
   ['teklif.kuzey@example.test', 'Tedarikçi portalı: Kuzey Teknoloji (aday)'],

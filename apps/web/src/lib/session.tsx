@@ -10,6 +10,9 @@ export interface Me {
   /** Tedarikçi portalı kullanıcısı: yalnız davet edildiği teklif turlarını görür. */
   supplierPortal: boolean;
   companies: { id: string; name: string; country: string; default_currency: string }[];
+  /** v2 (D93): aktif üyeliğin departmanları; allDepartments rolden türer (Yönetici, Satınalma, Denetçi). */
+  departments?: { id: string; name: string }[];
+  allDepartments?: boolean;
 }
 
 interface SessionCtx {
@@ -105,4 +108,16 @@ export function useSession() {
   if (!c) throw new Error('no session');
   return c;
 }
-export const hasRole = (me: Me | null, ...roles: string[]) => !!me && me.roles.some((r) => roles.includes(r));
+/** Eski rol kodu → v2 rolü (packages/domain/src/roles.ts LEGACY_ROLE_MAP ile aynı; API can() da girdiyi böyle normalize eder). */
+const LEGACY_ROLE: Record<string, string> = {
+  TENANT_ADMIN: 'ADMIN', PLATFORM_OPS: 'ADMIN',
+  BUYER: 'PROCUREMENT', PROCUREMENT_MANAGER: 'PROCUREMENT', MASTER_DATA: 'PROCUREMENT', LEGAL: 'PROCUREMENT', FINANCE: 'PROCUREMENT',
+  REQUESTER: 'DEPARTMENT_USER', TECH_EVALUATOR: 'DEPARTMENT_USER', SECURITY: 'DEPARTMENT_USER',
+};
+const v2Role = (r: string) => LEGACY_ROLE[r] ?? r;
+/** Oturumdaki rol (v2) verilenlerden biri mi? Eski kodla yazılmış denetimler eşlendiği v2 rolüne göre çalışır. */
+export const hasRole = (me: Me | null, ...roles: string[]) => {
+  if (!me) return false;
+  const wanted = new Set(roles.map(v2Role));
+  return me.roles.some((r) => wanted.has(v2Role(r)));
+};

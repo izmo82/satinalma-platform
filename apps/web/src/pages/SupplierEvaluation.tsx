@@ -54,7 +54,7 @@ function AssessmentsTab({ supplierId }: { supplierId: string }) {
         {blocked.map((x) => x.scope).join(', ')}. Yeni seçim önerisi, seçim onayı ve sipariş engellenir; ticari veya ağırlıklı puan bu engeli aşmaz. Engel, incelemesi tamamlanan yeni değerlendirmeyle giderilir.</Banner>}
       <div className="flex flex-wrap items-center gap-2">
         <p className="min-w-0 flex-1 text-ink-muted">Hizmete özel anket: aynı firma farklı hizmetler için farklı değerlendirilir. Eksik yanıt başarılı sayılmaz.</p>
-        <Button variant="outline" asChild><Link to="/anketler">Anket şablonları</Link></Button>
+        <Button variant="outline" asChild><Link to="/tedarikciler/anketler">Anket şablonları</Link></Button>
         {r.data.can.manage && !creating && <Button onClick={() => setCreating(true)}>Değerlendirme başlat</Button>}
       </div>
       {creating && <NewAssessment supplierId={supplierId} onCancel={() => setCreating(false)} />}
@@ -122,7 +122,7 @@ export function IncidentTable({ items, showSupplier }: { items: IncidentRow[]; s
         <TableHead>Şiddet</TableHead><TableHead className="max-[900px]:hidden">Kategori</TableHead><TableHead>Tarih</TableHead></TableRow></TableHeader>
       <TableBody>{items.map((x) => (
         <TableRow key={x.id}>
-          <TableCell className="min-w-[220px]"><Link className="font-semibold text-ink no-underline hover:underline" to={`/olaylar/${x.id}`}>{x.code}</Link>
+          <TableCell className="min-w-[220px]"><Link className="font-semibold text-ink no-underline hover:underline" to={`/tedarikciler/olaylar/${x.id}`}>{x.code}</Link>
             <span className="block text-sm text-ink-muted">{x.title}</span>
             {(x.duplicateOfId || x.openActions > 0 || x.awaitingVerification > 0) && <span className="block text-sm text-ink-subtle">{x.duplicateOfId ? 'Mükerrer'
               : [x.openActions && `${x.openActions} açık faaliyet`, x.awaitingVerification && `${x.awaitingVerification} doğrulama bekliyor`].filter(Boolean).join(' · ')}</span>}</TableCell>
@@ -160,7 +160,7 @@ function ReportIncident({ supplierId, onCancel, onReported }: { supplierId: stri
   const [err, setErr] = useState<string | null>(null);
   const [dups, setDups] = useState<{ created: { id: string; code: string }; list: { id: string; code: string; title: string; occurredOn: string }[] } | null>(null);
   if (dups) return (
-    <Banner tone="warn" title={`${dups.created.code} kaydedildi; ${dups.list.length} olası mükerrer olay var`} action={<Button size="sm" onClick={() => navigate(`/olaylar/${dups.created.id}`)}>Olayı aç</Button>}>
+    <Banner tone="warn" title={`${dups.created.code} kaydedildi; ${dups.list.length} olası mükerrer olay var`} action={<Button size="sm" onClick={() => navigate(`/tedarikciler/olaylar/${dups.created.id}`)}>Olayı aç</Button>}>
       {dups.list.map((x) => `${x.code} (${fmtDate(x.occurredOn)}) ${x.title}`).join(' · ')}. Otomatik birleştirilmedi; ön incelemede mükerrer olarak işaretlenebilir.
     </Banner>
   );
@@ -168,7 +168,7 @@ function ReportIncident({ supplierId, onCancel, onReported }: { supplierId: stri
     <form className="panel" onSubmit={(e) => { e.preventDefault(); setErr(null);
       void api<{ id: string; code: string; possibleDuplicates: { id: string; code: string; title: string; occurredOn: string }[] }>('/api/v1/incidents', { method: 'POST',
         json: { supplierId, ...f, impact: f.impact || null, location: f.location || null } })
-        .then((r) => { if (r.data.possibleDuplicates.length) { setDups({ created: r.data, list: r.data.possibleDuplicates }); onReported(); } else navigate(`/olaylar/${r.data.id}`); }, (x: ApiError) => setErr(x.message)); }}>
+        .then((r) => { if (r.data.possibleDuplicates.length) { setDups({ created: r.data, list: r.data.possibleDuplicates }); onReported(); } else navigate(`/tedarikciler/olaylar/${r.data.id}`); }, (x: ApiError) => setErr(x.message)); }}>
       <div className="panel-head"><h2>Olay bildir</h2><span className="text-sm text-ink-subtle">Bildirim iddiadır; doğrulama başka bir yetkilinindir.</span></div>
       <div className="panel-body grid gap-3">
         <div className="grid grid-cols-3 items-start gap-x-3 max-[900px]:grid-cols-1">
@@ -245,7 +245,7 @@ function ScorecardTab({ supplierId }: { supplierId: string }) {
         <div className="panel-head"><h2>Olaylar ve puan etkisi</h2><span className="text-sm text-ink-subtle">{d.incidents.counted}/{d.incidents.total} olay puana yansıdı</span></div>
         <div className="panel-body">{!d.incidents.items.length ? <p className="text-ink-muted">Bu yıl olay yok.</p> : (
           <ul className="grid gap-2">{d.incidents.items.map((x) => (
-            <li key={x.id} className="flex flex-wrap items-baseline gap-x-2"><Link to={`/olaylar/${x.id}`} className="font-semibold">{x.code}</Link><span>{x.title}</span>
+            <li key={x.id} className="flex flex-wrap items-baseline gap-x-2"><Link to={`/tedarikciler/olaylar/${x.id}`} className="font-semibold">{x.code}</Link><span>{x.title}</span>
               <Tag label={LEVEL[x.severity]} /><span className={cn('text-sm', x.counted ? 'text-danger' : 'text-ink-subtle')}>{x.counted ? 'Puana yansıdı' : x.reason}</span></li>))}</ul>)}</div>
       </section>
     </div>
@@ -271,7 +271,7 @@ function PerformanceForm({ supplierId, year, onDone }: { supplierId: string; yea
       void api(`/api/v1/suppliers/${supplierId}/performance-reviews`, { method: 'POST', json: { ...f, scores: Object.fromEntries(Object.entries(scores).filter(([, v]) => v !== '').map(([k, v]) => [k, Number(v)])) } })
         .then(onDone, (x: ApiError) => setErr(x.message)); }}>
       <div className="panel-head"><h2>Performans incelemesi</h2><span className="text-sm text-ink-subtle">{applied ? `"${applied.category}" kategori ağırlığı uygulanır: ${weightText(applied.weights)}.`
-        : `Kategori kuralı yok; örnek ağırlık uygulanır: ${weightText(DEFAULT_W)}.`} <Link to="/performans-agirliklari">Ağırlık kuralları</Link></span></div>
+        : `Kategori kuralı yok; örnek ağırlık uygulanır: ${weightText(DEFAULT_W)}.`} <Link to="/tedarikciler/performans-agirliklari">Ağırlık kuralları</Link></span></div>
       <div className="panel-body grid gap-3">
         <div className="grid grid-cols-3 items-start gap-x-3 max-[900px]:grid-cols-1">
           <Field label="Dönem başı">{(p) => <input className="input" type="date" required {...p} value={f.periodStart} onChange={(e) => setF({ ...f, periodStart: e.target.value })} />}</Field>

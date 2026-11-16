@@ -15,10 +15,14 @@ interface Result {
   supplier: null | { outcome: string; supplierId: string | null; message: string; nameMismatch: boolean; bankChangeRequestId: string | null; suggestions: { id: string; legalName: string }[] };
 }
 
-export function IntakePage() {
+/**
+ * Belge yükleme. v2 (D93): menüdeki "Belge girişi" kalktı; Sözleşmeler > "Sözleşme ekle" ve Faturalar > "Fatura yükle" bu ekranı
+ * türü önceden seçili açar. Teklif ve diğer türler de yüklenebilir (K-05), bu yüzden tür seçimi görünür kalır.
+ */
+export function IntakePage({ kind: initialKind = 'INVOICE', title = 'Belge girişi', back }: { kind?: 'INVOICE' | 'CONTRACT'; title?: string; back?: { to: string; label: string } } = {}) {
   const { me } = useSession();
   const [company, setCompany] = useState(me?.companies[0]?.id ?? '');
-  const [kind, setKind] = useState('INVOICE');
+  const [kind, setKind] = useState<string>(initialKind);
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
@@ -36,10 +40,11 @@ export function IntakePage() {
     } catch (err) { setError(err as ApiError); } finally { setBusy(false); inFlight.current = false; }
   }
 
-  if (!me?.companies.length) return <div className="page"><h1>Belge girişi</h1><Banner tone="neutral" icon="lock" title="Belge yükleyebileceğiniz şirket yok">Şirket kapsamı tanımlı değil.</Banner></div>;
+  const backLink = back && <Button variant="outline" asChild><Link to={back.to}>{back.label}</Link></Button>;
+  if (!me?.companies.length) return <div className="page"><PageHeader title={title} actions={backLink} /><Banner tone="neutral" icon="lock" title="Belge yükleyebileceğiniz şirket yok">Şirket kapsamı tanımlı değil.</Banner></div>;
   return (
     <div className="page" style={{ maxWidth: 820 }}>
-      <PageHeader title="Belge girişi">e-Fatura XML önce kural ile okunur. PDF/görüntü için OCR sağlayıcısı bağlı değilse alanlar elle girilir; sahte çıkarım yapılmaz.</PageHeader>
+      <PageHeader title={title} actions={backLink}>e-Fatura XML önce kural ile okunur. PDF/görüntü için OCR sağlayıcısı bağlı değilse alanlar elle girilir; sahte çıkarım yapılmaz.</PageHeader>
       <form className="panel panel-body" onSubmit={submit}>
         <Field label="Şirket">{(p) => <select className="input" {...p} value={company} onChange={(e) => setCompany(e.target.value)}>{me.companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>}</Field>
         <Field label="Belge türü">{(p) => <select className="input" {...p} value={kind} onChange={(e) => setKind(e.target.value)}>

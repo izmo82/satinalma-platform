@@ -7,7 +7,7 @@ const TYPE: Record<string, { label: string; href: (id: string) => string }> = {
   project: { label: 'Projeler', href: (id) => `/projeler/${id}` }, supplier: { label: 'Tedarikçiler', href: (id) => `/tedarikciler/${id}` },
   contract: { label: 'Sözleşmeler', href: (id) => `/sozlesmeler/${id}` }, purchase_order: { label: 'Siparişler', href: (id) => `/siparisler/${id}` },
   invoice: { label: 'Faturalar', href: (id) => `/faturalar/${id}` }, document: { label: 'Belgeler', href: (id) => `/belgeler/${id}` },
-  incident: { label: 'Olaylar', href: (id) => `/olaylar/${id}` },
+  incident: { label: 'Olaylar', href: (id) => `/tedarikciler/olaylar/${id}` },
 };
 
 /** Arama sonuçları: yalnız okuma izniniz olan türler ve şirket kapsamınızdaki kayıtlar; her sonuç neyle eşleştiğini gösterir. */

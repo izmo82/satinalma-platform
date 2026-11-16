@@ -1,4 +1,4 @@
-import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
+import { Link, NavLink, Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { lazy, Suspense, useEffect, useRef } from 'react';
 import { hasRole, useSession } from './lib/session.tsx';
 import { roleLabel } from './lib/labels.ts';
@@ -14,7 +14,9 @@ import { SuppliersPage } from './pages/SuppliersPage.tsx';
 import { SupplierDetailPage } from './pages/SupplierDetailPage.tsx';
 import { IntakePage } from './pages/IntakePage.tsx';
 import { ContractsPage } from './pages/ContractsPage.tsx';
-import { NotYetPage } from './pages/NotYetPage.tsx';
+import { NotYetPage, RemovedPage } from './pages/NotYetPage.tsx';
+import { AdminIndex, AdminLayout, AdminTab, adminTabs, ApproversTab, IntegrationsTab, RulesTab, TemplatesTab as ContractTemplatesTab, UsersTab } from './pages/AdminPages.tsx';
+import { SectionTabs } from './ui/SectionTabs.tsx';
 import { ProjectsPage } from './pages/ProjectsPage.tsx';
 import { ProjectWizard } from './pages/ProjectWizard.tsx';
 import { ProjectWorkspace } from './pages/ProjectWorkspace.tsx';
@@ -25,13 +27,9 @@ import { GlobalSearch, NotificationBell } from './ui/TopBar.tsx';
 const DocumentPage = lazy(() => import('./pages/DocumentPage.tsx').then((m) => ({ default: m.DocumentPage })));
 const ContractPage = lazy(() => import('./pages/ContractLifecycle.tsx').then((m) => ({ default: m.ContractPage })));
 const purchasing = () => import('./pages/PurchasingPages.tsx');
-const PurchaseOrdersPage = lazy(() => purchasing().then((m) => ({ default: m.PurchaseOrdersPage })));
-const PurchaseOrderPage = lazy(() => purchasing().then((m) => ({ default: m.PurchaseOrderPage })));
 const InvoicesPage = lazy(() => purchasing().then((m) => ({ default: m.InvoicesPage })));
 const InvoicePage = lazy(() => purchasing().then((m) => ({ default: m.InvoicePage })));
 const SearchPage = lazy(() => import('./pages/SearchPage.tsx').then((m) => ({ default: m.SearchPage })));
-const ApprovalPolicyPage = lazy(() => import('./pages/ApprovalPolicyPage.tsx').then((m) => ({ default: m.ApprovalPolicyPage })));
-const ToleranceRulesPage = lazy(() => purchasing().then((m) => ({ default: m.ToleranceRulesPage })));
 const evaluation = () => import('./pages/EvaluationPages.tsx');
 const AssessmentPage = lazy(() => evaluation().then((m) => ({ default: m.AssessmentPage })));
 const IncidentPage = lazy(() => evaluation().then((m) => ({ default: m.IncidentPage })));
@@ -40,16 +38,51 @@ const TemplatesPage = lazy(() => evaluation().then((m) => ({ default: m.Template
 const PerformanceWeightsPage = lazy(() => evaluation().then((m) => ({ default: m.PerformanceWeightsPage })));
 const ReportsPage = lazy(() => evaluation().then((m) => ({ default: m.ReportsPage })));
 const AiPage = lazy(() => evaluation().then((m) => ({ default: m.AiPage })));
-const governance = () => import('./pages/GovernancePages.tsx');
-const DataGovernancePage = lazy(() => governance().then((m) => ({ default: m.DataGovernancePage })));
-const DisposalBatchPage = lazy(() => governance().then((m) => ({ default: m.DisposalBatchPage })));
-const ErpReconciliationPage = lazy(() => governance().then((m) => ({ default: m.ErpReconciliationPage })));
-const ledger = () => import('./pages/LedgerPages.tsx');
-const LedgerPage = lazy(() => ledger().then((m) => ({ default: m.LedgerPage })));
-const RecoveryCasePage = lazy(() => ledger().then((m) => ({ default: m.RecoveryCasePage })));
+const AuditPage = lazy(() => import('./pages/AuditPage.tsx').then((m) => ({ default: m.AuditPage })));
 
 /** Adresin ilk bölümü kendi listesi olmayan detaylar: kiracı değişince dönülecek liste. */
-const LIST_OF: Record<string, string> = { belgeler: '/belge-girisi', degerlendirmeler: '/tedarikciler' };
+const LIST_OF: Record<string, string> = { belgeler: '/sozlesmeler/ekle', degerlendirmeler: '/tedarikciler' };
+/** Alt adresi olan liste sayfaları (sekmeler, yükleme ekranları): kiracı değişince adres korunur. */
+const KEEP = new Set(['/tedarikciler/olaylar', '/tedarikciler/anketler', '/tedarikciler/performans-agirliklari', '/sozlesmeler/ekle', '/faturalar/yukle']);
+/** Kiracı değişince gidilecek liste; null = adres kalır. */
+function listOf(path: string): string | null {
+  if (KEEP.has(path) || path.startsWith('/yonetim/')) return null;
+  if (path.startsWith('/tedarikciler/olaylar/')) return '/tedarikciler/olaylar';
+  const section = path.split('/')[1];
+  if (!section || path === `/${section}`) return null;
+  return LIST_OF[section] ?? `/${section}`;
+}
+
+/** v2 (D93): taşınan giriş; eski adres (yer imi, bildirim) sorgusuyla birlikte yeni yere kalıcı yönlenir. */
+function Moved({ to }: { to: (p: Record<string, string | undefined>) => string }) {
+  const params = useParams();
+  const { search } = useLocation();
+  return <Navigate to={`${to(params)}${search}`} replace />;
+}
+
+/** Veri yönetimi kalktı (saklama, hukuki saklama, imha); dışa aktarım sekmesi Yönetim > Denetim izi'ne taşındı. */
+function DataGovernanceRemoved() {
+  const { me } = useSession();
+  const { search } = useLocation();
+  const exportsVisible = adminTabs(me).some((t) => t.key === 'denetim-izi');
+  if (exportsVisible && new URLSearchParams(search).get('sekme') === 'disa-aktarim') return <Navigate to="/yonetim/denetim-izi" replace />;
+  return <RemovedPage moved={exportsVisible ? <>Kiracı dışa aktarımı taşındı: <Link to="/yonetim/denetim-izi">Yönetim &gt; Denetim izi</Link>.</> : undefined} />;
+}
+
+/** Tedarikçiler: liste ve taşınan Olaylar, Anketler, Performans ağırlıkları alt çizgili sekme olarak. */
+function SuppliersSection() {
+  return (
+    <div className="flex min-h-full flex-col">
+      <SectionTabs label="Tedarikçiler sekmeleri" tabs={[
+        { to: '/tedarikciler', label: 'Liste', end: true },
+        { to: '/tedarikciler/olaylar', label: 'Olaylar' },
+        { to: '/tedarikciler/anketler', label: 'Anketler' },
+        { to: '/tedarikciler/performans-agirliklari', label: 'Performans ağırlıkları' },
+      ]} />
+      <Outlet />
+    </div>
+  );
+}
 
 export function App() {
   const { me, loading } = useSession();
@@ -69,8 +102,8 @@ function Shell() {
   // listesine (adresin ilk bölümü) dönülür; liste sayfasında adres korunur.
   // Yönlendirme önce yapılır: kiracı yüklenirken bu bileşen kalkar, sonradan çağrılan navigate işlemez.
   const changeTenant = (id: string) => {
-    const section = loc.pathname.split('/')[1];
-    if (section && loc.pathname !== `/${section}`) navigate(LIST_OF[section] ?? `/${section}`, { replace: true });
+    const list = listOf(loc.pathname);
+    if (list) navigate(list, { replace: true });
     return switchTenant(id);
   };
   useEffect(() => { mainRef.current?.focus({ preventScroll: true }); }, [loc.pathname]);
@@ -83,19 +116,16 @@ function Shell() {
     { to: '/portal/anketler', label: 'Anketler', icon: 'shield' },
   ] : [
     { to: '/islerim', label: 'İşlerim', icon: 'inbox', count: load(null) },
-    ...(hasRole(me, 'BUYER', 'PROCUREMENT_MANAGER', 'FINANCE', 'LEGAL', 'AUDITOR') ? [{ to: '/lira-defteri', label: 'Lira Defteri', icon: 'wallet', count: load(['recovery_case']) }] : []),
-    // Yalnız yetkisiz (403) ekrana götüren girişler gizlenir; rol listeleri packages/domain/src/roles.ts ile aynı (D90).
-    // TENANT_ADMIN proje listesini okuyamaz ama onay politikasına buradan ulaşır.
-    ...(hasRole(me, 'REQUESTER', 'BUYER', 'PROCUREMENT_MANAGER', 'TECH_EVALUATOR', 'FINANCE', 'SECURITY', 'AUDITOR', 'TENANT_ADMIN') ? [{ to: '/projeler', label: 'Projeler', icon: 'folder', count: load(['project']) }] : []),
-    ...(hasRole(me, 'REQUESTER', 'BUYER', 'PROCUREMENT_MANAGER', 'TECH_EVALUATOR', 'LEGAL', 'FINANCE', 'SECURITY', 'MASTER_DATA', 'AUDITOR') ? [{ to: '/tedarikciler', label: 'Tedarikçiler', icon: 'users', count: load(['supplier']) }] : []),
-    ...(hasRole(me, 'BUYER', 'PROCUREMENT_MANAGER', 'LEGAL', 'FINANCE', 'AUDITOR') ? [{ to: '/sozlesmeler', label: 'Sözleşmeler', icon: 'file', count: load(['contract_version']) }] : []),
-    { to: '/belge-girisi', label: 'Belge girişi', icon: 'upload', count: load(['document_version']) },
-    ...(hasRole(me, 'REQUESTER', 'BUYER', 'PROCUREMENT_MANAGER', 'FINANCE', 'AUDITOR') ? [{ to: '/siparisler', label: 'Siparişler', icon: 'package' }] : []),
-    ...(hasRole(me, 'BUYER', 'PROCUREMENT_MANAGER', 'FINANCE', 'LEGAL', 'AUDITOR') ? [{ to: '/faturalar', label: 'Faturalar', icon: 'receipt', count: load(['invoice']) }] : []),
-    ...(hasRole(me, 'REQUESTER', 'BUYER', 'PROCUREMENT_MANAGER', 'TECH_EVALUATOR', 'LEGAL', 'FINANCE', 'SECURITY', 'MASTER_DATA', 'AUDITOR') ? [{ to: '/olaylar', label: 'Olaylar', icon: 'alert', count: load(['incident']) }] : []),
-    ...(hasRole(me, 'BUYER', 'PROCUREMENT_MANAGER', 'FINANCE', 'AUDITOR') ? [{ to: '/raporlar', label: 'Raporlar', icon: 'chart' }] : []),
-    ...(hasRole(me, 'TENANT_ADMIN', 'AUDITOR', 'PROCUREMENT_MANAGER') ? [{ to: '/yapay-zeka', label: 'Yapay zekâ', icon: 'sparkles', count: load(['tenant']) }] : []),
-    ...(hasRole(me, 'LEGAL', 'TENANT_ADMIN', 'AUDITOR') ? [{ to: '/veri-yonetimi', label: 'Veri yönetimi', icon: 'archive', count: load(['disposal_batch', 'tenant_export']) }] : []),
+    // v2 (D93): yedi giriş, beş rol. Taşınan girişlerin sayaçları yeni üst girişe eklenir: Olaylar → Tedarikçiler,
+    // Belge girişi → Sözleşmeler, Yapay zekâ ve dışa aktarım → Yönetim. Yönetim'i Departman kullanıcısı görmez.
+    ...(hasRole(me, 'ADMIN', 'PROCUREMENT', 'DEPARTMENT_USER', 'AUDITOR') ? [
+      { to: '/projeler', label: 'Projeler', icon: 'folder', count: load(['project']) },
+      { to: '/sozlesmeler', label: 'Sözleşmeler', icon: 'file', count: load(['contract_version', 'document_version']) },
+      { to: '/tedarikciler', label: 'Tedarikçiler', icon: 'users', count: load(['supplier', 'incident']) },
+      { to: '/faturalar', label: 'Faturalar', icon: 'receipt', count: load(['invoice']) },
+      { to: '/raporlar', label: 'Raporlar', icon: 'chart' },
+    ] : []),
+    ...(adminTabs(me).length ? [{ to: '/yonetim', label: 'Yönetim', icon: 'settings', count: load(['tenant', 'tenant_export']) }] : []),
   ];
   const companies = me.supplierPortal ? 'Tedarikçi portalı' : me.companies.length ? me.companies.map((c) => c.name).join(' · ') : 'Şirket belgesi erişimi yok';
   return (
@@ -130,7 +160,7 @@ function Shell() {
         </nav>
         <div className="border-t border-border px-5 py-4 max-[900px]:hidden">
           <div className="truncate font-semibold">{me.user.displayName}</div>
-          <div className="truncate text-sm text-ink-subtle">{me.roles.map((r) => roleLabel[r] ?? r).join(', ')}</div>
+          <div className="truncate text-sm text-ink-subtle">{[...new Set(me.roles.map((r) => roleLabel[r] ?? 'Rol tanımsız'))].join(', ')}</div>
           <Button variant="outline" size="sm" onClick={logout} className="mt-3"><Icon name="logout" />Çıkış</Button>
         </div>
       </aside>
@@ -158,31 +188,49 @@ function Shell() {
           <Route path="/projeler/yeni" element={<ProjectWizard />} />
           <Route path="/projeler/:id" element={<ProjectWorkspace />} />
           <Route path="/islerim" element={<WorkPage />} />
-          <Route path="/tedarikciler" element={<SuppliersPage />} />
+          <Route path="/tedarikciler" element={<SuppliersSection />}>
+            <Route index element={<SuppliersPage />} />
+            <Route path="olaylar" element={<IncidentsPage />} />
+            <Route path="anketler" element={<TemplatesPage />} />
+            <Route path="performans-agirliklari" element={<PerformanceWeightsPage />} />
+          </Route>
+          <Route path="/tedarikciler/olaylar/:id" element={<IncidentPage />} />
           <Route path="/tedarikciler/:id" element={<SupplierDetailPage />} />
-          <Route path="/belge-girisi" element={<IntakePage />} />
           <Route path="/belgeler/:id" element={<DocumentPage />} />
           <Route path="/sozlesmeler" element={<ContractsPage />} />
+          <Route path="/sozlesmeler/ekle" element={<IntakePage key="sozlesme" kind="CONTRACT" title="Sözleşme ekle" back={{ to: '/sozlesmeler', label: 'Sözleşmeler' }} />} />
           <Route path="/sozlesmeler/:id" element={<ContractPage />} />
-          <Route path="/siparisler" element={<PurchaseOrdersPage />} />
-          <Route path="/siparisler/:id" element={<PurchaseOrderPage />} />
           <Route path="/faturalar" element={<InvoicesPage />} />
-          <Route path="/faturalar/tolerans" element={<ToleranceRulesPage />} />
-          <Route path="/projeler/onay-politikasi" element={<ApprovalPolicyPage />} />
-          <Route path="/ara" element={<SearchPage />} />
-          <Route path="/faturalar/erp-mutabakati" element={<ErpReconciliationPage />} />
+          <Route path="/faturalar/yukle" element={<IntakePage key="fatura" kind="INVOICE" title="Fatura yükle" back={{ to: '/faturalar', label: 'Faturalar' }} />} />
           <Route path="/faturalar/:id" element={<InvoicePage />} />
+          <Route path="/ara" element={<SearchPage />} />
           <Route path="/raporlar" element={<ReportsPage />} />
-          <Route path="/lira-defteri" element={<LedgerPage />} />
-          <Route path="/lira-defteri/:id" element={<RecoveryCasePage />} />
-          <Route path="/olaylar" element={<IncidentsPage />} />
-          <Route path="/olaylar/:id" element={<IncidentPage />} />
           <Route path="/degerlendirmeler/:id" element={<AssessmentPage />} />
-          <Route path="/anketler" element={<TemplatesPage />} />
-          <Route path="/performans-agirliklari" element={<PerformanceWeightsPage />} />
-          <Route path="/yapay-zeka" element={<AiPage />} />
-          <Route path="/veri-yonetimi" element={<DataGovernancePage />} />
-          <Route path="/veri-yonetimi/imha/:id" element={<DisposalBatchPage />} />
+          <Route path="/yonetim" element={<AdminLayout />}>
+            <Route index element={<AdminIndex />} />
+            <Route path="kullanicilar" element={<AdminTab tab="kullanicilar"><UsersTab /></AdminTab>} />
+            <Route path="onaycilar" element={<AdminTab tab="onaycilar"><ApproversTab /></AdminTab>} />
+            <Route path="sablonlar" element={<AdminTab tab="sablonlar"><ContractTemplatesTab /></AdminTab>} />
+            <Route path="satinalma-kurallari" element={<AdminTab tab="satinalma-kurallari"><RulesTab /></AdminTab>} />
+            <Route path="entegrasyonlar" element={<AdminTab tab="entegrasyonlar"><IntegrationsTab /></AdminTab>} />
+            <Route path="yapay-zeka" element={<AdminTab tab="yapay-zeka"><AiPage /></AdminTab>} />
+            <Route path="denetim-izi" element={<AdminTab tab="denetim-izi"><AuditPage /></AdminTab>} />
+            <Route path="*" element={<AdminIndex />} />
+          </Route>
+          {/* v2 (D93): taşınan girişlerin eski adresleri kalıcı yönlenir. */}
+          <Route path="/yapay-zeka" element={<Moved to={() => '/yonetim/yapay-zeka'} />} />
+          <Route path="/faturalar/erp-mutabakati" element={<Moved to={() => '/yonetim/entegrasyonlar'} />} />
+          <Route path="/olaylar" element={<Moved to={() => '/tedarikciler/olaylar'} />} />
+          <Route path="/olaylar/:id" element={<Moved to={(p) => `/tedarikciler/olaylar/${p.id}`} />} />
+          <Route path="/anketler" element={<Moved to={() => '/tedarikciler/anketler'} />} />
+          <Route path="/performans-agirliklari" element={<Moved to={() => '/tedarikciler/performans-agirliklari'} />} />
+          <Route path="/belge-girisi" element={<Moved to={() => '/sozlesmeler/ekle'} />} />
+          {/* v2 (D93) onaylı kaldırma listesi: eski adres açıklama ekranına gider; veri silinmedi. */}
+          <Route path="/lira-defteri/*" element={<RemovedPage />} />
+          <Route path="/siparisler/*" element={<RemovedPage />} />
+          <Route path="/faturalar/tolerans" element={<RemovedPage />} />
+          <Route path="/projeler/onay-politikasi" element={<RemovedPage />} />
+          <Route path="/veri-yonetimi/*" element={<DataGovernanceRemoved />} />
           <Route path="*" element={<NotYetPage title="Sayfa bulunamadı" />} />
         </Routes>}
         </Suspense>

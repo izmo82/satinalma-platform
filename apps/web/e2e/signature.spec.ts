@@ -1,3 +1,4 @@
+// v2 Faz 1 (D93/D95): Belge girişi menüden kalktı; taşma denetimi yükleme ekranının yeni adresinde (/sozlesmeler/ekle) yapılır.
 import { expect, test, type Page } from '@playwright/test';
 
 async function login(page: Page, email: string) {
@@ -55,7 +56,7 @@ test('başka kiracı kullanıcısı A kiracısının sözleşmesini açamaz', as
 
 test('sayfa yatay taşmaz', async ({ page }) => {
   await login(page, 'mine.anaveri@example.test');
-  for (const path of ['/islerim', '/tedarikciler', '/sozlesmeler', '/belge-girisi']) {
+  for (const path of ['/islerim', '/tedarikciler', '/sozlesmeler', '/sozlesmeler/ekle']) {
     await page.goto(path);
     await page.waitForLoadState('networkidle');
     const { sw, cw } = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }));

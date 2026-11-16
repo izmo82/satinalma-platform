@@ -229,7 +229,7 @@ export function IncidentPage() {
   if (d.can.verify && i.status === 'VERIFIED' && !i.disputeOpen) acts.push({ action: 'DISPUTE', label: 'Tedarikçi itirazını kaydet' });
   return (
     <div className="page">
-      <p className="text-sm text-ink-subtle"><Link to="/olaylar" className="text-ink-subtle">Olaylar</Link> / {i.code}</p>
+      <p className="text-sm text-ink-subtle"><Link to="/tedarikciler/olaylar" className="text-ink-subtle">Olaylar</Link> / {i.code}</p>
       <div className="mb-2 mt-1 flex flex-wrap items-start gap-3"><h1 className="min-w-0 flex-1">{i.code} · {i.title}</h1><Tag label={INCIDENT_STATUS[i.status]} />
         {i.disputeOpen && <Tag label={{ text: 'İtiraz açık', tone: 'warn', icon: 'alert' }} />}</div>
       <p className="mb-5 text-ink-muted"><Link to={`/tedarikciler/${i.supplierId}?sekme=olaylar`}>{i.supplierName}</Link> · {CATEGORY[i.category]} · {fmtDate(i.occurredOn)}
@@ -241,7 +241,7 @@ export function IncidentPage() {
           <section className="panel"><div className="panel-head"><h2>Olay</h2><Tag label={LEVEL[i.severity]} /></div>
             <div className="panel-body grid gap-2"><p>{i.description}</p>
               {i.impact && <p><strong>Etki:</strong> {i.impact}</p>}{i.location && <p><strong>Lokasyon:</strong> {i.location}</p>}
-              {i.duplicateOfId && <p>Mükerrer kayıt; asıl olay <Link to={`/olaylar/${i.duplicateOfId}`}>{i.duplicateOfCode}</Link>.</p>}
+              {i.duplicateOfId && <p>Mükerrer kayıt; asıl olay <Link to={`/tedarikciler/olaylar/${i.duplicateOfId}`}>{i.duplicateOfCode}</Link>.</p>}
               {i.countedInMetric && <p className="text-sm text-ink-muted">SLA ölçümüne yansıdığı için ayrıca ceza puanı uygulanmaz.</p>}
               <p className="text-sm text-ink-subtle">Bildiren {i.reportedBy} · {fmtDateTime(i.reportedAt)}{i.verifiedBy ? ` · doğrulayan ${i.verifiedBy}` : ''}</p></div></section>
           <section className="panel"><div className="panel-head"><h2>Düzeltici faaliyet</h2></div>
@@ -348,7 +348,7 @@ export function TemplatesPage() {
   return (
     <div className="page">
       <PageHeader title="Anket şablonları" actions={<>{r.data?.can.manage && !creating && <Button onClick={() => setCreating(true)}>Yeni şablon / sürüm</Button>}
-        <Button asChild variant="outline"><Link to="/performans-agirliklari">Performans ağırlıkları</Link></Button></>}>
+        <Button asChild variant="outline"><Link to="/tedarikciler/performans-agirliklari">Performans ağırlıkları</Link></Button></>}>
         Hizmet kategorisine göre kontrol soruları. Standart metni kopyalanmaz; referans ve eşleme uzman onayına tabidir. Yayımlanan sürüm değişmez; değişiklik yeni sürümdür.
       </PageHeader>
       {creating && <TemplateForm onDone={() => { setCreating(false); void r.reload(); }} />}

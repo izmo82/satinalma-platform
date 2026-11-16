@@ -2,7 +2,7 @@ import { useState, type ReactNode } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { api, apiBlob, ApiError } from '../lib/api.ts';
 import { useResource } from '../lib/useApi.ts';
-import { useSession } from '../lib/session.tsx';
+import { hasRole, useSession } from '../lib/session.tsx';
 import { fmtDate, fmtDateTime, fmtMoney, shortHash } from '../lib/format.ts';
 import { todayLocal } from '../lib/format.ts';
 import type { Label } from '../lib/labels.ts';
@@ -225,7 +225,8 @@ interface Exports { items: { id: string; status: string; reason: string; request
   sizeBytes: string | null; sha256: string | null; counts: Record<string, number> | null; error: string | null; readyAt: string | null; expiresAt: string | null; expired: boolean | null }[];
   can: { request: boolean; approve: boolean }; userId: string }
 
-function ExportsTab() {
+/** Kiracı dışa aktarımı (K-03): isteyen Yönetici, onaylayan başka bir Satınalma kullanıcısı; Yönetim > Denetim izi'nde de kullanılır. */
+export function ExportsTab() {
   const r = useResource<Exports>('/api/v1/tenant-exports');
   const a = useAct(r.reload);
   const [reason, setReason] = useState('');
@@ -243,8 +244,8 @@ function ExportsTab() {
       <Banner tone="neutral" icon="info" title="Paket içeriği">Kiracının bütün şirketlerindeki kayıtlar (satır başına JSON), özgün belge baytları ve denetim izi; her dosyanın SHA-256 değeri manifest.json içindedir. Yalnız bu kiracının verisi okunur. Politika gereği görünmeyen kayıtlar (ör. kapalı teklif zarfları) ve imha edilmiş belgelerin baytları pakette yoktur.</Banner>
       {a.feedback}
       {d.can.request && <section className="panel"><div className="panel-head"><h2>Dışa aktarım iste</h2></div>
-        <form className="panel-body grid max-w-xl gap-1" onSubmit={(e) => { e.preventDefault(); void a.run(() => api('/api/v1/tenant-exports', { method: 'POST', json: { reason } }), 'Talep oluşturuldu; hukuk onayı bekleniyor.').then((ok) => { if (ok) setReason(''); }); }}>
-          <Field label="Gerekçe" hint="En az 10 karakter. Onayı başka bir kişi (hukuk) verir; paketi yalnız siz indirebilirsiniz.">{(x) => <textarea className="input min-h-16" {...x} value={reason} onChange={(e) => setReason(e.target.value)} />}</Field>
+        <form className="panel-body grid max-w-xl gap-1" onSubmit={(e) => { e.preventDefault(); void a.run(() => api('/api/v1/tenant-exports', { method: 'POST', json: { reason } }), 'Talep oluşturuldu; Satınalma onayı bekleniyor.').then((ok) => { if (ok) setReason(''); }); }}>
+          <Field label="Gerekçe" hint="En az 10 karakter. Onayı Satınalma rolünden başka bir kişi verir; paketi yalnız siz indirebilirsiniz.">{(x) => <textarea className="input min-h-16" {...x} value={reason} onChange={(e) => setReason(e.target.value)} />}</Field>
           <div><Button type="submit" disabled={a.busy || reason.trim().length < 10}>Dışa aktarım iste</Button></div>
         </form></section>}
       <section className="panel"><div className="panel-head"><h2>Talepler</h2><Button size="sm" variant="ghost" onClick={() => void r.reload()}><Icon name="refresh" />Yenile</Button></div>
@@ -347,7 +348,8 @@ export function ErpReconciliationPage() {
   const [replayReason, setReplayReason] = useState('');
   const [file, setFile] = useState<{ name: string; text: string } | null>(null);
   const [result, setResult] = useState<ResultRec | null>(null);
-  const finance = !!me?.roles.includes('FINANCE');
+  // v2 (D93/D95): CSV aktarımı ve tekrar gönderim Satınalma'da (integration.replay); Denetçi yalnız okur.
+  const finance = hasRole(me, 'PROCUREMENT');
 
   async function batch() {
     await a.run(async () => {

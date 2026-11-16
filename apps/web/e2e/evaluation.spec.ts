@@ -1,3 +1,4 @@
+// v2 Faz 1 (D93/D95): Yapay zekâ Yönetim sekmesine, Olaylar ve performans ağırlıkları Tedarikçiler sekmelerine taşındı; testler yeni yerlerden açar.
 import { expect, test, type Page } from '@playwright/test';
 
 // Faz 5 kritik tarayıcı görevleri: olay (UX12, T19), değerlendirme ve kritik engel (T20), raporlar (UX13), AI yönetişimi (T23). Sentetik demo verisi.
@@ -8,6 +9,11 @@ async function login(page: Page, email: string) {
   await expect(page.getByRole('heading', { name: 'İşlerim' })).toBeVisible();
 }
 const logout = (page: Page) => page.getByRole('button', { name: 'Çıkış' }).click();
+/** Yapay zekâ: Yönetim > Yapay zekâ sekmesi (v2). */
+async function openAi(page: Page) {
+  await page.getByRole('navigation', { name: 'Ana menü' }).getByRole('link', { name: /^Yönetim/ }).click();
+  await page.getByRole('navigation', { name: 'Yönetim sekmeleri' }).getByRole('link', { name: 'Yapay zekâ' }).click();
+}
 async function openSupplier(page: Page, name: string, tab: string) {
   await page.getByRole('link', { name: 'Tedarikçiler' }).click();
   // Aynı ünvanlı, kimliği doğrulanmamış aday (T06) listede bulunabilir; kimliği doğrulanmış kayıt açılır (D82).
@@ -88,13 +94,13 @@ test('raporlar: tanım ve kaynakla göstergeler; CSV aynı yetkiyle iner (UX13)'
 
 test('AI: sağlayıcı yokken manuel akış; kalite ölçümü BLOCKED; politika yalnız kiracı yöneticisinde (T23)', async ({ page }) => {
   await login(page, 'tamer.yonetici@example.test');
-  await page.getByRole('link', { name: 'Yapay zekâ' }).click();
+  await openAi(page);
   await expect(page.getByText('Etkin AI sağlayıcısı yok')).toBeVisible();
   await expect(page.getByText('Kalite ölçümü yapılamadı (engelli)')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Düzenle' })).toBeVisible();
   await logout(page);
   await login(page, 'kerem.hukuk@example.test');
-  await page.getByRole('link', { name: 'Yapay zekâ' }).click();
+  await openAi(page);
   await expect(page.getByText('Görev matrisi')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Düzenle' })).toHaveCount(0);
 });
@@ -105,7 +111,8 @@ test('tedarikçi karnesi ve olay listesi yatay taşmaz; yetersiz veride puan ver
   await expect(page.getByText(/performansı/).first()).toBeVisible();
   await expect(page.getByText(/Yetersiz veri|\/ 100/).first()).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
-  await page.getByRole('link', { name: 'Olaylar' }).first().click();
+  await page.getByRole('navigation', { name: 'Ana menü' }).getByRole('link', { name: /^Tedarikçiler/ }).click();
+  await page.getByRole('navigation', { name: 'Tedarikçiler sekmeleri' }).getByRole('link', { name: 'Olaylar' }).click();
   await expect(page.getByRole('heading', { name: 'Tedarikçi olayları' })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
 });
@@ -160,7 +167,7 @@ test('performans ağırlığı ve tasarruf bazı: yönetici kategori ağırlığ
   test.skip(info.project.name !== 'desktop-1440', 'veri değiştirir; yalnız bir projede');
   const cat = `E2E kategori ${Date.now().toString(36)}`;
   await login(page, 'kerem.hukuk@example.test');
-  await page.goto('/performans-agirliklari');
+  await page.goto('/tedarikciler/performans-agirliklari');
   await page.getByRole('button', { name: 'Kategori kuralı ekle' }).click();
   await page.getByLabel('Kategori', { exact: true }).fill(cat);
   await page.getByLabel('Kalite (%)').fill('40');

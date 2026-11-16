@@ -7,6 +7,7 @@ import { fmtDateTime } from '../lib/format.ts';
 import { custodyLabel, detectionLabel, methodLabel, overallLabel, stageLabel } from '../lib/labels.ts';
 import { Empty, ErrorState, FilterChip, Loading, PageHeader, Tag } from '../ui/kit.tsx';
 import { Icon } from '../ui/icons.tsx';
+import { hasRole, useSession } from '../lib/session.tsx';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 
 interface Row {
@@ -29,6 +30,7 @@ const FILTERS: [string, string, (r: Row) => boolean][] = [
 const quiet = (code: string) => ['NOT_PROCESSED', 'UNSUPPORTED'].includes(code);
 
 export function ContractsPage() {
+  const { me } = useSession();
   const [params, setParams] = useSearchParams();
   const f = params.get('filtre') ?? '';
   const r = useResource<{ items: Row[]; total: number }>('/api/v1/contracts');
@@ -53,7 +55,7 @@ export function ContractsPage() {
   const rows = loaded.filter(FILTERS.find(([k]) => k === f)?.[2] ?? (() => true));
   return (
     <div className="page">
-      <PageHeader title="Sözleşmeler">Güncel sürümler ve imza kontrolü durumu. Durum, kayıtlı kanıt ve gereksinimlerden sunucuda hesaplanır.</PageHeader>
+      <PageHeader title="Sözleşmeler" actions={hasRole(me, 'PROCUREMENT', 'DEPARTMENT_USER') && <Button asChild><Link to="/sozlesmeler/ekle"><Icon name="upload" />Sözleşme ekle</Link></Button>}>Güncel sürümler ve imza kontrolü durumu. Durum, kayıtlı kanıt ve gereksinimlerden sunucuda hesaplanır.</PageHeader>
       <div className="mb-3 flex flex-wrap gap-2" role="group" aria-label="İmza filtresi">
         {FILTERS.map(([k, l]) => <FilterChip key={k} pressed={f === k} count={counts[k]}
           onClick={() => { const p = new URLSearchParams(params); k ? p.set('filtre', k) : p.delete('filtre'); setParams(p, { replace: true }); }}>{l}</FilterChip>)}

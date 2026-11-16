@@ -74,10 +74,13 @@ export const originLabel: Record<string, Label> = {
   AI: { text: 'AI önerisi', tone: 'ai', icon: 'sparkles' },
   HUMAN: { text: 'İnsan onaylı', tone: 'human', icon: 'stamp' },
 };
+// v2 (D93): beş rol. Eski kodlar (bulgu çözen rolü, onay geçmişi, görev sorumlusu) eşlendikleri v2 rolünün adıyla görünür;
+// eşleme packages/domain/src/roles.ts LEGACY_ROLE_MAP ile aynı.
 export const roleLabel: Record<string, string> = {
-  REQUESTER: 'Talep sahibi', BUYER: 'Satınalmacı', PROCUREMENT_MANAGER: 'Satınalma yöneticisi', TECH_EVALUATOR: 'Teknik değerlendirici',
-  LEGAL: 'Hukuk', FINANCE: 'Finans', SECURITY: 'Bilgi güvenliği', MASTER_DATA: 'Ana veri', SUPPLIER: 'Tedarikçi', TENANT_ADMIN: 'Kiracı yöneticisi',
-  PLATFORM_OPS: 'Platform operasyonu', AUDITOR: 'Denetçi',
+  ADMIN: 'Yönetici', PROCUREMENT: 'Satınalma', DEPARTMENT_USER: 'Departman kullanıcısı', SUPPLIER: 'Tedarikçi', AUDITOR: 'Denetçi',
+  TENANT_ADMIN: 'Yönetici', PLATFORM_OPS: 'Yönetici',
+  BUYER: 'Satınalma', PROCUREMENT_MANAGER: 'Satınalma', MASTER_DATA: 'Satınalma', LEGAL: 'Satınalma', FINANCE: 'Satınalma',
+  REQUESTER: 'Departman kullanıcısı', TECH_EVALUATOR: 'Departman kullanıcısı', SECURITY: 'Departman kullanıcısı',
 };
 
 // Faz 2: proje aşaması (02 §5 durum tablosu) ve teklif satırı karşılaştırma durumu.

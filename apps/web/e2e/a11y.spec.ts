@@ -1,3 +1,4 @@
+// v2 Faz 1 (D93/D95): taşınan girişler yeni yerlerinden açılır (Olaylar → Tedarikçiler sekmesi, ERP mutabakatı → Yönetim > Entegrasyonlar, performans ağırlıkları → Tedarikçiler sekmesi). Kaldırılan ekranların senaryoları Görev 6'da.
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type Page } from '@playwright/test';
 
@@ -36,7 +37,8 @@ test('satınalma: işlerim, siparişler, tedarikçi sekmeleri, olaylar', async (
     await page.waitForLoadState('networkidle');
     await audit(page, `Tedarikçi · ${tab}`);
   }
-  await nav(page, 'Olaylar');
+  await nav(page, 'Tedarikçiler');
+  await page.getByRole('navigation', { name: 'Tedarikçiler sekmeleri' }).getByRole('link', { name: 'Olaylar' }).click();
   await expect(page.getByRole('heading', { name: 'Tedarikçi olayları' })).toBeVisible();
   await audit(page, 'Olaylar');
 });
@@ -86,7 +88,7 @@ test('veri yönetimi ve ERP mutabakatı (Faz 7)', async ({ page }) => {
   await audit(page, 'Veri yönetimi · dışa aktarım');
   await page.getByRole('button', { name: 'Çıkış' }).first().click();
   await login(page, 'ferda.finans@example.test');
-  await page.goto('/faturalar/erp-mutabakati');
+  await page.goto('/yonetim/entegrasyonlar');
   await expect(page.getByRole('heading', { name: 'Durum ve toplamlar' })).toBeVisible();
   await audit(page, 'ERP mutabakatı');
 });
@@ -107,7 +109,7 @@ test('Faz 5: tedarikçi anket listesi/yanıt ekranı ve performans ağırlıklar
   }
   await page.getByRole('button', { name: 'Çıkış' }).click();
   await login(page, 'kerem.hukuk@example.test');
-  await page.goto('/performans-agirliklari');
+  await page.goto('/tedarikciler/performans-agirliklari');
   await expect(page.getByRole('heading', { name: 'Performans ağırlıkları' })).toBeVisible();
   await page.getByRole('button', { name: 'Kategori kuralı ekle' }).click();
   await audit(page, 'Performans ağırlıkları');
