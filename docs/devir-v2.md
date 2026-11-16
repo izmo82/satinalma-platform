@@ -13,6 +13,8 @@ Bu not, önceki oturumun bağlamını yeni oturuma taşır. Önce bunu, sonra `d
 
 4. **16.11.2026 ikinci oturum:** kalan 31 çerçeve görüldü, kusurlar düzeltildi (liste `docs/implementation-status.md` "v2 yeniden kapsam" bölümünde). `docs/analiz-v2.md` başlığı ONAYLANDI yapıldı, D93 yazıldı, Faz 1 envanteri `docs/envanter-faz1.md`. Kullanıcıdan beklenen: tasarım onayı, `v1` etiketi + v2 dalı onayı. Aşağıdaki 1. ve 4. maddeler tamam.
 
+5. **16.11.2026, Faz 1 uygulandı (dal `v2-sadelestirme`, push yok):** tasarım onayı D94, kararlar D95–D100. Görev başına inceleme ile 8 görev + bütün dal incelemesi + tek düzeltme dalgası. Web ve iOS persona testi ve web işlev envanteri yürüyüşü yapıldı (`docs/envanter-faz1.md`: web 245/269, iOS 31 satır işaretli). Faz 1 durumu **PARTIAL**: kalan küçük düzeltmeler ve kullanıcı kararları `docs/implementation-status.md` v2 bölümünde. Ayrıntılı defter (git dışı): `.superpowers/sdd/2026-11-16-v2-faz1-sadelestirme/progress.md`. Geliştirme veritabanının 030 öncesi yedeği aynı klasörde `devdb-before-030.sql`.
+
 ## Sıradaki işler (sırayla)
 
 1. Figma'da kalan 31 ekranı ekran görüntüsüyle denetle, kusurları düğüm kimliğiyle hedefli düzelt.
