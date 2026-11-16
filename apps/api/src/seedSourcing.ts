@@ -144,7 +144,7 @@ export async function ensureLifecycleDemo(owner: pg.Pool, app: App, auth: DevAut
   // Yalnız sabit tarihli resmî tatiller; dini bayram tarihleri her yıl kurum tarafından girilir.
   for (const [day, name] of [['2026-10-29', 'Cumhuriyet Bayramı'], ['2027-01-01', 'Yılbaşı'], ['2027-04-23', 'Ulusal Egemenlik ve Çocuk Bayramı'],
     ['2027-05-01', 'Emek ve Dayanışma Günü'], ['2027-05-19', 'Atatürk\'ü Anma, Gençlik ve Spor Bayramı'], ['2027-07-15', 'Demokrasi ve Millî Birlik Günü'],
-    ['2027-08-30', 'Zafer Bayramı'], ['2027-10-29', 'Cumhuriyet Bayramı']]) await call('leyla.hukuk', 'POST', '/api/v1/holidays', { day, name });
+    ['2027-08-30', 'Zafer Bayramı'], ['2027-10-29', 'Cumhuriyet Bayramı']]) await call('tamer.yonetici', 'POST', '/api/v1/holidays', { day, name }); // v2 (D93): tatil takvimi Yönetici'de (holiday.manage)
   const t = await call('leyla.hukuk', 'POST', `/api/v1/contract-versions/${cv.id}/terms`, { currency: 'TRY', valueType: 'CEILING', amount: '1000000.00',
     paymentTerms: 'Fatura tarihinden itibaren 30 gün', startDate: '2026-01-01', endDate: '2026-12-31', autoRenewal: true, renewalMonths: 12,
     noticeAmount: 60, noticeUnit: 'DAY', nonWorkingDay: 'PREVIOUS_WORKING_DAY', sourceRef: 'Madde 4.2 (süre), 9.1 (ihbar), s. 3 (sentetik)' });
@@ -199,10 +199,16 @@ export async function ensurePurchasingDemo(owner: pg.Pool, app: App, auth: DevAu
   const a = await inv(s1, 'ANB2026000101', [{ description: 'Ekim bakım hizmeti', quantity: '1', unit: 'ay', unitPrice: '50000' }]);
   // v2 Faz 1 (D93): yeni sipariş bağı kurulamaz; demo faturaların eski (v1) sipariş bağı kayıt olarak yazılır, PUT aynı bağı korur
   // (değerlendirme, departman ve denetim izi API yolundan). Fatura onaylanmaz, reddedilmez.
+  // PUT reddedilirse yazılan v1 satırı geri alınır (yetim satır kalmaz), hata yukarı iletilir.
   const legacyLink = async (invoiceId: string, poLineId: string, quantity: string, amount: string) => {
-    await owner.query(`INSERT INTO invoice_allocations (tenant_id, company_id, invoice_id, line_no, po_line_id, contract_version_id, quantity, amount, created_by)
-      SELECT tenant_id, company_id, id, 1, $2, NULL, $3, $4, created_by FROM invoices WHERE id = $1`, [invoiceId, poLineId, quantity, amount]);
-    await call('ferda.finans', 'PUT', `/api/v1/invoices/${invoiceId}/allocations`, { allocations: [{ lineNo: 1, poLineId, contractVersionId: null, quantity, amount }] });
+    const row = (await owner.query<{ id: string }>(`INSERT INTO invoice_allocations (tenant_id, company_id, invoice_id, line_no, po_line_id, contract_version_id, quantity, amount, created_by)
+      SELECT tenant_id, company_id, id, 1, $2, NULL, $3, $4, created_by FROM invoices WHERE id = $1 RETURNING id`, [invoiceId, poLineId, quantity, amount])).rows[0]!.id;
+    try {
+      await call('ferda.finans', 'PUT', `/api/v1/invoices/${invoiceId}/allocations`, { allocations: [{ lineNo: 1, poLineId, contractVersionId: null, quantity, amount }] });
+    } catch (e) {
+      await owner.query(`DELETE FROM invoice_allocations WHERE id = $1`, [row]);
+      throw e;
+    }
   };
   await legacyLink(a, lines[1]!.poLineId, '1', '50000.00');
   const b = await inv(s1, 'ANB2026000102', [{ description: 'Yedek disk 2 TB', quantity: '8', unit: 'adet', unitPrice: '4000' }]);
