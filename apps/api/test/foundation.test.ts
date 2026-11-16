@@ -144,6 +144,30 @@ describe('037 açık görev metinleri', () => {
   });
 });
 
+// Faz 1 kalan düzeltme: 038 iOS yürüyüşünde görülen saklı eski rol dilini (ana veri onayı, hukuk yetkilisi, satınalma yöneticisi) düzeltir.
+describe('038 açık görev metinleri', () => {
+  it('eski next_action/reason metinleri değişir, kapalı görev değişmez; yeniden çalıştırma aynı sonucu verir', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const sql = await readFile(new URL('../migrations/038_v2_task_text_wording_2.sql', import.meta.url), 'utf8');
+    const add = async (next: string, reason: string, status = 'OPEN') => (await h.owner.query<{ id: string }>(
+      `INSERT INTO tasks (tenant_id, company_id, kind, entity_type, entity_id, title, reason, next_action, assignee_role, dedupe_key, status)
+       VALUES ($1, NULL, 't038', 'supplier', $2, 'Sentetik', $3, $4, 'PROCUREMENT', $5, $6) RETURNING id`,
+      [h.world.tenantA, h.world.suppliers.s1, reason, next, `t038:${randomUUID()}`, status])).rows[0]!.id;
+    const a = await add('Kimlik ve kanıtı inceleyip ana veri onayı verin.', 'Sentetik');
+    const b = await add('Doğrulayıcı entegrasyonu tamamlanana kadar hukuk yetkilisi karar verir veya istisna talep edilir.', 'Sentetik');
+    const c = await add('Kaydedin.', 'Sözleşme · Ek-4 · Sahipsiz yükümlülük: satınalma yöneticisine düştü.');
+    const closed = await add('Kimlik ve kanıtı inceleyip ana veri onayı verin.', 'Sentetik', 'DONE');
+    const row = async (id: string) => (await h.owner.query<{ reason: string; next_action: string }>(`SELECT reason, next_action FROM tasks WHERE id = $1`, [id])).rows[0]!;
+    for (let run = 0; run < 2; run++) {
+      await h.owner.query(sql);
+      expect((await row(a)).next_action).toBe('Kimlik ve kanıtı inceleyip kayıt onayı verin.');
+      expect((await row(b)).next_action).toBe('Doğrulayıcı entegrasyonu tamamlanana kadar Satınalma karar verir veya istisna talep edilir.');
+      expect((await row(c)).reason).toBe("Sözleşme · Ek-4 · Sahipsiz yükümlülük: Satınalma'ya düştü.");
+      expect((await row(closed)).next_action).toBe('Kimlik ve kanıtı inceleyip ana veri onayı verin.');
+    }
+  });
+});
+
 describe('T05 alıcı/satıcı ayrımı', () => {
   it('alıcı şirket VKN satıcı diye eşlenmez', async () => {
     const r = await uploadInvoice('buyer', invoice({ sellerVkn: syntheticVkn('300000005') }));
