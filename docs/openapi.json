@@ -224,6 +224,69 @@
         }
       }
     },
+    "/api/v1/department-assignments/unassigned": {
+      "get": {
+        "tags": [
+          "departments"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
+    "/api/v1/department-assignments": {
+      "put": {
+        "tags": [
+          "departments"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "entityType",
+                  "ids",
+                  "departmentId"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "entityType": {
+                    "type": "string",
+                    "enum": [
+                      "project",
+                      "contract_family",
+                      "supplier_assessment"
+                    ]
+                  },
+                  "ids": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 500,
+                    "items": {
+                      "type": "string",
+                      "format": "uuid"
+                    }
+                  },
+                  "departmentId": {
+                    "type": "string",
+                    "format": "uuid"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
     "/api/v1/memberships": {
       "get": {
         "tags": [

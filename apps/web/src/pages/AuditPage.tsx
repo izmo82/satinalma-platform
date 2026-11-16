@@ -80,7 +80,8 @@ function AuditLookup() {
           <Button type="submit" className="mb-4">Göster</Button>
         </form>
         {!UUID.test(id) ? <p className="text-ink-muted">Bir kaydın kimliğini girin; o kayıtta yapılan her işlem kişi, zaman ve gerekçesiyle listelenir.</p>
-          : r.loading && !r.data ? <Loading rows={4} /> : r.error ? <ErrorState error={r.error} onRetry={r.reload} />
+          // K1: kimlik girildiği ilk çizimde istek henüz başlamamıştır; veri ya da hata gelene kadar yükleniyor gösterilir (boş durum değil).
+          : (r.loading || (!r.data && !r.error)) ? <Loading rows={4} /> : r.error ? <ErrorState error={r.error} onRetry={r.reload} />
           : !r.data?.items.length ? <Empty icon="search" title="Bu kayıt için denetim olayı yok">Kimliği kontrol edin; yalnız bu kurumun kayıtları görünür.</Empty>
           : (
             <Table>

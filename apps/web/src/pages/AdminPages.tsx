@@ -116,8 +116,9 @@ function MemberItem({ m, deps, onSaved }: { m: Member; deps: Department[]; onSav
     setBusy(true); setMsg(null);
     try {
       await api(`/api/v1/memberships/${m.userId}/departments`, { method: 'PUT', json: { departmentIds: sel } });
-      setMsg({ tone: 'info', text: 'Departmanlar kaydedildi.' });
       await onSaved();
+      // K7: "Kaydediliyor…" ile başarı mesajı aynı anda görünmesin; mesaj liste yenilendikten sonra.
+      setMsg({ tone: 'info', text: 'Departmanlar kaydedildi.' });
     } catch (err) { setMsg({ tone: 'danger', text: err instanceof ApiError ? err.message : 'Departmanlar kaydedilemedi.' }); }
     finally { setBusy(false); }
   }

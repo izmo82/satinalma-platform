@@ -84,7 +84,11 @@ export function ErrorState({ error, onRetry }: { error: unknown; onRetry?: () =>
     <div role="alert" className="grid justify-items-center gap-2 px-6 py-12 text-center text-ink-muted">
       <Icon name={m.icon} size={28} className="text-ink-subtle" />
       <h3 className="text-base text-ink">{m.title}</h3>
-      <p className="max-w-[60ch]">{e.message}</p>
+      {/* K2: başlıkla aynı cümle tekrar edilmez; bulunamayan/erişilemeyen kayıtta olası nedenler ve dönüş yolu yazılır. */}
+      <p className="max-w-[60ch]">{e.status === 404 && e.message.replace(/\.$/, '') === m.title
+        ? 'Kayıt başka bir kuruma ya da departmana ait olabilir veya kaldırılmış olabilir. Listeye dönüp yeniden arayın; erişim gerekiyorsa yöneticinize başvurun.'
+        : e.message}</p>
+      {e.status === 404 && <a className="text-sm underline" href="/islerim">İşlerim'e dön</a>}
       {onRetry && <Button variant="outline" onClick={onRetry} className="mt-2"><Icon name="refresh" /> Yeniden dene</Button>}
     </div>
   );
