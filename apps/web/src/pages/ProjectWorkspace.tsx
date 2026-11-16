@@ -422,8 +422,12 @@ function ComparisonTab({ d, reload }: { d: Detail; reload: () => Promise<void> }
     return <div className="rounded-md border border-border bg-surface"><Empty icon="lock" title="Karşılaştırma tur kapandıktan sonra açılır">Teklifler kapanışa kadar mühürlüdür; erken görüntüleme sunucuda engellenir.</Empty></div>;
   }
   if (r.loading && !r.data) return <Loading rows={6} />;
-  if (r.error) return <ErrorState error={r.error} onRetry={r.reload} />;
-  const c = r.data!;
+  // Hata ya da gövdesiz/bozuk yanıt (ör. ağ geçidi 502 sayfası): beyaz ekran yerine standart hata durumu ve yeniden deneme.
+  if (r.error || !r.data?.comparison) {
+    return <div className="rounded-md border border-border bg-surface"><ErrorState onRetry={r.reload}
+      error={r.error ?? new ApiError(0, 'invalid_response', 'Karşılaştırma yüklenemedi; sunucudan geçerli yanıt gelmedi. Yeniden deneyin.')} /></div>;
+  }
+  const c = r.data;
   const bids = c.comparison.bids;
   const scoreCriteria = c.criteria.filter((x) => x.kind === 'SCORE');
   const scoreOf = (bidId: string, code: string) => c.scores.find((s) => s.bidId === bidId && s.criterionCode === code);

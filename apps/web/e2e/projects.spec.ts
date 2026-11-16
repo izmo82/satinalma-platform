@@ -52,6 +52,27 @@ test('alıcı karşılaştırmada eksik kapsamı ve onaylı bölünmüş tahsisi
   expect(pdf.suggestedFilename()).toMatch(/^PRJ-\d{4}-\d{4}-karar-ozeti-v\d+\.pdf$/);
 });
 
+// Faz 1 kalan düzeltme: karşılaştırma isteği hata verince (API 502 ya da gövdesiz/bozuk yanıt) sekme beyaz ekran yerine
+// standart hata durumunu ve "Yeniden dene"yi gösterir; yeniden deneme veriyi yükler.
+for (const [name, reply] of [['502', { status: 502, body: '' }], ['bozuk gövde', { status: 200, contentType: 'text/html', body: '<html>Bad Gateway</html>' }]] as const) {
+  test(`karşılaştırma yanıtı hatalıysa (${name}) hata durumu ve Yeniden dene görünür`, async ({ page }) => {
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(e.message));
+    await login(page, 'alper.satinalma@example.test', 'İşlerim');
+    await page.getByRole('link', { name: 'Projeler' }).click();
+    await page.getByRole('link', { name: 'BT altyapı bakım hizmeti 2027' }).first().click();
+    await expect(page.getByRole('heading', { name: 'BT altyapı bakım hizmeti 2027' })).toBeVisible();
+    await page.route('**/api/v1/projects/*/comparison', (route) => route.fulfill(reply));
+    await page.getByRole('tab', { name: 'Karşılaştırma' }).click();
+    await expect(page.getByRole('button', { name: 'Yeniden dene' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'BT altyapı bakım hizmeti 2027' })).toBeVisible();
+    expect(errors).toEqual([]);
+    await page.unroute('**/api/v1/projects/*/comparison');
+    await page.getByRole('button', { name: 'Yeniden dene' }).click();
+    await expect(page.getByText('Birim farklı').first()).toBeVisible();
+  });
+}
+
 test('proje sihirbazı: adım doğrulaması ve ilk hataya odak (UX03)', async ({ page }) => {
   await login(page, 'alper.satinalma@example.test', 'İşlerim');
   await page.goto('/projeler/yeni');
