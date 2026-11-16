@@ -174,12 +174,8 @@ async function proposeBankChange(tx: Tx, ctx: TenantContext, supplierId: string,
   const id = ins.rows[0]?.id ?? (await tx.query<{ id: string }>(
     `SELECT id FROM bank_change_requests WHERE supplier_id = $1 AND proposed_iban = $2 AND status = 'PENDING_VERIFICATION'`,
     [supplierId, iban])).rows[0]!.id;
-  await openTask(tx, ctx, {
-    companyId: null, kind: 'BANK_CHANGE_VERIFICATION', entityType: 'supplier', entityId: supplierId,
-    title: 'Banka bilgisi doğrulanmalı', reason: 'Belgede kayıtlı olmayan bir IBAN okundu. Mevcut banka bilgisi değiştirilmedi.',
-    nextAction: 'Kayıtlı güvenilir kanaldan teyit edin; ikinci onay gerekir.', assigneeRole: 'FINANCE', severity: 'HIGH',
-    dedupeKey: `bank-change:${id}`,
-  });
+  // v2 (D93, düzeltme dalgası Y1): banka değişikliği kararı kaldırıldı; talep kaydı ve tedarikçi kartındaki uyarı kalır, kapatılamayacak
+  // doğrulama görevi açılmaz.
   await audit(tx, ctx, 'supplier.bank_change.requested', 'supplier', supplierId, { bankChangeRequestId: id, source: 'DOCUMENT_EXTRACTION' });
   return id;
 }

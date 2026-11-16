@@ -2,6 +2,8 @@ import { normalizeRoles } from '@sp/domain';
 import type { TenantContext, Tx } from '../db.ts';
 import { audit } from '../audit.ts';
 import { ApiError, notFound, unprocessable } from '../errors.ts';
+import { rederiveTaskDepartments } from '../tasks.ts';
+import { inheritDepartment } from './invoices.ts';
 
 /**
  * v2 Faz 1 (D93, analiz-v2 §2.3): departmanlar. Kayıt (proje, sözleşme, değerlendirme) departman taşır; bölüm kullanıcısı yalnız
@@ -24,7 +26,7 @@ export async function createDepartment(tx: Tx, ctx: TenantContext, b: { name: st
 }
 
 /** Kiracıdaki departmanlar; listede kiracı dışı ya da olmayan kimlik varsa 422 (RLS başka kiracının departmanını göstermez). */
-async function assertKnown(tx: Tx, ids: string[]) {
+export async function assertKnown(tx: Tx, ids: string[]) {
   if (!ids.length) return;
   const n = (await tx.query<{ n: number }>(`SELECT count(*)::int AS n FROM departments WHERE id = ANY($1::uuid[])`, [ids])).rows[0]!.n;
   if (n !== ids.length) throw unprocessable('department_unknown', 'Seçilen departman bu kurumda tanımlı değil.');
@@ -76,4 +78,70 @@ export async function listMemberships(tx: Tx, ctx: TenantContext): Promise<Membe
 export async function departmentsOf(tx: Tx, ids: string[]): Promise<Department[]> {
   if (!ids.length) return [];
   return (await tx.query<Department>(`SELECT id, name FROM departments WHERE id = ANY($1::uuid[]) ORDER BY name, id`, [ids])).rows;
+}
+
+// --- Departmansız kayıtlara departman atama (düzeltme dalgası C1, D96) -----------------------------------------------------
+
+export type AssignableEntity = 'project' | 'contract_family' | 'supplier_assessment';
+const ASSIGN_TABLE: Record<AssignableEntity, string> = { project: 'projects', contract_family: 'contract_families', supplier_assessment: 'supplier_assessments' };
+
+/**
+ * Proje, sözleşme ailesi veya tedarikçi değerlendirmesine departman atar (tekli ya da toplu; Yönetici ve Satınalma). Kayıtlar
+ * çağıranın görebildiği (RLS) kayıtlar olmalı; biri görünmüyorsa hiçbiri değişmez (404). Her kayıt için `department.assigned`
+ * denetim olayı. Aynı işlemde bağlı görevlerin departmanı yeniden türetilir; sözleşme ailesinde ona tahsisli faturalar
+ * departmanı yeniden devralır (fatura → sözleşme kuralı, invoices.ts) ve onların görevleri de izler.
+ */
+export async function assignDepartment(tx: Tx, ctx: TenantContext, b: { entityType: AssignableEntity; ids: string[]; departmentId: string }) {
+  const table = ASSIGN_TABLE[b.entityType];
+  if (!table) throw unprocessable('invalid_entity_type', 'Departman yalnız proje, sözleşme veya değerlendirmeye atanır.');
+  const ids = [...new Set(b.ids)];
+  if (!ids.length) throw unprocessable('ids_required', 'En az bir kayıt seçilmeli.');
+  await assertKnown(tx, [b.departmentId]);
+  const rows = (await tx.query<{ id: string; department_id: string | null }>(
+    `SELECT id, department_id FROM ${table} WHERE id = ANY($1::uuid[]) FOR UPDATE`, [ids])).rows;
+  if (rows.length !== ids.length) throw notFound();
+  await tx.query(`UPDATE ${table} SET department_id = $2 WHERE id = ANY($1::uuid[])`, [ids, b.departmentId]);
+  for (const r of rows) {
+    await audit(tx, ctx, 'department.assigned', b.entityType, r.id, { entityType: b.entityType, before: r.department_id, after: b.departmentId });
+  }
+  let tasks = 0;
+  if (b.entityType === 'project') {
+    tasks += await rederiveTaskDepartments(tx, `(t.entity_type = 'project' AND t.entity_id = ANY($1::uuid[]))
+      OR (t.entity_type = 'rfq_round' AND t.entity_id IN (SELECT id FROM rfq_rounds WHERE project_id = ANY($1::uuid[])))
+      OR (t.entity_type = 'award' AND t.entity_id IN (SELECT id FROM awards WHERE project_id = ANY($1::uuid[])))
+      OR (t.entity_type = 'evaluation' AND t.entity_id IN (SELECT id FROM evaluations WHERE project_id = ANY($1::uuid[])))
+      OR (t.entity_type = 'sourcing_exception' AND t.entity_id IN (SELECT id FROM sourcing_exceptions WHERE project_id = ANY($1::uuid[])))`, [ids]);
+  } else if (b.entityType === 'contract_family') {
+    const invoices = (await tx.query<{ id: string }>(`SELECT DISTINCT a.invoice_id AS id FROM invoice_allocations a
+        LEFT JOIN po_lines pl ON pl.id = a.po_line_id LEFT JOIN purchase_orders po ON po.id = pl.po_id
+        JOIN contract_versions cv ON cv.id = coalesce(a.contract_version_id, po.contract_version_id)
+      WHERE cv.family_id = ANY($1::uuid[])`, [ids])).rows.map((r) => r.id);
+    for (const inv of invoices) await inheritDepartment(tx, inv);
+    tasks += await rederiveTaskDepartments(tx, `(t.entity_type = 'contract_family' AND t.entity_id = ANY($1::uuid[]))
+      OR (t.entity_type = 'contract_version' AND t.entity_id IN (SELECT id FROM contract_versions WHERE family_id = ANY($1::uuid[])))
+      OR (t.entity_type = 'incident' AND t.entity_id IN (SELECT i.id FROM supplier_incidents i JOIN contract_versions cv ON cv.id = i.contract_version_id WHERE cv.family_id = ANY($1::uuid[])))
+      OR (t.entity_type = 'invoice' AND t.entity_id = ANY($2::uuid[]))`, [ids, invoices]);
+  } else {
+    tasks += await rederiveTaskDepartments(tx, `t.entity_type = 'supplier_assessment' AND t.entity_id = ANY($1::uuid[])`, [ids]);
+    // Kritik engel görevleri tedarikçiye bağlıdır; departmanı değerlendirmeden gelir (tekil anahtar assessment-blocker:<id>:<rol>).
+    tasks += (await tx.query(`UPDATE tasks t SET department_id = $2 WHERE t.kind = 'assessment_blocker' AND split_part(t.dedupe_key, ':', 2) = ANY($1::text[])
+      AND t.department_id IS DISTINCT FROM $2`, [ids, b.departmentId])).rowCount ?? 0;
+  }
+  return { updated: rows.length, tasksUpdated: tasks };
+}
+
+/**
+ * Departmanı atanmamış kayıtlar (Yönetim > Kullanıcılar ve Entra > Departmansız kayıtlar). RLS: çağıranın şirket kapsamı.
+ * Yönetici'nin şirket kapsamı yoksa proje ve sözleşmeler boş döner (`companyScopeEmpty`); kapsam kullanıcı kararıdır, değiştirilmez.
+ */
+export async function listUnassigned(tx: Tx, ctx: TenantContext) {
+  const projects = (await tx.query(`SELECT p.id, p.code, p.title, p.status, le.name AS "companyName", p.created_at AS "createdAt"
+    FROM projects p LEFT JOIN legal_entities le ON le.id = p.company_id WHERE p.department_id IS NULL ORDER BY p.created_at DESC, p.id LIMIT 500`)).rows;
+  const contracts = (await tx.query(`SELECT f.id, f.code, f.title, le.name AS "companyName", s.legal_name AS "supplierName", f.created_at AS "createdAt"
+    FROM contract_families f LEFT JOIN legal_entities le ON le.id = f.company_id LEFT JOIN suppliers s ON s.id = f.supplier_id
+    WHERE f.department_id IS NULL ORDER BY f.created_at DESC, f.id LIMIT 500`)).rows;
+  const assessments = (await tx.query(`SELECT a.id, s.legal_name AS "supplierName", t.name AS "templateName", a.scope, a.status, a.created_at AS "createdAt"
+    FROM supplier_assessments a JOIN suppliers s ON s.id = a.supplier_id JOIN questionnaire_templates t ON t.id = a.template_id
+    WHERE a.department_id IS NULL ORDER BY a.created_at DESC, a.id LIMIT 500`)).rows;
+  return { projects, contracts, assessments, companyScopeEmpty: ctx.companyIds.length === 0 };
 }

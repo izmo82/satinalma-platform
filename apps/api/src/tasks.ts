@@ -31,12 +31,13 @@ export const taskRoleSql = (roles: string, t = 't') => `(${t}.assignee_role = AN
 
 /**
  * v2 Faz 1 (D93): kaldırılan işlevlerin görevleri İşlerim'de, sayaçlarda ve bildirimlerde listelenmez (kayıt silinmez):
- * Lira Defteri vakaları, imha partileri ve fatura bulgularından yalnız kaldırılan kodlar (üçlü eşleştirme, tolerans, sözleşmesiz
+ * Lira Defteri vakaları, imha partileri, banka bilgisi doğrulaması (banka değişikliği akışı kaldırıldı; düzeltme dalgası Y1) ve fatura bulgularından yalnız kaldırılan kodlar (üçlü eşleştirme, tolerans, sözleşmesiz
  * istisna; `REMOVED_ISSUE_CODES`). Korunan bulgular (vergi, tahsis, tedarikçi/şirket uyuşmazlığı, limit, imza, avans) görünür kalır.
  * Bulgu kodu görevin tekil anahtarındadır: `invoice-issue:<faturaId>:<kod>`.
  */
 const REMOVED_ISSUE_KEYS = REMOVED_ISSUE_CODES.map((c) => `'${c}'`).join(', ');
 export const visibleTaskSql = (t = 't') => `(${t}.entity_type NOT IN ('recovery_case', 'disposal_batch')
+  AND ${t}.kind <> 'BANK_CHANGE_VERIFICATION'
   AND NOT (${t}.kind = 'invoice_issue' AND split_part(${t}.dedupe_key, ':', 3) IN (${REMOVED_ISSUE_KEYS})))`;
 
 /** Aynı açık görev ikinci kez oluşmaz (BR12/SIG15). Var olanın id'sini döner. */
@@ -54,6 +55,17 @@ export async function openTask(tx: Tx, ctx: TenantContext, t: TaskInput): Promis
   const existing = await tx.query<{ id: string }>(
     `SELECT id FROM tasks WHERE tenant_id = $1 AND dedupe_key = $2 AND status = 'OPEN'`, [ctx.tenantId, t.dedupeKey]);
   return { id: existing.rows[0]!.id, created: false };
+}
+
+/**
+ * Kaydın departmanı değişince (departman ataması, faturanın tahsisle devraldığı departman) bağlı görevlerin departmanı kayıttan
+ * yeniden türetilir (açık ve kapalı; departman boşalırsa görev de boşalır). Yalnız departmanı kayıttan gelen türler. `where` görev satırı (t) üzerinde koşul; parametreler $1'den başlar.
+ */
+export async function rederiveTaskDepartments(tx: Tx, where: string, params: unknown[]): Promise<number> {
+  const r = await tx.query(`UPDATE tasks t SET department_id = app_task_department(t.entity_type, t.entity_id)
+    WHERE (${where}) AND (app_task_departmental(t.entity_type) OR t.entity_type = 'incident')
+      AND t.department_id IS DISTINCT FROM app_task_department(t.entity_type, t.entity_id)`, params);
+  return r.rowCount ?? 0;
 }
 
 /** Tedarikçi aktifleşince, reddedilince veya birleşince ona bağlı fatura görevleri biter (D92). */

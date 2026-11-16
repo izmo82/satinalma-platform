@@ -112,7 +112,7 @@ export async function uploadDocument(tx: Tx, ctx: TenantContext, store: ObjectSt
     await openTask(tx, ctx, {
       companyId: input.companyId, kind: 'DOCUMENT_QUARANTINED', entityType: 'document_version', entityId: dvId,
       title: 'Belge karantinada', reason: inspected.reason ?? 'Güvenlik kontrolü geçmedi.',
-      nextAction: 'Göndericiden temiz/şifresiz belge isteyin.', assigneeRole: 'SECURITY', severity: 'HIGH',
+      nextAction: 'Göndericiden temiz/şifresiz belge isteyin.', assigneeRole: 'PROCUREMENT', severity: 'HIGH', // I3: merkezi ön inceleme
       dedupeKey: `doc:${dvId}:quarantine`,
     });
     return { ...base, processing: { stage: 'QUARANTINED', message: 'Belge güvenlik kontrolünden geçmedi ve işlenmeyecek.' }, supplier: null };

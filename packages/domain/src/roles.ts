@@ -143,6 +143,8 @@ export const PERMISSIONS = {
   // v2 (D93): departman listesi iç rollere açık; departman tanımı ve üyelik departmanı ataması yalnız Yönetici.
   'department.read': ['ADMIN', 'PROCUREMENT', 'DEPARTMENT_USER', 'AUDITOR'],
   'department.manage': ['ADMIN'],
+  // Düzeltme dalgası (D96): departmansız eski proje, sözleşme ailesi ve değerlendirmeye departman atama (tekli/toplu, denetimli).
+  'department.assign': ['ADMIN', 'PROCUREMENT'],
 } as const satisfies Record<string, readonly Role[]>;
 
 export type Permission = keyof typeof PERMISSIONS;

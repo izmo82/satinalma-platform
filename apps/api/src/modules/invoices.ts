@@ -6,7 +6,7 @@ import {
 import type { TenantContext, Tx } from '../db.ts';
 import { audit } from '../audit.ts';
 import { nextCode } from '../codes.ts';
-import { closeTasks, openTask } from '../tasks.ts';
+import { closeTasks, openTask, rederiveTaskDepartments } from '../tasks.ts';
 import { ApiError, conflict, forbidden, notFound, unprocessable } from '../errors.ts';
 import { ErpTimeout, erpAdapter } from '../erp/adapter.ts';
 import { criticalBlocks } from './supplierEval.ts';
@@ -407,6 +407,8 @@ export async function setAllocations(tx: Tx, ctx: TenantContext, invoiceId: stri
   }
   await tx.query(`UPDATE invoices SET advance_offset = $2, advance_invoice_id = $3 WHERE id = $1`, [invoiceId, b.advanceOffset ?? '0', b.advanceInvoiceId ?? null]);
   const departmentId = await inheritDepartment(tx, invoiceId);
+  // Departmanı değişen faturanın görevleri yeni departmanı izler (düzeltme dalgası).
+  if (departmentId !== undefined) await rederiveTaskDepartments(tx, `t.entity_type = 'invoice' AND t.entity_id = $1`, [invoiceId]);
   const result = await evaluate(tx, invoiceId);
   // Atılan hata işlemi geri alır; önceki tahsis yerinde kalır.
   if (result.check.issues.some((x) => x.code === 'COMPANY_MISMATCH')) throw unprocessable('allocation_company_mismatch', 'Seçilen sipariş veya sözleşme bu faturanın şirketine ait değil ya da erişiminiz dışında.');
@@ -421,7 +423,7 @@ export async function setAllocations(tx: Tx, ctx: TenantContext, invoiceId: stri
  * Tüm sözleşmeler aynı departmandaysa o departman; farklıysa tahmin yok, departman boş. Sözleşmesiz tahsiste departman değişmez.
  * Tahsisle aynı transaction'da yazılır. Dönüş: yazılan departman (değişmediyse undefined).
  */
-async function inheritDepartment(tx: Tx, invoiceId: string): Promise<string | null | undefined> {
+export async function inheritDepartment(tx: Tx, invoiceId: string): Promise<string | null | undefined> {
   const deps = (await tx.query<{ d: string | null }>(`SELECT DISTINCT f.department_id AS d FROM invoice_allocations a
       LEFT JOIN po_lines pl ON pl.id = a.po_line_id LEFT JOIN purchase_orders po ON po.id = pl.po_id
       JOIN contract_versions cv ON cv.id = coalesce(a.contract_version_id, po.contract_version_id) JOIN contract_families f ON f.id = cv.family_id

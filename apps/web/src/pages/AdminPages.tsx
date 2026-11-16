@@ -145,7 +145,7 @@ function MemberItem({ m, deps, onSaved }: { m: Member; deps: Department[]; onSav
             <span aria-live="polite" className={msg?.tone === 'danger' ? 'text-sm text-danger' : 'text-sm text-ink-muted'}>{msg?.text}</span>
           </div>
         </fieldset>
-      ) : <span className="text-sm text-ink-muted">Tüm departmanlar</span>}
+      ) : <span className="text-sm text-ink-muted">Tüm departmanlar{m.departmentIds.length ? ` · üyelikte kayıtlı: ${m.departmentIds.map((id) => deps.find((d) => d.id === id)?.name).filter(Boolean).join(', ')}` : ''}</span>}
     </li>
   );
 }
@@ -159,13 +159,115 @@ function MembersAdmin({ deps }: { deps: Department[] }) {
   return <ul className="grid">{r.data.items.map((m) => <MemberItem key={m.userId} m={m} deps={deps} onSaved={r.reload} />)}</ul>;
 }
 
-/** Yönetici dışındaki roller (Satınalma): yalnız kullanıcı adları; rol ve departman ataması Yönetici'de. */
+/** Yönetici dışındaki roller (Satınalma): Yönetici listesiyle aynı kapsam (tedarikçi kullanıcıları yok), salt okunur adlar ve roller. */
 function MembersReadOnly() {
-  const members = useResource<{ id: string; displayName: string }[]>('/api/v1/members');
+  const members = useResource<{ id: string; displayName: string; roles?: string[] }[]>('/api/v1/members');
   if (members.loading && !members.data) return <Loading rows={4} />;
   if (members.error) return <ErrorState error={members.error} onRetry={members.reload} />;
   if (!members.data?.length) return <p className="text-ink-muted">Kullanıcı yok.</p>;
-  return <ul className="grid gap-1">{members.data.map((u) => <li key={u.id} className="border-b border-border py-1.5 last:border-0">{u.displayName}</li>)}</ul>;
+  return <ul className="grid gap-1">{members.data.map((u) => (
+    <li key={u.id} className="flex flex-wrap items-baseline gap-x-3 border-b border-border py-1.5 last:border-0">
+      <span>{u.displayName}</span>
+      {!!u.roles?.length && <span className="text-sm text-ink-muted">{[...new Set(u.roles.map((r) => roleLabel[r] ?? 'Rol tanımsız'))].join(', ')}</span>}
+    </li>))}</ul>;
+}
+
+// --- Departmansız kayıtlar (düzeltme dalgası C1, D96) ------------------------------------------------------------------
+
+type AssignKind = 'project' | 'contract_family' | 'supplier_assessment';
+interface UnassignedRow { id: string; code?: string | null; title?: string; companyName?: string | null; supplierName?: string | null; templateName?: string; scope?: string }
+interface Unassigned { projects: UnassignedRow[]; contracts: UnassignedRow[]; assessments: UnassignedRow[]; companyScopeEmpty: boolean }
+
+const KIND_TEXT: Record<AssignKind, { heading: string; noun: string }> = {
+  project: { heading: 'Projeler', noun: 'proje' },
+  contract_family: { heading: 'Sözleşmeler', noun: 'sözleşme' },
+  supplier_assessment: { heading: 'Tedarikçi değerlendirmeleri', noun: 'değerlendirme' },
+};
+
+function rowText(kind: AssignKind, r: UnassignedRow) {
+  if (kind === 'supplier_assessment') return { main: `${r.supplierName ?? 'Tedarikçi'} · ${r.templateName ?? ''}`, sub: r.scope ?? '' };
+  return { main: [r.code, r.title].filter(Boolean).join(' · '), sub: [r.companyName, r.supplierName].filter(Boolean).join(' · ') };
+}
+
+/** Bir kayıt türünün departmansız satırları: onay kutuları, departman seçimi ve "Departman ata" (tekli ya da toplu). */
+function AssignGroup({ kind, rows, deps, onDone }: { kind: AssignKind; rows: UnassignedRow[]; deps: Department[]; onDone: () => Promise<void> }) {
+  const [sel, setSel] = useState<string[]>([]);
+  const [dep, setDep] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ tone: 'info' | 'danger'; text: string } | null>(null);
+  const t = KIND_TEXT[kind];
+  const selectId = `assign-${kind}`;
+  const all = rows.length > 0 && sel.length === rows.length;
+  async function save() {
+    if (!sel.length || !dep || busy) return;
+    setBusy(true); setMsg(null);
+    try {
+      const r = await api<{ updated: number }>('/api/v1/department-assignments', { method: 'PUT', json: { entityType: kind, ids: sel, departmentId: dep } });
+      setMsg({ tone: 'info', text: `${r.data.updated} ${t.noun} ${deps.find((d) => d.id === dep)?.name ?? ''} departmanına atandı.` });
+      setSel([]);
+      await onDone();
+    } catch (err) { setMsg({ tone: 'danger', text: err instanceof ApiError ? err.message : 'Departman atanamadı.' }); }
+    finally { setBusy(false); }
+  }
+  return (
+    <section className="grid gap-2 border-t border-border pt-3 first:border-0 first:pt-0" aria-labelledby={`${selectId}-h`}>
+      <h3 id={`${selectId}-h`} className="text-[15px] font-semibold">{t.heading} <span className="font-normal text-ink-muted">({rows.length})</span></h3>
+      {!rows.length ? <p className="text-sm text-ink-muted">Departmansız {t.noun} yok.</p> : <>
+        <label className="inline-flex min-h-8 items-center gap-2 text-sm">
+          <input type="checkbox" className="size-4 accent-ink" checked={all} disabled={busy} onChange={(e) => setSel(e.target.checked ? rows.map((r) => r.id) : [])} />
+          Tümünü seç
+        </label>
+        <ul className="grid max-h-72 overflow-y-auto rounded-md border border-border">
+          {rows.map((r) => {
+            const x = rowText(kind, r);
+            return (
+              <li key={r.id} className="border-b border-border px-3 py-1.5 last:border-0">
+                <label className="flex min-h-8 items-start gap-2">
+                  <input type="checkbox" className="mt-1 size-4 shrink-0 accent-ink" checked={sel.includes(r.id)} disabled={busy}
+                    onChange={(e) => setSel(e.target.checked ? [...sel, r.id] : sel.filter((y) => y !== r.id))} />
+                  <span className="min-w-0"><span className="block break-words">{x.main}</span>{x.sub && <span className="block break-words text-sm text-ink-muted">{x.sub}</span>}</span>
+                </label>
+              </li>
+            );
+          })}
+        </ul>
+        <div className="flex flex-wrap items-end gap-3">
+          <label className="grid gap-1 text-sm" htmlFor={selectId}>
+            <span>Departman</span>
+            <select id={selectId} className="input min-w-48" value={dep} disabled={busy} onChange={(e) => setDep(e.target.value)}>
+              <option value="">Seçin</option>
+              {deps.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+          </label>
+          <Button disabled={busy || !sel.length || !dep} onClick={() => void save()}>{busy ? 'Atanıyor…' : `Departman ata (${sel.length})`}</Button>
+        </div>
+      </>}
+      <div aria-live="polite">{msg && <p className={msg.tone === 'danger' ? 'text-sm text-danger' : 'text-sm text-ink-muted'}>{msg.text}</p>}</div>
+    </section>
+  );
+}
+
+/** Departmanı atanmamış eski kayıtlar (Yönetici ve Satınalma). Atanana kadar bu kayıtları Departman kullanıcıları göremez. */
+function UnassignedRecords({ deps }: { deps: Department[] }) {
+  const r = useResource<Unassigned>('/api/v1/department-assignments/unassigned');
+  if (r.loading && !r.data) return <Loading rows={4} />;
+  if (r.error || !r.data) return <ErrorState error={r.error} onRetry={r.reload} />;
+  const d = r.data;
+  const empty = !d.projects.length && !d.contracts.length && !d.assessments.length;
+  return (
+    <div className="grid gap-4">
+      {d.companyScopeEmpty && (
+        <Banner tone="info" title="Yönetici rolünün şirket kapsamı yok">
+          Bu yüzden departmansız proje ve sözleşmeler size listelenmez; onları Satınalma kullanıcıları görür ve departmana atar. Tedarikçi değerlendirmeleri şirkete bağlı olmadığından aşağıda görünür.
+        </Banner>
+      )}
+      {empty && !d.companyScopeEmpty ? <p className="text-ink-muted">Departmanı atanmamış kayıt yok.</p> : <>
+        {!d.companyScopeEmpty && <AssignGroup kind="project" rows={d.projects} deps={deps} onDone={r.reload} />}
+        {!d.companyScopeEmpty && <AssignGroup kind="contract_family" rows={d.contracts} deps={deps} onDone={r.reload} />}
+        <AssignGroup kind="supplier_assessment" rows={d.assessments} deps={deps} onDone={r.reload} />
+      </>}
+    </div>
+  );
 }
 
 /** Kullanıcılar ve Entra (Faz 1): departmanlar, Yönetici için departman ekleme; kullanıcılar ve departman ataması. */
@@ -219,12 +321,19 @@ export function UsersTab() {
               <p className="text-sm text-ink-muted">Departman kullanıcısı yalnız atandığı departmanların kayıtlarını görür. Yönetici, Satınalma ve Denetçi bütün departmanları görür. Tedarikçi kullanıcıları bu listede yer almaz.</p>
               {deps.data ? <MembersAdmin deps={deps.data.items} /> : deps.error ? null : <Loading rows={4} />}
             </> : <>
-              <p className="text-sm text-ink-muted">Kullanıcıların rolünü ve departman atamasını Yönetici görür ve değiştirir.</p>
+              <p className="text-sm text-ink-muted">Kullanıcıların departman atamasını Yönetici değiştirir. Departman kullanıcısı yalnız atandığı departmanların kayıtlarını görür; Yönetici, Satınalma ve Denetçi bütün departmanları görür. Tedarikçi kullanıcıları bu listede yer almaz.</p>
               <MembersReadOnly />
             </>}
           </div>
         </section>
       </div>
+      <section className="panel mt-5" aria-labelledby="unassigned-h">
+        <div className="panel-head"><h2 id="unassigned-h">Departmansız kayıtlar</h2></div>
+        <div className="panel-body grid gap-3">
+          <p className="text-sm text-ink-muted">Departmanı atanmamış eski kayıtları Departman kullanıcıları göremez. Kayıtları seçip departman atayın; kaydın görevleri de aynı departmana geçer, sözleşmeye bağlı faturalar departmanı sözleşmeden alır. Her atama denetim izine yazılır.</p>
+          {deps.data ? <UnassignedRecords deps={deps.data.items} /> : deps.error ? null : <Loading rows={3} />}
+        </div>
+      </section>
     </div>
   );
 }

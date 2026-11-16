@@ -178,10 +178,13 @@ export async function completeReview(tx: Tx, ctx: TenantContext, id: string) {
   await tx.query(`UPDATE supplier_assessments a SET status = 'SUPERSEDED' FROM questionnaire_templates t, questionnaire_templates mine
     WHERE t.id = a.template_id AND mine.id = $3 AND t.code = mine.code AND a.supplier_id = $2 AND a.id <> $1 AND a.status <> 'SUPERSEDED'`, [id, a.supplier_id, a.template_id]);
   if (result.outcome === 'BLOCKED') {
-    for (const role of ['PROCUREMENT_MANAGER', 'SECURITY']) {
+    // Düzeltme dalgası (I3, D100): görev değerlendirmenin departmanını taşır (başka departmanın kullanıcısına görünmez). Departmansız
+    // değerlendirmeyi bölüm kullanıcıları göremez; bölüm görevi açılmaz, Satınalma görevi yeter.
+    const department = (await tx.query<{ d: string | null }>(`SELECT department_id AS d FROM supplier_assessments WHERE id = $1`, [id])).rows[0]?.d ?? null;
+    for (const role of department ? ['PROCUREMENT_MANAGER', 'SECURITY'] : ['PROCUREMENT_MANAGER']) {
       await openTask(tx, ctx, { companyId: null, kind: 'assessment_blocker', entityType: 'supplier', entityId: a.supplier_id, title: `Kritik engel: ${a.supplier_name}`,
         reason: result.items.filter((x) => x.kind === 'BLOCKER').map((x) => x.message).join(' '), nextAction: 'Düzeltici faaliyet isteyin veya tedarikçiyle yeni işlem yapılmamasına karar verin.',
-        assigneeRole: role, severity: 'HIGH', dedupeKey: `assessment-blocker:${id}:${role}` });
+        assigneeRole: role, severity: 'HIGH', dedupeKey: `assessment-blocker:${id}:${role}`, departmentId: department });
     }
   }
   await audit(tx, ctx, 'assessment.completed', 'supplier_assessment', id, { outcome: result.outcome, compliance: result.complianceRate });
@@ -271,7 +274,7 @@ export async function reportIncident(tx: Tx, ctx: TenantContext, b: IncidentInpu
     AND duplicate_of_id IS NULL AND status NOT IN ('REJECTED') AND abs(occurred_on - $4::date) <= 3`, [b.supplierId, b.category, i.id, b.occurredOn])).rows;
   await openTask(tx, ctx, { companyId: null, kind: 'incident_review', entityType: 'incident', entityId: i.id, title: `Olay ön incelemesi: ${code}`,
     reason: `${b.title.trim()} (${LEVEL_TR[b.severity]})${possibleDuplicates.length ? ` · ${possibleDuplicates.length} olası mükerrer` : ''}`,
-    nextAction: 'Mükerrer, gizlilik ve aciliyet kontrolü yapıp incelemeyi başlatın.', assigneeRole: b.category === 'SECURITY' || b.category === 'PERSONAL_DATA' ? 'SECURITY' : 'PROCUREMENT_MANAGER',
+    nextAction: 'Mükerrer, gizlilik ve aciliyet kontrolü yapıp incelemeyi başlatın.', assigneeRole: 'PROCUREMENT', // I3: merkezi ön inceleme (güvenlik/kişisel veri dahil) Satınalma'da
     severity: b.severity === 'HIGH' || b.severity === 'CRITICAL' ? 'HIGH' : 'NORMAL', dedupeKey: `incident-review:${i.id}` });
   await audit(tx, ctx, 'incident.reported', 'incident', i.id, { code, supplierId: b.supplierId, category: b.category, severity: b.severity });
   return { id: i.id, code, possibleDuplicates };
@@ -343,7 +346,7 @@ export async function transitionIncident(tx: Tx, ctx: TenantContext, id: string,
   if (action === 'VERIFY' && ['SECURITY', 'PERSONAL_DATA'].includes(i.category) && (severity === 'HIGH' || severity === 'CRITICAL')) {
     await openTask(tx, ctx, { companyId: null, kind: 'risk_rereview', entityType: 'supplier', entityId: i.supplier_id, title: `Risk yeniden incelemesi: ${i.code}`,
       reason: `Doğrulanmış ${LEVEL_TR[severity]} ${i.category === 'SECURITY' ? 'güvenlik' : 'kişisel veri'} olayı: ${i.title}`, nextAction: 'Değerlendirmeyi yenileyin; hukuki/düzenleyici bildirim gerekip gerekmediğini hukukla karara bağlayın.',
-      assigneeRole: 'SECURITY', severity: severity === 'CRITICAL' ? 'CRITICAL' : 'HIGH', dedupeKey: `risk-rereview:${id}` });
+      assigneeRole: 'PROCUREMENT', severity: severity === 'CRITICAL' ? 'CRITICAL' : 'HIGH', dedupeKey: `risk-rereview:${id}` });
     await openTask(tx, ctx, { companyId: null, kind: 'new_business_hold', entityType: 'supplier', entityId: i.supplier_id, title: `Yeni işlem kararı: ${i.code}`,
       reason: 'Ciddi olay doğrulandı; yeni sipariş/seçim durdurulmalı mı?', nextAction: 'Yeni işlem durdurma kararını verin; sistem otomatik durdurmaz.',
       assigneeRole: 'PROCUREMENT_MANAGER', severity: severity === 'CRITICAL' ? 'CRITICAL' : 'HIGH', dedupeKey: `new-business-hold:${id}` });

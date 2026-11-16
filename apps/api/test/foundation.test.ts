@@ -222,7 +222,9 @@ describe('T08 IBAN sessiz değişmez', () => {
     expect(r1.body.supplier.bankChangeRequestId).toBeTruthy();
     expect(r2.body.supplier.bankChangeRequestId).toBe(r1.body.supplier.bankChangeRequestId);
     const tasks = await h.call('finance', 'GET', '/api/v1/tasks?view=all');
-    expect(tasks.body.items.filter((t: any) => t.entityId === sid && t.kind === 'BANK_CHANGE_VERIFICATION')).toHaveLength(1);
+    // v2 düzeltme dalgası (Y1): banka değişikliği kararı kaldırıldı (D93); talep kaydı sürer, kapanamayacak doğrulama görevi açılmaz (önce 1).
+    expect(tasks.body.items.filter((t: any) => t.entityId === sid && t.kind === 'BANK_CHANGE_VERIFICATION')).toHaveLength(0);
+    expect((await h.owner.query(`SELECT 1 FROM tasks WHERE kind = 'BANK_CHANGE_VERIFICATION' AND entity_id = $1`, [sid])).rowCount).toBe(0);
     // Kayıtlı IBAN ile gelen belge talep açmaz.
     const same = await uploadInvoice('buyer', invoice({ sellerVkn: vkn, iban: verifiedIban }));
     expect(same.body.supplier.bankChangeRequestId).toBeNull();

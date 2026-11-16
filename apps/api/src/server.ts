@@ -3,7 +3,7 @@ import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import swagger from '@fastify/swagger';
 import type pg from 'pg';
-import { can, dec as decimal, supplierOptionLabels, taxIdTail, type Permission } from '@sp/domain';
+import { can, dec as decimal, normalizeRoles, supplierOptionLabels, taxIdTail, type Permission } from '@sp/domain';
 import type { Config } from './config.ts';
 import { withTenant, type TenantContext, type Tx } from './db.ts';
 import { DevAuthProvider, identityFor, resolveIdentity, tenantContext, type AuthProvider } from './auth.ts';
@@ -226,7 +226,10 @@ export async function buildApp(deps: AppDeps) {
   const internalOnly = (ctx: TenantContext) => { if (ctx.supplierId) throw forbidden('internal'); };
   app.get('/api/v1/members', async (req) => scoped(req, null, async (tx, ctx) => {
     internalOnly(ctx);
-    return (await tx.query(`SELECT u.id, u.display_name AS "displayName" FROM users u JOIN memberships m ON m.user_id = u.id ORDER BY u.display_name`)).rows;
+    // Düzeltme dalgası (Y4): Yönetici listesiyle aynı kapsam — tedarikçi portalı kullanıcıları listelenmez; roller v2 adlarıyla.
+    const rows = (await tx.query<{ id: string; displayName: string; roles: string[] }>(`SELECT u.id, u.display_name AS "displayName", m.roles FROM users u JOIN memberships m ON m.user_id = u.id
+      WHERE m.supplier_id IS NULL ORDER BY u.display_name, u.id`)).rows;
+    return rows.map((r) => ({ ...r, roles: normalizeRoles(r.roles) })).filter((r) => r.roles.length > 0 && !r.roles.includes('SUPPLIER'));
   }));
 
   // --- Departmanlar (v2 D93) ------------------------------------------------------
@@ -234,6 +237,12 @@ export async function buildApp(deps: AppDeps) {
     scoped(req, 'department.read', async (tx) => ({ items: await departments.listDepartments(tx) })));
   app.post('/api/v1/departments', { schema: { tags: ['departments'], body: { type: 'object', required: ['name'], additionalProperties: false, properties: { name: text(200) } } } },
     async (req, reply) => reply.status(201).send(await scoped(req, 'department.manage', (tx, ctx) => departments.createDepartment(tx, ctx, req.body as { name: string }))));
+  // Düzeltme dalgası (C1, D96): departmansız kayıtlar ve departman ataması (Yönetici, Satınalma).
+  app.get('/api/v1/department-assignments/unassigned', { schema: { tags: ['departments'] } }, async (req) =>
+    scoped(req, 'department.assign', (tx, ctx) => departments.listUnassigned(tx, ctx)));
+  app.put('/api/v1/department-assignments', { schema: { tags: ['departments'], body: { type: 'object', required: ['entityType', 'ids', 'departmentId'], additionalProperties: false,
+    properties: { entityType: { type: 'string', enum: ['project', 'contract_family', 'supplier_assessment'] }, ids: { type: 'array', minItems: 1, maxItems: 500, items: uuid }, departmentId: uuid } } } },
+  async (req) => scoped(req, 'department.assign', (tx, ctx) => departments.assignDepartment(tx, ctx, req.body as { entityType: departments.AssignableEntity; ids: string[]; departmentId: string })));
   app.get('/api/v1/memberships', { schema: { tags: ['departments'] } }, async (req) =>
     scoped(req, 'department.manage', async (tx, ctx) => ({ items: await departments.listMemberships(tx, ctx) })));
   app.put('/api/v1/memberships/:userId/departments', { schema: { tags: ['departments'], params: { type: 'object', required: ['userId'], properties: { userId: uuid } },

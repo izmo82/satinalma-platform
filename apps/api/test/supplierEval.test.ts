@@ -169,8 +169,12 @@ describe('T19 olay: iddia ≠ doğrulanmış; itiraz; çift sayım yok', () => {
     expect((await call('security', 'POST', `/api/v1/corrective-actions/${act.body.id}/verify`)).status).toBe(403);
     expect((await call('legal2', 'POST', `/api/v1/corrective-actions/${act.body.id}/verify`)).status).toBe(200);
     expect((await move(a.id, 'CLOSE', {}, 'security')).body.status).toBe('CLOSED');
-    const tasks = (await call('security', 'GET', '/api/v1/tasks?view=all')).body.items as { title: string }[];
+    // Düzeltme dalgası (I3, D100): risk yeniden incelemesi merkezi ön incelemedir, Satınalma'ya düşer (önce 'security' görürdü);
+    // departmanı olmayan tedarikçi işi bölüm kullanıcılarının hepsine görünmez.
+    const tasks = (await call('legal2', 'GET', '/api/v1/tasks?view=all')).body.items as { title: string }[];
     expect(tasks.some((t) => t.title === `Risk yeniden incelemesi: ${a.code}`)).toBe(true);
+    const dept = (await call('security', 'GET', '/api/v1/tasks?view=all')).body.items as { title: string }[];
+    expect(dept.some((t) => t.title === `Risk yeniden incelemesi: ${a.code}`)).toBe(false);
     const pm = (await call('legal2', 'GET', '/api/v1/tasks?view=all')).body.items as { title: string }[];
     expect(pm.some((t) => t.title === `Yeni işlem kararı: ${a.code}`)).toBe(true);
   });

@@ -98,6 +98,17 @@ describe('v2 kaldırılan işlevler (D93)', () => {
     }
   });
 
+  it('eski açık banka doğrulama görevi İşlerim, sayaç, bildirim ve aramada listelenmez; kayıt silinmez (Y1)', async () => {
+    const tag = `BNK${randomUUID().slice(0, 6)}`;
+    const t = (await h.owner.query<{ id: string }>(`INSERT INTO tasks (tenant_id, company_id, kind, entity_type, entity_id, title, reason, next_action, assignee_role, severity, dedupe_key)
+      VALUES ($1, NULL, 'BANK_CHANGE_VERIFICATION', 'supplier', $2, $3, 'Belgede kayıtlı olmayan bir IBAN okundu.', 'Teyit edin.', 'PROCUREMENT', 'HIGH', $4) RETURNING id`,
+      [h.world.tenantA, h.world.suppliers.s1, `Banka bilgisi doğrulanmalı ${tag}`, `bank-change:${randomUUID()}`])).rows[0]!.id;
+    for (const view of ['mine', 'all']) expect((await h.call('legal', 'GET', `/api/v1/tasks?view=${view}`)).body.items.map((x: any) => x.id)).not.toContain(t);
+    expect((await h.call('legal', 'GET', '/api/v1/notifications')).body.items.map((x: any) => x.id)).not.toContain(t);
+    expect(JSON.stringify((await h.call('legal', 'GET', `/api/v1/search?q=${tag}`)).body)).not.toContain(t);
+    expect((await h.owner.query(`SELECT status FROM tasks WHERE id = $1`, [t])).rows[0].status).toBe('OPEN');
+  });
+
   it('korunan komşu uçlar çalışmaya devam eder: politika okuma/simülasyon, fatura listesi, tolerans listesi salt okunur', async () => {
     expect((await h.call('legal', 'GET', '/api/v1/approval-policies')).body.can.manage).toBe(false);
     const sim = await h.call('buyer', 'POST', '/api/v1/approval-policies/simulate', { body: { action: 'RFQ_PUBLISH', companyId: h.world.companyA1.id, category: null, currency: 'TRY', amount: '10' } });
