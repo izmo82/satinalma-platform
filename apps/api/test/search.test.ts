@@ -1,4 +1,4 @@
-// v2 Faz 1 (D93/D95): hukuk artık Satınalma rolünde ve proje okur; izinsiz tür örneği tedarikçi kullanıcısı
+// v2 Faz 1 (D93/D95): hukuk artık Satınalma rolünde ve proje okur; izinsiz tür örneği tedarikçi kullanıcısı. Görev 5: departman kullanıcısı faturayı okur (analiz-v2 §2.1); okuma izni olmayan liste örneği kaldırılan sipariş listesi
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { makeHarness } from './harness.ts';
@@ -59,8 +59,10 @@ describe('bildirim ve kayıtlı görünüm', () => {
     expect((await h.call('supplier1', 'DELETE', `/api/v1/saved-views/${v.body.id}`)).status).toBe(403);
     expect((await h.call('supplier1', 'GET', '/api/v1/members')).status).toBe(403);
     expect((await h.call('supplier1', 'GET', '/api/v1/holidays')).status).toBe(403);
-    // Güvenlik rolü fatura okuyamaz: fatura listesinin görünümü de yok. İç kullanıcı için kullanıcı ve tatil uçları açık kalır.
-    expect((await h.call('security', 'GET', '/api/v1/saved-views?page=invoices')).status).toBe(403);
+    // Okuma izni olmayan listenin (v2'de kaldırılan sipariş listesi, po.read) görünümü de yok; departman kullanıcısı fatura
+    // listesini okur, görünümünü de okur. İç kullanıcı için kullanıcı ve tatil uçları açık kalır.
+    expect((await h.call('security', 'GET', '/api/v1/saved-views?page=purchase_orders')).status).toBe(403);
+    expect((await h.call('security', 'GET', '/api/v1/saved-views?page=invoices')).status).toBe(200);
     expect((await h.call('legal', 'GET', '/api/v1/members')).status).toBe(200);
     expect((await h.call('legal', 'GET', '/api/v1/holidays')).status).toBe(200);
   });

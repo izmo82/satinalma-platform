@@ -1,3 +1,4 @@
+import { normalizeRoles } from '@sp/domain';
 import type { TenantContext, Tx } from '../db.ts';
 import { audit } from '../audit.ts';
 import { ApiError, notFound, unprocessable } from '../errors.ts';
@@ -55,6 +56,20 @@ export async function resolveDepartment(tx: Tx, ctx: TenantContext, departmentId
   }
   await assertKnown(tx, [departmentId]);
   return departmentId;
+}
+
+export interface MemberRow { userId: string; displayName: string; email: string; roles: string[]; departmentIds: string[] }
+
+/**
+ * Kiracının iç kullanıcıları ve departmanları (yalnız Yönetici; Yönetim > Kullanıcılar ve Entra). Tedarikçi portalı üyelikleri
+ * listelenmez (departmanları yoktur, atama sunulmaz). Roller v2'ye normalize edilir. RLS: memberships kiracıya, users aynı kiracıya.
+ */
+export async function listMemberships(tx: Tx, ctx: TenantContext): Promise<MemberRow[]> {
+  const r = await tx.query<{ userId: string; displayName: string; email: string; roles: string[]; departmentIds: string[] }>(
+    `SELECT m.user_id AS "userId", u.display_name AS "displayName", u.email, m.roles, m.department_ids AS "departmentIds"
+     FROM memberships m JOIN users u ON u.id = m.user_id
+     WHERE m.tenant_id = $1 AND m.supplier_id IS NULL ORDER BY u.display_name, u.id`, [ctx.tenantId]);
+  return r.rows.map((x) => ({ ...x, roles: normalizeRoles(x.roles) })).filter((x) => x.roles.length > 0 && !x.roles.includes('SUPPLIER'));
 }
 
 /** Aktif üyeliğin departmanları (/me). */

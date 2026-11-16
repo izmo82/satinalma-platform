@@ -234,6 +234,8 @@ export async function buildApp(deps: AppDeps) {
     scoped(req, 'department.read', async (tx) => ({ items: await departments.listDepartments(tx) })));
   app.post('/api/v1/departments', { schema: { tags: ['departments'], body: { type: 'object', required: ['name'], additionalProperties: false, properties: { name: text(200) } } } },
     async (req, reply) => reply.status(201).send(await scoped(req, 'department.manage', (tx, ctx) => departments.createDepartment(tx, ctx, req.body as { name: string }))));
+  app.get('/api/v1/memberships', { schema: { tags: ['departments'] } }, async (req) =>
+    scoped(req, 'department.manage', async (tx, ctx) => ({ items: await departments.listMemberships(tx, ctx) })));
   app.put('/api/v1/memberships/:userId/departments', { schema: { tags: ['departments'], params: { type: 'object', required: ['userId'], properties: { userId: uuid } },
     body: { type: 'object', required: ['departmentIds'], additionalProperties: false, properties: { departmentIds: { type: 'array', maxItems: 100, items: uuid } } } } }, async (req) =>
     scoped(req, 'department.manage', (tx, ctx) => departments.setMembershipDepartments(tx, ctx, (req.params as { userId: string }).userId, req.body as { departmentIds: string[] })));

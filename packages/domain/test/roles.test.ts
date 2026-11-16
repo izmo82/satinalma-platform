@@ -1,3 +1,4 @@
+// v2 Faz 1 (D93/D95): Departman kullanıcısının sözleşme/fatura okuması (analiz-v2 §2.1) eklendi.
 import { describe, expect, it } from 'vitest';
 import { can, normalizeRoles, PERMISSIONS, REMOVED_PERMISSIONS, SEES_ALL_DEPARTMENTS, V2_ROLES, type Permission } from '../src/roles.js';
 
@@ -37,6 +38,12 @@ describe('v2 izin tablosu', () => {
     for (const p of ['project.manage', 'bid.score', 'contract.manage', 'assessment.manage', 'incident.report'] as const) {
       expect(can(['DEPARTMENT_USER'], p), p).toBe(true);
     }
+  });
+  it('DEPARTMENT_USER kendi departmanının sözleşme ve faturalarını okur; rapor okumaz (analiz-v2 §2.1)', () => {
+    expect(can(['DEPARTMENT_USER'], 'contract.read')).toBe(true);
+    expect(can(['DEPARTMENT_USER'], 'invoice.read')).toBe(true);
+    expect(can(['DEPARTMENT_USER'], 'report.read')).toBe(false);
+    expect(can(['DEPARTMENT_USER'], 'invoice.manage')).toBe(false);
   });
   it('ADMIN korunan işlevler', () => {
     for (const p of ['tenant.export.request', 'ai.policy.manage', 'holiday.manage', 'audit.read', 'project.read', 'contract.read', 'invoice.read'] as const) {

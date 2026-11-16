@@ -25,7 +25,8 @@ const ROLES: [string, string, string[], string[] | null][] = [
   ['Yönetici', 'tamer.yonetici@example.test', MENU, ALL_TABS],
   ['Satınalma', 'leyla.hukuk@example.test', MENU, ALL_TABS],
   ['Denetçi', 'deniz.denetci@example.test', MENU, ['Entegrasyonlar', 'Yapay zekâ', 'Denetim izi']],
-  ['Departman kullanıcısı', 'tolga.teknik@example.test', MENU.filter((m) => m !== 'Yönetim'), null],
+  // Departman kullanıcısı rapor okumaz (report.read) ve Yönetim'i görmez: 5 giriş.
+  ['Departman kullanıcısı', 'tolga.teknik@example.test', MENU.filter((m) => m !== 'Yönetim' && m !== 'Raporlar'), null],
 ];
 
 for (const [role, email, expected, tabs] of ROLES) {
@@ -160,4 +161,31 @@ test('taşınan girişler: Tedarikçiler sekmeleri, Sözleşme ekle ve Fatura y�
   await page.getByRole('navigation', { name: 'Ana menü' }).getByRole('link', { name: /^Sözleşmeler/ }).click();
   await page.getByRole('link', { name: 'Sözleşme ekle' }).click();
   await expect(page.getByLabel('Belge türü')).toHaveValue('CONTRACT');
+});
+
+test('Yönetim: Yönetici departman kullanıcısına departman atar; yenileyince kalır', async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop-1440', 'veri değiştirir; yalnız bir projede');
+  await login(page, 'tamer.yonetici@example.test');
+  await page.goto('/yonetim/kullanicilar');
+  const selin = page.getByRole('group', { name: 'Selin Arslan departmanları' });
+  const ik = selin.getByRole('checkbox', { name: 'İnsan Kaynakları' });
+  await expect(selin.getByRole('checkbox', { name: 'Bilgi Teknolojileri' })).toBeChecked();
+  // Tüm departmanları gören roller düzenlenmez; tedarikçi kullanıcısı listede yok.
+  await expect(page.getByRole('group', { name: 'Leyla Demir departmanları' })).toHaveCount(0);
+  await expect(page.getByRole('listitem').filter({ hasText: 'Leyla Demir' })).toContainText('Tüm departmanlar');
+  await expect(page.getByRole('listitem').filter({ hasText: 'Leyla Demir' })).toContainText('Satınalma');
+  await expect(page.getByText('Anadolu Bilişim Teklif Sorumlusu')).toHaveCount(0);
+  const save = page.getByRole('button', { name: 'Selin Arslan departmanlarını kaydet' });
+  const before = await ik.isChecked();
+  await ik.setChecked(!before);
+  await save.click();
+  await expect(selin.getByText('Departmanlar kaydedildi.')).toBeVisible();
+  await page.reload();
+  await expect(ik).toBeChecked({ checked: !before });
+  // Sentetik veriyi eski haline getir.
+  await ik.setChecked(before);
+  await save.click();
+  await expect(selin.getByText('Departmanlar kaydedildi.')).toBeVisible();
+  await page.reload();
+  await expect(ik).toBeChecked({ checked: before });
 });

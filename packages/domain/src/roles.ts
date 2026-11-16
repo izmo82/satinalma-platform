@@ -61,7 +61,8 @@ export const PERMISSIONS = {
   'bank.change.decide': [],
   // Bölüm kullanıcısı da sözleşme açar/düzenler (D93 brief: korunan işlev).
   'contract.manage': ['PROCUREMENT', 'DEPARTMENT_USER'],
-  'contract.read': ['ADMIN', 'PROCUREMENT', 'AUDITOR'],
+  // analiz-v2 §2.1: Departman kullanıcısı kendi departmanının sözleşme ve faturalarını görür (kapsam RLS'de, Görev 2).
+  'contract.read': ['ADMIN', 'PROCUREMENT', 'DEPARTMENT_USER', 'AUDITOR'],
   'signature.requirement.define': ['PROCUREMENT'],
   'signature.review': ['PROCUREMENT'],
   'signature.analyze': ['PROCUREMENT'],
@@ -98,7 +99,7 @@ export const PERMISSIONS = {
   'po.read': [],
   'po.manage': [],
   'receipt.record': [],
-  'invoice.read': ['ADMIN', 'PROCUREMENT', 'AUDITOR'],
+  'invoice.read': ['ADMIN', 'PROCUREMENT', 'DEPARTMENT_USER', 'AUDITOR'],
   'invoice.manage': ['PROCUREMENT'],
   'invoice.exception.approve': [],
   'invoice.approve': [],

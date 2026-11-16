@@ -2,6 +2,7 @@ import { lazy, useState, type ReactNode } from 'react';
 import { Link, Navigate, Outlet } from 'react-router-dom';
 import { api, ApiError } from '../lib/api.ts';
 import { hasRole, useSession, type Me } from '../lib/session.tsx';
+import { roleLabel } from '../lib/labels.ts';
 import { useResource } from '../lib/useApi.ts';
 import { Banner, Empty, ErrorState, Field, Loading, PageHeader } from '../ui/kit.tsx';
 import { SectionTabs } from '../ui/SectionTabs.tsx';
@@ -98,13 +99,80 @@ export function IntegrationsTab() {
 }
 
 interface Department { id: string; name: string }
+interface Member { userId: string; displayName: string; email: string; roles: string[]; departmentIds: string[] }
 
-/** Kullanıcılar ve Entra (Faz 1): departman listesi, Yönetici için departman ekleme ve kurum kullanıcıları. */
+/** Yalnız Departman kullanıcısı departmana bağlıdır; Yönetici, Satınalma ve Denetçi bütün departmanları görür. */
+const departmentBound = (roles: string[]) => roles.length > 0 && roles.every((r) => r === 'DEPARTMENT_USER');
+
+/** Bir kullanıcının satırı: rol adı, Departman kullanıcısı için departman seçimi (onay kutuları) ve kaydet. */
+function MemberItem({ m, deps, onSaved }: { m: Member; deps: Department[]; onSaved: () => Promise<void> }) {
+  const [sel, setSel] = useState<string[]>(m.departmentIds);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ tone: 'info' | 'danger'; text: string } | null>(null);
+  const editable = departmentBound(m.roles);
+  const dirty = [...sel].sort().join() !== [...m.departmentIds].sort().join();
+  const roles = [...new Set(m.roles.map((r) => roleLabel[r] ?? 'Rol tanımsız'))].join(', ');
+  async function save() {
+    setBusy(true); setMsg(null);
+    try {
+      await api(`/api/v1/memberships/${m.userId}/departments`, { method: 'PUT', json: { departmentIds: sel } });
+      setMsg({ tone: 'info', text: 'Departmanlar kaydedildi.' });
+      await onSaved();
+    } catch (err) { setMsg({ tone: 'danger', text: err instanceof ApiError ? err.message : 'Departmanlar kaydedilemedi.' }); }
+    finally { setBusy(false); }
+  }
+  return (
+    <li className="grid gap-2 border-b border-border py-3 last:border-0">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+        <span className="font-semibold">{m.displayName}</span>
+        <span className="text-sm text-ink-muted">{roles}</span>
+        <span className="min-w-0 break-all text-sm text-ink-subtle">{m.email}</span>
+      </div>
+      {editable ? (
+        <fieldset className="grid gap-2">
+          <legend className="sr-only">{m.displayName} departmanları</legend>
+          <div className="flex flex-wrap gap-x-5 gap-y-2">
+            {deps.map((d) => (
+              <label key={d.id} className="inline-flex min-h-8 items-center gap-2">
+                <input type="checkbox" className="size-4 accent-ink" checked={sel.includes(d.id)} disabled={busy}
+                  onChange={(e) => setSel(e.target.checked ? [...sel, d.id] : sel.filter((x) => x !== d.id))} />{d.name}
+              </label>
+            ))}
+          </div>
+          {!sel.length && <p className="text-sm text-warn">Departman seçilmedi: kullanıcı departmanlı kayıtları göremez.</p>}
+          <div className="flex flex-wrap items-center gap-3">
+            <Button size="sm" variant="outline" disabled={busy || !dirty} onClick={() => void save()} aria-label={`${m.displayName} departmanlarını kaydet`}>{busy ? 'Kaydediliyor…' : 'Kaydet'}</Button>
+            <span aria-live="polite" className={msg?.tone === 'danger' ? 'text-sm text-danger' : 'text-sm text-ink-muted'}>{msg?.text}</span>
+          </div>
+        </fieldset>
+      ) : <span className="text-sm text-ink-muted">Tüm departmanlar</span>}
+    </li>
+  );
+}
+
+/** Yönetici görünümü: iç kullanıcılar, rolleri ve departman ataması (GET /memberships, PUT /memberships/:id/departments). */
+function MembersAdmin({ deps }: { deps: Department[] }) {
+  const r = useResource<{ items: Member[] }>('/api/v1/memberships');
+  if (r.loading && !r.data) return <Loading rows={4} />;
+  if (r.error || !r.data) return <ErrorState error={r.error} onRetry={r.reload} />;
+  if (!r.data.items.length) return <p className="text-ink-muted">Kullanıcı yok.</p>;
+  return <ul className="grid">{r.data.items.map((m) => <MemberItem key={m.userId} m={m} deps={deps} onSaved={r.reload} />)}</ul>;
+}
+
+/** Yönetici dışındaki roller (Satınalma): yalnız kullanıcı adları; rol ve departman ataması Yönetici'de. */
+function MembersReadOnly() {
+  const members = useResource<{ id: string; displayName: string }[]>('/api/v1/members');
+  if (members.loading && !members.data) return <Loading rows={4} />;
+  if (members.error) return <ErrorState error={members.error} onRetry={members.reload} />;
+  if (!members.data?.length) return <p className="text-ink-muted">Kullanıcı yok.</p>;
+  return <ul className="grid gap-1">{members.data.map((u) => <li key={u.id} className="border-b border-border py-1.5 last:border-0">{u.displayName}</li>)}</ul>;
+}
+
+/** Kullanıcılar ve Entra (Faz 1): departmanlar, Yönetici için departman ekleme; kullanıcılar ve departman ataması. */
 export function UsersTab() {
   const { me } = useSession();
   const admin = hasRole(me, 'ADMIN');
   const deps = useResource<{ items: Department[] }>('/api/v1/departments');
-  const members = useResource<{ id: string; displayName: string }[]>('/api/v1/members');
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ tone: 'info' | 'danger'; text: string } | null>(null);
@@ -124,9 +192,9 @@ export function UsersTab() {
   return (
     <div className="page">
       <PageHeader title="Kullanıcılar ve Entra">
-        Departmanlar ve kurumdaki kullanıcılar. Entra eşitlemesi (kullanıcıların ve departmanların Entra'dan alınması) Faz 2'de gelir; o zamana kadar departmanlar burada tanımlanır.
+        Departmanlar ve kurumdaki kullanıcılar. Entra eşitlemesi (kullanıcıların ve departmanların Entra'dan alınması) Faz 2'de gelir; o zamana kadar departmanlar ve atamalar burada yapılır.
       </PageHeader>
-      <div className="grid gap-5 min-[1100px]:grid-cols-2">
+      <div className="grid items-start gap-5 min-[1100px]:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
         <section className="panel">
           <div className="panel-head"><h2>Departmanlar</h2></div>
           <div className="panel-body grid gap-4">
@@ -147,10 +215,13 @@ export function UsersTab() {
         <section className="panel">
           <div className="panel-head"><h2>Kullanıcılar</h2></div>
           <div className="panel-body grid gap-3">
-            <p className="text-sm text-ink-muted">Kullanıcıların rolü ve departman ataması Entra eşitlemesiyle (Faz 2) bu listede görünür ve buradan değiştirilir.</p>
-            {members.loading && !members.data ? <Loading rows={4} /> : members.error ? <ErrorState error={members.error} onRetry={members.reload} />
-              : !members.data?.length ? <p className="text-ink-muted">Kullanıcı yok.</p>
-              : <ul className="grid gap-1">{members.data.map((u) => <li key={u.id} className="border-b border-border py-1.5 last:border-0">{u.displayName}</li>)}</ul>}
+            {admin ? <>
+              <p className="text-sm text-ink-muted">Departman kullanıcısı yalnız atandığı departmanların kayıtlarını görür. Yönetici, Satınalma ve Denetçi bütün departmanları görür. Tedarikçi kullanıcıları bu listede yer almaz.</p>
+              {deps.data ? <MembersAdmin deps={deps.data.items} /> : deps.error ? null : <Loading rows={4} />}
+            </> : <>
+              <p className="text-sm text-ink-muted">Kullanıcıların rolünü ve departman atamasını Yönetici görür ve değiştirir.</p>
+              <MembersReadOnly />
+            </>}
           </div>
         </section>
       </div>

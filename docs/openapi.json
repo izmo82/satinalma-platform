@@ -224,6 +224,18 @@
         }
       }
     },
+    "/api/v1/memberships": {
+      "get": {
+        "tags": [
+          "departments"
+        ],
+        "responses": {
+          "200": {
+            "description": "Default Response"
+          }
+        }
+      }
+    },
     "/api/v1/memberships/{userId}/departments": {
       "put": {
         "tags": [

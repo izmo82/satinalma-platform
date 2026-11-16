@@ -425,3 +425,68 @@ describe('v2 departman alanı ve uçları (Görev 3)', () => {
     expect((await h.call('techEval', 'GET', '/api/v1/tasks?view=all')).body.items.map((x: any) => x.id)).toContain(supplierTask);
   });
 });
+
+describe('v2 Görev 5 düzeltme: departman kullanıcısının sözleşme/fatura okuması ve üyelik listesi', () => {
+  async function contractWith(dep: string | null) {
+    const up = await h.upload('legal', { name: 'g5.pdf', mime: 'application/pdf', data: syntheticPdf([[`SENTETIK ${randomUUID()}`]]) },
+      { companyId: h.world.companyA1.id, kind: 'CONTRACT', title: `Görev 5 sözleşmesi ${randomUUID().slice(0, 4)} (SENTETİK)` });
+    const c = await h.call('legal', 'POST', '/api/v1/contracts', { body: { title: `Görev 5 sözleşmesi ${randomUUID().slice(0, 4)} (SENTETİK)`, documentVersionId: up.body.documentVersionId,
+      stage: 'EXECUTION', signatureMethod: 'NOT_REQUIRED', originalCustodyRequired: false, ...(dep ? { departmentId: dep } : {}),
+      parties: [{ role: 'BUYER', displayName: h.world.companyA1.name, legalEntityId: h.world.companyA1.id }], supplierId: h.world.suppliers.s1 } });
+    expect(c.status, JSON.stringify(c.body)).toBe(201);
+    return c.body.contractVersionId as string;
+  }
+  /** Fatura; sözleşme verilirse satır o sözleşmeye tahsis edilir ve departmanı oradan devralır (yoksa departmansız). */
+  async function invoiceFor(cv: string | null) {
+    const r = await h.call('finance', 'POST', '/api/v1/invoices', { body: { companyId: h.world.companyA1.id, supplierId: h.world.suppliers.s1, kind: 'INVOICE', invoiceNo: `G5${randomUUID().slice(0, 8)}`,
+      issueDate: '2026-10-21', currency: 'TRY', lines: [{ description: 'Hizmet', quantity: '1', unit: 'adet', unitPrice: '100', netAmount: '100.00' }] } });
+    expect(r.status, JSON.stringify(r.body)).toBe(201);
+    if (cv) expect((await h.call('finance', 'PUT', `/api/v1/invoices/${r.body.id}/allocations`, { body: { allocations: [{ lineNo: 1, poLineId: null, contractVersionId: cv, quantity: '1', amount: '100.00' }] } })).status).toBe(200);
+    return r.body.id as string;
+  }
+
+  it('dept_user_reads_own_department_contracts_and_invoices', async () => {
+    const [btC, ikC, nullC] = [await contractWith(bt), await contractWith(ik), await contractWith(null)];
+    const [btI, ikI, nullI] = [await invoiceFor(btC), await invoiceFor(ikC), await invoiceFor(null)];
+    // Sözleşme: liste ve detay yalnız kendi departmanı.
+    const cl = await h.call('techEval', 'GET', '/api/v1/contracts');
+    expect(cl.status).toBe(200);
+    const cIds = cl.body.items.map((x: any) => x.id);
+    expect(cIds).toContain(btC);
+    expect(cIds).not.toContain(ikC);
+    expect(cIds).not.toContain(nullC);
+    expect(cl.body.items.every((x: any) => x.departmentId === bt)).toBe(true);
+    expect((await h.call('techEval', 'GET', `/api/v1/contract-versions/${btC}/signature-status`)).status).toBe(200);
+    expect((await h.call('techEval', 'GET', `/api/v1/contract-versions/${ikC}/signature-status`)).status).toBe(404);
+    expect((await h.call('techEval', 'GET', `/api/v1/contract-versions/${nullC}/signature-status`)).status).toBe(404);
+    // Fatura: liste ve detay yalnız kendi departmanı; departmansız fatura görünmez.
+    const il = await h.call('techEval', 'GET', '/api/v1/invoices');
+    expect(il.status).toBe(200);
+    const iIds = il.body.items.map((x: any) => x.id);
+    expect(iIds).toContain(btI);
+    expect(iIds).not.toContain(ikI);
+    expect(iIds).not.toContain(nullI);
+    const one = await h.call('techEval', 'GET', `/api/v1/invoices/${btI}`);
+    expect(one.status).toBe(200);
+    expect(one.body.invoice).toMatchObject({ departmentId: bt });
+    expect((await h.call('techEval', 'GET', `/api/v1/invoices/${ikI}`)).status).toBe(404);
+    expect((await h.call('techEval', 'GET', `/api/v1/invoices/${nullI}`)).status).toBe(404);
+    // Okuma yazma değildir: tahsis ve rapor yine kapalı.
+    expect((await h.call('techEval', 'PUT', `/api/v1/invoices/${btI}/allocations`, { body: { allocations: [{ lineNo: 1, poLineId: null, contractVersionId: btC, quantity: '1', amount: '100.00' }] } })).status).toBe(403);
+    expect((await h.call('techEval', 'GET', '/api/v1/reports/summary?from=2026-01-01&to=2026-12-31')).status).toBe(403);
+  });
+
+  it('admin_lists_internal_memberships', async () => {
+    const r = await h.call('tenantAdmin', 'GET', '/api/v1/memberships');
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    const byId = new Map(r.body.items.map((x: any) => [x.userId, x]));
+    expect(byId.get(h.world.users.techEval.id)).toMatchObject({ roles: ['DEPARTMENT_USER'], departmentIds: [bt], email: h.world.users.techEval.email });
+    expect((byId.get(h.world.users.tenantAdmin.id) as any).roles).toEqual(['ADMIN']);
+    for (const s of ['supplier1', 'supplier2', 'supplier3'] as const) expect(byId.has(h.world.users[s].id), s).toBe(false);
+    expect(byId.has(h.world.users.buyerB.id)).toBe(false); // başka kiracı
+    expect(r.body.items.every((x: any) => !x.roles.includes('SUPPLIER'))).toBe(true);
+    expect((await h.call('buyer', 'GET', '/api/v1/memberships')).status).toBe(403);
+    expect((await h.call('techEval', 'GET', '/api/v1/memberships')).status).toBe(403);
+    expect((await h.call('supplier1', 'GET', '/api/v1/memberships')).status).toBe(403);
+  });
+});

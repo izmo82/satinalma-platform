@@ -117,14 +117,14 @@ function Shell() {
   ] : [
     { to: '/islerim', label: 'İşlerim', icon: 'inbox', count: load(null) },
     // v2 (D93): yedi giriş, beş rol. Taşınan girişlerin sayaçları yeni üst girişe eklenir: Olaylar → Tedarikçiler,
-    // Belge girişi → Sözleşmeler, Yapay zekâ ve dışa aktarım → Yönetim. Yönetim'i Departman kullanıcısı görmez.
+    // Belge girişi → Sözleşmeler, Yapay zekâ ve dışa aktarım → Yönetim. Departman kullanıcısı Raporlar (report.read) ve Yönetim'i görmez.
     ...(hasRole(me, 'ADMIN', 'PROCUREMENT', 'DEPARTMENT_USER', 'AUDITOR') ? [
       { to: '/projeler', label: 'Projeler', icon: 'folder', count: load(['project']) },
       { to: '/sozlesmeler', label: 'Sözleşmeler', icon: 'file', count: load(['contract_version', 'document_version']) },
       { to: '/tedarikciler', label: 'Tedarikçiler', icon: 'users', count: load(['supplier', 'incident']) },
       { to: '/faturalar', label: 'Faturalar', icon: 'receipt', count: load(['invoice']) },
-      { to: '/raporlar', label: 'Raporlar', icon: 'chart' },
     ] : []),
+    ...(hasRole(me, 'ADMIN', 'PROCUREMENT', 'AUDITOR') ? [{ to: '/raporlar', label: 'Raporlar', icon: 'chart' }] : []),
     ...(adminTabs(me).length ? [{ to: '/yonetim', label: 'Yönetim', icon: 'settings', count: load(['tenant', 'tenant_export']) }] : []),
   ];
   const companies = me.supplierPortal ? 'Tedarikçi portalı' : me.companies.length ? me.companies.map((c) => c.name).join(' · ') : 'Şirket belgesi erişimi yok';
