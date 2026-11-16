@@ -527,7 +527,7 @@ describe('fatura tahsisi: sipariş faturanın tedarikçisine ait olmalı (D84)',
     const detail = await call('finance2', 'GET', `/api/v1/invoices/${invoiceId}`);
     expect(detail.body.check.issues.map((x: { code: string }) => x.code)).toContain('SUPPLIER_MISMATCH');
     expect(detail.body.check.canApprove).toBe(false);
-    expect((await approve(invoiceId)).status).not.toBe(200);
+    expect((await approve(invoiceId)).status).toBe(403); // v2: onay ucu kaldırıldı (removed-v1.test.ts)
   });
 
   it('birleştirilen adayın faturası hedef firmanın siparişine bağlanabilir ama aktif olmadığı için onaya kapalı kalır', async () => {

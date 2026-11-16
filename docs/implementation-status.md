@@ -20,7 +20,7 @@ Kapsam kaynağı artık `docs/analiz-v2.md` (ONAYLANDI 16.11.2026); `project-spe
 | 7 | Fatura eşleştirme, uyum denetimi, kural kataloğu | NOT_RUN | |
 | 8 | Oracle ERP: özellik başına uç nokta kartı | NOT_RUN / BLOCKED | Gerçek Oracle test ortamı yok; EBS varsayıldı, teyit bekliyor |
 
-Faz 1 Görev 4 (2026-11-16, `v2-sadelestirme` dalı, test veritabanı): `npm test -w @sp/api` **PASS: 202 geçti, 0 kaldı, 44 atlandı** (görev öncesi 148 geçti / 76 kaldı / 1 atlandı); `npm test -w @sp/domain` PASS 145; `npm run typecheck` PASS. Yeni `apps/api/test/removed-v1.test.ts`: kaldırılan her uç Satınalma, Yönetici ve Denetçi için 403 `forbidden`, tablolarda satır sayısı değişmez; aynı Satınalma kullanıcısı iki adımlı işin iki adımını yapamaz. Atlanan 44 testin 43'ü kaldırılan işlevi pozitif sınar (`it.skip`, davranış removed-v1.test.ts ile 403 olarak korunur); 1'i önceden de koşullu atlanan canlı TCMB testidir (`TCMB_LIVE`). Atlanan testlerin korunan kısımları ayrı testlere taşındı (eski sipariş/onay durumu test verisi olarak modül işleviyle yazılır).
+Faz 1 Görev 4 (2026-11-16, `v2-sadelestirme` dalı, test veritabanı): `npm test -w @sp/api` **PASS: 206 geçti, 0 kaldı, 44 atlandı** (görev öncesi 148 geçti / 76 kaldı / 1 atlandı); `npm test -w @sp/domain` PASS 145; `npm run typecheck` PASS. Yeni `apps/api/test/removed-v1.test.ts`: kaldırılan her uç Satınalma, Yönetici ve Denetçi için 403 `forbidden`, tablolarda satır sayısı değişmez; aynı Satınalma kullanıcısı iki adımlı işin iki adımını yapamaz. Atlanan 44 testin 43'ü kaldırılan işlevi pozitif sınar (`it.skip`, davranış removed-v1.test.ts ile 403 olarak korunur); 1'i önceden de koşullu atlanan canlı TCMB testidir (`TCMB_LIVE`). Atlanan testlerin korunan kısımları ayrı testlere taşındı (eski sipariş/onay durumu test verisi olarak modül işleviyle yazılır).
 
 | Dosya › test | Neden |
 |---|---|
@@ -38,15 +38,15 @@ Faz 1 Görev 4 (2026-11-16, `v2-sadelestirme` dalı, test veritabanı): `npm tes
 | recovery › kanıt zinciri: sözleşmesiz ve kabulsüz harcama ayrılır; tutarlar para birimi başına; vaka özeti defterde | Lira Defteri |
 | recovery › inceleme bulguları: yalnız kur farkı satırı sayılır; birden çok döviz fatura toplanır; iade düşülür; … | Lira Defteri |
 | tcmb › fatura reddedilince görev kapanır | fatura reddi (invoice.approve) |
-| invoices › T14: 1M tavan, 400 bin faturalanmış tüketim, 300 bin kalan açık sipariş → … | sipariş, kabul, fatura onayı |
+| invoices › T14: 1M tavan, 400 bin faturalanmış tüketim, 300 bin kalan açık sipariş → … | sipariş, kabul, fatura onayı (limit hesabı ayrı testte) |
 | invoices › T13: siparişin yarısı kabul, tamamı fatura → eksik kabul istisnası; … | mal kabul, istisna ve fatura onayı |
-| invoices › aynı limit için iki onay aynı anda: biri geçer, diğeri atomik olarak engellenir | fatura onayı |
-| invoices › net tüketim ve önceki tahsis doğru; faturalanmış kabul geri alınamaz | sipariş, kabul, fatura onayı |
+| invoices › aynı limit için iki onay aynı anda: biri geçer, diğeri atomik olarak engellenir | fatura onayı (limit kilidi ayrı testte, modül işleviyle) |
+| invoices › net tüketim ve önceki tahsis doğru; faturalanmış kabul geri alınamaz | sipariş, kabul, fatura onayı (avans/iade netleşmesi ayrı testte) |
 | invoices › T18: ERP zaman aşımı ama kayıt dışarıda oluştu → sorgu ile mutabakat, ikinci kayıt yok | fatura onayı (ERP kısmı ayrı testte) |
 | invoices › kalıcı hatayla DEAD olan aktarım, … tek kayıt olarak onaylanır | fatura onayı (tekrar gönderim ayrı testte) |
 | invoices › imza durumu bilinmeyen arşiv sözleşmesine bağlı mevcut fatura iptal edilmez; politika incelemesi açılır | istisna ve fatura onayı (bulgu kısmı ayrı testte) |
 | invoices › toplu kontrol, onaylanmamış her faturada tek tek kontrolle aynı sonucu verir (bu dosyadaki bütün senaryolar) | sipariş ve kabul (siparişsiz hali ayrı testte) |
-| invoices › vergi dahil limitli sözleşmede siparişte KDV oranı zorunlu; … | sipariş, kabul, fatura onayı |
+| invoices › vergi dahil limitli sözleşmede siparişte KDV oranı zorunlu; … | sipariş, kabul, fatura onayı (vergi dahil limit ayrı testte) |
 | invoices › inceleme: oransız açık sipariş varken vergi dahil limite geçilmez; … | sipariş (revizyon tavanı kısmı ayrı testte) |
 | invoices › kategori kuralı siparişin projesinin kategorisine göre seçilir; kural listesi ve kaldırma kategoriyle | tolerans kuralı, sipariş |
 | invoiceIntake › miktar artışı limit kilidiyle kontrol edilir; özgün kalem korunur, revizyon ve fark görünür | sipariş değişikliği |

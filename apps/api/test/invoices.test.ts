@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { syntheticPdf } from '../src/devdata.ts';
 import { processJobs } from '../src/worker.ts';
 import { withTenant, type TenantContext } from '../src/db.ts';
-import { approveInvoice } from '../src/modules/invoices.ts';
+import { approveInvoice, createPo, recordReceipt } from '../src/modules/invoices.ts';
 import { fakeErp, makeHarness } from './harness.ts';
 
 // Faz 4 kabul testleri (T13–T18, T37) gerçek PostgreSQL + RLS üzerinde. Tüm veri sentetik; ERP bağdaştırıcısı yalnız testte.
@@ -431,5 +431,76 @@ describe('v2: korunan ERP aktarımı, arşiv sözleşmesi bulgusu ve toplu kontr
     const loose = await call('buyer', 'POST', `/api/v1/contract-versions/${cv}/terms`, { ...terms, valueType: 'UNPRICED', amount: null, changeReason: 'Bedelsiz yapıldı (sentetik deneme).' });
     expect(loose.status).toBe(201);
     expect((await limit(cv)).ceiling).toBe('100000.00');
+  });
+});
+
+// Görev 4 düzeltme: sözleşme limit hesabı (GET /contract-versions/:id/limit) v2'de korunur (analiz §3.5 kullanım ve aşım uyarısı).
+// Sipariş, mal kabul ve fatura onayı uçları kaldırıldığından tüketim ve taahhüt doğuran eski (v1) kayıtlar test verisi olarak modül
+// işlevleriyle yazılır (API ucu değil); limit değerleri API'den okunur. Değerler atlanan T14, T15, T16 ve vergi dahil limit testleriyle aynı.
+describe('v2: sözleşme limit hesabı (eski sipariş/kabul/onay test verisi)', () => {
+  const ctx = (): TenantContext => ({ tenantId: h.world.tenantA, userId: h.world.users.buyer.id, roles: ['PROCUREMENT'], companyIds: [h.world.companyA1.id],
+    departmentIds: [], allDepartments: true, correlationId: 'v2-legacy-limit' });
+  const legacyPo = (cv: string | null, qty: string, price = '1000', taxRate?: string) => { const c = ctx(); return withTenant(h.pool, c, (tx) => createPo(tx, c, { companyId: h.world.companyA1.id,
+    supplierId: h.world.suppliers.s1, contractVersionId: cv, currency: 'TRY', lines: [{ kind: 'GOODS', description: 'Yedek parça (sentetik)', unit: 'adet', quantity: qty, unitPrice: price, ...(taxRate ? { taxRate } : {}) }] } as never)); };
+  const legacyLine = async (poId: string) => (await h.owner.query<{ id: string }>(`SELECT id FROM po_lines WHERE po_id = $1 ORDER BY line_no`, [poId])).rows[0]!.id;
+  const legacyReceive = (line: string, q: string) => { const c = ctx(); return withTenant(h.pool, c, (tx) => recordReceipt(tx, c, line, { quantity: q, note: 'Depoya teslim alındı (sentetik)' })); };
+
+  it('T14: 1M tavan, 400 bin faturalanmış tüketim, 300 bin kalan açık sipariş → kullanılabilir 300 bin; aşan sipariş verilemez', async () => {
+    const cv = await contract('1000000.00');
+    const p = await legacyPo(cv, '700');
+    const line = await legacyLine(p.id);
+    await legacyReceive(line, '400');
+    const inv = await invoice('400');
+    expect((await allocate(inv.id, { poLineId: line, quantity: '400', amount: inv.net })).status).toBe(200);
+    await legacyApprove(inv.id);
+    expect(await limit(cv)).toMatchObject({ ceiling: '1000000.00', netConsumption: '400000.00', openCommitment: '300000.00', available: '300000.00' });
+    await expect(legacyPo(cv, '301')).rejects.toMatchObject({ code: 'limit_exceeded' });
+  });
+
+  it('T15: aynı limit için iki onay aynı anda: biri geçer, diğeri atomik olarak engellenir', async () => {
+    // Onay ucu kaldırıldı; limit kilidi onay işlevinin içinde olduğundan eşzamanlılık güvencesi modül işleviyle sınanır.
+    const cv = await contract('100000.00');
+    const a = await invoice('60'); const b = await invoice('60');
+    await allocate(a.id, { contractVersionId: cv, quantity: '60', amount: a.net });
+    await allocate(b.id, { contractVersionId: cv, quantity: '60', amount: b.net });
+    const rs = await Promise.allSettled([legacyApprove(a.id), legacyApprove(b.id)]);
+    expect(rs.map((r) => r.status).sort()).toEqual(['fulfilled', 'rejected']);
+    expect((rs.find((r) => r.status === 'rejected') as PromiseRejectedResult).reason).toMatchObject({ code: 'invoice_blocked' });
+    expect(await limit(cv)).toMatchObject({ netConsumption: '60000.00', available: '40000.00' });
+  });
+
+  it('T16: avans tüketim değildir; mahsuplu fatura ödenecek tutarı düşer; iade tüketimi azaltır', async () => {
+    const cv = await contract('1000000.00');
+    const p = await legacyPo(cv, '100');
+    const line = await legacyLine(p.id);
+    await legacyReceive(line, '60');
+    const adv = await invoice('1', '20000', 'ADVANCE');
+    await allocate(adv.id, { contractVersionId: cv, quantity: '1', amount: adv.net });
+    await legacyApprove(adv.id);
+    expect((await limit(cv)).netConsumption).toBe('0.00'); // avans tüketim değildir
+    const inv = await invoice('50');
+    expect((await allocate(inv.id, { poLineId: line, quantity: '50', amount: inv.net }, { advanceOffset: '25000', advanceInvoiceId: adv.id })).body.check.issues.map((x: any) => x.code)).toContain('ADVANCE_OFFSET_INVALID');
+    await allocate(inv.id, { poLineId: line, quantity: '50', amount: inv.net }, { advanceOffset: '20000', advanceInvoiceId: adv.id });
+    expect((await legacyApprove(inv.id)).payable).toBe('30000.00');
+    const cn = await invoice('10', '1000', 'CREDIT_NOTE', { originalInvoiceId: inv.id });
+    await allocate(cn.id, { poLineId: line, quantity: '10', amount: cn.net });
+    await legacyApprove(cn.id);
+    expect(await limit(cv)).toMatchObject({ netConsumption: '40000.00', openCommitment: '60000.00' });
+  });
+
+  it('vergi dahil limitli sözleşmede siparişte KDV oranı zorunlu; açık taahhüt ve tüketim brüt; aşım KDV dahil hesaplanır', async () => {
+    const cv = await contract('130000.00', { limitBasis: 'GROSS' });
+    await expect(legacyPo(cv, '100')).rejects.toMatchObject({ code: 'tax_rate_required' });
+    // 110 × 1000 × 1,20 = 132.000 > 130.000 (net 110.000 sığardı).
+    await expect(legacyPo(cv, '110', '1000', '20')).rejects.toMatchObject({ code: 'limit_exceeded', message: expect.stringContaining('(vergi dahil)') });
+    const p = await legacyPo(cv, '100', '1000', '20');
+    expect(await limit(cv)).toMatchObject({ limitBasis: 'GROSS', openCommitment: '120000.00', available: '10000.00' });
+    const line = await legacyLine(p.id);
+    await legacyReceive(line, '100');
+    const inv = await invoice('100', '1000', 'INVOICE');
+    await allocate(inv.id, { poLineId: line, quantity: '100', amount: inv.net });
+    await legacyApprove(inv.id);
+    // Fatura satırı KDV %20 (varsayılan) → tüketim 120.000 brüt; açık taahhüt kalmadı.
+    expect(await limit(cv)).toMatchObject({ netConsumption: '120000.00', openCommitment: '0.00', available: '10000.00' });
   });
 });
