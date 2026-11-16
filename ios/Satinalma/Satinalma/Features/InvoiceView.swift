@@ -55,6 +55,9 @@ struct InvoiceView: View {
             OfflineBanner().listRowInsets(EdgeInsets())
             Loadable(value: data, error: error, retry: load) { d in
                 Section {
+                    // Büyük başlık gezinme çubuğunda tek satırdır ve AX5'te kesilir; fatura numarası burada sarılarak tam okunur.
+                    Text(verbatim: d.invoice.invoiceNo).font(.largeTitle.bold()).fixedSize(horizontal: false, vertical: true)
+                        .accessibilityLabel("Fatura \(d.invoice.invoiceNo)").accessibilityAddTraits(.isHeader)
                     LabeledContent("Tür", value: Labels.invoiceKind[d.invoice.kind] ?? "Fatura")
                     LabeledContent("Tedarikçi", value: d.invoice.supplierName)
                     if let note = Labels.supplierNote(d.invoice.supplierStatus, verified: d.invoice.supplierIdentityVerified) { LabeledContent("Tedarikçi durumu") { Text(note).foregroundStyle(.orange) } }
@@ -102,6 +105,7 @@ struct InvoiceView: View {
             }
         }
         .navigationTitle(data?.invoice.invoiceNo ?? "Fatura")
+        .navigationBarTitleDisplayMode(.inline)
         .refreshable { await load() }
         .task { await load() }
     }
