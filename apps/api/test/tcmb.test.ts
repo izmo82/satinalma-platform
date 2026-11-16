@@ -1,3 +1,4 @@
+// v2 Faz 1 (D93/D95): TenantContext artık departmentIds/allDepartments ister; test yardımcısı sistem kapsamıyla çalışır
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { makeHarness } from './harness.ts';

@@ -54,8 +54,8 @@ async function ensureRequest(tx: Tx, ctx: TenantContext, e: { entityType: Entity
 }
 
 async function load(tx: Tx, requestId: string, lock: boolean) {
-  const r = (await tx.query<{ id: string; company_id: string; plan: ApprovalPlan; requested_by: string; status: string }>(
-    `SELECT id, company_id, plan, requested_by, status FROM approval_requests WHERE id = $1 ${lock ? 'FOR UPDATE' : ''}`, [requestId])).rows[0];
+  const r = (await tx.query<{ id: string; company_id: string; plan: ApprovalPlan; requested_by: string; status: string; entity_type: EntityType; entity_id: string }>(
+    `SELECT id, company_id, plan, requested_by, status, entity_type, entity_id FROM approval_requests WHERE id = $1 ${lock ? 'FOR UPDATE' : ''}`, [requestId])).rows[0];
   if (!r) throw notFound();
   r.plan = v2Plan(r.plan);
   const decisions = (await tx.query<{ stepNo: number; role: string; decision: 'APPROVE' | 'REJECT'; note: string | null; decidedBy: string; decidedByName: string; decidedAt: Date }>(
@@ -64,12 +64,25 @@ async function load(tx: Tx, requestId: string, lock: boolean) {
   return { r, decisions, progress: approvalProgress(r.plan.steps, decisions, r.requested_by) };
 }
 
+/**
+ * Karar için geçerli roller. Eski (departmansız) iş istisnası (D93 göçü, kontrolcü kararı): departmanı NULL projeye bağlı işte
+ * DEPARTMENT_USER adımını Satınalma karara bağlayabilir; aksi halde göçle DEPARTMENT_USER'a dönen adımı kimse göremez/karar
+ * veremez. Yalnız rol eşleşmesi genişler; kişi düzeyindeki görev ayrılığı (talep eden, önceki adımı onaylayan) domain'de aynen.
+ */
+async function decidingRoles(tx: Tx, ctx: TenantContext, r: { entity_type: EntityType; entity_id: string }, next: { role: string } | null): Promise<string[]> {
+  if (!next || next.role !== 'DEPARTMENT_USER' || ctx.roles.includes('DEPARTMENT_USER') || !ctx.roles.includes('PROCUREMENT')) return ctx.roles;
+  const projectSql = { rfq_round: 'SELECT project_id FROM rfq_rounds WHERE id = $1', award: 'SELECT project_id FROM awards WHERE id = $1',
+    sourcing_exception: 'SELECT project_id FROM sourcing_exceptions WHERE id = $1' }[r.entity_type];
+  const legacy = (await tx.query<{ n: boolean }>(`SELECT p.department_id IS NULL AS n FROM projects p WHERE p.id = (${projectSql})`, [r.entity_id])).rows[0]?.n === true;
+  return legacy ? [...ctx.roles, 'DEPARTMENT_USER'] : ctx.roles;
+}
+
 /** Ekran için: plan, kararlar, sıradaki adım ve bu kullanıcının karar verip veremeyeceği (gerekçesiyle). */
 export async function stateFor(tx: Tx, ctx: TenantContext, entityType: EntityType, entityId: string) {
   const id = (await tx.query<{ id: string }>(`SELECT id FROM approval_requests WHERE entity_type = $1 AND entity_id = $2`, [entityType, entityId])).rows[0]?.id;
   if (!id) return null;
   const { r, decisions, progress } = await load(tx, id, false);
-  const c = progress.canDecide(ctx.userId, ctx.roles);
+  const c = progress.canDecide(ctx.userId, await decidingRoles(tx, ctx, r, progress.nextStep));
   return { status: r.status, plan: { policyVersion: r.plan.policyVersion, ruleId: r.plan.ruleId, steps: r.plan.steps, explanation: r.plan.explanation },
     decisions: decisions.map(({ decidedBy: _, ...d }) => d), nextStepNo: progress.nextStepNo, nextStep: progress.nextStep,
     canDecide: r.status === 'OPEN' && c.ok, cannotDecideReason: r.status === 'OPEN' && !c.ok ? c.reason : null };
@@ -84,7 +97,7 @@ export async function decideStep(tx: Tx, ctx: TenantContext, e: { entityType: En
   const id = await ensureRequest(tx, ctx, e);
   const { r, progress } = await load(tx, id, true);
   if (r.status !== 'OPEN') throw conflict('already_decided', 'Bu iş için karar verildi.');
-  const c = progress.canDecide(ctx.userId, ctx.roles);
+  const c = progress.canDecide(ctx.userId, await decidingRoles(tx, ctx, r, progress.nextStep));
   if (!c.ok) throw new ApiError(403, ctx.userId === r.requested_by ? 'segregation_of_duties' : 'approval_step', c.reason!);
   if (!approve && (note ?? '').trim().length < 5) throw unprocessable('note_required', 'Geri gönderme nedeni gerekli.');
   const stepNo = progress.nextStepNo!;

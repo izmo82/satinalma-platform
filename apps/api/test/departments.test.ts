@@ -11,6 +11,7 @@ let bt: string; let ik: string;
 // İK projesi tam akışla (tur, teklif, değerlendirme, kazanan); BT projesi ve departmansız proje yalnız taslak.
 let ikProject: string; let btProject: string; let nullProject: string;
 let roundId: string; let bidId: string; let evaluationId: string; let awardId: string; let cvId: string; let familyId: string;
+let ikDocVersion: string; const docTag = `IKBELGE${randomUUID().slice(0, 6)}`;
 
 const criteria = [
   { code: 'PRICE', name: 'Fiyat', kind: 'PRICE', weight: '60' },
@@ -68,7 +69,8 @@ beforeAll(async () => {
 
   // İK sözleşmesi.
   const up = await h.upload('legal', { name: 'ik.pdf', mime: 'application/pdf', data: syntheticPdf([[`SENTETIK ${randomUUID()}`]]) },
-    { companyId: h.world.companyA1.id, kind: 'CONTRACT', title: 'Bordro bakım sözleşmesi (SENTETİK)' });
+    { companyId: h.world.companyA1.id, kind: 'CONTRACT', title: `Bordro bakım sözleşmesi ${docTag} (SENTETİK)` });
+  ikDocVersion = up.body.documentVersionId;
   const c = await h.call('legal', 'POST', '/api/v1/contracts', { body: { title: `Bordro bakım ${randomUUID().slice(0, 4)} (SENTETİK)`, documentVersionId: up.body.documentVersionId,
     stage: 'EXECUTION', signatureMethod: 'NOT_REQUIRED', originalCustodyRequired: false,
     parties: [{ role: 'BUYER', displayName: h.world.companyA1.name, legalEntityId: h.world.companyA1.id }], supplierId: h.world.suppliers.s1 } });
@@ -159,5 +161,69 @@ describe('v2 departman kapsamı (RLS)', () => {
     const me = await h.call('multi', 'GET', '/api/v1/me', { tenant: h.world.tenantA });
     expect(me.status).toBe(200);
     expect(me.body.roles).toEqual(['PROCUREMENT']);
+  });
+
+  it('documents_follow_owning_record', async () => {
+    // İK sözleşmesinin belgesi BT kullanıcısına kapalı: metadata, içerik ve arama.
+    expect((await h.call('techEval', 'GET', `/api/v1/document-versions/${ikDocVersion}`)).status).toBe(404);
+    expect((await h.call('techEval', 'GET', `/api/v1/document-versions/${ikDocVersion}/content`)).status).toBe(404);
+    const hits = (await h.call('techEval', 'GET', `/api/v1/search?q=${docTag}`)).body;
+    expect(JSON.stringify(hits)).not.toContain(ikDocVersion);
+    // Tüm departmanı gören (Satınalma) aynı belgeyi görür ve arar.
+    expect((await h.call('legal', 'GET', `/api/v1/document-versions/${ikDocVersion}`)).status).toBe(200);
+    expect(JSON.stringify((await h.call('legal', 'GET', `/api/v1/search?q=${docTag}`)).body)).toContain(ikDocVersion);
+    // Hiçbir kapsamlı kaydın kullanmadığı yeni yükleme bölüm kullanıcısına bugünkü gibi açık.
+    const freeTag = `SERBEST${randomUUID().slice(0, 6)}`;
+    const free = await h.upload('legal', { name: 'serbest.pdf', mime: 'application/pdf', data: syntheticPdf([[`SENTETIK ${randomUUID()}`]]) },
+      { companyId: h.world.companyA1.id, kind: 'CONTRACT', title: `Serbest belge ${freeTag} (SENTETİK)` });
+    expect(free.status).toBe(201);
+    expect((await h.call('techEval', 'GET', `/api/v1/document-versions/${free.body.documentVersionId}`)).status).toBe(200);
+    expect((await h.call('techEval', 'GET', `/api/v1/document-versions/${free.body.documentVersionId}/content`)).status).toBe(200);
+    expect(JSON.stringify((await h.call('techEval', 'GET', `/api/v1/search?q=${freeTag}`)).body)).toContain(free.body.documentVersionId);
+    // SQL düzeyi: belge, sürüm ve sürüm alt kayıtları (çıkarılan alanlar) gizli; İK kapsamıyla görünür.
+    const seen = (deps: string[]) => withTenant(h.pool, deptCtx(deps), async (tx) => ({
+      versions: (await tx.query('SELECT 1 FROM document_versions WHERE id = $1', [ikDocVersion])).rowCount,
+      fields: (await tx.query<{ n: number }>('SELECT count(*)::int AS n FROM extracted_fields WHERE document_version_id = $1', [ikDocVersion])).rows[0]!.n,
+    }));
+    const docId = (await h.owner.query<{ document_id: string }>('SELECT document_id FROM document_versions WHERE id = $1', [ikDocVersion])).rows[0]!.document_id;
+    const docSeen = (deps: string[]) => withTenant(h.pool, deptCtx(deps), async (tx) => (await tx.query('SELECT 1 FROM documents WHERE id = $1', [docId])).rowCount);
+    expect((await seen([bt])).versions).toBe(0);
+    expect((await seen([bt])).fields).toBe(0);
+    expect(await docSeen([bt])).toBe(0);
+    expect((await seen([ik])).versions).toBe(1);
+    expect(await docSeen([ik])).toBe(1);
+  });
+
+  it('legacy_null_department_approval_step', async () => {
+    // Göç DEPARTMENT_USER adımı üretti; departmansız eski projede bu adımı ikinci bir Satınalma kullanıcısı karara bağlar.
+    const category = `Eski onay ${randomUUID().slice(0, 6)}`;
+    const rules = [{ id: 'ESKI', action: 'RFQ_PUBLISH', companyId: null, category, currency: 'TRY', minAmount: '0', maxAmount: null,
+      steps: [{ role: 'DEPARTMENT_USER', label: 'Bölüm onayı' }] }];
+    await h.owner.query(`UPDATE approval_policies SET status = 'RETIRED' WHERE tenant_id = $1 AND status = 'ACTIVE'`, [h.world.tenantA]);
+    const v = (await h.owner.query<{ n: number }>(`SELECT coalesce(max(version_no), 0) + 1 AS n FROM approval_policies WHERE tenant_id = $1`, [h.world.tenantA])).rows[0]!.n;
+    await h.owner.query(`INSERT INTO approval_policies (tenant_id, version_no, rules, note, status, created_by, activated_by, activated_at)
+      VALUES ($1,$2,$3,'Eski departmansız onay adımı (sentetik).','ACTIVE',$4,$5,now())`, [h.world.tenantA, v, JSON.stringify(rules), h.world.users.tenantAdmin.id, h.world.users.legal.id]);
+    const open = async (dep: string | null) => {
+      const r = await h.call('buyer', 'POST', '/api/v1/projects', { body: { companyId: h.world.companyA1.id, title: `Eski onaylı proje ${randomUUID().slice(0, 4)}`, category,
+        need: 'Sentetik', currency: 'TRY', budget: '1000.00', budgetVerified: false, lines, criteria } });
+      expect(r.status).toBe(201);
+      if (dep) await setDept('projects', r.body.id, dep);
+      const p = (await h.call('buyer', 'GET', `/api/v1/projects/${r.body.id}`)).body;
+      const pub = await h.call('buyer', 'POST', `/api/v1/projects/${r.body.id}/rounds`, { body: { closesAt: inHours(48), supplierIds: [h.world.suppliers.s1] }, headers: { 'if-match': p.project.etag } });
+      expect(pub.status).toBe(201);
+      return pub.body.roundId as string;
+    };
+    const legacyRound = await open(null);
+    // Talep eden (Satınalma + bölüm kullanıcısı) yine karar veremez.
+    const self = await h.call('buyer', 'POST', `/api/v1/rfq-rounds/${legacyRound}/decision`, { body: { approve: true } });
+    expect(self.status).toBe(403);
+    expect(self.body.error.code).toBe('segregation_of_duties');
+    expect((await h.call('legal2', 'POST', `/api/v1/rfq-rounds/${legacyRound}/decision`, { body: { approve: true } })).status).toBe(200);
+    // İstisna yalnız departmansız işte: BT projesinde aynı adımı Satınalma karara bağlayamaz.
+    const btRound = await open(bt);
+    const denied = await h.call('legal2', 'POST', `/api/v1/rfq-rounds/${btRound}/decision`, { body: { approve: true } });
+    expect(denied.status).toBe(403);
+    expect(denied.body.error.code).toBe('approval_step');
+    await h.owner.query(`UPDATE approval_policies SET status = 'RETIRED' WHERE tenant_id = $1 AND version_no = $2`, [h.world.tenantA, v]);
   });
 });
