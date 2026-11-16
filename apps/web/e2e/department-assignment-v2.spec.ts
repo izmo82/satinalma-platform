@@ -66,3 +66,28 @@ test('Departmansız kayıtlar: Satınalma listeyi görür; Yönetici şirket kap
   await expect(page.getByRole('heading', { name: /^Tedarikçi değerlendirmeleri/ })).toBeVisible();
   expect(await fits(page)).toBe(true);
 });
+
+// Düzeltme dalgası (I1, D98): birden çok departmanlı Departman kullanıcısına Fatura türü sunulmaz (sunucu da fatura kaydı açmaz).
+// Veri değiştirmemek için /me yanıtında ikinci departman taklit edilir.
+test('birden çok departmanlı departman kullanıcısı: belge yüklemede Fatura türü yok, açıklama görünür', async ({ page }) => {
+  await page.route('**/api/v1/me', async (route) => {
+    const res = await route.fetch();
+    const body = await res.json();
+    await route.fulfill({ response: res, json: { ...body, departments: [...(body.departments ?? []), { id: '00000000-0000-4000-8000-000000000001', name: 'İkinci departman (taklit)' }] } });
+  });
+  await login(page, 'tolga.teknik@example.test');
+  await page.goto('/faturalar/yukle');
+  await expect(page.getByText('Fatura yükleyemezsiniz')).toBeVisible();
+  const kind = page.getByLabel('Belge türü');
+  await expect(kind.locator('option', { hasText: 'Fatura' })).toHaveCount(0);
+  await expect(kind).toHaveValue('CONTRACT');
+  expect(await fits(page)).toBe(true);
+  await page.unroute('**/api/v1/me');
+});
+
+test('tek departmanlı departman kullanıcısı: Fatura türü sunulur', async ({ page }) => {
+  await login(page, 'tolga.teknik@example.test');
+  await page.goto('/sozlesmeler/ekle');
+  await expect(page.getByLabel('Belge türü').locator('option', { hasText: 'Fatura' })).toHaveCount(1);
+  await expect(page.getByText('Fatura yükleyemezsiniz')).toHaveCount(0);
+});

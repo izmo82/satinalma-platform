@@ -927,3 +927,31 @@ describe('fatura bulgusu görevleri: korunan görünür, kaldırılan gizli (v2)
     expect(visible).toBe(2); // UNALLOCATED + eski RECEIPT_MISSING kaydı duruyor; yalnız biri listelenir
   });
 });
+
+// Düzeltme dalgası (I1, D98): Departman kullanıcısının e-Fatura yüklemesi. Tek departmanlıysa fatura o departmanla açılır; birden çok
+// departmanlıysa fatura kaydı açılmaz (açık Türkçe sebep), belge yine kaydedilir. Önceden departmansız fatura RLS'e takılıp sessizce düşüyordu.
+describe('I1 departman kullanıcısının e-Fatura yüklemesi', () => {
+  const deptUpload = (who: 'techEval' | 'security', f: ReturnType<typeof xml>) => h.upload(who, f, { companyId: h.world.companyA1.id, kind: 'INVOICE', title: f.name });
+
+  it('tek departmanlı kullanıcı: fatura departmanıyla açılır ve kullanıcı faturayı görür', async () => {
+    await h.owner.query(`UPDATE memberships SET department_ids = $3 WHERE tenant_id = $1 AND user_id = $2`, [h.world.tenantA, h.world.users.techEval.id, [h.world.departments.bt]]);
+    const up = await deptUpload('techEval', xml());
+    expect(up.status).toBe(201);
+    expect(up.body.invoice, JSON.stringify(up.body.invoice)).toMatchObject({ created: true, duplicate: false });
+    const dep = (await h.owner.query<{ d: string | null }>(`SELECT department_id AS d FROM invoices WHERE id = $1`, [up.body.invoice.invoiceId])).rows[0]!.d;
+    expect(dep).toBe(h.world.departments.bt);
+    expect((await h.call('techEval', 'GET', `/api/v1/invoices/${up.body.invoice.invoiceId}`)).status).toBe(200);
+  });
+
+  it('birden çok departmanlı kullanıcı: fatura açılmaz, sebep açık; belge kaydedilir', async () => {
+    await h.owner.query(`UPDATE memberships SET department_ids = $3 WHERE tenant_id = $1 AND user_id = $2`, [h.world.tenantA, h.world.users.security.id, [h.world.departments.bt, h.world.departments.ik]]);
+    const no = `EFT${randomUUID().slice(0, 8)}`;
+    const up = await deptUpload('security', xml({ invoiceNo: no }));
+    expect(up.status).toBe(201);
+    expect(up.body.documentVersionId).toBeTruthy();
+    expect(up.body.invoice).toMatchObject({ created: false, invoiceId: null });
+    expect(up.body.invoice.reason).toMatch(/birden fazla departman/i);
+    expect((await h.owner.query(`SELECT 1 FROM invoices WHERE invoice_no = $1`, [no])).rowCount).toBe(0);
+    await h.owner.query(`UPDATE memberships SET department_ids = $3 WHERE tenant_id = $1 AND user_id = $2`, [h.world.tenantA, h.world.users.security.id, [h.world.departments.bt]]);
+  });
+});

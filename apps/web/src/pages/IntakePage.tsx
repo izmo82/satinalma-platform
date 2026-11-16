@@ -21,8 +21,11 @@ interface Result {
  */
 export function IntakePage({ kind: initialKind = 'INVOICE', title = 'Belge girişi', back }: { kind?: 'INVOICE' | 'CONTRACT'; title?: string; back?: { to: string; label: string } } = {}) {
   const { me } = useSession();
+  // Düzeltme dalgası (I1, D98): Departman kullanıcısının yüklediği fatura onun tek departmanını alır; birden çok (ya da hiç) departmanı
+  // varsa departman tahmin edilmez, sunucu fatura kaydı açmaz. Bu kullanıcıya Fatura türü sunulmaz.
+  const invoiceBlocked = !!me && me.allDepartments === false && (me.departments?.length ?? 0) !== 1;
   const [company, setCompany] = useState(me?.companies[0]?.id ?? '');
-  const [kind, setKind] = useState<string>(initialKind);
+  const [kind, setKind] = useState<string>(invoiceBlocked && initialKind === 'INVOICE' ? 'CONTRACT' : initialKind);
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<ApiError | null>(null);
@@ -45,10 +48,15 @@ export function IntakePage({ kind: initialKind = 'INVOICE', title = 'Belge giri�
   return (
     <div className="page" style={{ maxWidth: 820 }}>
       <PageHeader title={title} actions={backLink}>e-Fatura XML önce kural ile okunur. PDF/görüntü için OCR sağlayıcısı bağlı değilse alanlar elle girilir; sahte çıkarım yapılmaz.</PageHeader>
+      {invoiceBlocked && initialKind === 'INVOICE' && (
+        <Banner tone="info" title="Fatura yükleyemezsiniz">
+          {(me?.departments?.length ?? 0) > 1 ? 'Birden fazla departmanınız olduğundan faturanın departmanı belirlenemez.' : 'Size atanmış departman yok.'} Faturaları Satınalma girer; sözleşme, teklif ve diğer belgeleri yükleyebilirsiniz.
+        </Banner>
+      )}
       <form className="panel panel-body" onSubmit={submit}>
         <Field label="Şirket">{(p) => <select className="input" {...p} value={company} onChange={(e) => setCompany(e.target.value)}>{me.companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>}</Field>
         <Field label="Belge türü">{(p) => <select className="input" {...p} value={kind} onChange={(e) => setKind(e.target.value)}>
-          <option value="INVOICE">Fatura</option><option value="CONTRACT">Sözleşme</option><option value="QUOTE">Teklif</option><option value="OTHER">Diğer</option></select>}</Field>
+          {!invoiceBlocked && <option value="INVOICE">Fatura</option>}<option value="CONTRACT">Sözleşme</option><option value="QUOTE">Teklif</option><option value="OTHER">Diğer</option></select>}</Field>
         <Field label="Dosya" hint="PDF, PNG, JPEG veya XML · en fazla 25 MB. Aynı dosya tekrar yüklenirse yeni kayıt açılmaz.">
           {(p) => (
             <div className="flex flex-wrap items-center gap-3">

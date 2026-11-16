@@ -346,6 +346,8 @@ export interface InvoiceInput {
   lines: { description: string; quantity: string; unit: string; unitPrice: string; netAmount: string; taxRate?: string; taxAmount?: string | null; otherTax?: string | null; otherTaxes?: OtherTax[] | null }[];
   /** Belgede yazan toplamlar; kontrol satırlardan hesaplananla karşılaştırır. */
   declaredTaxTotal?: string | null; declaredWithholding?: string | null; declaredPayable?: string | null; declaredOtherTaxTotal?: string | null;
+  /** Yalnız sunucu içi (e-Fatura yükleyen tek departmanlı Departman kullanıcısı, D98); istek gövdesinden alınmaz. */
+  departmentId?: string | null;
 }
 
 /** Fatura girişi: aynı tedarikçi için aynı ETTN veya fatura no ikinci mali kayıt açmaz; tekrar izi tutulur (T17). */
@@ -371,9 +373,10 @@ export async function createInvoice(tx: Tx, ctx: TenantContext, b: InvoiceInput,
   }
   for (const v of [b.declaredTaxTotal, b.declaredWithholding, b.declaredPayable, b.declaredOtherTaxTotal]) if (v != null && (!isDecimal(v) || dec(v) < 0n)) throw unprocessable('invalid_number', 'Belge toplamları sıfır veya pozitif ondalık olmalı.');
   const inv = (await tx.query<{ id: string }>(`INSERT INTO invoices (tenant_id, company_id, supplier_id, kind, invoice_no, ettn, issue_date, currency, document_version_id, original_invoice_id, created_by,
-      declared_tax_total, declared_withholding, declared_payable, declared_other_tax_total)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`, [ctx.tenantId, b.companyId, b.supplierId, b.kind, b.invoiceNo.trim(), b.ettn ?? null, b.issueDate,
-    b.currency, b.documentVersionId ?? null, b.originalInvoiceId ?? null, ctx.userId, b.declaredTaxTotal ?? null, b.declaredWithholding ?? null, b.declaredPayable ?? null, b.declaredOtherTaxTotal ?? null])).rows[0]!;
+      declared_tax_total, declared_withholding, declared_payable, declared_other_tax_total, department_id)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`, [ctx.tenantId, b.companyId, b.supplierId, b.kind, b.invoiceNo.trim(), b.ettn ?? null, b.issueDate,
+    b.currency, b.documentVersionId ?? null, b.originalInvoiceId ?? null, ctx.userId, b.declaredTaxTotal ?? null, b.declaredWithholding ?? null, b.declaredPayable ?? null, b.declaredOtherTaxTotal ?? null,
+    b.departmentId ?? null])).rows[0]!;
   let n = 0;
   for (const l of b.lines) {
     // Vergi kalemleri verildiyse satırın KDV dışı toplamı onlardan (beyan edilen toplam ayrıca verildiyse kontrol karşılaştırır).
@@ -817,13 +820,21 @@ export async function invoiceFromEInvoice(tx: Tx, ctx: TenantContext, o: {
     if (!originalInvoiceId) return skip(`İade faturasının bağlı olduğu özgün fatura (${u.billingReference ?? 'belirtilmemiş'}) sistemde yok.`);
   }
   const dec2 = (x: string | null) => (x && isDecimal(x) ? str(dec(x)) : null);
+  // Düzeltme dalgası (I1, D98): Departman kullanıcısının yüklediği fatura onun departmanını taşır (departmansız fatura ona görünmez ve
+  // RLS kaydı reddeder). Tek departmanı varsa o; birden çoksa ya da hiç yoksa hangisi olduğu tahmin edilmez, fatura kaydı açılmaz.
+  let departmentId: string | null = null;
+  if (!ctx.allDepartments) {
+    if (ctx.departmentIds.length > 1) return skip('Birden fazla departmanınız olduğundan faturanın departmanı belirlenemedi; e-Faturadan fatura kaydı açılmadı. Belge kaydedildi; faturayı Satınalma girer.');
+    if (!ctx.departmentIds.length) return skip('Size atanmış departman olmadığından e-Faturadan fatura kaydı açılmadı. Belge kaydedildi; faturayı Satınalma girer.');
+    departmentId = ctx.departmentIds[0]!;
+  }
   // Beklenmeyen bir kayıt hatası belgenin kendisini düşürmez: belge saklanır, fatura girişi göreve döner.
   await tx.query('SAVEPOINT einvoice_intake');
   let r: { id: string; duplicate: boolean };
   try {
     r = await createInvoice(tx, ctx, { companyId: o.companyId, supplierId: o.supplierId, kind, invoiceNo: u.invoiceNumber, ettn: u.ettn, issueDate: u.issueDate,
     currency: u.currency, documentVersionId: o.documentVersionId, originalInvoiceId, lines,
-    declaredTaxTotal: dec2(u.totals.taxTotal), declaredWithholding: dec2(u.totals.withholding), declaredPayable: dec2(u.totals.payable), declaredOtherTaxTotal: dec2(u.totals.otherTaxTotal) }, 'einvoice');
+    declaredTaxTotal: dec2(u.totals.taxTotal), declaredWithholding: dec2(u.totals.withholding), declaredPayable: dec2(u.totals.payable), declaredOtherTaxTotal: dec2(u.totals.otherTaxTotal), departmentId }, 'einvoice');
     await tx.query('RELEASE SAVEPOINT einvoice_intake');
   } catch (e) {
     await tx.query('ROLLBACK TO SAVEPOINT einvoice_intake');
