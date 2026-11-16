@@ -231,7 +231,7 @@ describe('Faz 7: rapor için toplu fatura kontrolü', () => {
     const adv = await invoice('1', '1000', 'ADVANCE');
     const i5 = await invoice('1', '500'); await allocate(i5.id, { contractVersionId: cv, quantity: '1', amount: i5.net }, { advanceOffset: '2000', advanceInvoiceId: adv.id });
     const i6 = await invoice('1', '500'); await allocate(i6.id, { contractVersionId: cv, quantity: '1', amount: i6.net }, { advanceOffset: '300', advanceInvoiceId: adv.id });
-    const ctx = { tenantId: h.world.tenantA, userId: h.world.users.finance.id, roles: ['FINANCE'], companyIds: [h.world.companyA1.id, h.world.companyA2.id], correlationId: 'test' };
+    const ctx = { tenantId: h.world.tenantA, userId: h.world.users.finance.id, roles: ['FINANCE'], companyIds: [h.world.companyA1.id, h.world.companyA2.id], departmentIds: [], allDepartments: true, correlationId: 'test' };
     const ids = (await h.owner.query<{ id: string }>(`SELECT i.id FROM invoices i WHERE i.tenant_id = $1
       AND NOT EXISTS (SELECT 1 FROM invoice_decisions d WHERE d.invoice_id = i.id AND d.kind = 'APPROVAL')`, [h.world.tenantA])).rows.map((r) => r.id);
     expect(ids.length).toBeGreaterThan(5);

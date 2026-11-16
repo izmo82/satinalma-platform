@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import type { OidcConfig } from './config.ts';
 import { withoutTenant, type TenantContext } from './db.ts';
 import { ApiError } from './errors.ts';
+import { normalizeRoles, SEES_ALL_DEPARTMENTS } from '@sp/domain';
 
 export interface VerifiedToken {
   /** Kalıcı kullanıcı anahtarı; OIDC için 'oidc|<issuer>|<sub>'. */
@@ -62,7 +63,8 @@ export class DevAuthProvider implements AuthProvider {
   }
 }
 
-export interface Membership { tenantId: string; tenantName: string; roles: string[]; companyIds: string[]; supplierId: string | null }
+/** `roles` her zaman v2 rolleridir (saklanan eski kodlar normalize edilir). */
+export interface Membership { tenantId: string; tenantName: string; roles: string[]; companyIds: string[]; supplierId: string | null; departmentIds: string[] }
 export interface Identity { userId: string; email: string; displayName: string; memberships: Membership[] }
 
 /** Minimal oturum arayüzü (döngüsel import olmasın): çerez varsa doğrulanmış subject, yoksa null. */
@@ -98,11 +100,12 @@ export async function identityFor(pool: pg.Pool, token: VerifiedToken): Promise<
       user = (await c.query<U>('SELECT * FROM auth_link_invited_user($1, $2)', [token.subject, token.verifiedEmail])).rows[0];
     }
     if (!user) throw new ApiError(403, 'not_invited', 'Bu hesap için davet bulunamadı. Kurum yöneticinizden erişim isteyin.');
-    const m = await c.query<{ tenant_id: string; tenant_name: string; roles: string[]; company_ids: string[]; supplier_id: string | null }>(
+    const m = await c.query<{ tenant_id: string; tenant_name: string; roles: string[]; company_ids: string[]; supplier_id: string | null; department_ids: string[] }>(
       'SELECT * FROM auth_memberships($1)', [user.id]);
     return {
       userId: user.id, email: user.email, displayName: user.display_name,
-      memberships: m.rows.map((r) => ({ tenantId: r.tenant_id, tenantName: r.tenant_name, roles: r.roles, companyIds: r.company_ids, supplierId: r.supplier_id })),
+      memberships: m.rows.map((r) => ({ tenantId: r.tenant_id, tenantName: r.tenant_name, roles: normalizeRoles(r.roles), companyIds: r.company_ids,
+        supplierId: r.supplier_id, departmentIds: r.department_ids })),
     };
   });
 }
@@ -118,12 +121,16 @@ export function tenantContext(identity: Identity, req: FastifyRequest): TenantCo
     : identity.memberships.length === 1 ? identity.memberships[0] : undefined;
   if (!membership) throw new ApiError(403, 'tenant_not_selected', 'Geçerli bir kiracı üyeliği seçilmedi.');
   const corr = req.headers['x-correlation-id'];
+  const roles = normalizeRoles(membership.roles);
   return {
     userId: identity.userId,
     tenantId: membership.tenantId,
-    roles: membership.roles,
+    roles,
     companyIds: membership.companyIds,
     supplierId: membership.supplierId,
+    // Departman kapsamı rolden türetilir; tedarikçi bağlamı RLS'de ayrıca açılır (kendi politikaları geçerli).
+    departmentIds: membership.departmentIds,
+    allDepartments: roles.some((r) => SEES_ALL_DEPARTMENTS.includes(r)),
     correlationId: typeof corr === 'string' && /^[\w\-]{8,64}$/.test(corr) ? corr : randomUUID(),
   };
 }

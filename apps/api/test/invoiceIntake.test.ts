@@ -109,10 +109,10 @@ describe('e-Fatura XML → fatura (deterministik)', () => {
     expect(inv.check.issues.map((x: any) => x.code).some((c: string) => /UBL|PROFILE|LINE_COUNT/.test(c))).toBe(false);
     // Aynı dosya tekrar gelirse yeni denetim kaydı açılmaz.
     expect((await h.owner.query(`SELECT count(*)::int AS n FROM einvoice_checks WHERE document_version_id = $1`, [up.body.documentVersionId])).rows[0].n).toBe(1);
-    await expect(withTenant(h.pool, { tenantId: h.world.tenantA, userId: h.world.users.finance.id, roles: [], companyIds: [h.world.companyA1.id], correlationId: 'd81' },
+    await expect(withTenant(h.pool, { tenantId: h.world.tenantA, userId: h.world.users.finance.id, roles: [], companyIds: [h.world.companyA1.id], departmentIds: [], allDepartments: true, correlationId: 'd81' },
       (tx) => tx.query(`UPDATE einvoice_checks SET error_count = 0 WHERE document_version_id = $1`, [up.body.documentVersionId]))).rejects.toThrow(/permission denied/);
     // Şirket kapsamı dışındaki kullanıcı kaydı göremez (RLS).
-    const other = await withTenant(h.pool, { tenantId: h.world.tenantA, userId: h.world.users.finance.id, roles: [], companyIds: [h.world.companyA2.id], correlationId: 'd81' },
+    const other = await withTenant(h.pool, { tenantId: h.world.tenantA, userId: h.world.users.finance.id, roles: [], companyIds: [h.world.companyA2.id], departmentIds: [], allDepartments: true, correlationId: 'd81' },
       (tx) => tx.query(`SELECT 1 FROM einvoice_checks WHERE document_version_id = $1`, [up.body.documentVersionId]));
     expect(other.rowCount).toBe(0);
   });
@@ -589,7 +589,7 @@ describe('sipariş açma: sözleşme siparişin tedarikçisine ait olmalı (D85)
 describe('sipariş açma: sözleşme siparişin şirketine ait olmalı (D86)', () => {
   it('iki şirkete erişen kullanıcı başka şirketin sözleşmesine sipariş açamaz; aynı şirkette açabilir', async () => {
     const cv = await contract('50000.00');
-    const ctx = { tenantId: h.world.tenantA, userId: h.world.users.buyer.id, roles: ['BUYER'], companyIds: [h.world.companyA1.id, h.world.companyA2.id], correlationId: 'd86' };
+    const ctx = { tenantId: h.world.tenantA, userId: h.world.users.buyer.id, roles: ['BUYER'], companyIds: [h.world.companyA1.id, h.world.companyA2.id], departmentIds: [], allDepartments: true, correlationId: 'd86' };
     const open = (companyId: string) => withTenant(h.pool, ctx as never, (tx) => createPo(tx, ctx as never, { companyId, supplierId: h.world.suppliers.s1, contractVersionId: cv, currency: 'TRY',
       lines: [{ kind: 'GOODS', description: 'Yedek parça (sentetik)', unit: 'adet', quantity: '1', unitPrice: '100' }] } as never));
     await expect(open(h.world.companyA2.id)).rejects.toMatchObject({ code: 'contract_company_mismatch' });
@@ -599,7 +599,7 @@ describe('sipariş açma: sözleşme siparişin şirketine ait olmalı (D86)', (
 });
 
 describe('fatura tahsisi: sipariş ve sözleşme faturanın şirketine ait olmalı (D87)', () => {
-  const both = () => ({ tenantId: h.world.tenantA, userId: h.world.users.finance.id, roles: ['FINANCE', 'BUYER'], companyIds: [h.world.companyA1.id, h.world.companyA2.id], correlationId: 'd87' });
+  const both = () => ({ tenantId: h.world.tenantA, userId: h.world.users.finance.id, roles: ['FINANCE', 'BUYER'], companyIds: [h.world.companyA1.id, h.world.companyA2.id], departmentIds: [], allDepartments: true, correlationId: 'd87' });
   const invoice = async () => {
     const r = await call('finance', 'POST', '/api/v1/invoices', { companyId: h.world.companyA1.id, supplierId: h.world.suppliers.s1, kind: 'INVOICE', invoiceNo: `D87${randomUUID().slice(0, 8)}`,
       issueDate: '2026-10-20', currency: 'TRY', lines: [{ description: 'Yedek parça', quantity: '1', unit: 'adet', unitPrice: '100', netAmount: '100.00' }] });
@@ -687,7 +687,7 @@ describe('sipariş formu sözleşme seçenekleri (D88)', () => {
 
   it('sınır aşılınca listeyi kısaltır ve bunu bildirir', async () => {
     await contract('50000.00'); await contract('50000.00');
-    const ctx = { tenantId: h.world.tenantA, userId: h.world.users.buyer.id, roles: ['BUYER'], companyIds: [h.world.companyA1.id], correlationId: 'd88' };
+    const ctx = { tenantId: h.world.tenantA, userId: h.world.users.buyer.id, roles: ['BUYER'], companyIds: [h.world.companyA1.id], departmentIds: [], allDepartments: true, correlationId: 'd88' };
     const r = await withTenant(h.pool, ctx as never, (tx) => contractOptions(tx, 1));
     expect(r.items).toHaveLength(1);
     expect(r.truncated).toBe(true);

@@ -393,7 +393,8 @@ export async function buildApp(deps: AppDeps) {
     const body = req.body as any;
     await scoped(req, 'supplier.approve', async (tx, ctx) => {
       // Onay türü rolüyle eşleşmeli: güvenlik onayını yalnız güvenlik verir.
-      const roleFor = { MASTER_DATA: 'MASTER_DATA', SECURITY: 'SECURITY', FINANCE: 'FINANCE' } as const;
+      // v2 (D93): ana veri ve finans onayı Satınalma, güvenlik onayı bölüm kullanıcısı rolüne düşer; kişi düzeyindeki ayrılık recordApproval'da.
+      const roleFor = { MASTER_DATA: 'PROCUREMENT', SECURITY: 'DEPARTMENT_USER', FINANCE: 'PROCUREMENT' } as const;
       if (!ctx.roles.includes(roleFor[body.kind as keyof typeof roleFor])) throw forbidden(`supplier.approve.${body.kind}`);
       await recordApproval(tx, ctx, (req.params as { id: string }).id, body);
     });
@@ -790,7 +791,7 @@ export async function buildApp(deps: AppDeps) {
       companyId: { anyOf: [uuid, { type: 'null' }] }, category: { anyOf: [{ type: 'string', maxLength: 200 }, { type: 'null' }] }, currency: { type: 'string', pattern: '^[A-Z]{3}$' },
       minAmount: amount2, maxAmount: { anyOf: [amount2, { type: 'null' }] },
       steps: { type: 'array', minItems: 1, maxItems: 6, items: { type: 'object', additionalProperties: false, required: ['role', 'label'],
-        properties: { role: { type: 'string', enum: ['PROCUREMENT_MANAGER', 'FINANCE', 'LEGAL', 'SECURITY'] }, label: { type: 'string', minLength: 1, maxLength: 80 } } } },
+        properties: { role: { type: 'string', enum: ['PROCUREMENT', 'DEPARTMENT_USER', 'PROCUREMENT_MANAGER', 'FINANCE', 'LEGAL', 'SECURITY'] }, label: { type: 'string', minLength: 1, maxLength: 80 } } } },
       // Tip dizisi: ajv tür zorlaması null'ı yalnız hiçbir tür tutmazsa dönüştürür (anyOf'ta null 0'a çevriliyordu).
       minInvitees: { type: ['integer', 'null'] }, minResponseDays: { type: ['integer', 'null'] } } } as const;
   // Politikayı proje kullanıcıları okur (simülasyon); kiracı yöneticisi de yönetir (ikinci kişi olarak yayınlayabilsin).
@@ -889,7 +890,7 @@ export async function buildApp(deps: AppDeps) {
     return scoped(req, 'incident.verify', (tx, ctx) => evals.transitionIncident(tx, ctx, (req.params as any).id, b.action, b));
   });
   app.post('/api/v1/incidents/:id/actions', { schema: { tags: ['evaluation'], params: idParams, body: { type: 'object', required: ['title', 'ownerRole', 'dueDate'], additionalProperties: false,
-    properties: { title: { type: 'string', minLength: 5, maxLength: 300 }, ownerRole: { type: 'string', enum: ['REQUESTER', 'BUYER', 'PROCUREMENT_MANAGER', 'TECH_EVALUATOR', 'LEGAL', 'FINANCE', 'SECURITY', 'MASTER_DATA'] }, dueDate: dateStr } } } }, async (req, reply) =>
+    properties: { title: { type: 'string', minLength: 5, maxLength: 300 }, ownerRole: { type: 'string', enum: ['PROCUREMENT', 'DEPARTMENT_USER', 'REQUESTER', 'BUYER', 'PROCUREMENT_MANAGER', 'TECH_EVALUATOR', 'LEGAL', 'FINANCE', 'SECURITY', 'MASTER_DATA'] }, dueDate: dateStr } } } }, async (req, reply) =>
     reply.status(201).send(await scoped(req, 'incident.verify', (tx, ctx) => evals.addCorrectiveAction(tx, ctx, (req.params as any).id, req.body as any))));
   app.post('/api/v1/corrective-actions/:id/complete', { schema: { tags: ['evaluation'], params: idParams, body: { type: 'object', required: ['note'], properties: { note: { type: 'string', maxLength: 5000 } } } } }, async (req) =>
     scoped(req, 'corrective.complete', (tx, ctx) => evals.completeAction(tx, ctx, (req.params as any).id, (req.body as any).note)));

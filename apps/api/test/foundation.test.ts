@@ -63,8 +63,8 @@ describe('T02 şirket kapsamı', () => {
 describe('T03 havuzlanmış bağlantıda bağlam sızıntısı', () => {
   it('transaction-local bağlam bağlantı yeniden kullanımında düşer', async () => {
     const pool = createPool(TEST_APP_URL, 1);
-    const ctxA = { tenantId: h.world.tenantA, userId: h.world.users.masterData.id, roles: ['MASTER_DATA'], companyIds: [h.world.companyA1.id], correlationId: 't03' };
-    const ctxB = { tenantId: h.world.tenantB, userId: h.world.users.buyerB.id, roles: ['BUYER'], companyIds: [h.world.companyB1.id], correlationId: 't03' };
+    const ctxA = { tenantId: h.world.tenantA, userId: h.world.users.masterData.id, roles: ['MASTER_DATA'], companyIds: [h.world.companyA1.id], departmentIds: [], allDepartments: true, correlationId: 't03' };
+    const ctxB = { tenantId: h.world.tenantB, userId: h.world.users.buyerB.id, roles: ['BUYER'], companyIds: [h.world.companyB1.id], departmentIds: [], allDepartments: true, correlationId: 't03' };
     const countA = await withTenant(pool, ctxA, async (tx) => (await tx.query('SELECT count(*)::int AS n FROM legal_entities')).rows[0].n);
     expect(countA).toBe(2);
     const leaked = await pool.query(`SELECT count(*)::int AS n FROM legal_entities`);
@@ -83,7 +83,7 @@ describe('T03 havuzlanmış bağlantıda bağlam sızıntısı', () => {
   });
 
   it('başka kiracı kimliğiyle kayıt eklenemez (WITH CHECK)', async () => {
-    const ctxA = { tenantId: h.world.tenantA, userId: h.world.users.masterData.id, roles: [], companyIds: [], correlationId: 't03b' };
+    const ctxA = { tenantId: h.world.tenantA, userId: h.world.users.masterData.id, roles: [], companyIds: [], departmentIds: [], allDepartments: true, correlationId: 't03b' };
     await expect(withTenant(h.pool, ctxA, (tx) =>
       tx.query(`INSERT INTO suppliers (tenant_id, legal_name) VALUES ($1, 'x')`, [h.world.tenantB]))).rejects.toThrow(/row-level security/);
   });
@@ -210,7 +210,7 @@ describe('T08 IBAN sessiz değişmez', () => {
     const same = await uploadInvoice('buyer', invoice({ sellerVkn: vkn, iban: verifiedIban }));
     expect(same.body.supplier.bankChangeRequestId).toBeNull();
     // Uygulama rolünün banka hesabını güncelleme yetkisi yok.
-    await expect(withTenant(h.pool, { tenantId: h.world.tenantA, userId: h.world.users.finance.id, roles: [], companyIds: [], correlationId: 't08' },
+    await expect(withTenant(h.pool, { tenantId: h.world.tenantA, userId: h.world.users.finance.id, roles: [], companyIds: [], departmentIds: [], allDepartments: true, correlationId: 't08' },
       (tx) => tx.query(`UPDATE supplier_bank_accounts SET iban = 'X' WHERE supplier_id = $1`, [sid]))).rejects.toThrow(/permission denied/);
   });
 });

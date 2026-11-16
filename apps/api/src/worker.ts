@@ -8,6 +8,7 @@ import { processErpExport } from './modules/invoices.ts';
 import { processAiRun } from './modules/ai.ts';
 import { processPurge, processTenantExport } from './modules/governance.ts';
 import { hasAiProviders } from './ai/provider.ts';
+import { normalizeRoles } from '@sp/domain';
 
 /**
  * Durumsuz worker: kuyruktan iş çeker (SKIP LOCKED), işi isteyen kullanıcının GÜNCEL üyeliğiyle kiracı bağlamı kurar.
@@ -26,7 +27,9 @@ export async function processJobs(pool: pg.Pool, store: ObjectStore, detectorPro
       'SELECT * FROM auth_memberships($1)', [job.requested_by])).rows.find((r) => r.tenant_id === job.tenant_id));
     const ctx: TenantContext = {
       tenantId: job.tenant_id, userId: job.requested_by ?? '00000000-0000-0000-0000-000000000000',
-      roles: m?.roles ?? [], companyIds: m?.company_ids ?? [], correlationId: `job-${job.id}`,
+      roles: normalizeRoles(m?.roles ?? []), companyIds: m?.company_ids ?? [], correlationId: `job-${job.id}`,
+      // Sistem işi: departman kapsamı uygulanmaz (yetki üyelik ve şirket kapsamıyla sınırlı kalır).
+      departmentIds: [], allDepartments: true,
     };
     try {
       // İmha onaylandıktan sonraki bayt silme kullanıcı yetkisi gerektirmez (karar verildi); onaylayan ayrılsa da silme yapılır.

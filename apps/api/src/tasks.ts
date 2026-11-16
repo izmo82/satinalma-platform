@@ -1,4 +1,8 @@
+import { normalizeRoles } from '@sp/domain';
 import type { TenantContext, Tx } from './db.ts';
+
+/** Saklanan/gelen rol kodu (eski ya da v2) → v2 rolü; bilinmeyen kod olduğu gibi kalır. Görev ve sorumlu rolleri her zaman v2 saklanır. */
+export const v2Role = (role: string): string => normalizeRoles([role])[0] ?? role;
 
 export interface TaskInput {
   companyId: string | null;
@@ -20,7 +24,7 @@ export async function openTask(tx: Tx, ctx: TenantContext, t: TaskInput): Promis
     `INSERT INTO tasks (tenant_id, company_id, kind, entity_type, entity_id, title, reason, next_action, assignee_role, severity, due_at, dedupe_key)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
      ON CONFLICT (tenant_id, dedupe_key) WHERE status = 'OPEN' DO NOTHING RETURNING id`,
-    [ctx.tenantId, t.companyId, t.kind, t.entityType, t.entityId, t.title, t.reason, t.nextAction, t.assigneeRole,
+    [ctx.tenantId, t.companyId, t.kind, t.entityType, t.entityId, t.title, t.reason, t.nextAction, v2Role(t.assigneeRole),
       t.severity ?? 'NORMAL', t.dueAt ?? null, t.dedupeKey],
   );
   if (ins.rows[0]) return { id: ins.rows[0].id, created: true };

@@ -297,7 +297,7 @@ export async function processTenantExport(pool: pg.Pool, ctx: TenantContext, sto
   const row = await withTenant(pool, ctx, async (tx) => (await tx.query<{ status: string; requested_by: string; decided_by: string; reason: string }>(
     `SELECT status, requested_by, decided_by, reason FROM tenant_exports WHERE id = $1`, [exportId])).rows[0]);
   if (!row || row.status !== 'APPROVED') return withTenant(pool, ctx, (tx) => tx.query(`UPDATE jobs SET status = 'SUCCEEDED', result = '{"skipped":true}', updated_at = now() WHERE id = $1`, [jobId]));
-  if (!ctx.roles.includes('TENANT_ADMIN')) return fail('REQUESTER_NOT_AUTHORIZED', 'Talep eden kişinin kiracı yöneticisi rolü kalmamış.');
+  if (!ctx.roles.includes('ADMIN')) return fail('REQUESTER_NOT_AUTHORIZED', 'Talep eden kişinin kiracı yöneticisi rolü kalmamış.');
 
   // Kapsam: kiracının tüm şirketleri (iki kişi onayıyla). Kiracı sınırı yine RLS'tedir.
   const companyIds = await withTenant(pool, ctx, async (tx) => (await tx.query<{ id: string }>(`SELECT id FROM legal_entities`)).rows.map((r) => r.id));

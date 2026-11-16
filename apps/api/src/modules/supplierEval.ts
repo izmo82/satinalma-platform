@@ -6,7 +6,7 @@ import {
 } from '@sp/domain';
 import type { TenantContext, Tx } from '../db.ts';
 import { audit } from '../audit.ts';
-import { closeTasks, openTask } from '../tasks.ts';
+import { closeTasks, openTask, v2Role } from '../tasks.ts';
 import { ApiError, conflict, forbidden, notFound, unprocessable } from '../errors.ts';
 
 /**
@@ -350,7 +350,7 @@ export async function addCorrectiveAction(tx: Tx, ctx: TenantContext, incidentId
   if (!i) throw notFound();
   if (!['UNDER_REVIEW', 'VERIFIED'].includes(i.status)) throw conflict('invalid_state', 'Düzeltici faaliyet incelenen veya doğrulanmış olaya eklenir.');
   const a = (await tx.query<{ id: string }>(`INSERT INTO corrective_actions (tenant_id, incident_id, title, owner_role, due_date, created_by) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
-    [ctx.tenantId, incidentId, b.title.trim(), b.ownerRole, b.dueDate, ctx.userId])).rows[0]!;
+    [ctx.tenantId, incidentId, b.title.trim(), v2Role(b.ownerRole), b.dueDate, ctx.userId])).rows[0]!;
   await openTask(tx, ctx, { companyId: null, kind: 'corrective_action', entityType: 'incident', entityId: incidentId, title: `Düzeltici faaliyet: ${b.title.trim()}`,
     reason: `${i.code} için düzeltici faaliyet.`, nextAction: 'Faaliyeti tamamlayıp kanıtını yazın.', assigneeRole: b.ownerRole, dueAt: new Date(`${b.dueDate}T23:59:59+03:00`),
     dedupeKey: `corrective:${a.id}` });
@@ -363,7 +363,7 @@ export async function completeAction(tx: Tx, ctx: TenantContext, actionId: strin
   const a = (await tx.query<{ incident_id: string; owner_role: string; status: string }>(`SELECT incident_id, owner_role, status FROM corrective_actions WHERE id = $1 FOR UPDATE`, [actionId])).rows[0];
   if (!a) throw notFound();
   if (a.status !== 'OPEN') throw conflict('invalid_state', 'Faaliyet zaten tamamlandı.');
-  if (!ctx.roles.includes(a.owner_role)) throw new ApiError(403, 'not_owner', 'Faaliyeti yalnız sorumlu rol tamamlar.');
+  if (!ctx.roles.includes(v2Role(a.owner_role))) throw new ApiError(403, 'not_owner', 'Faaliyeti yalnız sorumlu rol tamamlar.');
   if (note.trim().length < 10) throw unprocessable('note_required', 'Ne yapıldığı ve kanıtı yazılmalı (en az 10 karakter).');
   await tx.query(`UPDATE corrective_actions SET status = 'DONE', done_note = $2, done_by = $3, done_at = now() WHERE id = $1`, [actionId, note.trim(), ctx.userId]);
   await closeTasks(tx, `corrective:${actionId}`);

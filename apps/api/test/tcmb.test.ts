@@ -32,7 +32,7 @@ describe('TCMB kur alma (D92)', () => {
     await expect(fetchTcmbBulletin(undefined, fake(200, '<x/>'))).rejects.toMatchObject({ code: 'tcmb_invalid' });
   });
   it('mevcut kurun üstüne yazmaz, kullanılmayan dövizi almaz, denetim izi bırakır', async () => {
-    const ctx = { tenantId: h.world.tenantA, userId: h.world.users.finance.id, roles: ['FINANCE'], companyIds: [h.world.companyA1.id], correlationId: 'd92' };
+    const ctx = { tenantId: h.world.tenantA, userId: h.world.users.finance.id, roles: ['FINANCE'], companyIds: [h.world.companyA1.id], departmentIds: [], allDepartments: true, correlationId: 'd92' };
     const date = `20${String(30 + Math.floor(Math.random() * 60))}-0${1 + Math.floor(Math.random() * 9)}-15`;
     const b = { rateDate: date, bulletin: 'T', rates: [{ currency: 'USD', rate: '50.000000' }, { currency: 'ZZZ', rate: '1.000000' }] };
     const first = await withTenant(h.pool, ctx as never, (tx) => importTcmbRates(tx, ctx as never, b));

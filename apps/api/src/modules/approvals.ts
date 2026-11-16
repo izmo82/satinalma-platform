@@ -2,7 +2,12 @@ import { approvalProgress, planApproval, validatePolicy, type ApprovalAction, ty
 import type { TenantContext, Tx } from '../db.ts';
 import { audit } from '../audit.ts';
 import { ApiError, conflict, notFound, unprocessable } from '../errors.ts';
-import { closeTasks, openTask } from '../tasks.ts';
+import { closeTasks, openTask, v2Role } from '../tasks.ts';
+
+/** Plan adım rolleri v2 rolüne çevrilir (D93): sabitlenen plan ve karar karşılaştırması v2 kodlarıyla yapılır. Kişi düzeyindeki
+ *  görev ayrılığı (talep eden karar veremez, bir adımı onaylayan sonrakini onaylayamaz) değişmez. */
+const v2Plan = (plan: ApprovalPlan): ApprovalPlan => ({ ...plan, steps: plan.steps.map((s) => ({ ...s, role: v2Role(s.role) })) });
+const v2Rules = (rules: ApprovalRule[]): ApprovalRule[] => rules.map((r) => ({ ...r, steps: r.steps.map((s) => ({ ...s, role: v2Role(s.role) })) }));
 
 // Kurallı onay motoru (02 §13). Politika sürümlüdür; yayın ikinci kişi ister. Her onaylı iş başladığı andaki planı saklar
 // (göç kararı: devam eden iş eski sürümle tamamlanır). Plan öncesi kayıtlar (motor öncesi açılmış işler) varsayılan tek adımla sürer.
@@ -24,8 +29,8 @@ export async function planFor(tx: Tx, c: { action: ApprovalAction; companyId: st
 export async function openRequest(tx: Tx, ctx: TenantContext, r: { companyId: string; entityType: EntityType; entityId: string; action: ApprovalAction; policyId: string | null; plan: ApprovalPlan;
   title: string; projectId: string }) {
   const req = (await tx.query<{ id: string }>(`INSERT INTO approval_requests (tenant_id, company_id, entity_type, entity_id, action, policy_id, plan, requested_by)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`, [ctx.tenantId, r.companyId, r.entityType, r.entityId, r.action, r.policyId, r.plan, ctx.userId])).rows[0]!;
-  await stepTask(tx, ctx, req.id, r.companyId, r.plan, 1, r.title, r.projectId);
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`, [ctx.tenantId, r.companyId, r.entityType, r.entityId, r.action, r.policyId, v2Plan(r.plan), ctx.userId])).rows[0]!;
+  await stepTask(tx, ctx, req.id, r.companyId, v2Plan(r.plan), 1, r.title, r.projectId);
   return req.id;
 }
 
@@ -42,7 +47,7 @@ async function stepTask(tx: Tx, ctx: TenantContext, requestId: string, companyId
 async function ensureRequest(tx: Tx, ctx: TenantContext, e: { entityType: EntityType; entityId: string; action: ApprovalAction; companyId: string; requestedBy: string }) {
   const existing = (await tx.query<{ id: string }>(`SELECT id FROM approval_requests WHERE entity_type = $1 AND entity_id = $2`, [e.entityType, e.entityId])).rows[0];
   if (existing) return existing.id;
-  const plan = planApproval(null, { action: e.action, companyId: e.companyId, category: null, currency: 'TRY', amount: null });
+  const plan = v2Plan(planApproval(null, { action: e.action, companyId: e.companyId, category: null, currency: 'TRY', amount: null }));
   plan.explanation = 'Onay motorundan önce başlatılan iş: önceki kural (tek onay, satınalma yöneticisi) ile tamamlanır.';
   return (await tx.query<{ id: string }>(`INSERT INTO approval_requests (tenant_id, company_id, entity_type, entity_id, action, policy_id, plan, requested_by)
     VALUES ($1,$2,$3,$4,$5,NULL,$6,$7) RETURNING id`, [ctx.tenantId, e.companyId, e.entityType, e.entityId, e.action, plan, e.requestedBy])).rows[0]!.id;
@@ -52,6 +57,7 @@ async function load(tx: Tx, requestId: string, lock: boolean) {
   const r = (await tx.query<{ id: string; company_id: string; plan: ApprovalPlan; requested_by: string; status: string }>(
     `SELECT id, company_id, plan, requested_by, status FROM approval_requests WHERE id = $1 ${lock ? 'FOR UPDATE' : ''}`, [requestId])).rows[0];
   if (!r) throw notFound();
+  r.plan = v2Plan(r.plan);
   const decisions = (await tx.query<{ stepNo: number; role: string; decision: 'APPROVE' | 'REJECT'; note: string | null; decidedBy: string; decidedByName: string; decidedAt: Date }>(
     `SELECT d.step_no AS "stepNo", d.role, d.decision, d.note, d.decided_by AS "decidedBy", u.display_name AS "decidedByName", d.decided_at AS "decidedAt"
      FROM approval_decisions d JOIN users u ON u.id = d.decided_by WHERE d.request_id = $1 ORDER BY d.step_no`, [requestId])).rows;
@@ -113,7 +119,7 @@ export async function createDraft(tx: Tx, ctx: TenantContext, b: { rules: Approv
   await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`approval-policy:${ctx.tenantId}`]);
   const v = (await tx.query<{ n: number }>(`SELECT coalesce(max(version_no), 0) + 1 AS n FROM approval_policies`)).rows[0]!.n;
   const r = (await tx.query<{ id: string }>(`INSERT INTO approval_policies (tenant_id, version_no, rules, note, created_by) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
-    [ctx.tenantId, v, JSON.stringify(b.rules), b.note.trim(), ctx.userId])).rows[0]!;
+    [ctx.tenantId, v, JSON.stringify(v2Rules(b.rules)), b.note.trim(), ctx.userId])).rows[0]!;
   await audit(tx, ctx, 'approval_policy.drafted', 'tenant', ctx.tenantId, { policyId: r.id, versionNo: v, rules: b.rules.length }, b.note.trim());
   return { id: r.id, versionNo: v };
 }

@@ -1,10 +1,10 @@
 import {
-  noticeDeadline, occurrences, reminderSchedule, termsDiff, validateTerms, ROLES, addDays,
+  noticeDeadline, occurrences, reminderSchedule, termsDiff, validateTerms, normalizeRoles, addDays,
   type CommercialTerms, type NoticeUnit, type NonWorkingDayRule, type Recurrence,
 } from '@sp/domain';
 import type { TenantContext, Tx } from '../db.ts';
 import { audit } from '../audit.ts';
-import { closeTasks, openTask } from '../tasks.ts';
+import { closeTasks, openTask, v2Role } from '../tasks.ts';
 import { ApiError, conflict, notFound, unprocessable } from '../errors.ts';
 
 /**
@@ -189,11 +189,13 @@ export interface ObligationInput { title: string; counterparty: 'BUYER' | 'SUPPL
 export async function addObligation(tx: Tx, ctx: TenantContext, cvId: string, b: ObligationInput) {
   const cv = await loadCv(tx, cvId);
   if (cv.superseded_by_id) throw conflict('version_superseded', 'Yükümlülükler güncel sözleşme sürümüne eklenir.');
-  if (b.ownerRole && !(ROLES as readonly string[]).includes(b.ownerRole)) throw unprocessable('invalid_role', 'Geçersiz sorumlu rol.');
+  // Eski ve v2 rol kodları kabul edilir; v2 saklanır (D93).
+  if (b.ownerRole && !normalizeRoles([b.ownerRole]).length) throw unprocessable('invalid_role', 'Geçersiz sorumlu rol.');
+  const ownerRole = b.ownerRole ? v2Role(b.ownerRole) : null;
   if (b.until && b.until < b.firstDue) throw unprocessable('invalid_until', 'Bitiş ilk tarihten önce olamaz.');
   const o = (await tx.query<{ id: string }>(`INSERT INTO contract_obligations (tenant_id, company_id, contract_version_id, title, counterparty, owner_role,
       first_due, recurrence, until, evidence_required, source_ref, created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
-    [ctx.tenantId, cv.company_id, cvId, b.title.trim(), b.counterparty, b.ownerRole, b.firstDue, b.recurrence, b.until, b.evidenceRequired, b.sourceRef.trim(), ctx.userId])).rows[0]!;
+    [ctx.tenantId, cv.company_id, cvId, b.title.trim(), b.counterparty, ownerRole, b.firstDue, b.recurrence, b.until, b.evidenceRequired, b.sourceRef.trim(), ctx.userId])).rows[0]!;
   await scheduleObligation(tx, ctx, o.id, cv.company_id);
   await audit(tx, ctx, 'contract.obligation_added', 'contract_obligation', o.id, { contractVersionId: cvId, recurrence: b.recurrence });
   return { id: o.id };

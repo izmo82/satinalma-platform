@@ -1,6 +1,6 @@
 import pg from 'pg';
 import { parseArgs } from 'node:util';
-import { normalizeTaxId, ROLES, type TaxIdType } from '@sp/domain';
+import { normalizeRoles, normalizeTaxId, type TaxIdType } from '@sp/domain';
 
 /**
  * İlk kurulum ve operasyon aracı (kurum içi veya bulut fark etmez). Owner bağlantısıyla çalışır, her değişikliği
@@ -50,9 +50,11 @@ export async function provision(url: string, argv: string[], log = console.log):
       const tenantId = need('tenant');
       const email = need('email').toLowerCase();
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('invalid --email');
-      const roles = need('roles').split(',').map((r) => r.trim());
-      const unknown = roles.filter((r) => !(ROLES as readonly string[]).includes(r));
+      // Eski ve v2 rol kodları kabul edilir; üyelikte v2 rolleri saklanır (D93).
+      const given = need('roles').split(',').map((r) => r.trim());
+      const unknown = given.filter((r) => !normalizeRoles([r]).length);
       if (unknown.length) throw new Error(`unknown roles: ${unknown.join(',')}`);
+      const roles: string[] = normalizeRoles(given);
       // Tedarikçi portalı kullanıcısı: yalnız SUPPLIER rolü, şirket belgesi kapsamı yok, tek tedarikçiye bağlı.
       const supplierId = a.supplier?.trim() || null;
       if ((supplierId !== null) !== roles.includes('SUPPLIER') || (supplierId && roles.length !== 1)) {

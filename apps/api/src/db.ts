@@ -10,6 +10,10 @@ export interface TenantContext {
   companyIds: string[];
   /** Tedarikçi portalı kullanıcısıysa temsil ettiği tedarikçi; RLS yalnız onun kayıtlarını açar. */
   supplierId?: string | null;
+  /** Bölüm kullanıcısının departmanları (RLS `app.department_ids`). */
+  departmentIds: string[];
+  /** Tüm departmanları görür (Yönetici, Satınalma, Denetçi; sistem işleri). RLS `app.department_scope = 'ALL'`. */
+  allDepartments: boolean;
   correlationId: string;
 }
 
@@ -30,8 +34,8 @@ export async function withTenant<T>(pool: pg.Pool, ctx: TenantContext, fn: (tx: 
     await client.query(opts.snapshot ? 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY' : 'BEGIN');
     await client.query(
       `SELECT set_config('app.tenant_id', $1, true), set_config('app.user_id', $2, true), set_config('app.company_ids', $3, true),
-              set_config('app.supplier_id', $4, true)`,
-      [ctx.tenantId, ctx.userId, `{${ctx.companyIds.join(',')}}`, ctx.supplierId ?? ''],
+              set_config('app.supplier_id', $4, true), set_config('app.department_scope', $5, true), set_config('app.department_ids', $6, true)`,
+      [ctx.tenantId, ctx.userId, `{${ctx.companyIds.join(',')}}`, ctx.supplierId ?? '', ctx.allDepartments ? 'ALL' : 'LIST', `{${ctx.departmentIds.join(',')}}`],
     );
     const result = await fn(client);
     await client.query('COMMIT');

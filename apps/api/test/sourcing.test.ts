@@ -123,7 +123,7 @@ describe('T09 tedarikçi portalı: yalnız kendi teklifi, kapanış sunucu saati
   it('başka tedarikçinin teklif kimliğiyle içerik okunamaz; alıcı kapanıştan önce içeriği göremez (RLS)', async () => {
     const s1Bid = (await h.call('supplier1', 'GET', `/api/v1/portal/rounds/${roundId}`)).body.current.id;
     const ctx = (userId: string, supplierId: string | null, companyIds: string[]) =>
-      ({ tenantId: h.world.tenantA, userId, roles: [], companyIds, supplierId, correlationId: 't09' });
+      ({ tenantId: h.world.tenantA, userId, roles: [], companyIds, supplierId, departmentIds: [], allDepartments: true, correlationId: 't09' });
     const asS2 = await withTenant(h.pool, ctx(h.world.users.supplier2.id, h.world.suppliers.s2, []), async (tx) => ({
       bids: (await tx.query('SELECT id FROM bids WHERE id = $1', [s1Bid])).rowCount,
       lines: (await tx.query('SELECT id FROM bid_lines WHERE bid_id = $1', [s1Bid])).rowCount,
@@ -177,7 +177,7 @@ describe('T09 tedarikçi portalı: yalnız kendi teklifi, kapanış sunucu saati
     expect(late.status).toBe(409);
     expect(late.body.error.code).toBe('round_closed');
     // API atlansa da tetikleyici reddeder.
-    await expect(withTenant(h.pool, { tenantId: h.world.tenantA, userId: h.world.users.supplier2.id, roles: [], companyIds: [], supplierId: h.world.suppliers.s2, correlationId: 't09' },
+    await expect(withTenant(h.pool, { tenantId: h.world.tenantA, userId: h.world.users.supplier2.id, roles: [], companyIds: [], supplierId: h.world.suppliers.s2, departmentIds: [], allDepartments: true, correlationId: 't09' },
       (tx) => tx.query(`INSERT INTO bids (tenant_id, company_id, project_id, round_id, supplier_id, version_no, currency, idempotency_key, submitted_by)
         VALUES ($1,$2,$3,$4,$5,1,'TRY',$6,$7)`, [h.world.tenantA, h.world.companyA1.id, projectId, roundId, h.world.suppliers.s2, randomUUID(), h.world.users.supplier2.id])))
       .rejects.toThrow(/round_closed/);
