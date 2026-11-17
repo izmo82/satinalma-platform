@@ -98,6 +98,47 @@ describe('validateEndpointConfig (R4, R7, R8, R12)', () => {
   });
 });
 
+describe('review düzeltmeleri', () => {
+  it('I1 tutar/tarih alanı doğru dönüşüm olmadan eşlenemez; katalog alan türü taşır', () => {
+    expect(ERP_FEATURE_CATALOG.INVOICE.appFields.find((f) => f.key === 'totalAmount')?.type).toBe('money');
+    expect(ERP_FEATURE_CATALOG.INVOICE.appFields.find((f) => f.key === 'invoiceDate')?.type).toBe('date');
+    for (const f of ERP_FEATURES) for (const a of ERP_FEATURE_CATALOG[f].appFields) {
+      if (/amount$/i.test(a.key)) expect(a.type, `${f}.${a.key}`).toBe('money');
+      if (/date$/i.test(a.key)) expect(a.type, `${f}.${a.key}`).toBe('date');
+    }
+    const m1 = { ...ERP_FEATURE_CATALOG.INVOICE.ebsDefaultMap, totalAmount: { path: 'a', transform: 'NONE' as const }, invoiceDate: { path: 'b', transform: 'TRIM' as const } };
+    expect(codes(validateEndpointConfig(base({ fieldMap: m1 }), opts))).toEqual(expect.arrayContaining(['fieldMap.totalAmount.transform:transform_required', 'fieldMap.invoiceDate.transform:transform_required']));
+  });
+  it('I1 applyFieldMap özellikle verilince NONE eşlemeli tutarı da denetler', () => {
+    const mp = { ...ERP_FEATURE_CATALOG.INVOICE.ebsDefaultMap, totalAmount: { path: 't', transform: 'NONE' as const } };
+    const r = applyFieldMap(mp, { t: '1.234,50' }, 'INVOICE');
+    expect(r.errors).toContainEqual({ field: 'totalAmount', code: 'invalid_decimal' });
+  });
+  it('I2 CIDR öneki 1–32; /0, boş ve bozuk önek kapalı', () => {
+    for (const c of ['10.0.0.0/', '0.0.0.0/0', '10.0.0.0/33', '10.0.0.0/x', '10.0.0.0/-1', '10.0.0.0/008']) {
+      expect(validateEndpointConfig(base({ baseUrl: 'https://10.1.2.3/' }), { allowedHosts: [c], production: true }).ok, c).toBe(false);
+    }
+    expect(validateEndpointConfig(base({ baseUrl: 'https://10.1.2.3/' }), { allowedHosts: ['10.0.0.0/8'], production: true }).ok).toBe(true);
+  });
+  it('IPv6 izin listesi köşeli parantezle ya da parantezsiz eşler', () => {
+    for (const a of ['[::1]', '::1']) expect(validateEndpointConfig(base({ baseUrl: 'https://[::1]:9000/' }), { allowedHosts: [a], production: true }).ok, a).toBe(true);
+  });
+  it('kaynağı bilinmeyen dolu değer ezilmez', () => { expect(reconcileManual({ value: 'K1', source: null }, 'K2')).toBe('CONFLICT_MANUAL'); });
+  it('redact: her şema, Cookie, X-API-Key, JSON alanları ve JSON-kaçışlı sır', () => {
+    expect(redactSecrets('Authorization: Negotiate abc123def', [])).not.toContain('abc123');
+    expect(redactSecrets('Cookie: sid=zzz999; a=b', [])).not.toContain('zzz999');
+    expect(redactSecrets('X-API-Key: k-777-secret', [])).not.toContain('k-777');
+    const j = redactSecrets('{"password":"pw\\"1","client_secret":"cs2","token":"t3","secret":"s4"}', []);
+    for (const v of ['pw', 'cs2', 't3', 's4']) expect(j).not.toContain(v);
+    const sec = 'a"b\\c';
+    const out = redactSecrets('body ' + JSON.stringify({ x: sec }), [sec]);
+    expect(out).not.toContain(JSON.stringify(sec).slice(1, -1));
+  });
+  it('prototip anahtarları yok sayılır', () => {
+    for (const p of ['__proto__.x', 'a.constructor.name', 'a.prototype']) expect(applyFieldMap({ k: { path: p, transform: 'NONE' } }, { a: {} }).values.k).toBeNull();
+  });
+});
+
 describe('missingMappings', () => {
   it('INVOICE için invoiceNo eşlenmemişse döner', () => {
     const { invoiceNo: _x, ...rest } = ERP_FEATURE_CATALOG.INVOICE.ebsDefaultMap;
@@ -198,7 +239,7 @@ describe('redactSecrets', () => {
     expect(out).toContain('***');
   });
   it('Authorization değerlerini ve Basic/Bearer belirteçlerini gizler', () => {
-    expect(redactSecrets('Authorization: Basic dXNlcjpwYXNz geldi', [])).toBe('Authorization: *** geldi');
+    expect(redactSecrets('Authorization: Basic dXNlcjpwYXNz', [])).toBe('Authorization: ***');
     expect(redactSecrets('Authorization: Bearer abc.def.ghi', [])).not.toContain('abc.def');
     expect(redactSecrets('gönderilen Basic xxx reddedildi', [])).not.toContain('xxx');
     expect(redactSecrets('{"authorization":"Bearer tok123"}', [])).not.toContain('tok123');

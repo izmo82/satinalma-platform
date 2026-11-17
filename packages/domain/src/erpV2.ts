@@ -7,6 +7,7 @@ export type ErpFeature = (typeof ERP_FEATURES)[number];
 
 export const ERP_TRANSFORMS = ['NONE', 'TRIM', 'UPPER', 'DATE_YMD', 'DECIMAL'] as const;
 export type ErpTransform = (typeof ERP_TRANSFORMS)[number];
+export type ErpFieldType = 'text' | 'money' | 'date';
 export type FieldMapEntry = { path: string; transform: ErpTransform };
 export type FieldMap = Record<string, FieldMapEntry>;
 
@@ -16,7 +17,7 @@ export type ErpFeatureDef = {
   reads: boolean;
   writes: boolean;
   stage: 1 | 2;
-  appFields: { key: string; label: string; required: boolean }[];
+  appFields: { key: string; label: string; required: boolean; type: ErpFieldType }[];
   ebsDefaultMap: FieldMap;
   manualFallback: string;
 };
@@ -28,9 +29,9 @@ export const ERP_FEATURE_CATALOG: Record<ErpFeature, ErpFeatureDef> = {
   SUPPLIER: {
     label: 'Tedarikçi ana verisi', direction: 'BOTH', reads: true, writes: true, stage: 1,
     appFields: [
-      { key: 'taxId', label: 'Vergi kimlik no (VKN)', required: true },
-      { key: 'erpSupplierCode', label: 'ERP tedarikçi kodu', required: true },
-      { key: 'legalName', label: 'Unvan', required: false },
+      { key: 'taxId', label: 'Vergi kimlik no (VKN)', required: true, type: 'text' },
+      { key: 'erpSupplierCode', label: 'ERP tedarikçi kodu', required: true, type: 'text' },
+      { key: 'legalName', label: 'Unvan', required: false, type: 'text' },
     ],
     ebsDefaultMap: { taxId: m('TAX_REGISTRATION_NUM', 'TRIM'), erpSupplierCode: m('SEGMENT1', 'TRIM'), legalName: m('VENDOR_NAME', 'TRIM') },
     manualFallback: 'Tedarikçi kartındaki "ERP tedarikçi kodu" alanına Satınalma elle yazar; kaynağı "Elle" görünür.',
@@ -38,9 +39,9 @@ export const ERP_FEATURE_CATALOG: Record<ErpFeature, ErpFeatureDef> = {
   COST_CENTER: {
     label: 'Departman / masraf merkezi', direction: 'IN', reads: true, writes: false, stage: 1,
     appFields: [
-      { key: 'code', label: 'Masraf merkezi kodu', required: true },
-      { key: 'name', label: 'Masraf merkezi adı', required: true },
-      { key: 'active', label: 'Etkin', required: false },
+      { key: 'code', label: 'Masraf merkezi kodu', required: true, type: 'text' },
+      { key: 'name', label: 'Masraf merkezi adı', required: true, type: 'text' },
+      { key: 'active', label: 'Etkin', required: false, type: 'text' },
     ],
     ebsDefaultMap: { code: m('FLEX_VALUE', 'TRIM'), name: m('DESCRIPTION', 'TRIM'), active: m('ENABLED_FLAG', 'UPPER') },
     manualFallback: 'Departmanda "Masraf merkezi kodu" alanını Yönetici elle girer; departman ana kaynağı Entra kalır.',
@@ -48,11 +49,11 @@ export const ERP_FEATURE_CATALOG: Record<ErpFeature, ErpFeatureDef> = {
   REQUISITION: {
     label: 'Satınalma talebi', direction: 'OUT', reads: false, writes: true, stage: 2,
     appFields: [
-      { key: 'projectNo', label: 'Proje no', required: true },
-      { key: 'description', label: 'Açıklama', required: true },
-      { key: 'amount', label: 'Tutar', required: true },
-      { key: 'currency', label: 'Para birimi', required: true },
-      { key: 'erpReference', label: 'ERP referans no', required: false },
+      { key: 'projectNo', label: 'Proje no', required: true, type: 'text' },
+      { key: 'description', label: 'Açıklama', required: true, type: 'text' },
+      { key: 'amount', label: 'Tutar', required: true, type: 'money' },
+      { key: 'currency', label: 'Para birimi', required: true, type: 'text' },
+      { key: 'erpReference', label: 'ERP referans no', required: false, type: 'text' },
     ],
     ebsDefaultMap: {
       projectNo: m('SEGMENT_REFERENCE'), description: m('DESCRIPTION'), amount: m('AMOUNT', 'DECIMAL'),
@@ -63,14 +64,14 @@ export const ERP_FEATURE_CATALOG: Record<ErpFeature, ErpFeatureDef> = {
   CONTRACT_HEADER: {
     label: 'Sözleşme başlığı', direction: 'OUT', reads: false, writes: true, stage: 2,
     appFields: [
-      { key: 'contractNo', label: 'Sözleşme no', required: true },
-      { key: 'supplierTaxId', label: 'Tedarikçi VKN', required: true },
-      { key: 'startDate', label: 'Başlangıç tarihi', required: true },
-      { key: 'title', label: 'Başlık', required: false },
-      { key: 'endDate', label: 'Bitiş tarihi', required: false },
-      { key: 'amount', label: 'Tutar', required: false },
-      { key: 'currency', label: 'Para birimi', required: false },
-      { key: 'erpReference', label: 'ERP referans no', required: false },
+      { key: 'contractNo', label: 'Sözleşme no', required: true, type: 'text' },
+      { key: 'supplierTaxId', label: 'Tedarikçi VKN', required: true, type: 'text' },
+      { key: 'startDate', label: 'Başlangıç tarihi', required: true, type: 'date' },
+      { key: 'title', label: 'Başlık', required: false, type: 'text' },
+      { key: 'endDate', label: 'Bitiş tarihi', required: false, type: 'date' },
+      { key: 'amount', label: 'Tutar', required: false, type: 'money' },
+      { key: 'currency', label: 'Para birimi', required: false, type: 'text' },
+      { key: 'erpReference', label: 'ERP referans no', required: false, type: 'text' },
     ],
     ebsDefaultMap: {
       contractNo: m('SEGMENT1', 'TRIM'), supplierTaxId: m('TAX_REGISTRATION_NUM', 'TRIM'), startDate: m('START_DATE', 'DATE_YMD'),
@@ -82,11 +83,11 @@ export const ERP_FEATURE_CATALOG: Record<ErpFeature, ErpFeatureDef> = {
   PURCHASE_ORDER: {
     label: 'Sipariş', direction: 'IN', reads: true, writes: false, stage: 1,
     appFields: [
-      { key: 'poNo', label: 'Sipariş no', required: true },
-      { key: 'supplierTaxId', label: 'Tedarikçi VKN', required: true },
-      { key: 'amount', label: 'Tutar', required: true },
-      { key: 'currency', label: 'Para birimi', required: true },
-      { key: 'orderDate', label: 'Sipariş tarihi', required: false },
+      { key: 'poNo', label: 'Sipariş no', required: true, type: 'text' },
+      { key: 'supplierTaxId', label: 'Tedarikçi VKN', required: true, type: 'text' },
+      { key: 'amount', label: 'Tutar', required: true, type: 'money' },
+      { key: 'currency', label: 'Para birimi', required: true, type: 'text' },
+      { key: 'orderDate', label: 'Sipariş tarihi', required: false, type: 'date' },
     ],
     ebsDefaultMap: {
       poNo: m('SEGMENT1', 'TRIM'), supplierTaxId: m('TAX_REGISTRATION_NUM', 'TRIM'), amount: m('AMOUNT', 'DECIMAL'),
@@ -97,13 +98,13 @@ export const ERP_FEATURE_CATALOG: Record<ErpFeature, ErpFeatureDef> = {
   INVOICE: {
     label: 'Fatura', direction: 'IN', reads: true, writes: false, stage: 1,
     appFields: [
-      { key: 'invoiceNo', label: 'Fatura no', required: true },
-      { key: 'supplierTaxId', label: 'Tedarikçi VKN', required: true },
-      { key: 'invoiceDate', label: 'Fatura tarihi', required: true },
-      { key: 'totalAmount', label: 'Toplam tutar', required: true },
-      { key: 'currency', label: 'Para birimi', required: true },
-      { key: 'taxAmount', label: 'KDV tutarı', required: false },
-      { key: 'poNo', label: 'Sipariş no', required: false },
+      { key: 'invoiceNo', label: 'Fatura no', required: true, type: 'text' },
+      { key: 'supplierTaxId', label: 'Tedarikçi VKN', required: true, type: 'text' },
+      { key: 'invoiceDate', label: 'Fatura tarihi', required: true, type: 'date' },
+      { key: 'totalAmount', label: 'Toplam tutar', required: true, type: 'money' },
+      { key: 'currency', label: 'Para birimi', required: true, type: 'text' },
+      { key: 'taxAmount', label: 'KDV tutarı', required: false, type: 'money' },
+      { key: 'poNo', label: 'Sipariş no', required: false, type: 'text' },
     ],
     ebsDefaultMap: {
       invoiceNo: m('INVOICE_NUM', 'TRIM'), supplierTaxId: m('TAX_REGISTRATION_NUM', 'TRIM'), invoiceDate: m('INVOICE_DATE', 'DATE_YMD'),
@@ -115,11 +116,11 @@ export const ERP_FEATURE_CATALOG: Record<ErpFeature, ErpFeatureDef> = {
   PAYMENT_STATUS: {
     label: 'Ödeme durumu', direction: 'IN', reads: true, writes: false, stage: 1,
     appFields: [
-      { key: 'invoiceNo', label: 'Fatura no', required: true },
-      { key: 'supplierTaxId', label: 'Tedarikçi VKN', required: true },
-      { key: 'status', label: 'Ödeme durumu', required: true },
-      { key: 'paidAmount', label: 'Ödenen tutar', required: false },
-      { key: 'paymentDate', label: 'Ödeme tarihi', required: false },
+      { key: 'invoiceNo', label: 'Fatura no', required: true, type: 'text' },
+      { key: 'supplierTaxId', label: 'Tedarikçi VKN', required: true, type: 'text' },
+      { key: 'status', label: 'Ödeme durumu', required: true, type: 'text' },
+      { key: 'paidAmount', label: 'Ödenen tutar', required: false, type: 'money' },
+      { key: 'paymentDate', label: 'Ödeme tarihi', required: false, type: 'date' },
     ],
     ebsDefaultMap: {
       invoiceNo: m('INVOICE_NUM', 'TRIM'), supplierTaxId: m('TAX_REGISTRATION_NUM', 'TRIM'), status: m('PAYMENT_STATUS_FLAG', 'UPPER'),
@@ -169,17 +170,20 @@ function ipv4ToInt(s: string): number | null {
 }
 
 function hostAllowed(hostname: string, allowed: string[]): boolean {
-  const h = hostname.toLowerCase();
+  const strip = (x: string) => x.trim().toLowerCase().replace(/^\[/, '').replace(/\]$/, '');
+  const h = strip(hostname);
   const ip = ipv4ToInt(h);
   for (const raw of allowed) {
-    const a = raw.trim().toLowerCase();
+    const a = strip(raw);
     if (!a) continue;
     if (a.includes('/')) {
       const [net, bitsS] = a.split('/');
       const n = ipv4ToInt(net ?? '');
+      // Kapalı kal: yalnız 1–32 arası ondalık önek; /0, boş ve bozuk önek eşleşmez.
+      if (ip === null || n === null || !/^\d{1,2}$/.test(bitsS ?? '')) continue;
       const bits = Number(bitsS);
-      if (ip === null || n === null || !Number.isInteger(bits) || bits < 0 || bits > 32) continue;
-      const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
+      if (bits < 1 || bits > 32) continue;
+      const mask = (0xffffffff << (32 - bits)) >>> 0;
       if (((ip & mask) >>> 0) === ((n & mask) >>> 0)) return true;
     } else if (a === h) return true;
   }
@@ -236,6 +240,11 @@ export function validateEndpointConfig(input: EndpointInput, opts: { allowedHost
     if (!known.has(key)) { errors.push({ field: `fieldMap.${key}`, code: 'unknown_field' }); continue; }
     if (!entry || !isValidFieldPath(entry.path)) errors.push({ field: `fieldMap.${key}.path`, code: 'invalid' });
     if (!entry || !(ERP_TRANSFORMS as readonly string[]).includes(entry.transform)) errors.push({ field: `fieldMap.${key}.transform`, code: 'invalid' });
+    else {
+      // Tutar alanı DECIMAL, tarih alanı DATE_YMD dönüşümü olmadan eşlenemez (yuvarlama/biçim kaçağı olmasın).
+      const t = def.appFields.find((f) => f.key === key)?.type;
+      if ((t === 'money' && entry.transform !== 'DECIMAL') || (t === 'date' && entry.transform !== 'DATE_YMD')) errors.push({ field: `fieldMap.${key}.transform`, code: 'transform_required' });
+    }
   }
   return errors.length ? { ok: false, errors } : { ok: true };
 }
@@ -254,6 +263,7 @@ const DECIMAL_RE = /^-?\d+(\.\d{1,4})?$/;
 function getPath(record: unknown, path: string): unknown {
   let cur: unknown = record;
   for (const seg of path.split('.')) {
+    if (seg === '__proto__' || seg === 'constructor' || seg === 'prototype') return undefined;
     if (cur === null || typeof cur !== 'object' || !Object.hasOwn(cur, seg)) return undefined;
     cur = (cur as Record<string, unknown>)[seg];
   }
@@ -275,7 +285,10 @@ export function applyFieldMap(map: FieldMap, record: unknown, feature?: ErpFeatu
     if (typeof raw === 'object') { values[key] = null; errors.push({ field: key, code: 'invalid_value' }); continue; }
     let s = String(raw);
     if (typeof raw === 'number' && !Number.isFinite(raw)) { values[key] = null; errors.push({ field: key, code: 'invalid_value' }); continue; }
-    switch (entry.transform) {
+    // Özellik verilmişse tutar/tarih alanı eşlemedeki dönüşümden bağımsız olarak DECIMAL/DATE_YMD denetiminden geçer.
+    const ft = feature ? ERP_FEATURE_CATALOG[feature].appFields.find((f) => f.key === key)?.type : undefined;
+    const transform: ErpTransform = ft === 'money' ? 'DECIMAL' : ft === 'date' ? 'DATE_YMD' : entry.transform;
+    switch (transform) {
       case 'TRIM': s = s.trim(); break;
       case 'UPPER': s = s.trim().toUpperCase(); break;
       case 'DECIMAL':
@@ -346,11 +359,14 @@ export function redactSecrets(message: string, secrets: string[]): string {
   const forms = new Set<string>();
   for (const s of secrets) {
     if (!s) continue;
-    for (const f of [s, encodeURIComponent(s), b64(s), b64(s).replace(/=+$/, '')]) if (f) forms.add(f);
+    for (const f of [s, encodeURIComponent(s), b64(s), b64(s).replace(/=+$/, ''), JSON.stringify(s).slice(1, -1)]) if (f) forms.add(f);
   }
   for (const f of [...forms].sort((a, b) => b.length - a.length)) out = out.split(f).join('***');
   out = out
-    .replace(/(authorization["']?\s*[:=]\s*["']?)(?:(?:basic|bearer|digest)\s+)?[^\s,;"']+/gi, '$1***')
+    .replace(/((?:proxy-)?authorization["']?\s*[:=]\s*["']?)[^\r\n"']+/gi, '$1***')
+    .replace(/((?:set-)?cookie["']?\s*[:=]\s*["']?)[^\r\n"']+/gi, '$1***')
+    .replace(/(x-api-key["']?\s*[:=]\s*["']?)[^\s,;"']+/gi, '$1***')
+    .replace(/("(?:password|passwd|secret|client_secret|token|access_token|refresh_token|api_?key)"\s*:\s*)"(?:[^"\\]|\\.)*"/gi, '$1"***"')
     .replace(/\b(basic|bearer)\s+[A-Za-z0-9._~+/=-]{3,}/gi, '$1 ***')
     .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/?#@]*@/gi, '$1***@')
     .replace(/((?:password|passwd|pwd|client_secret|secret|access_token|refresh_token|token|api[_-]?key)=)[^&\s"']+/gi, '$1***');
@@ -368,5 +384,6 @@ export function reconcileManual(current: { value: string | null; source: ErpValu
   const cur = current.value?.trim() ? current.value.trim() : null;
   if (cur === null) return 'SET';
   if (cur === inc) return 'SAME';
-  return current.source === 'MANUAL' ? 'CONFLICT_MANUAL' : 'SET';
+  // Kaynağı bilinmeyen dolu değer elle girilmiş sayılır: asla ezilmez.
+  return current.source === 'ERP' ? 'SET' : 'CONFLICT_MANUAL';
 }
