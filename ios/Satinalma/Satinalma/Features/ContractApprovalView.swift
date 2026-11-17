@@ -19,7 +19,8 @@ struct ContractApprovalView: View {
 
     private var meId: String? { session.me?.user.id }
     /// Karar verilecek adım: görevin adımı, yoksa zincirin sıradaki adımı.
-    private var decisionStepId: String? { stepId ?? contract?.chain?.steps.first(where: \.current)?.id }
+    /// Karar verilecek adım: zincirin sıradaki adımı (varsa), yoksa görevin adımı (sunucu yine adımı denetler).
+    private var decisionStepId: String? { contract?.chain?.steps.first(where: \.current)?.id ?? stepId }
 
     var body: some View {
         List {
@@ -113,7 +114,7 @@ struct ContractApprovalView: View {
             return nil
         } catch {
             let n = Notice.from(error)
-            if (error as? APIError)?.isConflict == true { await load() }
+            if let e = error as? APIError, e.isConflict || e.outcomeUnknown { await load() }
             if decision == "APPROVED" { notice = n }
             return n
         }
@@ -196,12 +197,26 @@ enum ContractFormat {
 
 /// Durum etiketi (sunucunun türettiği Türkçe etiket).
 struct StatusBadge: View {
+    /// Açık/koyu görünüme göre metin rengi (her ikisinde ≥4,5:1 kontrast için).
+    static func adaptive(light: (Double, Double, Double), dark: (Double, Double, Double)) -> Color {
+        Color(UIColor { t in
+            let c = t.userInterfaceStyle == .dark ? dark : light
+            return UIColor(red: c.0, green: c.1, blue: c.2, alpha: 1)
+        })
+    }
     let code: String?
     let label: String
     var body: some View {
         let tone = ContractLabels.tone(code)
         let color: Color = switch tone { case .error: .red; case .warn: .orange; case .info: .green; case nil: .secondary }
-        Text(label).font(.caption.weight(.semibold)).foregroundStyle(color)
+        // Açık zeminde turuncu/yeşil metin 4,5:1 sağlamaz; metin koyu tonla, zemin renkle verilir.
+        let text: Color = switch tone {
+        case .warn: StatusBadge.adaptive(light: (0.60, 0.29, 0.0), dark: (1.0, 0.72, 0.40))
+        case .info: StatusBadge.adaptive(light: (0.0, 0.42, 0.16), dark: (0.45, 0.88, 0.55))
+        case .error: StatusBadge.adaptive(light: (0.70, 0.07, 0.07), dark: (1.0, 0.55, 0.52))
+        case nil: .secondary
+        }
+        Text(label).font(.caption.weight(.semibold)).foregroundStyle(text)
             .padding(.horizontal, 8).padding(.vertical, 3)
             .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
             .accessibilityLabel("Durum: \(label)")

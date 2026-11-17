@@ -17,6 +17,8 @@ struct ScanView: View {
     @State private var removing: Draft?
     /// v2 Faz 3: yüklenen sözleşme taraması → "Alanları doğrula" (Figma iOS 3).
     @State private var verifying: Draft?
+    /// `contract.manage` (packages/domain roles.ts): Satınalma ve Departman kullanıcısı. Diğer rollerde eski davranış (yalnız yükleme bildirimi).
+    private var canManageContracts: Bool { (session.me?.roles ?? []).map(Labels.v2Role).contains { $0 == "PROCUREMENT" || $0 == "DEPARTMENT_USER" } }
 
     var body: some View {
         List {
@@ -43,7 +45,7 @@ struct ScanView: View {
                             await drafts.upload(d.id, session: session)
                             if let r = drafts.drafts.first(where: { $0.id == d.id }) {
                                 notice = r.state == .uploaded ? Notice(tone: .info, text: "Yüklendi: \(r.serverMessage ?? "")") : Notice(tone: .warn, text: r.lastError ?? "Yüklenmedi; taslak korunuyor.")
-                                if r.state == .uploaded, r.kind == "CONTRACT", r.documentVersionId != nil { verifying = r }
+                                if r.state == .uploaded, r.kind == "CONTRACT", r.documentVersionId != nil, canManageContracts { verifying = r }
                             }
                         }
                     } catch { notice = Notice(tone: .error, text: "Taslak kaydedilemedi: \(error.localizedDescription)") }
@@ -55,7 +57,7 @@ struct ScanView: View {
                 if mine.isEmpty { Text("Taslak yok.").foregroundStyle(.secondary) }
                 ForEach(mine) { d in
                     DraftRow(draft: d, onUpload: { Task { await drafts.upload(d.id, session: session) } }, onRemove: { removing = d },
-                             onVerify: d.kind == "CONTRACT" && d.state == .uploaded && d.documentVersionId != nil ? { verifying = d } : nil)
+                             onVerify: canManageContracts && d.kind == "CONTRACT" && d.state == .uploaded && d.documentVersionId != nil ? { verifying = d } : nil)
                 }
             }
         }
