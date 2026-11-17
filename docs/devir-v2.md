@@ -17,6 +17,8 @@ Bu not, önceki oturumun bağlamını yeni oturuma taşır. Önce bunu, sonra `d
 
 6. **17.11.2026:** Faz 1 kapandı (D102–D104, e2e 155/1/63, kalan UX04 önceden var). Faz 2 (Entra) planı `docs/superpowers/plans/2026-11-17-v2-faz2-entra.md`, kullanıcı onayı bekliyor.
 
+7. **17.11.2026:** Faz 2 (Entra) uygulandı, PARTIAL (D105): test dizini sağlayıcısıyla bütün akış PASS; gerçek Entra kiracısı ve ilk gerçek OIDC girişi NOT_RUN. Defter (git dışı): `.superpowers/sdd/2026-11-17-v2-faz2-entra/progress.md`. Geliştirme `.env`'inde `DIRECTORY_PROVIDER=test` (yedek scratchpad'de); dizin işini alan işçi Terminal sekmesinde çalışır.
+
 ## Sıradaki işler (sırayla)
 
 1. Figma'da kalan 31 ekranı ekran görüntüsüyle denetle, kusurları düğüm kimliğiyle hedefli düzelt.
