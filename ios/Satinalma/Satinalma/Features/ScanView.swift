@@ -33,7 +33,7 @@ struct ScanView: View {
                     }
                     PhotosPicker(selection: $photoItems, maxSelectionCount: 30, matching: .images) { Label("Fotoğraflardan seç", systemImage: "photo.on.rectangle") }
                     Button { showFiles = true } label: { Label("PDF dosyası seç", systemImage: "doc") }
-                } footer: { Text("Belge önce bu cihazda şifreli taslak olarak saklanır; bağlantı varsa hemen yüklenir, yoksa bağlantı gelince. Sözleşme yüklenince alanları siz doğrularsınız (yapay zekâ okuması Faz 4'te).") }
+                } footer: { Text("Belge önce bu cihazda şifreli taslak olarak saklanır; bağlantı varsa hemen yüklenir, yoksa bağlantı gelince. Sözleşme yüklenince alanları siz doğrularsınız; yapay zekâ okuması etkinse öneriler alanların altında görünür, değerleri siz kaydedersiniz.") }
             } else {
                 ScanComposer(pages: $pages, importedPDF: $importedPDF) { pdf, count, title, kind, company in
                     do {

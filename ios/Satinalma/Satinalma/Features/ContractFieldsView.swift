@@ -1,7 +1,9 @@
 import SwiftUI
 
-/// "Alanları doğrula" (Figma iOS 3, v2 Faz 3 R2/R9/R10): taranan sözleşme belgesinden taslak açılır ve zorunlu alanlar
-/// insan tarafından girilir. Yapay zekâ okuması bu fazda yok; alanlar boş gelir ve ekran bunu açıkça söyler.
+/// "Alanları doğrula" (Figma iOS 3, v2 Faz 3 R2/R9/R10, Faz 4 R4–R6/R11): taranan sözleşme belgesinden taslak açılır ve zorunlu alanlar
+/// insan tarafından girilir. v2 Faz 4: taslak açılınca (yeni taramada proje seçilince) sunucu yapay zekâ okumasını (AI06) ister; ekran okuma
+/// durumunu ve alan önerilerini (değer, kaynak sayfa, güven) gösterir. Tutar, para birimi, tarihler ve VKN forma önceden yazılmaz ("Öneriyi kullan"
+/// açık insan eylemidir); kararlar alan kaydıyla (`aiDecisions`) yazılır. Okuma yoksa ya da çalışmadıysa sebebi yazılır ve elle form aynen çalışır.
 /// Proje zorunludur (taslak projeyle açılır); departman projenin departmanıdır, değiştirilebilir. Tutar decimal metin olarak
 /// gönderilir. Devam → "İncele ve gönder" özeti → onaya gönderim. Gönderilmeyen taslak webde Sözleşmeler'de açılır.
 struct ContractFieldsView: View {
@@ -21,7 +23,8 @@ struct ContractFieldsView: View {
     @State private var notice: Notice?
     @State private var busy = false
     @State private var showReview = false
-    @State private var addingSupplier = false
+    /// Aday tedarikçi sayfası: elle (boş) ya da VKN önerisiyle (unvan + VKN dolu, öneri kimliğiyle) açılır.
+    @State private var candidateSheet: CandidateSeed?
 
     @State private var projectId = ""
     @State private var departmentId = ""
@@ -45,6 +48,23 @@ struct ContractFieldsView: View {
     @State private var supplierHint: String?
     @State private var memberHint: String?
     @Environment(\.dynamicTypeSize) private var typeSize
+    // v2 Faz 4: okuma önerileri.
+    @State private var extractions: ContractExtractions?
+    @State private var extractionError: Notice?
+    @State private var readTimedOut = false
+    @State private var readBusy = false
+    @State private var pollToken = UUID()
+    @State private var draftBusy = false
+    /// "Öneriyi kullan" denen ve "Yoksay" denen öneriler (kayıtla karar olur); önceden doldurulan (kritik olmayan) öneri: alan → öneri kimliği.
+    @State private var used: Set<String> = []
+    @State private var rejected: Set<String> = []
+    @State private var prefilled: [String: String] = [:]
+    @State private var appliedRun: String?
+    /// VKN önerisiyle açılan aday kartında VKN değiştirilmediyse öneri onaylanır.
+    @State private var vknUsedExact = false
+    @State private var previewPage: Int?
+    /// Devam düğmesinin yanında gösterilen sonuç (ör. karar bekleyen kritik öneri); üstteki bildirim kaydırılınca görünmez.
+    @State private var continueNotice: Notice?
 
     init(documentVersionId: String, draftId: UUID?, familyId: String?) {
         self.documentVersionId = documentVersionId; self.draftId = draftId; _familyId = State(initialValue: familyId)
@@ -59,15 +79,23 @@ struct ContractFieldsView: View {
     }
     private var needsNotice: Bool { indefinite || autoRenewal }
     private var canContinue: Bool {
-        !projectId.isEmpty && compared && !busy && session.isOnline && (amountText.isEmpty || amount != nil)
+        !projectId.isEmpty && compared && !busy && !draftBusy && session.isOnline && (amountText.isEmpty || amount != nil)
     }
+    /// Önerinin ait olduğu belge sürümü taslağın güncel belge sürümüyse ve okuma tamamlandıysa öneriler kullanılır.
+    private var aiOk: Bool {
+        guard let e = extractions, e.run?.status == "SUCCEEDED" else { return false }
+        let current = loaded?.document?.documentVersionId ?? documentVersionId
+        return current == nil || current == e.documentVersionId
+    }
+    private var aiFields: [ContractExtractions.Field] { aiOk ? extractions?.fields ?? [] : [] }
+    private func ai(_ field: String) -> ContractExtractions.Field? { aiFields.first { $0.field == field } }
+    private var canEditAi: Bool { loaded?.can.edit ?? true }
+    private var previewDocument: String? { loaded?.document?.documentVersionId ?? documentVersionId }
 
     var body: some View {
         Form {
             OfflineBanner().listRowInsets(EdgeInsets())
-            Section {
-                Label(ContractLabels.aiNotConnected, systemImage: "sparkles").font(.footnote).foregroundStyle(.secondary)
-            }
+            readStatusSection
             if let notice { NoticeView(notice: notice) }
             if let loadError {
                 Section {
@@ -101,11 +129,13 @@ struct ContractFieldsView: View {
                 }
                 .pickerStyle(.navigationLink)
                 if let supplierHint { Text(supplierHint).font(.footnote).foregroundStyle(.orange) }
-                Button { addingSupplier = true } label: { Label("Kayıtlı değil: aday tedarikçi ekle", systemImage: "plus.circle") }
+                aiRow("supplierVkn")
+                Button { candidateSheet = CandidateSeed() } label: { Label("Kayıtlı değil: aday tedarikçi ekle", systemImage: "plus.circle") }
                 Picker("Sözleşme türü", selection: $contractType) {
                     Text("Seçilmedi").tag("")
                     ForEach(ContractLabels.types, id: \.0) { Text($0.1).tag($0.0) }
                 }
+                aiRow("contractType")
                 Picker("Sözleşme sorumlusu", selection: $ownerUserId) {
                     Text("Seçilmedi").tag("")
                     ForEach(members) { Text($0.displayName).tag($0.id) }
@@ -115,10 +145,14 @@ struct ContractFieldsView: View {
             }
             Section("Tarihler") {
                 OptionalDateRow(title: "İmza tarihi", date: $signedOn)
+                aiRow("signedOn")
                 OptionalDateRow(title: "Başlangıç", date: $startDate)
+                aiRow("startDate")
                 Toggle("Süresiz sözleşme", isOn: $indefinite)
-                if !indefinite { OptionalDateRow(title: "Bitiş", date: $endDate) }
+                aiRow("indefinite")
+                if !indefinite { OptionalDateRow(title: "Bitiş", date: $endDate); aiRow("endDate") }
                 Toggle("Otomatik yenileme", isOn: $autoRenewal)
+                aiRow("autoRenewal")
                 if autoRenewal { Stepper("Yenileme süresi: \(renewalMonths) ay", value: $renewalMonths, in: 1...120) }
                 if needsNotice {
                     AdaptiveStack {
@@ -126,6 +160,7 @@ struct ContractFieldsView: View {
                         Picker("Birim", selection: $noticeUnit) { Text("gün").tag("DAY"); Text("ay").tag("MONTH") }.adaptivePicker(typeSize)
                     }
                     Text("Süresiz ya da otomatik yenilenen sözleşmede ihbar süresi zorunludur.").font(.footnote).foregroundStyle(.secondary)
+                    aiRow("noticePeriodDays")
                 }
             }
             Section {
@@ -134,12 +169,17 @@ struct ContractFieldsView: View {
                     if let amount { Text(Fmt.money(amount, currency)).font(.footnote).foregroundStyle(.secondary) }
                     else { Text("Tutar okunamadı; en fazla iki ondalık hane girin.").font(.footnote).foregroundStyle(.red) }
                 }
+                aiRow("amount")
                 Picker("Para birimi", selection: $currency) {
                     ForEach(currencyOptions, id: \.self) { Text($0).tag($0) }
                 }.adaptivePicker(typeSize)
+                aiRow("currency")
                 Picker("KDV", selection: $limitBasis) { Text("KDV hariç").tag("NET"); Text("KDV dahil").tag("GROSS") }.adaptivePicker(typeSize)
+                aiRow("limitBasis")
             } header: { Text("Tutar (\(currency))") }
+            infoOnlySection
             Section {
+                if let continueNotice { NoticeView(notice: continueNotice) }
                 Toggle("Tutar, tarih ve VKN'yi belgeyle karşılaştırdım.", isOn: $compared)
                 Button { Task { await saveAndContinue() } } label: {
                     Text(busy ? "Kaydediliyor…" : "Devam: İncele ve gönder").frame(maxWidth: .infinity).font(.body.weight(.semibold))
@@ -148,19 +188,29 @@ struct ContractFieldsView: View {
                 .disabled(!canContinue)
                 .listRowInsets(EdgeInsets()).listRowBackground(Color.clear)
             } footer: {
-                Text(familyId == nil ? "Devam ettiğinizde sözleşme taslağı açılır; gönderilmeden bırakırsanız webde Sözleşmeler'de tamamlanabilir." : "Taslak kayıtlı; değişiklikler kaydedilir. Onaydaki bir sözleşmede değişiklik onayı baştan başlatır.")
+                Text(familyId == nil ? "Proje seçildiğinde (ya da Devam ettiğinizde) sözleşme taslağı açılır; gönderilmeden bırakırsanız webde Sözleşmeler'de tamamlanabilir." : "Taslak kayıtlı; değişiklikler ve yapay zekâ önerisi kararlarınız kaydedilir. Onaydaki bir sözleşmede değişiklik onayı baştan başlatır.")
             }
         }
         .navigationTitle("Alanları doğrula")
         .navigationDestination(isPresented: $showReview) { if let familyId { ContractSubmitView(familyId: familyId) } }
-        .sheet(isPresented: $addingSupplier) {
-            CandidateSupplierSheet { s in
+        .navigationDestination(item: $previewPage) { p in
+            if let dv = previewDocument { DocumentPreview(documentVersionId: dv, expectedSha256: loaded?.document?.sha256, title: loaded?.family.title ?? "Sözleşme", page: p) }
+        }
+        .sheet(item: $candidateSheet) { seed in
+            CandidateSupplierSheet(initialLegalName: seed.legalName, initialVkn: seed.vkn) { s, vkn in
                 if !suppliers.contains(where: { $0.id == s.id }) { suppliers.insert(SupplierOption(id: s.id, legalName: s.legalName, status: s.status, label: nil), at: 0) }
                 supplierId = s.id
+                // VKN önerisiyle açıldıysa: kart eşleşmesi VKN'yle kesin kayıt aramasıdır (yapay zekâ eşleştirmez); öneri "kullanıldı" sayılır.
+                if let eid = seed.extractionId {
+                    used.insert(eid); rejected.remove(eid)
+                    vknUsedExact = vkn.filter(\.isNumber) == seed.vkn.filter(\.isNumber)
+                }
                 notice = Notice(tone: .info, text: s.existing ? "Bu VKN ile kayıtlı firma seçildi: \(s.legalName)." : "Aday tedarikçi kartı açıldı: \(s.legalName). Satınalma kartı sonradan tamamlar.")
             }
         }
         .task { if projects == nil { await loadOptions() } }
+        // Okuma durumu: iş kuyruktayken 3 sn aralıkla sorulur, en çok 2 dk (R11). Taslak yoksa okuma da yoktur.
+        .task(id: "\(familyId ?? "")|\(pollToken)") { await pollExtractions() }
     }
 
     /// Kullanıcı projeyi seçti: departman projenin departmanına geçer (kullanıcı yine değiştirebilir).
@@ -168,6 +218,30 @@ struct ContractFieldsView: View {
         guard id != projectId else { return }
         projectId = id
         if let p = projects?.first(where: { $0.id == id }), let d = p.departmentId, departments.contains(where: { $0.id == d }) { departmentId = d }
+        // v2 Faz 4 (R11): yeni taramada taslak proje seçilince açılır; sunucu okumayı ister ve öneriler bu ekranda görünür.
+        // Açılamazsa (ör. çevrimdışı) eski yol sürer: taslak "Devam"da açılır.
+        if familyId == nil, !id.isEmpty, session.isOnline { Task { await openDraft() } }
+    }
+
+    /// Yeni taramadan taslak açar (Devam'da da aynısı çağrılır; iki kez açılmaz).
+    @discardableResult
+    private func openDraft() async -> Bool {
+        if familyId != nil { return true }
+        guard let documentVersionId, !projectId.isEmpty, !draftBusy else { return false }
+        draftBusy = true; defer { draftBusy = false }
+        do {
+            struct Draft: Encodable, Sendable { let documentVersionId: String; let projectId: String; let departmentId: String? }
+            let r: ContractDraftCreated = try await session.post("/api/v1/contract-drafts", body: Draft(documentVersionId: documentVersionId, projectId: projectId, departmentId: departmentId.ifEmptyNil))
+            if let draftId { drafts.setContractFamily(draftId, familyId: r.familyId) }
+            if let d = r.duplicateOf { notice = Notice(tone: .warn, text: "Aynı belge daha önce \(d.code) (\(d.title)) olarak eklenmiş; yine de yeni taslak açıldı. Gereksizse webden kaldırın.") }
+            let (c, _): (ContractV2, String?) = try await session.get("/api/v1/contracts/\(r.familyId)/v2")
+            loaded = c
+            familyId = r.familyId
+            return true
+        } catch {
+            notice = Notice.from(error)
+            return false
+        }
     }
 
     private func loadOptions() async {
@@ -205,6 +279,9 @@ struct ContractFieldsView: View {
         }
         contractType = f.contractType ?? ""
         ownerUserId = f.ownerUserId ?? ""
+        // Yeni taramada taslak proje seçilince açıldığından sorumlu henüz kaydedilmemiş olabilir: kendi taslağınızda yeni taramadaki
+        // varsayılan (siz) korunur; kayıt yine "Devam" ile olur.
+        if ownerUserId.isEmpty, let me = session.me?.user.id, c.family.createdBy?.id == me, members.contains(where: { $0.id == me }) { ownerUserId = me }
         if let o = c.owner, !members.contains(where: { $0.id == o.id }) { members.insert(MemberOption(id: o.id, displayName: o.displayName), at: 0) }
         signedOn = ContractInput.date(f.signedOn); startDate = ContractInput.date(f.startDate); endDate = ContractInput.date(f.endDate)
         indefinite = f.indefinite
@@ -251,26 +328,329 @@ struct ContractFieldsView: View {
 
     private func saveAndContinue() async {
         busy = true; defer { busy = false }
-        notice = nil
+        notice = nil; continueNotice = nil
         do {
             if familyId == nil {
-                guard let documentVersionId else { return }
-                struct Draft: Encodable, Sendable { let documentVersionId: String; let projectId: String; let departmentId: String? }
-                let r: ContractDraftCreated = try await session.post("/api/v1/contract-drafts", body: Draft(documentVersionId: documentVersionId, projectId: projectId, departmentId: departmentId.ifEmptyNil))
-                familyId = r.familyId
-                if let draftId { drafts.setContractFamily(draftId, familyId: r.familyId) }
-                if let d = r.duplicateOf { notice = Notice(tone: .warn, text: "Aynı belge daha önce \(d.code) (\(d.title)) olarak eklenmiş; yine de yeni taslak açıldı. Gereksizse webden kaldırın.") }
-                let (c, _): (ContractV2, String?) = try await session.get("/api/v1/contracts/\(r.familyId)/v2")
-                loaded = c
+                busy = false
+                guard await openDraft() else { continueNotice = notice; return }
+                busy = true
             }
             guard let familyId else { return }
             let b = body(for: loaded)
-            if !b.isEmpty {
-                let c: ContractV2 = try await session.post("/api/v1/contracts/\(familyId)/fields", body: b, method: "PUT")
+            let dec = aiDecisions()
+            let pending = pendingCritical(excluding: dec)
+            if !b.isEmpty || !dec.isEmpty {
+                var full = b
+                if !dec.isEmpty { full["aiDecisions"] = .array(dec.map { .object(["extractionId": .str($0.0), "decision": .str($0.1)]) }) }
+                let c: ContractV2 = try await session.post("/api/v1/contracts/\(familyId)/fields", body: full, method: "PUT")
                 loaded = c
+                if !dec.isEmpty { used = []; rejected = []; prefilled = [:]; vknUsedExact = false; await loadExtractions(familyId) }
+            }
+            // R6: güncel okumada karar bekleyen kritik öneri varsa sunucu gönderimi reddeder; aynı kural burada önceden söylenir.
+            if !pending.isEmpty {
+                continueNotice = Notice(tone: .warn, text: "Kaydedildi. Göndermeden önce kritik önerilere karar verin (\"Öneriyi kullan\" ya da \"Yoksay\"): \(pending.map(\.label).joined(separator: ", ")).")
+                return
             }
             showReview = true
+        } catch {
+            continueNotice = Notice.from(error)
+            // Öneri artık güncel okumaya ait değilse (yeni sürüm/yeniden okuma) ya da değer öneriyle uyuşmuyorsa öneriler yenilenir.
+            if let e = error as? APIError, ["extraction_unknown", "decision_mismatch", "extraction_duplicate"].contains(e.code), let familyId { await loadExtractions(familyId) }
+        }
+    }
+
+    // MARK: Yapay zekâ okuması (v2 Faz 4)
+
+    private func loadExtractions(_ fid: String) async {
+        do {
+            let (e, _): (ContractExtractions, String?) = try await session.get("/api/v1/contracts/\(fid)/extractions")
+            extractions = e; extractionError = nil
+            applyPrefill()
+        } catch { extractionError = Notice.from(error) }
+    }
+
+    private func pollExtractions() async {
+        guard let fid = familyId else { return }
+        readTimedOut = false
+        let start = Date()
+        while !Task.isCancelled {
+            await loadExtractions(fid)
+            guard extractions?.run?.active == true, extractionError == nil else { return }
+            if Date().timeIntervalSince(start) > 120 { readTimedOut = true; return }
+            try? await Task.sleep(for: .seconds(3))
+        }
+    }
+
+    private func reRead() async {
+        guard let fid = familyId else { return }
+        readBusy = true; defer { readBusy = false }
+        do {
+            let r: AiRequestResult = try await session.post("/api/v1/contracts/\(fid)/extractions")
+            if r.status != "QUEUED" && r.status != "RUNNING" && r.status != "SUCCEEDED", let reason = r.reason { notice = Notice(tone: .warn, text: reason) }
+            pollToken = UUID()
         } catch { notice = Notice.from(error) }
+    }
+
+    /// R5: yalnız kritik olmayan ve sunucunun `prefill` dediği (HIGH/MEDIUM, metin/sayı) öneri, alan boşsa "Yapay zekâ" etiketiyle yazılır;
+    /// kayıt yine kullanıcının "Devam"ıyla olur. Bu ekranda bu yalnız ihbar süresidir (görünürken). Kritik alan asla önceden yazılmaz.
+    private func applyPrefill() {
+        guard aiOk, let run = extractions?.run, appliedRun != run.id else { return }
+        appliedRun = run.id
+        used = []; rejected = []; prefilled = [:]; vknUsedExact = false
+        for x in aiFields where x.prefill && !x.critical && x.decision == "PENDING" {
+            guard let v = x.value, x.field == "noticePeriodDays", needsNotice, noticeAmount == nil, loaded?.fields.noticeAmount == nil, let n = Int(v) else { continue }
+            noticeAmount = n; noticeUnit = "DAY"
+            prefilled[x.field] = x.id
+        }
+    }
+
+    /// Formdaki değer öneri biçiminde (normalize). Eşleşme alanı yoksa nil.
+    private func formValue(_ field: String) -> String? {
+        switch field {
+        case "contractType": contractType.ifEmptyNil
+        case "signedOn": signedOn.map(ContractInput.iso)
+        case "startDate": startDate.map(ContractInput.iso)
+        case "endDate": indefinite ? nil : endDate.map(ContractInput.iso)
+        case "indefinite": String(indefinite)
+        case "autoRenewal": String(autoRenewal)
+        case "limitBasis": limitBasis
+        case "noticePeriodDays": noticeUnit == "DAY" ? noticeAmount.map(String.init) : nil
+        case "amount": amount
+        case "currency": currency
+        default: nil
+        }
+    }
+    /// Kayıtlı (ekran açılırken yüklenen) değer, formun varsayılanlarıyla aynı biçimde.
+    private func baseValue(_ field: String) -> String? {
+        let f = loaded?.fields
+        switch field {
+        case "contractType": return f?.contractType
+        case "signedOn": return f?.signedOn.map { String($0.prefix(10)) }
+        case "startDate": return f?.startDate.map { String($0.prefix(10)) }
+        case "endDate": return (f?.indefinite ?? false) ? nil : f?.endDate.map { String($0.prefix(10)) }
+        case "indefinite": return String(f?.indefinite ?? false)
+        case "autoRenewal": return String(f?.autoRenewal ?? false)
+        case "limitBasis": return f?.limitBasis ?? "NET"
+        case "noticePeriodDays": return (f?.noticeUnit ?? "MONTH") == "DAY" ? f?.noticeAmount.map(String.init) : nil
+        case "amount": return f?.amount
+        case "currency": return f?.currency ?? "TRY"
+        default: return nil
+        }
+    }
+    private static let mapped: Set<String> = ["contractType", "signedOn", "startDate", "endDate", "indefinite", "autoRenewal", "limitBasis", "noticePeriodDays", "amount", "currency"]
+    /// Formdaki değer öneriyle aynı mı (sunucu kayıttan sonra yeniden karşılaştırır).
+    private func same(_ field: String, _ value: String) -> Bool {
+        switch field {
+        case "amount": guard let a = amount, let x = Decimal(string: a), let y = Decimal(string: value) else { return false }; return x == y
+        case "currency": return currency.uppercased() == value
+        default: return formValue(field) == value
+        }
+    }
+    /// Alan bu kayıtta gerçekten kaydedilir mi (koşul alanları tutar girilmeden kaydedilmez; bkz. `body(for:)`).
+    private func willSave(_ field: String) -> Bool {
+        switch field {
+        case "amount", "currency", "limitBasis", "startDate", "autoRenewal": amount != nil
+        case "endDate": amount != nil && !indefinite
+        case "noticePeriodDays": needsNotice && (indefinite || amount != nil)
+        default: true
+        }
+    }
+    private func apply(_ x: ContractExtractions.Field) {
+        guard let v = x.value else { return }
+        rejected.remove(x.id)
+        if x.field == "supplierVkn" {
+            // Kayıtlı ve seçili kartın VKN'si aynıysa onaylanır; değilse aday kart formu VKN ile açılır (aynı VKN'li kart varsa sunucu onu seçer).
+            if let s = loaded?.supplier, s.id == supplierId, s.vkn == v { used.insert(x.id); vknUsedExact = true; return }
+            candidateSheet = CandidateSeed(legalName: ai("supplierName")?.value ?? "", vkn: v, extractionId: x.id)
+            return
+        }
+        switch x.field {
+        case "contractType": if ContractLabels.types.contains(where: { $0.0 == v }) { contractType = v } else { return }
+        case "signedOn": signedOn = ContractInput.date(v)
+        case "startDate": startDate = ContractInput.date(v)
+        case "endDate": endDate = ContractInput.date(v)
+        case "indefinite": indefinite = v == "true"
+        case "autoRenewal": autoRenewal = v == "true"
+        case "limitBasis": if ContractLabels.limitBasis[v] != nil { limitBasis = v } else { return }
+        case "noticePeriodDays": if let n = Int(v) { noticeAmount = n; noticeUnit = "DAY" } else { return }
+        case "amount": amountText = ContractInput.display(v)
+        case "currency": currency = v
+        default: return
+        }
+        used.insert(x.id)
+    }
+    private func prefillUnchanged(_ x: ContractExtractions.Field) -> Bool {
+        prefilled[x.field] == x.id && x.value.map { same(x.field, $0) } == true
+    }
+    /// Bu kayıtla yazılacak kararlar: "Öneriyi kullan" → Onaylandı (değer aynı kaldıysa, değilse Düzeltildi); elle değiştirilen ya da önceden
+    /// doldurulmuş alan → Düzeltildi (sunucu değer öneriye eşitse Onaylandı saklar); "Yoksay" → Yoksayıldı. Dokunulmayan öneri beklemede kalır.
+    private func aiDecisions() -> [(String, String)] {
+        guard canEditAi else { return [] }
+        var out: [(String, String)] = []
+        for x in aiFields where x.decision == "PENDING" {
+            guard let v = x.value else { continue }
+            if rejected.contains(x.id) { out.append((x.id, "REJECTED")); continue }
+            if x.field == "supplierVkn" {
+                if used.contains(x.id) { out.append((x.id, vknUsedExact ? "CONFIRMED" : "CORRECTED")) }
+                else if !supplierId.isEmpty, supplierId != (loaded?.fields.supplierId ?? "") { out.append((x.id, "CORRECTED")) }
+                continue
+            }
+            guard Self.mapped.contains(x.field), willSave(x.field) else { continue }
+            if used.contains(x.id) { out.append((x.id, same(x.field, v) ? "CONFIRMED" : "CORRECTED")) }
+            else if prefillUnchanged(x) || formValue(x.field) != baseValue(x.field) { out.append((x.id, "CORRECTED")) }
+        }
+        return out
+    }
+    private func pendingCritical(excluding dec: [(String, String)]) -> [ContractExtractions.Field] {
+        aiFields.filter { x in x.critical && x.value != nil && x.decision == "PENDING" && !dec.contains { $0.0 == x.id } }
+    }
+
+    /// Okuma durumu (Oku adımının mobil karşılığı): dürüst tek satır, test sağlayıcısı etiketi, "Yeniden oku".
+    @ViewBuilder private var readStatusSection: some View {
+        Section {
+            if familyId == nil {
+                Label(draftBusy ? "Taslak açılıyor…" : "Proje seçilince taslak açılır; yapay zekâ okuması etkinse öneriler burada görünür. Alanları belgeden siz de girebilirsiniz.",
+                      systemImage: "sparkles").font(.footnote).foregroundStyle(.secondary)
+            } else if let e = extractions {
+                if let run = e.run, run.isTestProvider { TestProviderTag(label: run.providerLabel) }
+                Label { Text(readLine(e)).font(.footnote) } icon: { Image(systemName: "sparkles").foregroundStyle(.secondary) }
+                if e.run?.active == true && !readTimedOut { ProgressView().accessibilityLabel("Okunuyor") }
+                if readTimedOut { Text("Okuma sürüyor, alanları elle girebilirsiniz.").font(.footnote).foregroundStyle(.secondary) }
+                if aiOk {
+                    let n = aiFields.filter { $0.critical && $0.value != nil && $0.decision == "PENDING" }.count
+                    if n > 0 { Text("\(n) kritik öneri kararınızı bekliyor.").font(.footnote.weight(.semibold)) }
+                }
+                if e.can.request, e.run?.active != true, e.run == nil || e.run?.status == "FAILED" || e.run?.waiting == true {
+                    Button { Task { await reRead() } } label: { Label("Yeniden oku", systemImage: "arrow.clockwise") }
+                        .disabled(readBusy || !session.isOnline)
+                }
+            } else if let extractionError {
+                Label("Yapay zekâ okumasının durumu alınamadı (\(extractionError.text)); alanları belgeden siz girin.", systemImage: "sparkles").font(.footnote).foregroundStyle(.secondary)
+            } else {
+                ProgressView("Okuma durumu alınıyor").font(.footnote)
+            }
+        } header: { Text("Yapay zekâ okuması") }
+    }
+
+    private func readLine(_ e: ContractExtractions) -> String {
+        guard let run = e.run else { return "Yapay zekâ okuması yapılmadı; alanları belgeden siz girin." }
+        switch run.status {
+        case "SUCCEEDED":
+            if !aiOk { return "Okuma önceki belge sürümüne ait; alanları belgeden siz girin." }
+            return "Belgeden okunan öneriler. Tutar, para birimi, tarihler ve VKN forma yazılmaz; \"Öneriyi kullan\" ile siz alırsınız. Hiçbir değer siz kaydetmeden sözleşmeye yazılmaz."
+        case "QUEUED", "RUNNING": return "Yapay zekâ okuması sürüyor; alanları beklemeden belgeden girebilirsiniz."
+        case "FAILED": return "Yapay zekâ okuması tamamlanamadı: \(AiText.reason(run)) Alanları belgeden siz girin."
+        default: return "Yapay zekâ okuması çalışmadı: \(AiText.reason(run)) Alanları belgeden siz girin."
+        }
+    }
+
+    private func isEmptyInForm(_ field: String) -> Bool {
+        field == "supplierVkn" ? supplierId.isEmpty : formValue(field) == nil || (field == "amount" && amountText.isEmpty)
+    }
+
+    /// Alanın altındaki öneri satırı: öneri + kaynak sayfa + güven, "Öneriyi kullan" / "Yoksay", ya da karar / "Sorulan alan".
+    @ViewBuilder private func aiRow(_ field: String) -> some View {
+        if let x = ai(field) {
+            let src = x.page
+            if x.value == nil || x.confidence == "MISSING" {
+                if isEmptyInForm(field) {
+                    AdaptiveStack {
+                        AskedTag()
+                        Text("\(x.label): belgede okunamadı; belgeden siz girin.").font(.footnote).foregroundStyle(.secondary)
+                    }
+                    .accessibilityElement(children: .combine)
+                }
+            } else if x.decision != "PENDING" {
+                Text("\(decidedText(x.decision))\(x.decidedBy.map { " · \($0.displayName)" } ?? "")\(src.map { " · s. \($0)" } ?? "")").font(.footnote).foregroundStyle(.secondary)
+            } else if rejected.contains(x.id) {
+                AdaptiveStack {
+                    Text("Öneri (\(shown(x))) kaydedince yoksayılır.").font(.footnote).foregroundStyle(.secondary)
+                    Button("Geri al") { rejected.remove(x.id) }.buttonStyle(.borderless).font(.footnote)
+                        .accessibilityLabel("\(x.label): yoksaymayı geri al")
+                }
+            } else if prefillUnchanged(x) {
+                AdaptiveStack {
+                    AiTag()
+                    Text("\(src.map { "s. \($0) · " } ?? "")güven \(AiText.confidence[x.confidence] ?? "") · belgeyle karşılaştırın").font(.footnote).foregroundStyle(.secondary)
+                }
+                .accessibilityElement(children: .combine)
+            } else if used.contains(x.id) && (x.field == "supplierVkn" || same(x.field, x.value!)) {
+                Text("Öneri kullanıldı; kaydedince onaylanır\(willSave(x.field) ? "" : " (tutar girilince kaydedilir)").\(src.map { " · s. \($0)" } ?? "")")
+                    .font(.footnote).foregroundStyle(.secondary)
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    if x.confidence == "LOW" { AskedTag() }
+                    Text("Öneri: \(shown(x))\(src.map { " (s. \($0))" } ?? "") · güven \(AiText.confidence[x.confidence] ?? "")")
+                        .font(.footnote.weight(.semibold))
+                    if let ev = x.evidence, !ev.isEmpty { Text("“\(ev)”").font(.footnote).foregroundStyle(.secondary).lineLimit(3) }
+                    ForEach(AiText.flags(x.flags), id: \.self) { Text($0).font(.footnote).foregroundStyle(.orange) }
+                    if x.field == "supplierVkn" { Text("Kayıtlı kart VKN ile kesin aranır; yoksa aday kart açılır.").font(.footnote).foregroundStyle(.secondary) }
+                    if canEditAi {
+                        AdaptiveStack(spacing: 12) {
+                            Button("Öneriyi kullan") { apply(x) }.buttonStyle(.bordered).controlSize(.small)
+                                .accessibilityLabel("Öneriyi kullan: \(x.label)")
+                            Button("Yoksay") { rejected.insert(x.id); used.remove(x.id) }.buttonStyle(.borderless).font(.footnote)
+                                .accessibilityLabel("Öneriyi yoksay: \(x.label)")
+                            if let p = src, previewDocument != nil {
+                                Button("Belgede s. \(p)") { previewPage = p }.buttonStyle(.borderless).font(.footnote)
+                                    .accessibilityLabel("\(x.label) önerisinin kaynağı: belgede sayfa \(p)")
+                            }
+                        }
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+        }
+    }
+
+    private func shown(_ x: ContractExtractions.Field) -> String { AiText.value(x.field, x.value, currency: ai("currency")?.value ?? currency) }
+    private func decidedText(_ d: String) -> String {
+        switch d { case "CONFIRMED": "Öneri onaylandı"; case "CORRECTED": "Öneriden farklı değer kaydedildi"; case "REJECTED": "Öneri yoksayıldı"; default: "Karar bekleniyor" }
+    }
+
+    /// Bu ekranda karşılığı olmayan okunan bilgiler: yalnız bilgi, kaydedilmez (web formunda girilir).
+    @ViewBuilder private var infoOnlySection: some View {
+        let info = aiFields.filter { !Self.mapped.contains($0.field) && $0.field != "supplierVkn" && $0.value != nil }
+        if !info.isEmpty {
+            Section {
+                ForEach(info) { x in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(x.label).font(.footnote).foregroundStyle(.secondary)
+                        Text("\(shown(x))\(x.page.map { " (s. \($0))" } ?? "")").font(.subheadline)
+                    }
+                    .accessibilityElement(children: .combine)
+                }
+            } header: { Text("Belgeden okunan diğer bilgiler") } footer: {
+                Text("Yalnız bilgi; bu ekranda kaydedilmez. Sözleşme no, ödeme vadesi, KVKK maddesi, yetkili mahkeme ve fiyat farkı web uygulamasındaki sihirbazda girilir.")
+            }
+        }
+    }
+}
+
+struct CandidateSeed: Identifiable {
+    let id = UUID()
+    var legalName = ""
+    var vkn = ""
+    var extractionId: String?
+}
+
+/// "Sorulan alan": öneri düşük güvenli ya da okunamadı; değeri belgeden siz girersiniz.
+struct AskedTag: View {
+    var body: some View {
+        Label("Sorulan alan", systemImage: "questionmark.circle").font(.caption.weight(.semibold))
+            .foregroundStyle(StatusBadge.adaptive(light: (0.60, 0.29, 0.0), dark: (1.0, 0.72, 0.40)))
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 5))
+    }
+}
+
+/// "Yapay zekâ": alan yapay zekâ önerisiyle dolduruldu (kritik olmayan alan); kayıt kullanıcının eylemiyle olur.
+struct AiTag: View {
+    var body: some View {
+        Label("Yapay zekâ", systemImage: "sparkles").font(.caption.weight(.semibold)).foregroundStyle(.purple)
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .background(Color.purple.opacity(0.10), in: RoundedRectangle(cornerRadius: 5))
+            .accessibilityLabel("Yapay zekâ önerisiyle dolduruldu")
     }
 }
 
@@ -329,7 +709,7 @@ struct ContractSubmitView: View {
                         Text("Taslak \(c.family.code) kayıtlı. Şimdi göndermezseniz webde Sözleşmeler'de açıp tamamlayabilirsiniz.")
                     }
                 }
-                Section("Ön inceleme") { AIReviewEmptyState() }
+                ReviewSubmitCard(familyId: familyId)
             }
         }
         .navigationTitle("İncele ve gönder")
@@ -337,6 +717,8 @@ struct ContractSubmitView: View {
         .task(id: useDeputy) { if contract?.can.submit == true { await loadPreview() } }
         .refreshable { await load() }
         .task { await load() }
+        // v2 Faz 4 (R11): ön inceleme bu adıma girişte istenir (kart görünür olmasa da); kart sonucu kendisi sorar.
+        .task { await ReviewSubmitCard.requestIfNeeded(session, familyId: familyId) }
     }
 
     private func load() async {
@@ -371,11 +753,15 @@ struct ContractSubmitView: View {
 
 /// Aday tedarikçi (R9): unvan + VKN (+ e-posta). Aynı VKN varsa sunucu mevcut kartı döner.
 struct CandidateSupplierSheet: View {
-    let done: (CandidateSupplier) -> Void
+    /// v2 Faz 4: VKN önerisiyle açılınca unvan ve VKN dolu gelir (kullanıcı görür, değiştirebilir, "Ekle" ile açar).
+    init(initialLegalName: String = "", initialVkn: String = "", done: @escaping (CandidateSupplier, String) -> Void) {
+        _legalName = State(initialValue: initialLegalName); _vkn = State(initialValue: initialVkn); self.done = done
+    }
+    let done: (CandidateSupplier, String) -> Void
     @Environment(SessionStore.self) private var session
     @Environment(\.dismiss) private var dismiss
-    @State private var legalName = ""
-    @State private var vkn = ""
+    @State private var legalName: String
+    @State private var vkn: String
     @State private var email = ""
     @State private var busy = false
     @State private var notice: Notice?
@@ -391,6 +777,7 @@ struct CandidateSupplierSheet: View {
             }
             .navigationTitle("Aday tedarikçi")
             .navigationBarTitleDisplayMode(.inline)
+
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Vazgeç") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
@@ -405,7 +792,7 @@ struct CandidateSupplierSheet: View {
         busy = true; defer { busy = false }
         do {
             let r: CandidateSupplier = try await session.post("/api/v1/suppliers/candidates", body: Body(legalName: legalName.trimmingCharacters(in: .whitespaces), vkn: vkn.trimmingCharacters(in: .whitespaces), contactEmail: email.trimmingCharacters(in: .whitespaces).ifEmptyNil))
-            done(r); dismiss()
+            done(r, vkn); dismiss()
         } catch { notice = Notice.from(error) }
     }
 }
@@ -434,10 +821,15 @@ struct OptionalDateRow: View {
 /// JSON değeri (kısmi PUT gövdesi için: gönderilen anahtar değişir, null alanı boşaltır).
 enum JSONValue: Encodable, Sendable, Equatable {
     case str(String), int(Int), bool(Bool), null
+    /// v2 Faz 4: `aiDecisions: [{ extractionId, decision }]`.
+    case array([JSONValue]), object([String: JSONValue])
     static func opt(_ s: String?) -> JSONValue { s.map(JSONValue.str) ?? .null }
     func encode(to encoder: Encoder) throws {
         var c = encoder.singleValueContainer()
-        switch self { case .str(let s): try c.encode(s); case .int(let i): try c.encode(i); case .bool(let b): try c.encode(b); case .null: try c.encodeNil() }
+        switch self {
+        case .str(let s): try c.encode(s); case .int(let i): try c.encode(i); case .bool(let b): try c.encode(b); case .null: try c.encodeNil()
+        case .array(let a): try c.encode(a); case .object(let o): try c.encode(o)
+        }
     }
 }
 

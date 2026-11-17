@@ -145,12 +145,71 @@ struct ContractV2: Decodable, Sendable {
         let steps: [Step]
     }
     struct Project: Decodable, Sendable { let id: String; let code: String?; let title: String?; let visible: Bool }
-    struct Supplier: Decodable, Sendable { let id: String; let legalName: String; let status: String }
+    /// `vkn`: v2 Faz 4 — VKN önerisi kayıtlı kartla karşılaştırılır (kesin eşitlik; yapay zekâ eşleştirmez). Eski sunucuda yok.
+    struct Supplier: Decodable, Sendable { let id: String; let legalName: String; let status: String; let vkn: String? }
     struct Document: Decodable, Sendable { let contractVersionId: String; let versionNo: Int; let documentVersionId: String?; let filename: String?; let sha256: String? }
     struct Can: Decodable, Sendable { let edit: Bool; let submit: Bool; let decide: Bool }
     let family: Family; let fields: Fields; let missing: [Missing]; let status: Status; let legacy: Bool
     let chain: Chain?; let chainCount: Int
     let project: Project?; let supplier: Supplier?; let owner: UserRef?; let document: Document?; let can: Can
+    /// v2 Faz 4 (Görev 5): ön inceleme özeti; `contract.review.read` yoksa ya da inceleme yoksa null, eski sunucuda yok.
+    let review: ReviewSummary?
+}
+
+// MARK: Sözleşme yapay zekâsı (v2 Faz 4, D109)
+
+/// Okuma (AI06) ya da inceleme (AI14) işi. `provider` yönlenmeyen işte (NOT_ALLOWED, NO_PROVIDER, WAITING_QUOTA) null.
+struct AiRun: Decodable, Sendable {
+    let id: String; let status: String; let reason: String?; let provider: String?; let isTestProvider: Bool; let providerLabel: String?
+    let promptVersion: String?; let responseModel: String?; let createdAt: String; let finishedAt: String?
+    var active: Bool { status == "QUEUED" || status == "RUNNING" }
+    /// Çalışmayan (yönlenmemiş ya da bekleyen) iş: yeniden istemek ücret yaratmaz.
+    var waiting: Bool { ["WAITING_QUOTA", "NO_PROVIDER", "NOT_ALLOWED"].contains(status) }
+}
+
+/// `GET /api/v1/contracts/:id/extractions` (Görev 4). Alanlar CONTRACT_AI_FIELDS sırasında; iş bitmediyse boş.
+struct ContractExtractions: Decodable, Sendable {
+    struct Field: Decodable, Identifiable, Sendable {
+        let id: String; let field: String; let label: String; let value: String?; let page: Int?; let evidence: String?
+        let confidence: String; let flags: [String]; let requiresHuman: Bool; let critical: Bool; let prefill: Bool
+        let decision: String; let decidedBy: UserRef?; let decidedAt: String?
+    }
+    struct Can: Decodable, Sendable { let request: Bool }
+    let familyId: String; let contractVersionId: String; let documentVersionId: String
+    let run: AiRun?; let fields: [Field]; let can: Can
+}
+
+/// `POST /api/v1/contracts/:id/extractions` ve `/reviews` yanıtı (yalnız gerekli alanlar).
+struct AiRequestResult: Decodable, Sendable { let runId: String?; let status: String; let reason: String? }
+
+struct ReviewTemplateRef: Decodable, Sendable { let code: String; let versionNo: Int }
+
+/// `GET /api/v1/contracts/:id/v2` içindeki `review` (Görev 5).
+struct ReviewSummary: Decodable, Sendable {
+    let id: String; let score: Int; let threshold: Int; let belowThreshold: Bool; let stale: Bool; let template: ReviewTemplateRef?; let modelId: String?
+    let isTestProvider: Bool; let providerLabel: String?; let createdAt: String; let disclaimer: String; let advice: String?
+}
+
+/// `GET /api/v1/contracts/:id/reviews` (Görev 5). Puan yalnız bilgidir: onay vermez, engellemez.
+struct ContractReviews: Decodable, Sendable {
+    struct Finding: Decodable, Identifiable, Sendable {
+        let id: String; let category: String; let categoryLabel: String; let kind: String; let severity: String; let title: String
+        let quote: String?; let page: Int?; let templateRef: String?; let suggestion: String?; let verified: Bool; let sourceLabel: String?
+    }
+    struct SubScore: Decodable, Identifiable, Sendable { let category: String; let label: String; let score: Int?; var id: String { category } }
+    struct Base: Decodable, Identifiable, Sendable {
+        let id: String; let score: Int; let documentVersionId: String; let template: ReviewTemplateRef?; let modelId: String?; let promptVersion: String
+        let rubricVersion: String; let isTestProvider: Bool; let providerLabel: String?; let stale: Bool; let createdAt: String
+    }
+    struct Current: Decodable, Sendable {
+        let id: String; let score: Int; let documentVersionId: String; let template: ReviewTemplateRef?; let modelId: String?; let promptVersion: String
+        let rubricVersion: String; let isTestProvider: Bool; let providerLabel: String?; let stale: Bool; let createdAt: String
+        let subScoreList: [SubScore]; let summary: String?; let templateNote: String?; let findings: [Finding]
+    }
+    struct Can: Decodable, Sendable { let request: Bool }
+    let familyId: String; let contractVersionId: String; let documentVersionId: String; let templateVersionId: String?
+    let current: Current?; let run: AiRun?; let history: [Base]
+    let threshold: Int; let belowThreshold: Bool; let advice: String?; let disclaimer: String; let can: Can
 }
 
 /// `GET /api/v1/contract-approvals/mine` (Görev 5): İşlerim'deki onay görevleriyle aynı küme.
@@ -193,8 +252,6 @@ enum ContractLabels {
     static let noticeUnit: [String: String] = ["DAY": "gün", "MONTH": "ay"]
     static let decision: [String: String] = ["APPROVED": "Onayladı", "REJECTED": "Reddetti"]
     static let chainStatus: [String: String] = ["OPEN": "Onayda", "APPROVED": "Onaylandı", "REJECTED": "Reddedildi", "CANCELLED": "İptal edildi"]
-    /// Yapay zekâ okuması bu fazda yok (Faz 4): sahte puan/bulgu gösterilmez.
-    static let aiNotConnected = "Yapay zekâ okuması bağlı değil (Faz 4); alanları belgeden siz girin."
     /// Durum etiketi rengi: kırmızı eksik/ret/süre doldu, turuncu onayda/eski kayıt, yeşil yürürlükte, gri taslak.
     static func tone(_ code: String?) -> Notice.Tone? {
         switch code {

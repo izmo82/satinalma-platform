@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// Sözleşme onayı (Figma iOS 4, v2 Faz 3 R4–R6): tutar, süre, proje, departman, ön inceleme alanı (Faz 4'e kadar boş durum),
+/// Sözleşme onayı (Figma iOS 4, v2 Faz 3 R4–R6, Faz 4 R10): tutar, süre, proje, departman, ön inceleme (puan, en önemli 3 bulgu, uyarı metni,
+/// "Tüm bulgular"; yalnız bilgi, kararı etkilemez),
 /// onay zinciri ("· siz") ve Reddet (gerekçe sayfası) / Onayla. Karar yetkisi sunucuda (`can.decide`); görev ayrılığı ve
 /// sıra hataları sunucunun Türkçe mesajıyla gösterilir.
 /// İşlerim görevinden adım kimliğiyle (`stepId`), sözleşme özetinden aile kimliğiyle (`familyId`) açılır.
@@ -16,6 +17,9 @@ struct ContractApprovalView: View {
     @State private var confirmApprove = false
     @State private var rejecting = false
     @State private var stepGone = false
+    @State private var reviews: ContractReviews?
+    @State private var reviewError: Notice?
+    @State private var reviewTimedOut = false
 
     private var meId: String? { session.me?.user.id }
     /// Karar verilecek adım: görevin adımı, yoksa zincirin sıradaki adımı.
@@ -32,7 +36,7 @@ struct ContractApprovalView: View {
             } else {
                 Loadable(value: contract, error: error, retry: load) { c in
                     ContractHeaderCard(c: c)
-                    Section("Ön inceleme") { AIReviewEmptyState() }
+                    Section("Ön inceleme") { ReviewInfoCard(data: reviews, error: reviewError, timedOut: reviewTimedOut, familyId: c.family.id) }
                     Section("Onay zinciri") { ApprovalChainView(c: c, meId: meId) }
                     if let doc = c.document, let dv = doc.documentVersionId {
                         Section("Belge") {
@@ -73,6 +77,14 @@ struct ContractApprovalView: View {
         }
         .refreshable { await load() }
         .task { await load() }
+        // Ön inceleme ayrı yüklenir: alınamazsa onay ekranı ve karar düğmeleri etkilenmez.
+        .task(id: resolvedFamily) {
+            guard let fid = resolvedFamily else { return }
+            reviewTimedOut = false
+            await pollReviews(session, familyId: fid, update: { r in
+                switch r { case .success(let d): reviews = d; reviewError = nil; case .failure(let e): reviewError = Notice.from(e) }
+            }, timedOut: { reviewTimedOut = true })
+        }
     }
 
     private func noDecisionReason(_ c: ContractV2) -> String {
@@ -223,19 +235,6 @@ struct StatusBadge: View {
     }
 }
 
-/// Ön inceleme alanı: bu fazda yapay zekâ bağlı değil; puan, güven yüzdesi ya da bulgu gösterilmez (küresel kısıt).
-struct AIReviewEmptyState: View {
-    var body: some View {
-        Label {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Ön inceleme yok").font(.subheadline.weight(.semibold))
-                Text("Yapay zekâ ön incelemesi bağlı değil (Faz 4). Koşulları belgeden kendiniz okuyun.").font(.footnote).foregroundStyle(.secondary)
-            }
-        } icon: { Image(systemName: "sparkles").foregroundStyle(.secondary) }
-        .accessibilityElement(children: .combine)
-    }
-}
-
 /// Onay zinciri: sıra, unvan, kişi, karar ve gerekçe; oturumdaki kişinin adımı "· siz" ile işaretlenir.
 struct ApprovalChainView: View {
     let c: ContractV2
@@ -306,6 +305,7 @@ struct ContractSummaryView: View {
                                 }
                             }
                         }
+                        NavigationLink { ContractReviewView(familyId: c.family.id) } label: { ReviewSummaryRow(review: c.review) }
                         if c.can.decide {
                             NavigationLink { ContractApprovalView(familyId: c.family.id) } label: { Label("Onay kararı ver", systemImage: "checkmark.seal") }
                         }
@@ -334,5 +334,25 @@ struct ContractSummaryView: View {
     private func load() async {
         do { let (c, _): (ContractV2, String?) = try await session.get("/api/v1/contracts/\(familyId)/v2"); contract = c; error = nil }
         catch { self.error = Notice.from(error) }
+    }
+}
+
+/// Özet satırı: ön inceleme puanı (v2 özetinden; ek istek yok) ya da "inceleme yok"; dokununca "Ön inceleme" ekranı.
+struct ReviewSummaryRow: View {
+    let review: ReviewSummary?
+    var body: some View {
+        Label {
+            VStack(alignment: .leading, spacing: 2) {
+                if let r = review {
+                    Text("Ön inceleme: \(r.score) / 100")
+                    Text("Eşik \(r.threshold)\(r.belowThreshold ? " · eşiğin altında" : "")\(r.stale ? " · güncel değil" : "") · yalnız bilgi")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    if r.isTestProvider { TestProviderTag(label: r.providerLabel) }
+                } else {
+                    Text("Ön inceleme")
+                    Text("Güncel inceleme yok").font(.footnote).foregroundStyle(.secondary)
+                }
+            }
+        } icon: { Image(systemName: "sparkles") }
     }
 }

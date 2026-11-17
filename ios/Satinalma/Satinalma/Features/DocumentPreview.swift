@@ -8,6 +8,8 @@ struct DocumentPreview: View {
     let documentVersionId: String
     let expectedSha256: String?
     let title: String
+    /// v2 Faz 4: öneri/bulgu kaynağı sayfası (1'den başlar); verilmezse ilk sayfa.
+    var page: Int? = nil
     @Environment(SessionStore.self) private var session
     @State private var pdf: PDFDocument?
     @State private var image: UIImage?
@@ -23,7 +25,8 @@ struct DocumentPreview: View {
                       systemImage: ok == nil ? "number" : ok! ? "checkmark.seal" : "xmark.octagon")
                     .font(.footnote).foregroundStyle(ok == false ? Color.red : Color.secondary).padding(8)
             }
-            if let pdf { PDFKitView(document: pdf).accessibilityLabel("\(title) belge önizlemesi") }
+            if let page, pdf != nil { Text("Sayfa \(page)").font(.footnote.weight(.semibold)).padding(.bottom, 4) }
+            if let pdf { PDFKitView(document: pdf, page: page).accessibilityLabel("\(title) belge önizlemesi") }
             else if let image { ScrollView([.horizontal, .vertical]) { Image(uiImage: image).resizable().scaledToFit() }.accessibilityLabel("\(title) görüntüsü") }
             else if let error { ContentUnavailableView("Belge açılamadı", systemImage: "doc.questionmark", description: Text(error.text)) }
             else { ProgressView("Belge yükleniyor").frame(maxHeight: .infinity) }
@@ -43,8 +46,11 @@ struct DocumentPreview: View {
 
 struct PDFKitView: UIViewRepresentable {
     let document: PDFDocument
+    var page: Int? = nil
     func makeUIView(context: Context) -> PDFView {
-        let v = PDFView(); v.autoScales = true; v.displayMode = .singlePageContinuous; v.document = document; return v
+        let v = PDFView(); v.autoScales = true; v.displayMode = .singlePageContinuous; v.document = document
+        if let page, page >= 1, let p = document.page(at: page - 1) { v.go(to: p) }
+        return v
     }
     func updateUIView(_ v: PDFView, context: Context) { if v.document !== document { v.document = document } }
 }
