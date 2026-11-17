@@ -8,7 +8,10 @@ import { unprocessable } from '../errors.ts';
  * satınalma direktörü + vekil). Adaylar yalnız bu kiracının etkin, tedarikçi olmayan üyelikleridir (kullanıcı FK'leri kiracıya bağlı değildir).
  */
 
-export type Person = { userId: string; displayName: string; email: string; active: boolean };
+export type Person = { userId: string; displayName: string; email: string; active: boolean; wrongRole?: boolean };
+
+/** D107 (kullanıcı kararı 17.11.2026): onaycı yalnız Satınalma ya da Departman kullanıcısı rolündeki kişilerden seçilir. */
+const APPROVER_ROLES = ['PROCUREMENT', 'DEPARTMENT_USER'];
 export type ApproverStatus = 'DEFINED' | 'NO_DEPUTY' | 'UNASSIGNED' | 'INACTIVE';
 export type OrgInput = { leadUserId?: string | null; leadDeputyUserId?: string | null; directorUserId?: string | null; directorDeputyUserId?: string | null };
 export type DeptInput = { departmentId: string; headUserId: string | null; deputyUserId: string | null };
@@ -28,7 +31,9 @@ async function loadPeople(tx: Tx): Promise<Map<string, Person>> {
   for (const r of rows) {
     const roles = normalizeRoles(r.roles);
     if (roles.includes('SUPPLIER')) continue;
-    map.set(r.id, { userId: r.id, displayName: r.display_name, email: r.email, active: r.status === 'ACTIVE' && roles.length > 0 });
+    // Onaycılık için etkin = üyelik etkin ve Satınalma ya da Departman kullanıcısı rolü var (D107); rolü düşen atanmış kişi "(pasif)" görünür.
+    map.set(r.id, { userId: r.id, displayName: r.display_name, email: r.email, active: r.status === 'ACTIVE' && roles.some((x) => APPROVER_ROLES.includes(x)),
+      wrongRole: r.status === 'ACTIVE' && roles.length > 0 && !roles.some((x) => APPROVER_ROLES.includes(x)) });
   }
   return map;
 }
@@ -37,7 +42,9 @@ async function loadRows(tx: Tx): Promise<Row[]> {
   return (await tx.query<Row>(`SELECT kind, department_id, primary_user_id, deputy_user_id FROM approver_assignments`)).rows;
 }
 
-const personOf = (people: Map<string, Person>, id: string | null): Person | null => (id ? people.get(id) ?? null : null);
+// Yanıtta iç alan (wrongRole) dönmez.
+const pub = (p: Person): Person => ({ userId: p.userId, displayName: p.displayName, email: p.email, active: p.active });
+const personOf = (people: Map<string, Person>, id: string | null): Person | null => { const p = id ? people.get(id) : undefined; return p ? pub(p) : null; };
 const activeOf = (people: Map<string, Person>, id: string | null): Person | null => {
   const p = personOf(people, id);
   return p && p.active ? p : null;
@@ -95,7 +102,7 @@ export async function listApprovers(tx: Tx) {
       director: personOf(people, director?.primary_user_id ?? null), directorDeputy: personOf(people, director?.deputy_user_id ?? null),
     },
     departments,
-    candidates: [...people.values()].filter((p) => p.active),
+    candidates: [...people.values()].filter((p) => p.active).map(pub),
   };
 }
 
@@ -141,6 +148,9 @@ export async function setApprovers(tx: Tx, ctx: TenantContext, b: { organization
     // "Etkin olmalı" kuralı yalnız yeni atanan ya da değişen kişiye uygulanır: aynı yerde kalan (sonradan askıya alınmış) kişi
     // başka satırların kaydını engellemez; askıdaki birini yeniden ya da yeni yere atamak yine 422.
     const prev = beforeMap.get(key(n.kind, n.departmentId));
+    const fresh = [n.primaryUserId !== prev?.primary ? n.primaryUserId : null, n.deputyUserId !== prev?.deputy ? n.deputyUserId : null];
+    if (fresh.some((id) => id && people.get(id)?.wrongRole))
+      throw unprocessable('approver_role', 'Onaycı yalnız Satınalma ya da Departman kullanıcısı rolündeki kişilerden seçilir.', { kind: n.kind, departmentId: n.departmentId });
     const allowed = new Set(candidates);
     if (prev?.primary && prev.primary === n.primaryUserId) allowed.add(prev.primary);
     if (prev?.deputy && prev.deputy === n.deputyUserId) allowed.add(prev.deputy);

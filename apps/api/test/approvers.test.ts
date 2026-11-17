@@ -181,6 +181,28 @@ describe('askıya alma ve currentApprovers', () => {
   });
 });
 
+// v2 Faz 2 (D107, kullanıcı kararı 17.11.2026): onaycı yalnız Satınalma ya da Departman kullanıcısı rolündeki kişilerden seçilir.
+describe('onaycı rol süzgeci (D107)', () => {
+  it('Denetçi ve yalnız Yönetici rolündeki kişi aday değildir ve atanamaz (422 approver_role); Satınalma ve Departman kullanıcısı atanır', async () => {
+    const w = await fresh();
+    const g = (await as(w, 'tenantAdmin', 'GET', U)).body;
+    const cand = new Set((g.candidates as { userId: string }[]).map((c) => c.userId));
+    expect(cand.has(id(w, 'auditor'))).toBe(false);
+    expect(cand.has(id(w, 'tenantAdmin'))).toBe(false);
+    expect(cand.has(id(w, 'buyer'))).toBe(true);
+    expect(cand.has(id(w, 'security'))).toBe(true);
+    for (const who of ['auditor', 'tenantAdmin'] as const) {
+      const r = await as(w, 'tenantAdmin', 'PUT', U, { departments: [{ departmentId: w.departments.bt, headUserId: id(w, who), deputyUserId: null }] });
+      expect(r.status).toBe(422);
+      expect(r.body.error.code).toBe('approver_role');
+      expect(JSON.stringify(r.body)).not.toContain('wrongRole');
+    }
+    const ok = await as(w, 'tenantAdmin', 'PUT', U, { departments: [{ departmentId: w.departments.bt, headUserId: id(w, 'security'), deputyUserId: id(w, 'buyer') }] });
+    expect(ok.status).toBe(200);
+    expect(JSON.stringify(ok.body)).not.toContain('wrongRole');
+  });
+});
+
 describe('öneri', () => {
   it('önerilen kişi departmanın dizin kullanıcılarında en sık geçen yönetici; eşitlikte ada göre; etkin üyeliği yoksa atlanır', async () => {
     const w = await fresh();
