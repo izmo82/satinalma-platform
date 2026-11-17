@@ -1,4 +1,4 @@
-import { lazy, useCallback, useEffect, useReducer, useState, type ReactNode } from 'react';
+import { lazy, useCallback, useEffect, useReducer, useRef, useState, type ReactNode } from 'react';
 import { Link, Navigate, Outlet } from 'react-router-dom';
 import { api, ApiError } from '../lib/api.ts';
 import { hasRole, useSession, type Me } from '../lib/session.tsx';
@@ -101,6 +101,15 @@ export function IntegrationsTab() {
 interface Department { id: string; name: string }
 interface Member { userId: string; displayName: string; email: string; roles: string[]; departmentIds: string[] }
 
+/**
+ * v2 Faz 2 (D105): eşitleme, rol ataması ya da birleştirme sonrası veriyi yeniden yükler; bileşen yeniden kurulmaz, kaydedilmemiş
+ * düzenleme (departman onay kutuları, kayıt seçimi) korunur. İlk çizimde çalışmaz.
+ */
+function useRefresh(signal: number, reload: () => Promise<void>) {
+  const first = useRef(signal);
+  useEffect(() => { if (signal !== first.current) void reload(); }, [signal, reload]);
+}
+
 /** Yalnız Departman kullanıcısı departmana bağlıdır; Yönetici, Satınalma ve Denetçi bütün departmanları görür. */
 const departmentBound = (roles: string[]) => roles.length > 0 && roles.every((r) => r === 'DEPARTMENT_USER');
 
@@ -152,8 +161,9 @@ function MemberItem({ m, deps, onSaved }: { m: Member; deps: Department[]; onSav
 }
 
 /** Yönetici görünümü: iç kullanıcılar, rolleri ve departman ataması (GET /memberships, PUT /memberships/:id/departments). */
-function MembersAdmin({ deps }: { deps: Department[] }) {
+function MembersAdmin({ deps, refresh = 0 }: { deps: Department[]; refresh?: number }) {
   const r = useResource<{ items: Member[] }>('/api/v1/memberships');
+  useRefresh(refresh, r.reload);
   if (r.loading && !r.data) return <Loading rows={4} />;
   if (r.error || !r.data) return <ErrorState error={r.error} onRetry={r.reload} />;
   if (!r.data.items.length) return <p className="text-ink-muted">Kullanıcı yok.</p>;
@@ -161,8 +171,9 @@ function MembersAdmin({ deps }: { deps: Department[] }) {
 }
 
 /** Yönetici dışındaki roller (Satınalma): Yönetici listesiyle aynı kapsam (tedarikçi kullanıcıları yok), salt okunur adlar ve roller. */
-function MembersReadOnly() {
+function MembersReadOnly({ refresh = 0 }: { refresh?: number }) {
   const members = useResource<{ id: string; displayName: string; roles?: string[] }[]>('/api/v1/members');
+  useRefresh(refresh, members.reload);
   if (members.loading && !members.data) return <Loading rows={4} />;
   if (members.error) return <ErrorState error={members.error} onRetry={members.reload} />;
   if (!members.data?.length) return <p className="text-ink-muted">Kullanıcı yok.</p>;
@@ -198,6 +209,8 @@ function AssignGroup({ kind, rows, deps, onDone }: { kind: AssignKind; rows: Una
   const [msg, setMsg] = useState<{ tone: 'info' | 'danger'; text: string } | null>(null);
   const t = KIND_TEXT[kind];
   const selectId = `assign-${kind}`;
+  // Liste yeniden yüklenince (başka sekmede atanan) artık görünmeyen kayıtlar seçimden düşer; görünenlerin seçimi korunur.
+  useEffect(() => { setSel((s) => { const n = s.filter((id) => rows.some((r) => r.id === id)); return n.length === s.length ? s : n; }); }, [rows]);
   const all = rows.length > 0 && sel.length === rows.length;
   async function save() {
     if (!sel.length || !dep || busy) return;
@@ -249,8 +262,9 @@ function AssignGroup({ kind, rows, deps, onDone }: { kind: AssignKind; rows: Una
 }
 
 /** Departmanı atanmamış eski kayıtlar (Yönetici ve Satınalma). Atanana kadar bu kayıtları Departman kullanıcıları göremez. */
-function UnassignedRecords({ deps }: { deps: Department[] }) {
+function UnassignedRecords({ deps, refresh = 0 }: { deps: Department[]; refresh?: number }) {
   const r = useResource<Unassigned>('/api/v1/department-assignments/unassigned');
+  useRefresh(refresh, r.reload);
   if (r.loading && !r.data) return <Loading rows={4} />;
   if (r.error || !r.data) return <ErrorState error={r.error} onRetry={r.reload} />;
   const d = r.data;
@@ -352,10 +366,10 @@ export function UsersTab() {
       <div className="panel-body grid gap-3">
         {admin ? <>
           <p className="text-sm text-ink-muted">Departman kullanıcısı yalnız atandığı departmanların kayıtlarını görür. Yönetici, Satınalma ve Denetçi bütün departmanları görür. Tedarikçi kullanıcıları bu listede yer almaz.</p>
-          {deps.data ? <MembersAdmin key={version} deps={deps.data.items} /> : deps.error ? null : <Loading rows={4} />}
+          {deps.data ? <MembersAdmin refresh={version} deps={deps.data.items} /> : deps.error ? null : <Loading rows={4} />}
         </> : <>
           <p className="text-sm text-ink-muted">Kullanıcıların departman atamasını Yönetici değiştirir. Departman kullanıcısı yalnız atandığı departmanların kayıtlarını görür; Yönetici, Satınalma ve Denetçi bütün departmanları görür. Tedarikçi kullanıcıları bu listede yer almaz.</p>
-          <MembersReadOnly key={version} />
+          <MembersReadOnly refresh={version} />
         </>}
       </div>
     </section>
@@ -391,7 +405,7 @@ export function UsersTab() {
           <div className="panel-head"><h2 id="unassigned-h">Departmansız kayıtlar</h2></div>
           <div className="panel-body grid gap-3">
             <p className="text-sm text-ink-muted">Departmanı atanmamış eski kayıtları Departman kullanıcıları göremez. Kayıtları seçip departman atayın; kaydın görevleri de aynı departmana geçer, sözleşmeye bağlı faturalar departmanı sözleşmeden alır. Her atama denetim izine yazılır.</p>
-            {deps.data ? <UnassignedRecords key={version} deps={deps.data.items} /> : deps.error ? null : <Loading rows={3} />}
+            {deps.data ? <UnassignedRecords refresh={version} deps={deps.data.items} /> : deps.error ? null : <Loading rows={3} />}
           </div>
         </section>
       )}

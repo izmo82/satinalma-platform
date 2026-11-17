@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { inScope } from '@sp/domain';
 import type { DirectoryProvider, DirectoryUser } from './provider.ts';
@@ -15,7 +16,13 @@ export function testProvider(fixturePath: string): DirectoryProvider {
   return {
     kind: 'test',
     label: TEST_LABEL,
-    tenantLabel: 'test',
+    /** Kiracı etiketi fixture'daki `tenantLabel`'dır (okunamazsa "Test dizini"); her okumada dosyadan, sır içermez. */
+    get tenantLabel() {
+      try {
+        const j = JSON.parse(readFileSync(fixturePath, 'utf8')) as { tenantLabel?: unknown };
+        return typeof j.tenantLabel === 'string' && j.tenantLabel.trim() ? j.tenantLabel : 'Test dizini';
+      } catch { return 'Test dizini'; }
+    },
     async testConnection() {
       try { await load(fixturePath); return { ok: true }; }
       catch { return { ok: false, code: 'fixture_unreadable', message: 'Test dizini dosyası okunamadı ya da biçimi geçersiz.' }; }

@@ -1,7 +1,8 @@
 // v2 Faz 2 (D105) Görev 6: Yönetim > Kullanıcılar ve Entra (Figma 20) ve Onaycılar (Figma 21).
 // Önkoşul: geliştirme API'si ve işçisi `DIRECTORY_PROVIDER=test` + `DIRECTORY_TEST_FIXTURE=apps/api/fixtures/directory-dev.json` ile çalışır.
-// Sağlayıcı yoksa testler sessizce atlanmaz, açık iletiyle başarısız olur. Veri değiştiren adımlar yalnız 1440'ta ve yalnız
-// adanmış sentetik kullanıcılarla (rol.deneme@example.test; Tıbbi Cihaz onaycı ataması) yapılır ve sonunda eski haline döner.
+// Sağlayıcı yoksa testler sessizce atlanmaz, açık iletiyle başarısız olur. Veri değiştiren adımlar yalnız 1440'ta. Rol ataması
+// (rol.deneme@example.test) ve Tıbbi Cihaz onaycı ataması sonunda eski haline döner. Kalıcı olan: ilk test kapsamı (GROUP, açık)
+// kaydeder ve eşitleme çalıştırır; bağlantı ayarı, eşitleme çalıştırması ve directory_users satırları paylaşılan veritabanında kalır.
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 
@@ -65,6 +66,8 @@ test('Yönetici test dizinini eşitler; test etiketi bağlantı kartında ve eş
   for (const t of ['Güvenlik grubu', 'Yönetim birimi', 'OU filtresi']) await expect(card.getByRole('radio', { name: t })).toHaveCount(1);
   await expect(card.getByText('OU=Satinalma,OU=Kullanicilar,DC=moment')).toBeVisible();
   await expect(card.getByText('Kapsam dışındaki Entra kullanıcıları alınmaz.', { exact: false })).toBeVisible();
+  // Kiracı: fixture'daki etiket (ham "test" sözcüğü değil).
+  await expect(card.getByText('Örnek Holding test dizini (sentetik, gerçek Entra değil)')).toBeVisible();
   await card.getByRole('button', { name: 'Bağlantıyı sına' }).click();
   await expect(card.getByText('Bağlantı doğrulandı (test dizini)')).toBeVisible();
   if (info.project.name !== 'desktop-1440') return;
@@ -107,6 +110,10 @@ test('Yönetici sentetik kullanıcıya Departman kullanıcısı rolü verir; dep
   const users = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Eşitlenen kullanıcılar' }) });
   const row = users.getByRole('row').filter({ hasText: 'Rol Deneme (sentetik)' });
   await expect(row).toContainText('Rol verilmedi');
+  // Sıfır gerileme: Faz 1 düzenleyicideki kaydedilmemiş seçim, rol kaydı sonrası yeniden yüklemede kaybolmaz.
+  const selinIk = page.getByRole('group', { name: 'Selin Arslan departmanları' }).getByRole('checkbox', { name: 'İnsan Kaynakları' });
+  const selinBefore = await selinIk.isChecked();
+  await selinIk.setChecked(!selinBefore);
   await row.getByRole('button', { name: 'Rol Deneme (sentetik) rolünü değiştir' }).click();
   await row.getByRole('checkbox', { name: 'Departman kullanıcısı' }).check();
   await row.getByRole('button', { name: 'Rol Deneme (sentetik) rollerini kaydet' }).click();
@@ -114,6 +121,8 @@ test('Yönetici sentetik kullanıcıya Departman kullanıcısı rolü verir; dep
   await expect(row).toContainText('Departman kullanıcısı');
   await expect(row).toContainText('Etkin');
   await expect.poll(countOf).toBe(before + 1);
+  await expect(selinIk).toBeChecked({ checked: !selinBefore });
+  await selinIk.setChecked(selinBefore);
   // Faz 1 departman düzenleyicisinde de görünür (aynı sekme).
   const editor = page.getByRole('group', { name: 'Rol Deneme (sentetik) departmanları' });
   await expect(editor.getByRole('checkbox', { name: 'İnsan Kaynakları' })).toBeChecked();
@@ -148,8 +157,16 @@ test('Onaycılar: Yönetici öneriyle departman sorumlusu ve vekil atar; yeniley
   await request.put('/api/v1/approver-assignments', { headers: h, data: { departments: [{ departmentId: tc.departmentId, headUserId: null, deputyUserId: null }] } });
   try {
     await login(page, 'tamer.yonetici@example.test');
+    // İlk çizimde bir kare hata durumu ("Bağlantı yok") görünmez: DOM'a eklenen her metin izlenir.
+    await page.addInitScript(() => {
+      const seen: string[] = ((window as unknown as { __seen: string[] }).__seen = []);
+      new MutationObserver(() => { if (document.body?.innerText.includes('Bağlantı yok')) seen.push('Bağlantı yok'); })
+        .observe(document, { childList: true, subtree: true, characterData: true });
+    });
     await page.goto('/yonetim/onaycilar');
     await expect(page.getByRole('heading', { name: 'Onaycılar', level: 1 })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Departman sorumluları' })).toBeVisible();
+    expect(await page.evaluate(() => (window as unknown as { __seen: string[] }).__seen)).toEqual([]);
     await expect(page.getByText('Her sözleşme sırayla üç onaydan geçer: departman sorumlusu, satınalma sorumlusu, satınalma direktörü.')).toBeVisible();
     for (const l of ['Satınalma sorumlusu', 'Sorumlu vekili', 'Satınalma direktörü', 'Direktör vekili']) await expect(page.getByLabel(l, { exact: true })).toBeVisible();
     const row = page.getByTestId('approver-row-Tıbbi Cihaz');

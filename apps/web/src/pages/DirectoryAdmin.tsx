@@ -174,7 +174,8 @@ export function ConnectionCard({ conn, admin, sync, onSaved }: { conn: Directory
     if (busy) return;
     setBusy('save'); setMsg(null);
     try {
-      await api('/api/v1/directory/connection', { method: 'PUT', json: { scopeType: type, scopeValue: value, enabled } });
+      await api('/api/v1/directory/connection', { method: 'PUT', json: { scopeType: type, scopeValue: value.trim(), enabled } });
+      setValue(value.trim());
       await onSaved();
       setMsg({ tone: 'info', text: 'Kapsam kaydedildi.' });
     } catch (err) { setMsg({ tone: 'danger', text: err instanceof ApiError ? err.message : 'Kapsam kaydedilemedi.' }); }

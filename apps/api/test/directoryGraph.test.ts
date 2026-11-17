@@ -201,6 +201,7 @@ describe('Test sağlayıcısı ve fabrika', () => {
     const p = directoryProvider({ kind: 'test', testFixture: fixture })!;
     expect(p.kind).toBe('test');
     expect(p.label).toBe('Test dizini (gerçek Entra değil)');
+    expect(p.tenantLabel).toBe('Test dizini (sentetik)');
     expect(await p.testConnection()).toEqual({ ok: true });
     const all = await p.listUsers({ type: 'GROUP', value: 'x' });
     expect(all).toHaveLength(3);
@@ -211,6 +212,8 @@ describe('Test sağlayıcısı ve fabrika', () => {
   it('fixture okunamazsa testConnection ok:false', async () => {
     const p = directoryProvider({ kind: 'test', testFixture: '/yok/yok.json' })!;
     expect(await p.testConnection()).toMatchObject({ ok: false, code: 'fixture_unreadable' });
+    expect(p.tenantLabel).toBe('Test dizini');
+    expect(p.label).toBe('Test dizini (gerçek Entra değil)');
   });
   it('none → null; graph eksik yapılandırma → null değil hata değil: yapılandırma yükleyicisi doğrular', () => {
     expect(directoryProvider({ kind: 'none' })).toBeNull();

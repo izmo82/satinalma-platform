@@ -63,11 +63,13 @@ export function ApproversPage() {
   const { me } = useSession();
   const admin = hasRole(me, 'ADMIN');
   const r = useResource<Approvers>('/api/v1/approver-assignments');
-  const [draft, setDraft] = useState<Draft | null>(null);
+  const [draftState, setDraft] = useState<Draft | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ tone: 'info' | 'danger'; text: string } | null>(null);
   const ids = useId();
   useEffect(() => { if (r.data) setDraft(draftOf(r.data)); }, [r.data]);
+  // İlk çizimde (efekt henüz çalışmadan) taslak veriden türetilir; aksi halde bir kare hata durumu görünürdü.
+  const draft = draftState ?? (r.data ? draftOf(r.data) : null);
 
   const isActive = (id: string) => !!id && !!r.data?.candidates.some((c) => c.userId === id);
 
