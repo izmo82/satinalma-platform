@@ -123,7 +123,8 @@ export async function listEndpoints(tx: Tx, ctx: TenantContext, config: ErpCfg, 
       enabled: row?.enabled ?? false,
       writeEnabled: row?.write_enabled ?? false,
       writeConfirmation: row?.write_enabled && row.write_confirmed_at ? { at: iso(row.write_confirmed_at), by: { id: row.write_confirmed_by, name: row.write_confirmed_by_name } } : null,
-      provider: providerView(row?.provider_kind ?? cfgKind, config),
+      // ERP_PROVIDER=none: satırdaki eski tür (ör. TAKLIT) gösterilmez; kart "yapılandırılmadı" der.
+      provider: providerView(cfgKind === null ? null : row?.provider_kind ?? cfgKind, config),
       baseUrl: row?.base_url ?? null, resourcePath: row?.resource_path ?? null, authType: row?.auth_type ?? null,
       username: row?.username ?? null, clientId: row?.client_id ?? null, tokenUrl: row?.token_url ?? null, timeoutMs: row?.timeout_ms ?? 15000,
       secretSet: secret.secretSet, secretUpdatedAt: secret.secretUpdatedAt, secretNeedsReentry: secret.needsReentry,
@@ -164,7 +165,9 @@ export async function updateEndpoint(tx: Tx, ctx: TenantContext, config: ErpCfg,
   const box = secretBox(config);
   const row = await endpointRow(tx, feature, true);
   const cfgKind = configuredProviderKind(config);
-  const kind: ErpProviderKind = cfgKind ?? row?.provider_kind ?? 'TAKLIT';
+  // ERP_PROVIDER=none: yeni uç nokta açılmaz (tür uydurulmaz); var olan satırın türü değiştirilmez, taklit:// kabul edilmez.
+  if (!cfgKind && !row) throw conflict('provider_not_configured', 'Bu ortamda ERP sağlayıcısı yapılandırılmadı (ERP_PROVIDER); bağlantı kaydedilemez.');
+  const kind: ErpProviderKind = cfgKind ?? row!.provider_kind;
 
   const prevSchedule = { mode: row?.schedule_kind ?? 'MANUAL', intervalMinutes: row?.schedule_interval_min ?? null, dailyTime: row?.schedule_daily_at ?? null };
   const next = {
@@ -202,7 +205,7 @@ export async function updateEndpoint(tx: Tx, ctx: TenantContext, config: ErpCfg,
   // Yalnız kapatma ve/veya kapalı kayıtta yalnız sır kaldırma her zaman mümkündür; geri kalan her kayıt tam doğrulanır.
   const onlyDisabling = !next.enabled && secretAction !== 'set' && changed.every((k) => k === 'enabled');
   if (!onlyDisabling) {
-    const errors = validateConfig(feature, kind, next, secretSet, next.enabled, config, production);
+    const errors = validateConfig(feature, cfgKind === 'TAKLIT', next, secretSet, next.enabled, config, production);
     if (errors.length) throw unprocessable('endpoint_invalid', 'Bağlantı ayarları geçersiz; işaretli alanları düzeltin.', { errors });
     if (typeof body.secret === 'string' && (Buffer.byteLength(body.secret, 'utf8') === 0 || Buffer.byteLength(body.secret, 'utf8') > 4096)) {
       throw unprocessable('endpoint_invalid', 'Bağlantı ayarları geçersiz; işaretli alanları düzeltin.', { errors: [{ field: 'secret', code: 'invalid_length' }] });
@@ -211,7 +214,7 @@ export async function updateEndpoint(tx: Tx, ctx: TenantContext, config: ErpCfg,
   if (next.enabled) {
     const missing = missingMappings(feature, next.fieldMap);
     if (missing.length) throw unprocessable('mapping_incomplete', 'Zorunlu alanlar eşlenmeden özellik açılamaz.', { missing });
-    if (!cfgKind) throw conflict('provider_not_configured', 'Bu ortamda ERP sağlayıcısı yapılandırılmadı (ERP_PROVIDER); özellik açılamaz.');
+    if (!erpProvider(kind, config)) throw conflict('provider_not_configured', 'Bu ortamda uç noktanın sağlayıcısı yapılandırılmadı (ERP_PROVIDER); özellik açılamaz.');
   }
   if (secretAction === 'set' && !box.configured) {
     throw conflict('secret_key_not_configured', 'Sır şifreleme anahtarı (INTEGRATION_SECRET_KEY) yapılandırılmadı; sır kaydedilemez.');
@@ -260,14 +263,14 @@ export async function updateEndpoint(tx: Tx, ctx: TenantContext, config: ErpCfg,
   return { id: endpointId, feature, enabled: next.enabled, writeEnabled, changed, secretChanged: secretAction !== 'keep', writeDisabled: writeOff };
 }
 
-function validateConfig(feature: ErpFeature, kind: ErpProviderKind, next: {
+function validateConfig(feature: ErpFeature, taklitAllowed: boolean, next: {
   baseUrl: string | null; resourcePath: string | null; authType: ErpAuthType | null; username: string | null; clientId: string | null; tokenUrl: string | null;
   schedule: { mode: 'MANUAL' | 'INTERVAL' | 'DAILY'; intervalMinutes: number | null; dailyTime: string | null }; fieldMap: FieldMap;
 }, secretSet: boolean, enabled: boolean, config: ErpCfg, production: boolean): ErpError[] {
   const allowedHosts = config.erp?.allowedHosts ?? [];
-  // Taklit uç noktasında `taklit://…` adresi kabul edilir (ağ yok); domain kuralı yalnız http/https bilir, o hata burada düşülür.
-  const taklitBase = kind === 'TAKLIT' && typeof next.baseUrl === 'string' && TAKLIT_URL_RE.test(next.baseUrl);
-  const taklitToken = kind === 'TAKLIT' && typeof next.tokenUrl === 'string' && TAKLIT_URL_RE.test(next.tokenUrl);
+  // Yalnız ERP_PROVIDER=taklit iken `taklit://…` adresi kabul edilir (ağ yok); domain kuralı yalnız http/https bilir, o hata burada düşülür.
+  const taklitBase = taklitAllowed && typeof next.baseUrl === 'string' && TAKLIT_URL_RE.test(next.baseUrl);
+  const taklitToken = taklitAllowed && typeof next.tokenUrl === 'string' && TAKLIT_URL_RE.test(next.tokenUrl);
   const r = validateEndpointConfig({
     feature, baseUrl: next.baseUrl ?? '', authType: next.authType as ErpAuthType, username: next.username ?? undefined, clientId: next.clientId ?? undefined,
     tokenUrl: next.tokenUrl ?? undefined, secretSet, sourcePath: next.resourcePath ?? '',
@@ -320,8 +323,28 @@ export async function disableWrite(tx: Tx, ctx: TenantContext, featureParam: str
 // ---------- Bağlantıyı sına ----------
 
 export type PreparedTest =
-  | { kind: 'call'; feature: ErpFeature; endpointId: string; provider: ErpProvider; ep: ResolvedEndpoint }
-  | { kind: 'refused'; feature: ErpFeature; endpointId: string; providerKind: ErpProviderKind | null; message: string; code: string };
+  | { kind: 'call'; feature: ErpFeature; endpointId: string; updatedAt: string; provider: ErpProvider; ep: ResolvedEndpoint }
+  | { kind: 'refused'; feature: ErpFeature; endpointId: string; updatedAt: string; providerKind: ErpProviderKind | null; message: string; code: string };
+
+export type TestOutcome = { ok: boolean; message: string; latencyMs: number; providerKind: ErpProviderKind | null; mock: boolean; code: string | null; startedAt: Date;
+  /** Sınama başlarken uç noktanın updated_at'i (metin, mikro saniye kaybı yok); kayıtta değiştiyse last_test_* yazılmaz. */
+  endpointUpdatedAt: string };
+
+/** Uç nokta başına sınama sıklığı sınırı (süreç belleği). YALNIZ TEST `ms` değerini değiştirir. */
+export const testThrottle = { ms: 10_000 };
+const lastTestCall = new Map<string, number>();
+function throttleTest(tenantId: string, feature: string): void {
+  const now = Date.now();
+  const key = `${tenantId}|${feature}`;
+  const prev = lastTestCall.get(key);
+  if (prev !== undefined && now - prev < testThrottle.ms) {
+    const wait = Math.max(1, Math.ceil((testThrottle.ms - (now - prev)) / 1000));
+    throw new ApiError(429, 'test_rate_limited', `Bağlantı en fazla ${Math.ceil(testThrottle.ms / 1000)} saniyede bir sınanabilir; ${wait} saniye sonra yeniden deneyin.`,
+      { retryAfterSeconds: wait });
+  }
+  if (lastTestCall.size > 5000) for (const [k, t] of lastTestCall) if (now - t >= testThrottle.ms) lastTestCall.delete(k);
+  lastTestCall.set(key, now);
+}
 
 /** 1. işlem: uç noktayı ve sırrı okur (sır yalnız bellekte, çağrı için). Sağlayıcı çağrısı işlem dışında yapılır. */
 export async function prepareTest(tx: Tx, ctx: TenantContext, config: ErpCfg, featureParam: string): Promise<PreparedTest> {
@@ -331,36 +354,39 @@ export async function prepareTest(tx: Tx, ctx: TenantContext, config: ErpCfg, fe
   if (!row || !row.base_url || !row.resource_path || !row.auth_type) {
     throw conflict('endpoint_not_configured', 'Önce bağlantı ayarlarını kaydedin.');
   }
+  throttleTest(ctx.tenantId, feature);
+  const updatedAt = (await tx.query<{ v: string }>(`SELECT updated_at::text AS v FROM integration_endpoints WHERE id = $1`, [row.id])).rows[0]!.v;
   const provider = erpProvider(row.provider_kind, config);
-  if (!provider) return { kind: 'refused', feature, endpointId: row.id, providerKind: null, code: 'provider_not_configured', message: 'Bu ortamda ERP sağlayıcısı yapılandırılmadı; istek atılmadı.' };
+  if (!provider) return { kind: 'refused', feature, endpointId: row.id, updatedAt, providerKind: null, code: 'provider_not_configured', message: 'Bu ortamda ERP sağlayıcısı yapılandırılmadı; istek atılmadı.' };
   let secret: string | null = null;
   try {
     secret = await loadEndpointSecret(tx, row.id, secretBox(config));
   } catch (e) {
-    if (e instanceof SecretKekMismatch) return { kind: 'refused', feature, endpointId: row.id, providerKind: row.provider_kind, code: 'secret_needs_reentry', message: 'Sır yeniden girilmeli (anahtar değişti); istek atılmadı.' };
-    if (e instanceof SecretKeyNotConfigured) return { kind: 'refused', feature, endpointId: row.id, providerKind: row.provider_kind, code: 'secret_key_not_configured', message: 'Sır şifreleme anahtarı yapılandırılmadı; istek atılmadı.' };
-    if (e instanceof SecretOpenFailed) return { kind: 'refused', feature, endpointId: row.id, providerKind: row.provider_kind, code: 'secret_unreadable', message: 'Kayıtlı sır açılamadı; sırrı yeniden girin. İstek atılmadı.' };
+    if (e instanceof SecretKekMismatch) return { kind: 'refused', feature, endpointId: row.id, updatedAt, providerKind: row.provider_kind, code: 'secret_needs_reentry', message: 'Sır yeniden girilmeli (anahtar değişti); istek atılmadı.' };
+    if (e instanceof SecretKeyNotConfigured) return { kind: 'refused', feature, endpointId: row.id, updatedAt, providerKind: row.provider_kind, code: 'secret_key_not_configured', message: 'Sır şifreleme anahtarı yapılandırılmadı; istek atılmadı.' };
+    if (e instanceof SecretOpenFailed) return { kind: 'refused', feature, endpointId: row.id, updatedAt, providerKind: row.provider_kind, code: 'secret_unreadable', message: 'Kayıtlı sır açılamadı; sırrı yeniden girin. İstek atılmadı.' };
     throw e;
   }
   return {
-    kind: 'call', feature, endpointId: row.id, provider,
+    kind: 'call', feature, endpointId: row.id, updatedAt, provider,
     ep: { id: row.id, tenantId: ctx.tenantId, feature, baseUrl: row.base_url, resourcePath: row.resource_path, authType: row.auth_type,
       username: row.username, clientId: row.client_id, tokenUrl: row.token_url, secret, timeoutMs: row.timeout_ms },
   };
 }
 
-export async function executeTest(p: PreparedTest): Promise<{ ok: boolean; message: string; latencyMs: number; providerKind: ErpProviderKind | null; mock: boolean; code: string | null; startedAt: Date }> {
+export async function executeTest(p: PreparedTest): Promise<TestOutcome> {
+  const endpointUpdatedAt = p.updatedAt;
   const startedAt = new Date();
-  if (p.kind === 'refused') return { ok: false, message: p.message, latencyMs: 0, providerKind: p.providerKind, mock: p.providerKind === 'TAKLIT', code: p.code, startedAt };
+  if (p.kind === 'refused') return { ok: false, message: p.message, latencyMs: 0, providerKind: p.providerKind, mock: p.providerKind === 'TAKLIT', code: p.code, startedAt, endpointUpdatedAt };
   const secrets = [p.ep.secret ?? ''].filter(Boolean);
   try {
     const r = await p.provider.test(p.ep);
     return { ok: r.ok, message: redactSecrets(r.message, secrets), latencyMs: r.latencyMs, providerKind: p.provider.kind, mock: !p.provider.real,
-      code: r.ok ? null : 'connection_test_failed', startedAt };
+      code: r.ok ? null : 'connection_test_failed', startedAt, endpointUpdatedAt };
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'Bağlantı denemesi başarısız.';
     return { ok: false, message: redactSecrets(msg, secrets), latencyMs: Date.now() - startedAt.getTime(), providerKind: p.provider.kind, mock: !p.provider.real,
-      code: 'connection_test_failed', startedAt };
+      code: 'connection_test_failed', startedAt, endpointUpdatedAt };
   } finally {
     p.ep.secret = null;
   }
@@ -368,7 +394,7 @@ export async function executeTest(p: PreparedTest): Promise<{ ok: boolean; messa
 
 /** 2. işlem: sınama çalışmasını (trigger TEST) ve last_test_* alanlarını yazar. İleti sırdan arındırılmış ve ≤500. */
 export async function recordTest(tx: Tx, ctx: TenantContext, featureParam: string, endpointId: string,
-  r: { ok: boolean; message: string; latencyMs: number; providerKind: ErpProviderKind | null; mock: boolean; code: string | null; startedAt: Date }) {
+  r: TestOutcome) {
   const message = r.message.slice(0, 500);
   const status = r.providerKind === null ? 'NOT_CONFIGURED' : r.ok ? 'SUCCESS' : 'FAILED';
   const runId = (await tx.query<{ id: string }>(`INSERT INTO integration_runs (tenant_id, endpoint_id, feature, trigger, provider_kind, mock, started_at, finished_at,
@@ -379,10 +405,13 @@ export async function recordTest(tx: Tx, ctx: TenantContext, featureParam: strin
     await tx.query(`INSERT INTO integration_run_errors (tenant_id, run_id, record_key, code, message) VALUES ($1, $2, NULL, $3, $4)`,
       [ctx.tenantId, runId, r.code ?? 'connection_test_failed', message]);
   }
-  await tx.query(`UPDATE integration_endpoints SET last_test_at = now(), last_test_ok = $2, last_test_message = $3 WHERE id = $1`, [endpointId, r.ok, message]);
+  // Sınama sürerken ayar değiştiyse sonuç eski ayara aittir: çalışma kaydı kalır, last_test_* yazılmaz (R3 bu sonuçla açılamaz).
+  const stale = (await tx.query(`UPDATE integration_endpoints SET last_test_at = now(), last_test_ok = $2, last_test_message = $3
+    WHERE id = $1 AND updated_at = $4::timestamptz`, [endpointId, r.ok, message, r.endpointUpdatedAt])).rowCount === 0;
   await audit(tx, ctx, 'integration.endpoint.tested', 'integration_endpoint', endpointId,
-    { feature: featureParam, ok: r.ok, mock: r.mock, providerKind: r.providerKind, runId, code: r.code });
-  return { ok: r.ok, message, latencyMs: r.latencyMs, mock: r.mock, runId, status, statusLabel: r.mock ? `${RUN_STATUS_LABEL[status]} (${MOCK_NOTE})` : RUN_STATUS_LABEL[status] };
+    { feature: featureParam, ok: r.ok, mock: r.mock, providerKind: r.providerKind, runId, code: r.code, stale });
+  return { ok: r.ok, message, latencyMs: r.latencyMs, mock: r.mock, runId, stale,
+    staleNote: stale ? 'Sınama sürerken bağlantı ayarları değişti; sonuç son sınama olarak kaydedilmedi, yeniden sınayın.' : null, status, statusLabel: r.mock ? `${RUN_STATUS_LABEL[status]} (${MOCK_NOTE})` : RUN_STATUS_LABEL[status] };
 }
 
 // ---------- Şimdi çalıştır ----------

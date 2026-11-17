@@ -5,6 +5,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ERP_FEATURE_CATALOG, ERP_FEATURES } from '@sp/domain';
 import type { ErpConfig } from '../src/config.ts';
+import { withTenant, type TenantContext } from '../src/db.ts';
+import { executeTest, prepareTest, recordTest, testThrottle } from '../src/modules/integrationEndpoints.ts';
 import { makeHarness } from './harness.ts';
 
 const KEY = Buffer.alloc(32, 11);
@@ -13,7 +15,8 @@ const TAKLIT_OK = 'Taklit sağlayıcıyla denendi — gerçek Oracle değil';
 let h: Awaited<ReturnType<typeof makeHarness>>;
 const erpCfg = (): ErpConfig => ({ provider: 'taklit', secretKey: KEY, allowedHosts: ['erp.example.test'] });
 
-beforeAll(async () => { h = await makeHarness({ erp: erpCfg() }); });
+// Sınama sıklığı sınırı yalnız kendi testinde açılır (diğer testler aynı özelliği art arda sınar).
+beforeAll(async () => { testThrottle.ms = 0; h = await makeHarness({ erp: erpCfg() }); });
 afterAll(async () => { await h?.close(); });
 
 const url = (f: string, rest = '') => `/api/v1/integration/endpoints/${f}${rest}`;
@@ -62,6 +65,16 @@ describe('kart listesi ve roller', () => {
     expect((await h.call('techEval', 'GET', url('INVOICE', '/runs'))).status).toBe(403);
     // Bilinmeyen özellik 400.
     expect((await h.call('tenantAdmin', 'PUT', url('BANKA'), { body: {} })).status).toBe(400);
+  });
+
+  it('ERP_PROVIDER=none: kart "yapılandırılmadı" der (TAKLIT değil); yeni uç nokta kaydedilmez, TAKLIT yazılmaz', async () => {
+    await withConfig({ erp: { provider: 'none' } }, async () => {
+      const c = await card('SUPPLIER');
+      expect(c.provider).toEqual({ kind: null, label: 'Sağlayıcı yapılandırılmadı', real: false, available: false });
+      const r = await h.call('tenantAdmin', 'PUT', url('SUPPLIER'), { body: basic('SUPPLIER') });
+      expect([r.status, r.body.error.code]).toEqual([409, 'provider_not_configured']);
+    });
+    expect((await h.owner.query(`SELECT 1 FROM integration_endpoints WHERE tenant_id = $1 AND feature = 'SUPPLIER'`, [h.world.tenantA])).rowCount).toBe(0);
   });
 });
 
@@ -191,6 +204,18 @@ describe('doğrulama (R4/R7/R8/R12)', () => {
       const r = await h.call('tenantAdmin', 'PUT', url('CONTRACT_HEADER'), { body: { enabled: true, baseUrl: 'https://erp.example.test/ebs' } });
       expect(r.status).toBe(409);
       expect(r.body.error.code).toBe('provider_not_configured');
+      // Var olan TAKLIT satırı: kart yine "yapılandırılmadı"; taklit:// artık kabul edilmez, tür değiştirilmez; yalnız kapatma geçer.
+      expect((await card('INVOICE')).provider.kind).toBeNull();
+      const t = await h.call('tenantAdmin', 'PUT', url('INVOICE'), { body: { timeoutMs: 16000 } });
+      expect(t.status).toBe(422);
+      expect(t.body.error.details.errors).toEqual(expect.arrayContaining([{ field: 'baseUrl', code: 'scheme_invalid' }]));
+      expect((await h.call('tenantAdmin', 'PUT', url('INVOICE'), { body: { enabled: false } })).status).toBe(200);
+      expect((await h.owner.query(`SELECT provider_kind FROM integration_endpoints WHERE tenant_id = $1 AND feature = 'INVOICE'`, [h.world.tenantA])).rows[0].provider_kind).toBe('TAKLIT');
+    });
+    // M4: açma, sağlayıcının bu ortamda gerçekten kurulabilmesini ister (üretimde taklit kurulamaz).
+    await withConfig({ env: 'production' }, async () => {
+      const r = await h.call('tenantAdmin', 'PUT', url('INVOICE'), { body: { enabled: true } });
+      expect([r.status, r.body.error.code]).toEqual([409, 'provider_not_configured']);
     });
   });
 });
@@ -346,5 +371,45 @@ describe('Şimdi çalıştır', () => {
     const jobs = (await h.owner.query<{ kind: string; payload: any }>(`SELECT kind, payload FROM jobs WHERE tenant_id = $1 AND payload->>'runId' = $2`, [h.world.tenantA, r.body.runId])).rows;
     expect(jobs.map((j) => j.kind)).toEqual(['erp.write', 'erp.write', 'erp.write']);
     expect(jobs.map((j) => j.payload.outboundId).sort()).toEqual([...ids].sort());
+  });
+});
+
+describe('sınama: sıklık sınırı ve eski ayar', () => {
+  const adminCtx = (): TenantContext => ({ tenantId: h.world.tenantA, userId: h.world.users.tenantAdmin.id, roles: ['ADMIN'], companyIds: [],
+    departmentIds: [], allDepartments: true, correlationId: 't4-stale' });
+
+  it('uç nokta başına 10 sn içinde ikinci sınama 429 (Türkçe ileti, çalışma açılmaz)', async () => {
+    expect((await h.call('tenantAdmin', 'PUT', url('PAYMENT_STATUS'), { body: basic('PAYMENT_STATUS') })).status).toBe(200);
+    testThrottle.ms = 10_000;
+    try {
+      expect((await h.call('tenantAdmin', 'POST', url('PAYMENT_STATUS', '/test'))).status).toBe(200);
+      const before = (await h.owner.query(`SELECT count(*)::int AS n FROM integration_runs WHERE tenant_id = $1 AND feature = 'PAYMENT_STATUS' AND trigger = 'TEST'`, [h.world.tenantA])).rows[0].n;
+      const r = await h.call('tenantAdmin', 'POST', url('PAYMENT_STATUS', '/test'));
+      expect([r.status, r.body.error.code]).toEqual([429, 'test_rate_limited']);
+      expect(r.body.error.message).toContain('saniye');
+      expect(r.body.error.details.retryAfterSeconds).toBeGreaterThan(0);
+      const after = (await h.owner.query(`SELECT count(*)::int AS n FROM integration_runs WHERE tenant_id = $1 AND feature = 'PAYMENT_STATUS' AND trigger = 'TEST'`, [h.world.tenantA])).rows[0].n;
+      expect(after).toBe(before);
+      // Başka özellik etkilenmez.
+      expect((await h.call('tenantAdmin', 'POST', url('COST_CENTER', '/test'))).status).toBe(200);
+    } finally { testThrottle.ms = 0; }
+  });
+
+  it('sınama sürerken ayar değişirse çalışma kaydedilir ama last_test_* yazılmaz (stale)', async () => {
+    expect((await h.call('tenantAdmin', 'PUT', url('PAYMENT_STATUS'), { body: basic('PAYMENT_STATUS') })).status).toBe(200);
+    const prepared = await withTenant(h.pool, adminCtx(), (tx) => prepareTest(tx, adminCtx(), h.config, 'PAYMENT_STATUS'));
+    const outcome = await executeTest(prepared);
+    expect(outcome.ok).toBe(true);
+    // Arada ayar değişti (sınama sonucu boşalır).
+    expect((await h.call('tenantAdmin', 'PUT', url('PAYMENT_STATUS'), { body: { resourcePath: '/webservices/rest/yeni' } })).status).toBe(200);
+    const rec = await withTenant(h.pool, adminCtx(), (tx) => recordTest(tx, adminCtx(), 'PAYMENT_STATUS', prepared.endpointId, outcome));
+    expect(rec).toMatchObject({ ok: true, stale: true });
+    expect(rec.staleNote).toContain('yeniden sınayın');
+    expect((await h.owner.query(`SELECT 1 FROM integration_runs WHERE id = $1 AND trigger = 'TEST'`, [rec.runId])).rowCount).toBe(1);
+    expect((await card('PAYMENT_STATUS')).lastTest).toBeNull();
+    // Değişiklik yoksa yazılır.
+    const t = await h.call('tenantAdmin', 'POST', url('PAYMENT_STATUS', '/test'));
+    expect(t.body).toMatchObject({ ok: true, stale: false });
+    expect((await card('PAYMENT_STATUS')).lastTest).toMatchObject({ ok: true });
   });
 });
