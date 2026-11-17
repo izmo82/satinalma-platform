@@ -7,6 +7,7 @@ import { closeTasks, openTask } from '../tasks.ts';
 import { ApiError, conflict, notFound, unprocessable } from '../errors.ts';
 import { selectDetector } from '../signature/detector.ts';
 import { resolveDepartment } from './departments.ts';
+import { cancelOpenChain, CONTENT_CHANGED_REASON, familyWritable } from './contractChain.ts';
 
 interface CvRow {
   id: string; company_id: string; family_id: string; version_no: number; document_version_id: string; stage: string;
@@ -86,6 +87,8 @@ export async function addContractVersion(tx: Tx, ctx: TenantContext, prevId: str
   documentVersionId: string; kind: 'MAIN' | 'AMENDMENT' | 'ANNEX' | 'SOW'; stage: 'DRAFT' | 'EXECUTION' | 'ARCHIVE_IMPORT'; addSupplierId?: string;
 }) {
   const prev = await loadCv(tx, prevId, true);
+  // v2 Faz 3 (R6): başka departmandan onaycı sözleşmeyi görür ama sürüm ekleyemez (RLS hatası yerine 403).
+  if (!familyWritable(ctx, prev.department_id)) throw new ApiError(403, 'department_forbidden', 'Bu sözleşmeyi görebilirsiniz ama düzenleyemezsiniz.');
   assertCurrent(prev, ifMatch);
   const dv = await tx.query<{ sha256: string }>(`SELECT sha256 FROM document_versions WHERE id = $1 AND company_id = $2`,
     [body.documentVersionId, prev.company_id]);
@@ -139,7 +142,9 @@ export async function addContractVersion(tx: Tx, ctx: TenantContext, prevId: str
   await closeTasks(tx, `sig:${prevId}:`);
   await audit(tx, ctx, 'contract.version.added', 'contract_version', newId, { previous: prevId, kind: body.kind });
   await openReviewTask(tx, ctx, newId, prev.company_id, prev.title);
-  return { contractVersionId: newId };
+  // v2 Faz 3 (R5): gönderimden sonra yeni belge sürümü gelirse açık onay zinciri iptal edilir; ekleyene yeniden gönderim görevi.
+  const cancelledChainId = await cancelOpenChain(tx, ctx, prev.family_id, CONTENT_CHANGED_REASON);
+  return { contractVersionId: newId, cancelledChainId };
 }
 
 export async function updateSignaturePolicy(tx: Tx, ctx: TenantContext, cvId: string, ifMatch: string | undefined,
@@ -259,6 +264,8 @@ export async function getSignatureStatus(tx: Tx, ctx: TenantContext, cvId: strin
 export async function reconcileExpiredExceptions(tx: Tx, ctx: TenantContext, cvId: string) {
   const s = await getSignatureStatus(tx, ctx, cvId);
   if (s.status.expiredExceptionIds.length === 0) return s;
+  // v2 Faz 3 (R6): başka departmandan onaycı okurken görev/sürüm yazılamaz (RLS); uzlaştırma yazabilen kullanıcının okumasında yapılır.
+  if (!familyWritable(ctx, s.contractVersion.departmentId ?? null)) return s;
   for (const id of s.status.expiredExceptionIds) {
     const t = await openTask(tx, ctx, {
       companyId: s.contractVersion.companyId, kind: 'SIGNATURE_EXCEPTION_EXPIRED', entityType: 'contract_version', entityId: cvId,

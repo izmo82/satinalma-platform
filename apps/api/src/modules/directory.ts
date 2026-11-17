@@ -324,7 +324,7 @@ async function suspend(tx: Tx, ctx: TenantContext, userId: string, runId: string
  */
 export async function handOffOpenTasks(tx: Tx, ctx: TenantContext, userId: string, reason: string, extra: Record<string, unknown> = {},
   keepRoles: string[] | null = null): Promise<number> {
-  const tasks = (await tx.query<{ id: string }>(`SELECT id FROM tasks WHERE status = 'OPEN' AND assignee_user_id = $1
+  const tasks = (await tx.query<{ id: string; entity_type: string; entity_id: string }>(`SELECT id, entity_type, entity_id FROM tasks WHERE status = 'OPEN' AND assignee_user_id = $1
       AND ($2::text[] IS NULL OR NOT (assignee_role = ANY ($2::text[]))) ORDER BY created_at, id FOR UPDATE`, [userId, keepRoles])).rows;
   if (!tasks.length) return 0;
   const deputy = (await tx.query<{ deputy_user_id: string }>(
@@ -333,10 +333,24 @@ export async function handOffOpenTasks(tx: Tx, ctx: TenantContext, userId: strin
       WHERE a.primary_user_id = $1 AND a.deputy_user_id IS NOT NULL
       ORDER BY a.kind, a.department_id NULLS FIRST LIMIT 1`, [userId])).rows[0]?.deputy_user_id ?? null;
   for (const t of tasks) {
-    await tx.query(`UPDATE tasks SET assignee_user_id = $2 WHERE id = $1`, [t.id, deputy]);
-    await audit(tx, ctx, 'task.reassigned', 'task', t.id, { from: userId, to: deputy, reason, ...extra });
+    // v2 Faz 3 (D108+, Görev 5): sözleşme onay adımı görevi o adımın unvanının (tür + departman) vekiline gider; kişi birden çok
+    // unvanın asıl kişisiyse genel seçim (ilk atama) yanlış vekili seçebilirdi. Etkin, D107 rollü vekil yoksa genel kurala düşer.
+    const to = t.entity_type === 'contract_approval_step' ? (await stepDeputy(tx, userId, t.entity_id)) ?? deputy : deputy;
+    await tx.query(`UPDATE tasks SET assignee_user_id = $2 WHERE id = $1`, [t.id, to]);
+    await audit(tx, ctx, 'task.reassigned', 'task', t.id, { from: userId, to, reason, ...extra });
   }
   return tasks.length;
+}
+
+/** Onay adımının unvanındaki (tür + departman) etkin vekil; kişi o unvanın asıl kişisi değilse ya da vekil uygun değilse null. */
+async function stepDeputy(tx: Tx, userId: string, stepId: string): Promise<string | null> {
+  return (await tx.query<{ deputy_user_id: string }>(
+    `SELECT a.deputy_user_id FROM contract_approval_steps s
+       JOIN approver_assignments a ON a.kind = s.kind AND a.department_id IS NOT DISTINCT FROM s.department_id
+       JOIN memberships m ON m.tenant_id = a.tenant_id AND m.user_id = a.deputy_user_id AND m.status = 'ACTIVE' AND m.supplier_id IS NULL
+      WHERE s.id = $2 AND s.kind <> 'EXTRA' AND a.primary_user_id = $1 AND a.deputy_user_id IS NOT NULL
+        AND m.roles && ARRAY['PROCUREMENT','DEPARTMENT_USER','BUYER','PROCUREMENT_MANAGER','MASTER_DATA','LEGAL','FINANCE','REQUESTER','TECH_EVALUATOR','SECURITY']`,
+    [userId, stepId])).rows[0]?.deputy_user_id ?? null;
 }
 
 async function reactivate(tx: Tx, ctx: TenantContext, userId: string, runId: string): Promise<boolean> {

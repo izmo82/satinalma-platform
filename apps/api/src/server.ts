@@ -33,6 +33,7 @@ import * as approvers from './modules/approvers.ts';
 import * as templates from './modules/templates.ts';
 import * as intake from './modules/contractIntake.ts';
 import * as reminders from './modules/contractReminders.ts';
+import * as contractApprovals from './modules/contractApprovals.ts';
 import { directoryProvider, type DirectoryProvider } from './directory/provider.ts';
 import { taskRoleSql, visibleTaskSql } from './tasks.ts';
 import { decisionSummaryPdf, evaluationWorkbook } from './reports.ts';
@@ -341,10 +342,11 @@ export async function buildApp(deps: AppDeps) {
                 WHEN 'invoice' THEN (SELECT i.invoice_no FROM invoices i WHERE i.id = t.entity_id)
                 WHEN 'incident' THEN (SELECT x.code FROM supplier_incidents x WHERE x.id = t.entity_id)
                 WHEN 'contract_reminder' THEN (SELECT f.code FROM contract_families f WHERE f.id = t.entity_id)
+                WHEN 'contract_rejection' THEN (SELECT f.code FROM contract_families f WHERE f.id = t.entity_id)
               END AS "refNo"
        FROM tasks t WHERE t.status = 'OPEN' AND ${taskRoleSql('$1')} AND ${visibleTaskSql()}
          AND (t.entity_type <> 'contract_approval_step' OR t.assignee_user_id = $3)
-         AND (t.entity_type <> 'contract_reminder' OR t.assignee_user_id IS NULL OR t.assignee_user_id = $3)
+         AND (t.entity_type NOT IN ('contract_reminder', 'contract_rejection') OR t.assignee_user_id IS NULL OR t.assignee_user_id = $3)
          AND ($2 <> 'overdue' OR (t.due_at IS NOT NULL AND t.due_at < now()))
          AND ($2 <> 'mine' OR t.assignee_user_id IS NULL OR t.assignee_user_id = $3)
        ORDER BY CASE t.severity WHEN 'CRITICAL' THEN 0 WHEN 'HIGH' THEN 1 ELSE 2 END, t.due_at NULLS LAST, t.created_at
@@ -355,7 +357,7 @@ export async function buildApp(deps: AppDeps) {
               count(*) FILTER (WHERE due_at IS NOT NULL AND due_at < now())::int AS overdue, count(*)::int AS "all"
        FROM tasks t WHERE t.status = 'OPEN' AND ${taskRoleSql('$1')} AND ${visibleTaskSql()}
          AND (t.entity_type <> 'contract_approval_step' OR t.assignee_user_id = $2)
-         AND (t.entity_type <> 'contract_reminder' OR t.assignee_user_id IS NULL OR t.assignee_user_id = $2)`, [ctx.roles, ctx.userId])).rows[0];
+         AND (t.entity_type NOT IN ('contract_reminder', 'contract_rejection') OR t.assignee_user_id IS NULL OR t.assignee_user_id = $2)`, [ctx.roles, ctx.userId])).rows[0];
     return { items: r.rows, counts: c };
   }));
 
@@ -632,6 +634,12 @@ export async function buildApp(deps: AppDeps) {
   app.post('/api/v1/contracts/:id/submit', { schema: { tags: ['contracts'], params: idParams, body: { type: 'object', additionalProperties: false, properties: {
     useDeputyForHead: { type: 'boolean' }, extraApproverIds: { type: 'array', maxItems: 10, items: uuid }, note: nullable({ type: 'string', maxLength: 2000 }) } } } }, async (req) =>
     scoped(req, 'contract.manage', (tx, ctx) => intake.submitContract(tx, ctx, (req.params as { id: string }).id, (req.body ?? {}) as any)));
+  // --- Onay kararı (v2 Faz 3, Görev 5: R4–R6) ----------------------------------------------------------------------------
+  app.post('/api/v1/contract-approval-steps/:id/decision', { schema: { tags: ['contracts'], params: idParams, body: { type: 'object', required: ['decision'], additionalProperties: false,
+    properties: { decision: { type: 'string', enum: ['APPROVED', 'REJECTED'] }, reason: nullable({ type: 'string', maxLength: 2000 }) } } } }, async (req) =>
+    scoped(req, 'contract.approve', (tx, ctx) => contractApprovals.decideStep(tx, ctx, (req.params as { id: string }).id, req.body as any)));
+  app.get('/api/v1/contract-approvals/mine', { schema: { tags: ['contracts'] } }, async (req) =>
+    scoped(req, 'contract.approve', (tx, ctx) => contractApprovals.myApprovals(tx, ctx)));
   app.post('/api/v1/suppliers/candidates', { schema: { tags: ['suppliers'], body: { type: 'object', required: ['legalName', 'vkn'], additionalProperties: false,
     properties: { legalName: text(300), vkn: { type: 'string', minLength: 1, maxLength: 20 }, contactEmail: nullable({ type: 'string', maxLength: 254 }) } } } }, async (req, reply) => {
     const r = await scoped(req, 'supplier.candidate.create', (tx, ctx) => createCandidateSupplier(tx, ctx, req.body as any));

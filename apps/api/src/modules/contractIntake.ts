@@ -12,6 +12,7 @@ import { saveTerms } from './contractTerms.ts';
 import { currentApprovers } from './approvers.ts';
 import { resolveDepartment } from './departments.ts';
 import { noticeBasis } from './contractReminders.ts';
+import { cancelOpenChain, CONTENT_CHANGED_REASON, roleOf } from './contractChain.ts';
 
 /**
  * v2 Faz 3 (D108+, R1–R5, R9, R10) Görev 4: sözleşme ekleme akışı. Taslak (aile + MAIN sürüm, proje zorunlu), zorunlu alanlar
@@ -26,7 +27,6 @@ const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbu
 const UNIT_TR: Record<NoticeUnit, string> = { DAY: 'gün', MONTH: 'ay' };
 const noticeLabel = (amount: number | null, unit: NoticeUnit | null) => (amount != null && unit ? `${amount} ${UNIT_TR[unit]}` : null);
 const INTAKE_REASON = 'Sözleşme ekleme akışı';
-export const CONTENT_CHANGED_REASON = 'İçerik değişti, onay baştan.';
 /** D107: onaycı yalnız etkin, Satınalma ya da Departman kullanıcısı rolündeki iç kişidir. */
 const APPROVER_ROLES = ['PROCUREMENT', 'DEPARTMENT_USER'];
 
@@ -98,25 +98,28 @@ async function chainRows(tx: Tx, familyIds: string[]): Promise<Map<string, Chain
   return out;
 }
 
-/**
- * Zincir özeti. Onaylanan zincirin sürümü ailenin güncel sürümü değilse (onaydan sonra yeni sürüm eklendi) onay güncel belgeyi
- * kapsamaz: özet "iptal" sayılır ve durum Taslak (yeniden onay gerekir) türetilir.
- */
-const summary = (c: ChainRow, currentVersionId: string | null): ChainSummary =>
-  !c.closed_at ? { status: 'OPEN', nextStepKind: c.next_kind }
-    : c.outcome === 'APPROVED' && c.version_id !== currentVersionId ? { status: 'CANCELLED' } : { status: c.outcome! };
+/** Onaylanan zincir güncel içeriği (güncel sürüm + o sürümün son koşul revizyonu) kapsıyor mu. */
+const coversCurrent = (c: ChainRow, f: Pick<FamilyRow, 'version_id' | 'terms_id'>) => c.version_id === f.version_id && c.terms_id === f.terms_id;
 
-/** Son zincir güncel sürüm için onaylandı mı: bu durumda alanlar değişmez, yeniden gönderilmez (değişiklik yeni sürümle). */
+/**
+ * Zincir özeti. Onaylanan zincir güncel içeriği kapsamıyorsa (onaydan sonra yeni sürüm eklendi ya da eski koşul ucuyla yeni koşul
+ * revizyonu kaydedildi; Görev 5) onay güncel içerik için sayılmaz: özet "iptal" sayılır ve durum Taslak/Eksik alan türetilir.
+ */
+const summary = (c: ChainRow, f: Pick<FamilyRow, 'version_id' | 'terms_id'>): ChainSummary =>
+  !c.closed_at ? { status: 'OPEN', nextStepKind: c.next_kind }
+    : c.outcome === 'APPROVED' && !coversCurrent(c, f) ? { status: 'CANCELLED' } : { status: c.outcome! };
+
+/** Son zincir güncel içerik için onaylandı mı: bu durumda alanlar değişmez, yeniden gönderilmez (değişiklik yeni sürümle). */
 const approvedCurrent = (f: FamilyRow, chains: ChainRow[]) => {
   const l = chains.at(-1);
-  return !!l && l.outcome === 'APPROVED' && l.version_id === f.version_id;
+  return !!l && l.outcome === 'APPROVED' && coversCurrent(l, f);
 };
 
 function statusOf(f: FamilyRow, chains: ChainRow[], day = today()) {
   const missing = missingRequired(fieldsOf(f));
   // Eski kayıt: Faz 3 geçişinden (051a) önce açılmış (intake_flow false) ve hiç onay zinciri yok.
   const legacy = !f.intake_flow && chains.length === 0;
-  const s = contractStatus({ missing, chains: chains.map((c) => summary(c, f.version_id)), legacy, endDate: f.end_date, indefinite: f.indefinite, today: day });
+  const s = contractStatus({ missing, chains: chains.map((c) => summary(c, f)), legacy, endDate: f.end_date, indefinite: f.indefinite, today: day });
   return { missing, legacy, code: s.code, label: s.label };
 }
 
@@ -176,12 +179,6 @@ function assertCanEdit(ctx: TenantContext, f: FamilyRow) {
   if (f.created_by !== ctx.userId && !isProcurement(ctx)) {
     throw new ApiError(403, 'not_contract_owner', 'Sözleşmeyi yalnız ekleyen kişi ya da Satınalma düzenler ve onaya gönderir.');
   }
-}
-
-async function roleOf(tx: Tx, userId: string): Promise<string> {
-  const r = (await tx.query<{ roles: string[] }>(`SELECT roles FROM memberships WHERE user_id = $1 AND supplier_id IS NULL`, [userId])).rows[0];
-  const roles = normalizeRoles(r?.roles ?? []);
-  return roles.includes('PROCUREMENT') ? 'PROCUREMENT' : roles.includes('DEPARTMENT_USER') ? 'DEPARTMENT_USER' : roles[0] ?? 'PROCUREMENT';
 }
 
 /** Kiracının etkin iç üyeleri arasından (carry-forward: kimlik kiracıya bağlı doğrulanır); `approverOnly` D107 rollerini ister. */
@@ -333,7 +330,7 @@ export async function updateFields(tx: Tx, ctx: TenantContext, familyId: string,
     if (!next.autoRenewal) next.renewalMonths = null;
     if (indefinite) { next.endDate = null; next.noticeAmount = null; next.noticeUnit = null; }
     if (!prev || termsDiff(prev, next).length > 0) {
-      const r = await saveTerms(tx, ctx, f.version_id, { ...next, changeReason: prev ? INTAKE_REASON : null });
+      const r = await saveTerms(tx, ctx, f.version_id, { ...next, changeReason: prev ? INTAKE_REASON : null }, { cancelChain: false });
       termsSaved = { id: r.id, revision: r.revision };
     }
   }
@@ -355,28 +352,9 @@ export async function updateFields(tx: Tx, ctx: TenantContext, familyId: string,
   return { ...(await getContractV2(tx, ctx, familyId)), changed, cancelledChainId: cancelled };
 }
 
-// --- Zincir iptali (R5; T5 yeni sürüm ve koşul kaydı yollarından da çağırır) ------------------------------------------------
+// --- Zincir iptali (R5): contractChain.ts (Görev 5'te eski uçlar da çağırdığı için taşındı; adlar burada da dışa aktarılır) ---------
 
-/**
- * Açık zinciri `CANCELLED` yapar (gerekçe, kapanış zamanı), açık adım görevlerini kapatır ve gönderene "Yeniden onaya gönderin"
- * görevi açar. Açık zincir yoksa hiçbir şey yapmaz (null). Karar yazılmış adımlar tarih olarak kalır.
- */
-export async function cancelOpenChain(tx: Tx, ctx: TenantContext, familyId: string, reason: string): Promise<string | null> {
-  const c = (await tx.query<{ id: string; submitted_by: string }>(
-    `SELECT id, submitted_by FROM contract_approval_chains WHERE family_id = $1 AND closed_at IS NULL`, [familyId])).rows[0];
-  if (!c) return null;
-  await tx.query(`UPDATE contract_approval_chains SET closed_at = now(), outcome = 'CANCELLED', cancel_reason = $2 WHERE id = $1`, [c.id, reason]);
-  await closeTasks(tx, `contract-approval:${c.id}:`);
-  const f = (await tx.query<{ code: string; title: string; company_id: string }>(`SELECT code, title, company_id FROM contract_families WHERE id = $1`, [familyId])).rows[0]!;
-  await openTask(tx, ctx, {
-    companyId: f.company_id, kind: 'contract_resubmit', entityType: 'contract_family', entityId: familyId,
-    title: `Yeniden onaya gönderin: ${f.title}`, reason: `${f.code}: ${reason} Önceki onay zinciri iptal edildi.`,
-    nextAction: 'Alanları ve belgeyi kontrol edip sözleşmeyi yeniden onaya gönderin.', assigneeRole: await roleOf(tx, c.submitted_by),
-    assigneeUserId: c.submitted_by, dedupeKey: `contract-resubmit:${familyId}`,
-  });
-  await audit(tx, ctx, 'contract.approval.cancelled', 'contract_family', familyId, { chainId: c.id }, reason);
-  return c.id;
-}
+export { cancelOpenChain, CONTENT_CHANGED_REASON } from './contractChain.ts';
 
 // --- Onay zinciri planı ve gönderim ----------------------------------------------------------------------------------------
 

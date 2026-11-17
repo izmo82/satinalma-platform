@@ -7,6 +7,7 @@ import { audit } from '../audit.ts';
 import { closeTasks, openTask, v2Role } from '../tasks.ts';
 import { ApiError, conflict, notFound, unprocessable } from '../errors.ts';
 import { scheduleContractReminders, taskPrefix as reminderTaskPrefix } from './contractReminders.ts';
+import { cancelOpenChain, CONTENT_CHANGED_REASON, familyWritable } from './contractChain.ts';
 
 /**
  * Faz 3 kalan: sözleşme koşulları (bedel/tavan, süre, ihbar), hukuk doğrulaması, ihbar son gününe göre uyarılar (T21),
@@ -57,7 +58,11 @@ async function assertRatedOpenLines(tx: Tx, cvId: string) {
   if (n) throw unprocessable('tax_rate_missing', `Bu sözleşmenin açık siparişlerinde KDV oranı girilmemiş ${n} satır var; vergi dahil limite geçmeden önce bu siparişler oranla yeniden düzenlenmeli veya kapatılmalı.`);
 }
 
-export async function saveTerms(tx: Tx, ctx: TenantContext, cvId: string, body: TermsInput) {
+/**
+ * `opts.cancelChain` (varsayılan true): v2 Faz 3 (R5) koşul değişince açık onay zinciri iptal edilir. Ekleme akışı (`updateFields`)
+ * iptali kendisi yaptığı için false geçer.
+ */
+export async function saveTerms(tx: Tx, ctx: TenantContext, cvId: string, body: TermsInput, opts: { cancelChain?: boolean } = {}) {
   const cv = await loadCv(tx, cvId);
   if (cv.superseded_by_id) throw conflict('version_superseded', 'Bu sürümün yerine yeni sürüm geldi; koşullar güncel sürüme girilir.');
   const prev = await latestTerms(tx, cvId);
@@ -88,7 +93,8 @@ export async function saveTerms(tx: Tx, ctx: TenantContext, cvId: string, body: 
     nextAction: 'Değerleri kaynak maddeyle karşılaştırıp doğrulayın.', assigneeRole: 'LEGAL', dedupeKey: `terms-verify:${cvId}:${revision}`,
   });
   await audit(tx, ctx, prev ? 'contract.terms_revised' : 'contract.terms_entered', 'contract_version', cvId, { revision, diff }, body.changeReason ?? undefined);
-  return { id: r.id, revision, diff };
+  const cancelledChainId = opts.cancelChain === false ? null : await cancelOpenChain(tx, ctx, cv.family_id, CONTENT_CHANGED_REASON);
+  return { id: r.id, revision, diff, cancelledChainId };
 }
 
 /** Hukuk doğrulaması: giren kişi doğrulayamaz; yalnız en son revizyon. Doğrulanınca ihbar uyarıları planlanır. */
@@ -162,11 +168,16 @@ export async function processNoticeReminder(tx: Tx, ctx: TenantContext, jobId: s
 
 export async function decideRenewal(tx: Tx, ctx: TenantContext, cvId: string, body: { decision: 'RENEW' | 'TERMINATE' | 'RENEGOTIATE' | 'NEW_PROJECT'; rationale: string }) {
   const cv = await loadCv(tx, cvId);
-  const t = await latestTerms(tx, cvId);
+  // v2 Faz 3 (Görev 5, T6 inceleme m2): bu sürümün onaylı zinciri varsa karar yürürlükteki (en yeni onaylı) koşul revizyonuna bağlanır;
+  // onaydan sonra eski uçla kaydedilmiş, henüz onaylanmamış yeni revizyon kararı engellemez (hatırlatıcılar da onaylı koşulla sürer,
+  // `contractReminders.effectiveTermsId`). Onaylı zincir yoksa eski davranış: sürümün son revizyonu.
+  const approvedTerms = (await tx.query<TermsRow>(`SELECT ${TERMS_COLS} FROM contract_terms t
+    WHERE t.contract_version_id = $1 AND EXISTS (SELECT 1 FROM contract_approval_chains c WHERE c.terms_id = t.id AND c.outcome = 'APPROVED')
+    ORDER BY t.revision DESC LIMIT 1`, [cvId])).rows[0] ?? null;
+  const t = approvedTerms ?? await latestTerms(tx, cvId);
   // v2 Faz 3 (D108 R7a): bu sürüm + koşul revizyonunu onaylayan APPROVED zincir varsa D95a doğrulaması olmadan da karar girilebilir;
   // üç kişilik görev ayrılıklı onay zinciri yenileme kararı için daha güçlü bir denetimdir. Eski kayıtta doğrulama yine şarttır.
-  const approved = t && !t.verified_by && (await tx.query(`SELECT 1 FROM contract_approval_chains WHERE version_id = $1 AND terms_id = $2 AND outcome = 'APPROVED'`,
-    [cvId, t.id])).rowCount;
+  const approved = approvedTerms != null;
   if (!t || (!t.verified_by && !approved)) throw conflict('terms_not_verified', 'Yenileme kararı doğrulanmış koşullara bağlanır.');
   if (body.rationale.trim().length < 10) throw unprocessable('rationale_required', 'Karar gerekçesi gerekli (en az 10 karakter).');
   const d = (await tx.query<{ id: string }>(`INSERT INTO renewal_decisions (tenant_id, company_id, contract_version_id, terms_id, decision, rationale, decided_by)
@@ -249,9 +260,12 @@ export async function processObligationDue(tx: Tx, ctx: TenantContext, jobId: st
 }
 
 export async function recordObligation(tx: Tx, ctx: TenantContext, obligationId: string, b: { dueDate: string; outcome: 'FULFILLED' | 'MISSED' | 'WAIVED'; note: string; evidence?: string | null }) {
-  const o = (await tx.query<{ id: string; company_id: string; first_due: string; recurrence: Recurrence; until: string | null; evidence_required: boolean; retired_at: Date | null }>(
-    `SELECT id, company_id, first_due::text, recurrence, until::text, evidence_required, retired_at FROM contract_obligations WHERE id = $1`, [obligationId])).rows[0];
+  const o = (await tx.query<{ id: string; company_id: string; first_due: string; recurrence: Recurrence; until: string | null; evidence_required: boolean; retired_at: Date | null; department_id: string | null }>(
+    `SELECT o.id, o.company_id, o.first_due::text, o.recurrence, o.until::text, o.evidence_required, o.retired_at, f.department_id FROM contract_obligations o
+     JOIN contract_versions cv ON cv.id = o.contract_version_id JOIN contract_families f ON f.id = cv.family_id WHERE o.id = $1`, [obligationId])).rows[0];
   if (!o) throw notFound();
+  // v2 Faz 3 (R6): başka departmandan onaycı yükümlülüğü görür ama kaydedemez (RLS hatası yerine 403).
+  if (!familyWritable(ctx, o.department_id)) throw new ApiError(403, 'department_forbidden', 'Bu sözleşmeyi görebilirsiniz ama düzenleyemezsiniz.');
   if (!occurrences(o.first_due, o.recurrence, b.dueDate, b.dueDate, o.until).includes(b.dueDate)) throw unprocessable('invalid_period', 'Bu tarih yükümlülüğün bir dönemi değil.');
   if (b.outcome === 'FULFILLED' && o.evidence_required && (b.evidence ?? '').trim().length < 5) throw unprocessable('evidence_required', 'Bu yükümlülük kanıtla kapatılır (belge no, rapor adı veya bağlantı).');
   if (b.note.trim().length < 5) throw unprocessable('note_required', 'Açıklama gerekli.');
