@@ -331,9 +331,14 @@ export async function buildApp(deps: AppDeps) {
   }));
 
   app.get('/api/v1/tasks', {
-    schema: { tags: ['tasks'], querystring: { type: 'object', properties: { view: { type: 'string', enum: ['mine', 'overdue', 'all'] } } } },
+    schema: { tags: ['tasks'], querystring: { type: 'object', properties: { view: { type: 'string', enum: ['mine', 'overdue', 'all'] },
+      // Persona K2: sayfalama. Varsayılan ilk 200 (önceki davranış); sonraki sayfa `offset` ile, `nextOffset` null olunca liste biter.
+      offset: { type: 'integer', minimum: 0, maximum: 1_000_000, default: 0 }, limit: { type: 'integer', minimum: 1, maximum: 200, default: 200 } } } },
   }, async (req) => scoped(req, 'task.read', async (tx, ctx) => {
-    const view = (req.query as { view?: string }).view ?? 'mine';
+    const q = req.query as { view?: string; offset?: number; limit?: number };
+    const view = q.view ?? 'mine';
+    const offset = q.offset ?? 0;
+    const limit = q.limit ?? 200;
     // Kullanıcının rolüne atanmamış işler sayılmaz bile (yetkisiz iş sayısı sızdırılmaz).
     // Kayıt no: görevin bağlı olduğu kaydın kiracı içi numarası. Varlığa erişim yoksa (RLS) boş kalır, uydurulmaz.
     const r = await tx.query(
@@ -348,22 +353,36 @@ export async function buildApp(deps: AppDeps) {
                 WHEN 'incident' THEN (SELECT x.code FROM supplier_incidents x WHERE x.id = t.entity_id)
                 WHEN 'contract_reminder' THEN (SELECT f.code FROM contract_families f WHERE f.id = t.entity_id)
                 WHEN 'contract_rejection' THEN (SELECT f.code FROM contract_families f WHERE f.id = t.entity_id)
+                WHEN 'contract_family' THEN (SELECT f.code FROM contract_families f WHERE f.id = t.entity_id)
+                WHEN 'contract_approval_step' THEN (SELECT f.code FROM contract_approval_steps s JOIN contract_approval_chains c ON c.id = s.chain_id
+                  JOIN contract_families f ON f.id = c.family_id WHERE s.id = t.entity_id)
               END AS "refNo"
        FROM tasks t WHERE t.status = 'OPEN' AND ${taskRoleSql('$1')} AND ${visibleTaskSql()}
          AND (t.entity_type <> 'contract_approval_step' OR t.assignee_user_id = $3)
          AND (t.entity_type NOT IN ('contract_reminder', 'contract_rejection') OR t.assignee_user_id IS NULL OR t.assignee_user_id = $3)
          AND ($2 <> 'overdue' OR (t.due_at IS NOT NULL AND t.due_at < now()))
          AND ($2 <> 'mine' OR t.assignee_user_id IS NULL OR t.assignee_user_id = $3)
-       ORDER BY CASE t.severity WHEN 'CRITICAL' THEN 0 WHEN 'HIGH' THEN 1 ELSE 2 END, t.due_at NULLS LAST, t.created_at
-       LIMIT 200`, [ctx.roles, view, ctx.userId]);
+       -- Kişiye atanmış açık onay adımı en üstte (yoğun onaycıda rol kuyruğunun altında kalmasın, persona K2); sonra önceki sıra.
+       -- t.id son anahtar: sayfalar arasında kararlı sıra (aynı satır iki sayfada görünmez, hiçbiri atlanmaz).
+       ORDER BY CASE WHEN t.entity_type = 'contract_approval_step' AND t.assignee_user_id = $3 THEN 0 ELSE 1 END,
+                CASE t.severity WHEN 'CRITICAL' THEN 0 WHEN 'HIGH' THEN 1 ELSE 2 END, t.due_at NULLS LAST, t.created_at, t.id
+       LIMIT $4 OFFSET $5`, [ctx.roles, view, ctx.userId, limit, offset]);
     // Sekme sayıları aynı yetki sınırıyla: yalnız kullanıcının rolüne atanmış işler.
     const c = (await tx.query<{ mine: number; overdue: number; all: number }>(
       `SELECT count(*) FILTER (WHERE assignee_user_id IS NULL OR assignee_user_id = $2)::int AS mine,
               count(*) FILTER (WHERE due_at IS NOT NULL AND due_at < now())::int AS overdue, count(*)::int AS "all"
        FROM tasks t WHERE t.status = 'OPEN' AND ${taskRoleSql('$1')} AND ${visibleTaskSql()}
          AND (t.entity_type <> 'contract_approval_step' OR t.assignee_user_id = $2)
-         AND (t.entity_type NOT IN ('contract_reminder', 'contract_rejection') OR t.assignee_user_id IS NULL OR t.assignee_user_id = $2)`, [ctx.roles, ctx.userId])).rows[0];
-    return { items: r.rows, counts: c };
+         AND (t.entity_type NOT IN ('contract_reminder', 'contract_rejection') OR t.assignee_user_id IS NULL OR t.assignee_user_id = $2)`, [ctx.roles, ctx.userId])).rows[0]!;
+    // Menü sayaçları (modül başına "Benden beklenen"): listeden değil sayımdan; 200 sınırı ve sayfalama sayacı kısaltmaz.
+    const byType = (await tx.query<{ entityType: string; n: number }>(
+      `SELECT t.entity_type AS "entityType", count(*)::int AS n FROM tasks t WHERE t.status = 'OPEN' AND ${taskRoleSql('$1')} AND ${visibleTaskSql()}
+         AND (t.assignee_user_id IS NULL OR t.assignee_user_id = $2)
+         AND (t.entity_type <> 'contract_approval_step' OR t.assignee_user_id = $2)
+       GROUP BY t.entity_type`, [ctx.roles, ctx.userId])).rows;
+    const total = c[view as keyof typeof c];
+    const nextOffset = offset + r.rows.length < total && r.rows.length === limit ? offset + r.rows.length : null;
+    return { items: r.rows, counts: c, total, offset, nextOffset, mineByType: Object.fromEntries(byType.map((x) => [x.entityType, x.n])) };
   }));
 
   // --- Sözleşme şablon kütüphanesi (v2 Faz 3, R8) ---------------------------------
@@ -609,6 +628,9 @@ export async function buildApp(deps: AppDeps) {
   // --- Sözleşme ekleme akışı (v2 Faz 3, Görev 4: R1–R5, R9, R10) --------------------------------------------------------
   const nullable = (schema: Record<string, unknown>) => ({ anyOf: [schema, { type: 'null' }] });
   const intakeDate = { type: 'string', format: 'date' } as const;
+  // Persona K1: anyOf[{integer},{null}] ile ajv tür zorlaması null'ı 0'a çeviriyordu (boş ihbar 422, boş vade 0 kaydı).
+  // Tür dizisi ['integer','null'] veride null tuttuğu için zorlama yapılmaz; yalnız alanlar ucunda kullanılır (diğer uçlar değişmez).
+  const nullNum = (schema: { type: 'integer'; minimum: number; maximum: number }) => ({ ...schema, type: ['integer', 'null'] });
   app.post('/api/v1/contract-drafts', { schema: { tags: ['contracts'], body: { type: 'object', required: ['documentVersionId'], additionalProperties: false,
     properties: { documentVersionId: uuid, projectId: nullable(uuid), templateVersionId: nullable(uuid), departmentId: optDepartment } } } }, async (req, reply) =>
     reply.status(201).send(await scoped(req, 'contract.manage', (tx, ctx) => intake.createDraft(tx, ctx, req.body as any))));
@@ -619,9 +641,9 @@ export async function buildApp(deps: AppDeps) {
     priceEscalation: nullable({ type: 'string', maxLength: 1000 }),
     currency: { type: 'string', pattern: '^[A-Z]{3}$' }, valueType: { type: 'string', enum: ['FIXED', 'CEILING', 'UNPRICED'] },
     amount: nullable({ type: 'string', pattern: '^\\d{1,18}(\\.\\d{1,2})?$' }), limitBasis: { type: 'string', enum: ['NET', 'GROSS'] },
-    startDate: nullable(intakeDate), endDate: nullable(intakeDate), autoRenewal: { type: 'boolean' }, renewalMonths: nullable({ type: 'integer', minimum: 1, maximum: 120 }),
-    noticeAmount: nullable({ type: 'integer', minimum: 0, maximum: 3650 }), noticeUnit: nullable({ type: 'string', enum: ['DAY', 'MONTH'] }),
-    paymentDays: nullable({ type: 'integer', minimum: 0, maximum: 365 }), paymentTerms: { type: 'string', maxLength: 2000 }, sourceRef: { type: 'string', minLength: 3, maxLength: 300 },
+    startDate: nullable(intakeDate), endDate: nullable(intakeDate), autoRenewal: { type: 'boolean' }, renewalMonths: nullNum({ type: 'integer', minimum: 1, maximum: 120 }),
+    noticeAmount: nullNum({ type: 'integer', minimum: 0, maximum: 3650 }), noticeUnit: nullable({ type: 'string', enum: ['DAY', 'MONTH'] }),
+    paymentDays: nullNum({ type: 'integer', minimum: 0, maximum: 365 }), paymentTerms: { type: 'string', maxLength: 2000 }, sourceRef: { type: 'string', minLength: 3, maxLength: 300 },
     fxDifference: nullable({ type: 'string', enum: ['ALLOWED', 'NOT_ALLOWED'] }), nonWorkingDay: { type: 'string', enum: ['PREVIOUS_WORKING_DAY', 'AS_IS'] },
   } } } }, async (req) => scoped(req, 'contract.manage', (tx, ctx) => intake.updateFields(tx, ctx, (req.params as { id: string }).id, req.body as intake.FieldsInput)));
   app.get('/api/v1/contracts/:id/v2', { schema: { tags: ['contracts'], params: idParams } }, async (req) =>

@@ -41,6 +41,8 @@ export interface UploadResult {
   ublCheck?: { ruleSet: string; errors: number; warnings: number; findings: UblFinding[] };
 }
 
+export const CONTRACT_DOCX_MESSAGE = "Sözleşme ekleme imzalı belgenin PDF'i ya da taraması içindir. .docx taslaklar Şablonlar'da tutulur.";
+
 /**
  * Belge sürümü kaydı. Aynı içerik (hash) aynı belgeye/aynı şirket+türde tekrar yüklenirse
  * yeni sürüm ya da iş açılmaz; mevcut sürüm döner (BR08, T30).
@@ -48,7 +50,11 @@ export interface UploadResult {
 export async function uploadDocument(tx: Tx, ctx: TenantContext, store: ObjectStore, input: UploadInput): Promise<UploadResult> {
   if (!ctx.companyIds.includes(input.companyId)) throw new ApiError(403, 'company_forbidden', 'Bu şirket için yetkiniz yok.');
   const inspected = inspectUpload(input.filename, input.mimeType, input.body);
-  if ('rejected' in inspected) throw new ApiError(415, 'unsupported_file', inspected.rejected);
+  if ('rejected' in inspected) {
+    // Persona K3: sözleşme imzalı belgenin PDF'i ya da taramasıdır; şablondan hazırlanan .docx taslak yüklenmek istenince yol gösterilir.
+    if (input.kind === 'CONTRACT' && /\.(docx?|dotx)$/i.test(input.filename)) throw new ApiError(415, 'unsupported_file', CONTRACT_DOCX_MESSAGE);
+    throw new ApiError(415, 'unsupported_file', inspected.rejected);
+  }
 
   const dup = await tx.query<{ id: string; document_id: string; version_no: number; basic_check_status: 'PASSED' | 'QUARANTINED'; basic_check_reason: string | null }>(
     `SELECT dv.id, dv.document_id, dv.version_no, dv.basic_check_status, dv.basic_check_reason

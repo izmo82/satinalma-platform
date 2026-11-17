@@ -563,3 +563,56 @@ describe('final inceleme: kişi seçici ve izinler', () => {
     expect(me.body.permissions).not.toContain('template.manage');
   });
 });
+
+describe('persona K2: İşlerim sayfalama ve onay adımının görünürlüğü', () => {
+  it('250 yüksek öncelikli işi olan onaycı yeni onay görevini ilk sayfada görür (kayıt no = sözleşme kodu); sayfalama bütün işlere ulaşır, sayaç değişmez', async () => {
+    const w = await fresh();
+    await approvers(w);
+    const c = await contract(w);
+    const code = (await v2(w, 'legal', c.familyId)).body.family.code as string;
+    const step = (await tasks(w, 'security')).body.items.find((t: any) => t.entityType === 'contract_approval_step');
+    expect(step, 'Selin için onay görevi').toBeTruthy();
+    // Kişiye atanmış 250 kritik ve gecikmiş iş (önceki sırada onay adımını ilk 200'ün dışına iter).
+    const role = (await h.owner.query<{ r: string }>(`SELECT assignee_role AS r FROM tasks WHERE id = $1`, [step.id])).rows[0]!.r;
+    await h.owner.query(`INSERT INTO tasks (tenant_id, company_id, kind, entity_type, entity_id, title, reason, next_action, assignee_role, severity, due_at, dedupe_key, assignee_user_id)
+      SELECT $1, $2, 'persona_k2_load', 'supplier', $3, 'Yük işi ' || g, 'Sentetik yük', 'İnceleyin', $4, 'CRITICAL', now() - interval '1 day', 'persona-k2:' || g || ':' || $5, $6
+      FROM generate_series(1, 250) g`, [w.tenantA, w.companyA1.id, w.suppliers.s1, role, randomUUID(), w.users.security.id]);
+
+    const first = (await tasks(w, 'security')).body;
+    expect(first.items).toHaveLength(200);
+    expect(first.total).toBe(first.counts.mine);
+    expect(first.total).toBeGreaterThanOrEqual(251);
+    expect(first.nextOffset).toBe(200);
+    expect(first.items[0]).toMatchObject({ id: step.id, entityType: 'contract_approval_step', refNo: code });
+    expect(first.mineByType.contract_approval_step).toBe(1);
+    expect(first.mineByType.supplier).toBeGreaterThanOrEqual(250);
+
+    // Sayfa sayfa: her iş bir kez, toplam sayaçla aynı; son sayfada nextOffset null.
+    const seen: string[] = [];
+    let offset: number | null = 0;
+    while (offset !== null) {
+      const p: any = (await call(w, 'security', 'GET', `/api/v1/tasks?view=mine&limit=100&offset=${offset}`)).body;
+      seen.push(...p.items.map((t: any) => t.id));
+      offset = p.nextOffset;
+    }
+    expect(new Set(seen).size).toBe(seen.length);
+    expect(seen.length).toBe(first.total);
+    // 201. iş ve sonrası erişilebilir (eski sınır 200).
+    const tail = (await call(w, 'security', 'GET', '/api/v1/tasks?view=mine&offset=200')).body;
+    expect(tail.items.length).toBe(first.total - 200);
+    expect(tail.nextOffset).toBeNull();
+    // Geçersiz sayfa parametresi reddedilir.
+    expect((await call(w, 'security', 'GET', '/api/v1/tasks?view=mine&limit=500')).status).toBe(400);
+  });
+
+  it('yeniden gönderim görevinde kayıt no sözleşme kodudur', async () => {
+    const w = await fresh();
+    await approvers(w);
+    const c = await contract(w);
+    const code = (await v2(w, 'legal', c.familyId)).body.family.code as string;
+    const put = await call(w, 'techEval', 'PUT', `/api/v1/contracts/${c.familyId}/fields`, { amount: '130000.00' });
+    expect(put.status, JSON.stringify(put.body)).toBe(200);
+    const resubmit = (await tasks(w, 'techEval')).body.items.find((t: any) => t.entityType === 'contract_family');
+    expect(resubmit).toMatchObject({ kind: 'contract_resubmit', refNo: code });
+  });
+});

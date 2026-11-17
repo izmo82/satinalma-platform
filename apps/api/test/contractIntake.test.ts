@@ -351,6 +351,38 @@ describe('alanlar ve gönderim', () => {
     expect(g.body.fields).toMatchObject({ indefinite: true, endDate: null, noticeAmount: 3, noticeUnit: 'MONTH', noticePeriod: '3 ay' });
     expect(g.body.status.code).toBe('DRAFT');
   });
+
+  it('persona K1: boş sayısal alanlar null kalır (0 olmaz); boş ihbar "ihbar yok" kaydı, yalnız biri girilirse 422', async () => {
+    const w = await fresh();
+    const d = await draft(w);
+    // Personanın curl gövdesi (ihbar ve vade boş): önce 422 dönüyor, paymentDays 0 kaydediliyordu.
+    const body = { currency: 'TRY', valueType: 'FIXED', amount: '1.00', limitBasis: 'NET', startDate: '2027-01-01', endDate: '2027-12-31', autoRenewal: false,
+      noticeAmount: null, noticeUnit: null, sourceRef: 'Madde 1', indefinite: false };
+    const r = await call(w, 'techEval', 'PUT', `/api/v1/contracts/${d.familyId}/fields`, { ...body, paymentDays: null, renewalMonths: null });
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body.fields).toMatchObject({ noticeAmount: null, noticeUnit: null, noticePeriod: null, paymentDays: null, renewalMonths: null });
+    const row = (await h.owner.query(`SELECT t.notice_amount, t.notice_unit, t.payment_days, t.renewal_months FROM contract_terms t
+      WHERE t.id = $1`, [r.body.fields.termsId])).rows[0];
+    expect(row).toEqual({ notice_amount: null, notice_unit: null, payment_days: null, renewal_months: null });
+    expect((await v2(w, 'techEval', d.familyId)).body.fields).toMatchObject({ noticeAmount: null, paymentDays: null });
+
+    // Değer girilince saklanır; sonra null gönderilince yeniden boşalır (0 olmaz).
+    const set = await call(w, 'techEval', 'PUT', `/api/v1/contracts/${d.familyId}/fields`, { noticeAmount: 0, noticeUnit: 'DAY', paymentDays: 0 });
+    expect(set.status, JSON.stringify(set.body)).toBe(200);
+    expect(set.body.fields).toMatchObject({ noticeAmount: 0, noticeUnit: 'DAY', paymentDays: 0 });
+    const clear = await call(w, 'techEval', 'PUT', `/api/v1/contracts/${d.familyId}/fields`, { noticeAmount: null, noticeUnit: null, paymentDays: null });
+    expect(clear.status, JSON.stringify(clear.body)).toBe(200);
+    expect(clear.body.fields).toMatchObject({ noticeAmount: null, noticeUnit: null, paymentDays: null });
+
+    // Yalnız biri girilirse 422 (iki yönde).
+    for (const half of [{ noticeAmount: 30, noticeUnit: null }, { noticeAmount: null, noticeUnit: 'DAY' }]) {
+      const bad = await call(w, 'techEval', 'PUT', `/api/v1/contracts/${d.familyId}/fields`, half);
+      expect(bad.status, JSON.stringify(half)).toBe(422);
+      expect(bad.body.error.message).toBe('İhbar süresi ve birimi birlikte girilir.');
+    }
+    // Sayı yerine metin hâlâ reddedilir (zorlama yalnız null için kapatıldı, doğrulama sürer).
+    expect((await call(w, 'techEval', 'PUT', `/api/v1/contracts/${d.familyId}/fields`, { paymentDays: 400 })).status).toBe(400);
+  });
 });
 
 describe('eski kayıt ve liste', () => {
