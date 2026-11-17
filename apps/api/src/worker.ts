@@ -14,6 +14,7 @@ import { normalizeRoles } from '@sp/domain';
 import { directoryProvider, type DirectoryProvider } from './directory/provider.ts';
 import { directoryJobContext, enqueueNightlySyncs, processDirectorySync } from './modules/directory.ts';
 import { configureMailChannel, DISPATCH_JOB, mailSender, processEmailDispatch, type MailSender } from './mail/index.ts';
+import { EXPIRE_JOB, processApplicationExpiry, processApplicationSubmitted, SUBMITTED_JOB } from './modules/supplierApplications.ts';
 
 /** İsteğe bağlı işçi bağımlılıkları; eski çağrılar etkilenmez. */
 export interface WorkerOptions {
@@ -33,7 +34,7 @@ export async function processJobs(pool: pg.Pool, store: ObjectStore, detectorPro
   const sender = opts.mailSender ?? null;
   // Kiracı dışa aktarımı saatler sürebilir: ayrı şeritte tek tek çalışır, ihbar/imza/silme işlerini bekletmez.
   const short = ['signature.detect', 'contract.notice_reminder', 'contract.end_reminder', 'contract.reminder_backfill', 'contract.obligation_due', 'retention.purge', ...(erpAdapterName ? ['erp.export'] : []), ...(hasAiProviders() ? ['ai.run'] : []),
-    ...(directory ? ['directory.sync'] : []), ...(sender ? [DISPATCH_JOB] : [])];
+    ...(directory ? ['directory.sync'] : []), ...(sender ? [DISPATCH_JOB] : []), SUBMITTED_JOB, EXPIRE_JOB];
   const kinds = lane === 'export' ? ['tenant.export'] : lane === 'short' ? short : [...short, 'tenant.export'];
   const claimed = await withoutTenant(pool, async (c) =>
     (await c.query<{ id: string; tenant_id: string; company_id: string | null; kind: string; requested_by: string | null }>(
@@ -62,6 +63,9 @@ export async function processJobs(pool: pg.Pool, store: ObjectStore, detectorPro
       }
       // v2 Faz 5 (R6): gönderim sistem işidir (kuyruğa yazanın üyeliğine bağlı değil); yalnız QUEUED satır gönderilir.
       if (job.kind === DISPATCH_JOB && sender) { await processEmailDispatch(pool, sender, job.tenant_id, job.id); continue; }
+      // v2 Faz 5 (R2): girişsiz başvurunun işleri sistem işidir (isteyen kullanıcı yok; kiracı başvurudan gelir).
+      if (job.kind === SUBMITTED_JOB) { await processApplicationSubmitted(pool, job.tenant_id, job.id); continue; }
+      if (job.kind === EXPIRE_JOB) { await processApplicationExpiry(pool, job.tenant_id, job.id); continue; }
       if (job.kind === 'contract.reminder_backfill') { await processReminderBackfill(pool, job.tenant_id, job.id); continue; }
       if (job.kind === 'retention.purge') { await withTenant(pool, { ...ctx, roles: [], companyIds: [] }, (tx) => processPurge(tx, store, job.id)); continue; }
       if (!m || (job.company_id && !m.company_ids.includes(job.company_id))) {

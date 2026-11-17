@@ -42,6 +42,9 @@ import { configureMailChannel } from './mail/index.ts';
 import { taskRoleSql, visibleTaskSql } from './tasks.ts';
 import { decisionSummaryPdf, evaluationWorkbook } from './reports.ts';
 import { RateLimiter, rateLimited } from './rateLimit.ts';
+import { DEFAULT_PUBLIC_RATE_LIMIT, PublicRateLimiter } from './publicRateLimit.ts';
+import { avScanner } from './av/index.ts';
+import * as applications from './modules/supplierApplications.ts';
 
 export interface AppDeps {
   config: Config;
@@ -87,7 +90,7 @@ export async function buildApp(deps: AppDeps) {
   });
   await app.register(cors, {
     origin: [deps.config.webOrigin, ...(deps.config.extraWebOrigins ?? [])], credentials: false,
-    exposedHeaders: ['ETag', 'X-Correlation-Id', 'Retry-After', 'X-SP-User'], allowedHeaders: ['Authorization', 'Content-Type', 'If-Match', 'X-Tenant-Id', 'X-Correlation-Id', 'X-SP-CSRF', 'X-SP-Expect-User'],
+    exposedHeaders: ['ETag', 'X-Correlation-Id', 'Retry-After', 'X-SP-User'], allowedHeaders: ['Authorization', 'Content-Type', 'If-Match', 'X-Tenant-Id', 'X-Correlation-Id', 'X-SP-CSRF', 'X-SP-Expect-User', 'X-Application-Token'],
   });
   await app.register(multipart, { limits: { fileSize: MAX_UPLOAD_BYTES, files: 1, fields: 10 } });
 
@@ -99,6 +102,9 @@ export async function buildApp(deps: AppDeps) {
   const dirProvider: DirectoryProvider | null = deps.directoryProvider !== undefined ? deps.directoryProvider : directoryProvider(deps.config.directory);
   const sessions = new WebSessions(deps.pool, deps.config.session ?? DEFAULT_SESSION, deps.config.webOrigin, deps.config.oidc, deps.auth, deps.config.extraWebOrigins);
   const limiter = deps.config.rateLimit?.enabled ? new RateLimiter(deps.config.rateLimit) : null;
+  // v2 Faz 5 (R4a): girişsiz uç sınırlayıcısı her ortamda açık (RATE_LIMIT_ENABLED'dan bağımsız). R5: tarayıcı yoksa NOT_CONFIGURED.
+  const publicLimiter = new PublicRateLimiter(deps.config.publicRateLimit ?? DEFAULT_PUBLIC_RATE_LIMIT);
+  const scanner = avScanner(deps.config.av);
   app.setErrorHandler((err: any, req, reply) => {
     if (err instanceof ApiError) {
       // Kimlik doğrulaması başarısız: adres başına sınırlı (geçerli token buraya hiç gelmez).
@@ -118,6 +124,14 @@ export async function buildApp(deps: AppDeps) {
     // PostgreSQL kısıtları: iş kuralı ihlali olarak döner, ayrıntı sızdırmaz.
     if (err.code === '23505') return reply.status(409).send({ error: { code: 'duplicate', message: 'Bu kayıt zaten mevcut.' } });
     if (err.code === '23514') return reply.status(422).send({ error: { code: 'rule_violation', message: 'İş kuralı ihlali.', details: { constraint: err.constraint } } });
+    // v2 Faz 5 (052): girişsiz başvuru işlevlerinin hata durumları. İleti genel; var olan kayıt ya da kiracı bilgisi sızdırmaz.
+    if (typeof err.code === 'string' && err.code.startsWith('SP4')) {
+      const sp = publicFunctionError(err.code, String(err.message ?? ''));
+      if (sp) {
+        if (sp.status === 429) reply.header('Retry-After', '3600');
+        return reply.status(sp.status).send({ error: { code: sp.code, message: sp.message } });
+      }
+    }
     if (err.code === 'P0001') return reply.status(409).send({ error: { code: 'immutable_record', message: 'Tamamlanmış kayıt değiştirilemez; ters işlem kullanın.' } });
     if (err.code === '42501') return reply.status(404).send({ error: { code: 'not_found', message: 'Kayıt bulunamadı veya erişim yetkiniz yok.' } });
     if (err.code === '22P02') return reply.status(400).send({ error: { code: 'validation_failed', message: 'Geçersiz kimlik biçimi.' } });
@@ -1362,7 +1376,84 @@ export async function buildApp(deps: AppDeps) {
   app.post('/api/v1/portal/rounds/:id/questions', { schema: { tags: ['portal'], params: idParams, body: { type: 'object', required: ['question'], properties: { question: { type: 'string', maxLength: 4000 } } } } }, async (req, reply) =>
     reply.status(201).send(await scoped(req, 'bid.submit', (tx, ctx) => sourcing.askQuestion(tx, ctx, (req.params as any).id, (req.body as any).question))));
 
+  // --- v2 Faz 5 (D110): girişsiz tedarikçi başvurusu (R2–R5) -------------------------------------------------
+  // Oturum gerekmez; yalnız 052 SECURITY DEFINER işlevleri çağrılır, yanıtta kiracı kimliği (`internal`) yoktur.
+  const publicDeps = (): applications.SubmitDeps => ({ pool: deps.pool, store: deps.store, scanner, channel: mail, webOrigin: deps.config.webOrigin });
+  const slugParams = { type: 'object', required: ['slug'], properties: { slug: { type: 'string', maxLength: 64 } } } as const;
+  app.get('/api/v1/public/applications/:slug/config', { schema: { tags: ['public'], security: [], params: slugParams } }, async (req) =>
+    (await applications.loadPublicConfig(deps.pool, (req.params as { slug: string }).slug)).config);
+  app.post('/api/v1/public/applications/verify', { onRequest: publicLimiter.hook('token'), schema: { tags: ['public'], security: [],
+    body: { type: 'object', required: ['token'], additionalProperties: false, properties: { token: { type: 'string', maxLength: 200 } } } } },
+  async (req) => applications.verifyApplication(deps.pool, (req.body as { token: string }).token));
+  const appToken = (req: FastifyRequest) => req.headers['x-application-token'];
+  app.get('/api/v1/public/applications/complete-info', { onRequest: publicLimiter.hook('token'), schema: { tags: ['public'], security: [] } }, async (req) =>
+    applications.completeInfo(deps.pool, appToken(req)));
+  app.post('/api/v1/public/applications/complete', { onRequest: publicLimiter.hook('token'), schema: { tags: ['public'], security: [], consumes: ['multipart/form-data'] } },
+    async (req) => applications.completeApplication(publicDeps(), appToken(req), () => applications.readApplicationForm(req.parts({ limits: applications.MULTIPART_LIMITS }))));
+  app.post('/api/v1/public/applications/:slug', { onRequest: publicLimiter.hook('apply'), schema: { tags: ['public'], security: [], params: slugParams, consumes: ['multipart/form-data'] } },
+    async (req, reply) => {
+      const slug = (req.params as { slug: string }).slug;
+      const { config, tenantId } = await applications.loadPublicConfig(deps.pool, slug);
+      if (!config.enabled || !tenantId) throw new ApiError(404, 'applications_closed', 'Başvuru şu an kabul edilmiyor.');
+      const form = await applications.readApplicationForm(req.parts({ limits: applications.MULTIPART_LIMITS }));
+      // R4d: tuzak alanı doluysa kayıt açılmaz, dosya yazılmaz; yanıt aynı.
+      if (applications.isHoneypot(form)) return reply.status(202).send(applications.submitResponse(mail));
+      const input = applications.validateApplication(form, config);
+      const docs = await applications.prepareDocuments(form, tenantId, scanner);
+      return reply.status(202).send(await applications.submitApplication(publicDeps(), slug, tenantId, req.ip, input, docs));
+    });
+
+  // --- v2 Faz 5 (R3): başvuru ayarları ve belge türleri (okuma Yönetici + Satınalma, yazma Yönetici) ------------------
+  app.get('/api/v1/settings/supplier-applications', { schema: { tags: ['settings'] } }, async (req) =>
+    scoped(req, 'supplier.application.settings.view', async (tx, ctx) => ({ ...(await applications.getSettings(tx)),
+      can: { manage: can(ctx.roles, 'supplier.application.settings') } })));
+  app.put('/api/v1/settings/supplier-applications', { schema: { tags: ['settings'], body: { type: 'object', required: ['enabled'], additionalProperties: false, properties: {
+    enabled: { type: 'boolean' }, publicSlug: { anyOf: [{ type: 'string', maxLength: 64 }, { type: 'null' }] },
+    categories: { type: 'array', maxItems: 50, items: { type: 'string', maxLength: 100 } } } } } }, async (req) =>
+    scoped(req, 'supplier.application.settings', (tx, ctx) => applications.putSettings(tx, ctx, req.body as { enabled: boolean; publicSlug?: string | null; categories?: string[] })));
+  const docTypeProps = { name: { type: 'string', maxLength: 120 }, required: { type: 'boolean' }, expiryRequired: { type: 'boolean' },
+    requiredCategories: { type: 'array', maxItems: 50, items: { type: 'string', maxLength: 100 } } } as const;
+  app.get('/api/v1/settings/supplier-document-types', { schema: { tags: ['settings'] } }, async (req) =>
+    scoped(req, 'supplier.application.settings.view', async (tx, ctx) => ({ ...(await applications.listDocumentTypes(tx)),
+      can: { manage: can(ctx.roles, 'supplier.application.settings') } })));
+  app.post('/api/v1/settings/supplier-document-types', { schema: { tags: ['settings'], body: { type: 'object', required: ['code', 'name'], additionalProperties: false,
+    properties: { code: { type: 'string', maxLength: 40 }, ...docTypeProps } } } }, async (req, reply) =>
+    reply.status(201).send(await scoped(req, 'supplier.application.settings', (tx, ctx) => applications.createDocumentType(tx, ctx, req.body as any))));
+  // Silme yok: tür `active=false` ile kapanır (belgeler koda bağlıdır; kod değişmez).
+  app.put('/api/v1/settings/supplier-document-types/:id', { schema: { tags: ['settings'], params: idParams, body: { type: 'object', additionalProperties: false,
+    properties: { ...docTypeProps, active: { type: 'boolean' } } } } }, async (req) =>
+    scoped(req, 'supplier.application.settings', (tx, ctx) => applications.updateDocumentType(tx, ctx, (req.params as { id: string }).id, req.body as any)));
+
   return app;
+}
+
+/** 052 SQLSTATE → HTTP. `invalid_application: <neden>` nedeni koddur; bilinmeyen neden genel kodla döner. */
+const SP422_MESSAGES: Record<string, string> = {
+  documents_missing: 'İstenen belgelerin hepsi yüklenmeli.',
+  document_type: 'Belge türü bu başvuruda kabul edilmiyor.',
+  file_infected: 'Dosyada virüs bulundu; başvuru kaydedilmedi.',
+  file_size: 'Dosya 10 MB sınırını aşıyor.',
+  total_size: 'Dosyaların toplamı 40 MB sınırını aşıyor.',
+  too_many_files: 'En çok 10 dosya yüklenebilir.',
+  valid_until_required: 'Bu belge için geçerlilik tarihi gerekli.',
+  categories: 'Seçilen hizmet kategorisi bu başvuru formunda yok.',
+  contact_email: 'Geçerli bir e-posta adresi girin.',
+  tax_id: 'Vergi kimlik numarası geçersiz.',
+};
+function publicFunctionError(sqlstate: string, message: string): { status: number; code: string; message: string } | null {
+  switch (sqlstate) {
+    case 'SP404': return { status: 404, code: 'applications_closed', message: 'Başvuru şu an kabul edilmiyor.' };
+    case 'SP409': return { status: 409, code: 'application_exists', message: 'Bu bilgilerle bekleyen bir başvuru var; e-postanızı kontrol edin.' };
+    case 'SP410': return { status: 410, code: 'token_invalid', message: 'Bağlantı geçersiz, kullanılmış ya da süresi dolmuş. Gerekirse yeniden başvurun.' };
+    case 'SP429': return { status: 429, code: 'rate_limited', message: 'Çok fazla başvuru gönderildi; bir süre sonra tekrar deneyin.' };
+    case 'SP422': {
+      const reason = /^invalid_application: ([a-z_]+)/.exec(message)?.[1];
+      if (reason && SP422_MESSAGES[reason]) return { status: 422, code: reason, message: SP422_MESSAGES[reason]! };
+      if (message.startsWith('invalid_contact')) return { status: 422, code: 'invalid_contact', message: 'İletişim bilgileri geçersiz.' };
+      return { status: 422, code: 'invalid_application', message: 'Başvuru bilgileri geçersiz; alanları kontrol edin.' };
+    }
+    default: return null;
+  }
 }
 
 export type App = Awaited<ReturnType<typeof buildApp>>;

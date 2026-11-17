@@ -1,5 +1,6 @@
 import { DEFAULT_RATE_LIMIT, type RateLimitConfig } from './rateLimit.ts';
 import type { SessionConfig } from './webSession.ts';
+import { loadPublicRateLimit, type PublicRateLimitConfig } from './publicRateLimit.ts';
 
 // 12-factor yapılandırma: tüm bağlantılar ortamdan gelir; bulutta secret manager doldurur.
 export interface Config {
@@ -45,6 +46,8 @@ export interface Config {
   mail?: MailConfig;
   /** v2 Faz 5 (R5): virüs taraması. `none` (varsayılan) = "Virüs taraması yapılandırılmadı"; `clamav` = clamd `zINSTREAM`. */
   av?: AvConfig;
+  /** v2 Faz 5 (R4a): girişsiz başvuru uçlarının adres başına sınırı; her ortamda açık (`PUBLIC_APPLY_PER_HOUR`, `PUBLIC_TOKEN_PER_HOUR`). */
+  publicRateLimit?: PublicRateLimitConfig;
 }
 
 export type MailConfig =
@@ -204,6 +207,7 @@ export function loadConfig(): Config {
     ai: loadAi(env),
     mail: loadMail(),
     av: loadAv(),
+    publicRateLimit: loadPublicRateLimit(),
     session: {
       secret: process.env.SESSION_SECRET || null,
       // Üretimde çerez yalnız HTTPS'te; web kökeni https ise yerelde de Secure.

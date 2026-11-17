@@ -47,32 +47,47 @@ export function rateClass(method: string, path: string): RateClass {
 interface Bucket { tokens: number; at: number }
 const MAX_KEYS = 50_000;
 
-export class RateLimiter {
+/**
+ * Süreç içi token kovaları: `capacity` jeton, `windowMs` içinde tamamen dolar. Son kullanılan sona taşınır; taşmada en uzun süre
+ * dokunulmayan anahtar düşer. Oturum sınırlayıcısı (dakika) ve girişsiz uç sınırlayıcısı (saat, `publicRateLimit.ts`) ortak kullanır.
+ */
+export class TokenBuckets {
   private buckets = new Map<string, Bucket>();
-  constructor(private cfg: RateLimitConfig, private now: () => number = Date.now) {}
+  constructor(private now: () => number = Date.now) {}
 
-  private bucket(key: string, perMinute: number): Bucket {
+  /** Kovayı geçen süreye göre doldurur (jeton harcamaz). */
+  refill(key: string, capacity: number, windowMs: number): Bucket {
     const t = this.now();
     let b = this.buckets.get(key);
     if (b) {
-      b.tokens = Math.min(perMinute, b.tokens + ((t - b.at) / 60_000) * perMinute);
+      b.tokens = Math.min(capacity, b.tokens + ((t - b.at) / windowMs) * capacity);
       b.at = t;
-      // Son kullanılan sona taşınır: taşmada en uzun süre dokunulmayan anahtar düşer.
       this.buckets.delete(key);
     } else {
-      b = { tokens: perMinute, at: t };
+      b = { tokens: capacity, at: t };
       if (this.buckets.size >= MAX_KEYS) this.buckets.delete(this.buckets.keys().next().value!);
     }
     this.buckets.set(key, b);
     return b;
   }
-  private wait(b: Bucket, perMinute: number) { return Math.ceil(((1 - b.tokens) / perMinute) * 60); }
-  /** Bir jeton harcar; yetmezse Retry-After saniyesini döner. */
-  private take(key: string, perMinute: number): number {
-    const b = this.bucket(key, perMinute);
+  /** Bir jeton için beklenecek saniye. */
+  wait(b: Bucket, capacity: number, windowMs: number) { return Math.ceil(((1 - b.tokens) / capacity) * (windowMs / 1000)); }
+  /** Bir jeton harcar; yetmezse Retry-After saniyesini döner (0 = izin). */
+  take(key: string, capacity: number, windowMs: number): number {
+    const b = this.refill(key, capacity, windowMs);
     if (b.tokens >= 1) { b.tokens -= 1; return 0; }
-    return this.wait(b, perMinute);
+    return this.wait(b, capacity, windowMs);
   }
+}
+
+export class RateLimiter {
+  private buckets: TokenBuckets;
+  constructor(private cfg: RateLimitConfig, now: () => number = Date.now) { this.buckets = new TokenBuckets(now); }
+
+  private bucket(key: string, perMinute: number): Bucket { return this.buckets.refill(key, perMinute, 60_000); }
+  private wait(b: Bucket, perMinute: number) { return this.buckets.wait(b, perMinute, 60_000); }
+  /** Bir jeton harcar; yetmezse Retry-After saniyesini döner. */
+  private take(key: string, perMinute: number): number { return this.buckets.take(key, perMinute, 60_000); }
 
   static sessionKey(authorization: string | undefined) {
     // Token'ın kendisi bellekte tutulmaz; özeti anahtardır.
