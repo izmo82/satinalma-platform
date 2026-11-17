@@ -674,6 +674,8 @@ export async function getInvoice(tx: Tx, ctx: TenantContext, id: string) {
     invoice: inv, lines, allocations, decisions, intake, erp, check: shown, contracts, poLines, ublCheck,
     /** v2 Faz 7 (R1, R11): eşleşme durumu, sözleşme, proje, yöntem, referanslar ve kullanım. */
     match: await matchInfo(tx, id),
+    /** v2 Faz 8 (R6, R11): fatura kaynağı (Oracle ERP / Taklit Oracle (gerçek değil) / e-Fatura / Elle), ERP bağı ve ERP ödeme durumu (bilgi). */
+    erpSource: await invoiceErpInfo(tx, id),
     status: final ? final.kind : issues.some((x) => x.severity === 'BLOCK') ? 'BLOCKED' : 'OPEN',
     exceptionCurrent: exception ? exception.checkHash === fingerprint : null,
     /** Onay isteği If-Match ile bu değeri gönderir (görülen kontrol sonucu). */
@@ -684,7 +686,8 @@ export async function getInvoice(tx: Tx, ctx: TenantContext, id: string) {
 export type MatchFilter = 'ALL' | 'MATCHED' | 'UNMATCHED';
 export async function listInvoices(tx: Tx, f: { departmentId?: string; match?: MatchFilter } = {}) {
   const rows = (await tx.query<{ id: string; decision: string | null; hasLines: boolean; matchState: MatchState; familyId: string | null; familyCode: string | null;
-    familyTitle: string | null; projectId: string | null; projectCode: string | null; projectTitle: string | null; allocFamilies: string[] }>(`SELECT i.id, i.kind, i.invoice_no AS "invoiceNo", i.issue_date::text AS "issueDate", i.currency, s.legal_name AS "supplierName",
+    familyTitle: string | null; projectId: string | null; projectCode: string | null; projectTitle: string | null; allocFamilies: string[];
+    erpProviderKind: string | null; erpPaymentStatus: string | null; intakeSource: string | null }>(`SELECT i.id, i.kind, i.invoice_no AS "invoiceNo", i.issue_date::text AS "issueDate", i.currency, s.legal_name AS "supplierName",
       s.status AS "supplierStatus", ${SUPPLIER_VERIFIED_SQL} AS "supplierIdentityVerified",
       (SELECT sum(net_amount)::text FROM invoice_lines WHERE invoice_id = i.id) AS "netAmount", i.legal_status AS "legalStatus", i.payment_status AS "paymentStatus",
       (SELECT kind FROM invoice_decisions d WHERE d.invoice_id = i.id AND d.kind IN ('APPROVAL','REJECTION')) AS decision,
@@ -692,7 +695,8 @@ export async function listInvoices(tx: Tx, f: { departmentId?: string; match?: M
       (SELECT count(*)::int FROM invoice_intake_events e WHERE e.invoice_id = i.id AND e.duplicate) AS "duplicateCount",
       i.department_id AS "departmentId", (SELECT d.name FROM departments d WHERE d.id = i.department_id) AS "departmentName",
       EXISTS (SELECT 1 FROM invoice_lines l WHERE l.invoice_id = i.id) AS "hasLines",
-      ${MATCH_STATE_SQL('i')} AS "matchState", i.match_method AS "matchMethod", i.contract_family_id AS "familyId", cf.code AS "familyCode", cf.title AS "familyTitle",
+      ${MATCH_STATE_SQL('i')} AS "matchState", i.match_method AS "matchMethod",
+      i.erp_provider_kind AS "erpProviderKind", i.erp_payment_status AS "erpPaymentStatus", ${INTAKE_SOURCE_SQL} AS "intakeSource", i.contract_family_id AS "familyId", cf.code AS "familyCode", cf.title AS "familyTitle",
       i.project_id AS "projectId", pr.code AS "projectCode", pr.title AS "projectTitle", ${ALLOC_FAMILIES_SQL('i')} AS "allocFamilies"
     FROM invoices i JOIN suppliers s ON s.id = i.supplier_id LEFT JOIN contract_families cf ON cf.id = i.contract_family_id LEFT JOIN projects pr ON pr.id = i.project_id
     WHERE ($1::uuid IS NULL OR i.department_id = $1)
@@ -707,9 +711,11 @@ export async function listInvoices(tx: Tx, f: { departmentId?: string; match?: M
   // v2 eşleşme (I5): "Eşleşti" tahsis kontrolünden türer (eksik/fazla/yanlış tedarikçi ya da şirket tahsisi eşleşme sayılmaz). Tahsis
   // bulguları onaylı faturada da aynı hesaplanır (toplu kontrolün onaylı fatura farkı limit ve avans hesabındadır), bu yüzden hepsi için.
   const checks = await unapprovedInvoiceChecks(tx, rows.map((r) => r.id));
-  return rows.map(({ hasLines, familyId, familyCode, familyTitle, projectId, projectCode, projectTitle, allocFamilies, ...r }) => {
+  return rows.map(({ hasLines, familyId, familyCode, familyTitle, projectId, projectCode, projectTitle, allocFamilies, intakeSource, ...r }) => {
     const af = r.matchState === 'ALLOCATED' ? allocFam.get(allocFamilies[0]!) : undefined;
     return { ...r, matchStateLabel: MATCH_STATE_TR[r.matchState],
+    sourceLabel: invoiceSourceLabel(intakeSource, r.erpProviderKind),
+    erpPaymentStatusLabel: r.erpPaymentStatus ? ERP_PAYMENT_STATUS_TR[r.erpPaymentStatus] ?? null : null,
     contract: familyId ? { id: familyId, code: familyCode, title: familyTitle } : af ? { id: af.id, code: af.code, title: af.title } : null,
     project: projectId ? { id: projectId, code: projectCode, title: projectTitle } : af?.project_id ? { id: af.project_id, code: af.pcode, title: af.ptitle } : null,
     matched: allocationMatched(hasLines, checks.get(r.id)?.issues ?? []),
@@ -741,6 +747,36 @@ export async function setTolerance(tx: Tx, ctx: TenantContext, b: { currency: st
     [ctx.tenantId, b.currency, category, b.absAmount, b.percent, b.combine, ctx.userId]);
   await audit(tx, ctx, 'tolerance.set', 'tenant', ctx.tenantId, { ...b, category });
   return { ok: true };
+}
+
+// --- v2 Faz 8 (D113): fatura kaynağı ve ERP ödeme durumu (bilgi; uygulama ödeme yapmaz) ------------------
+
+/** İlk (tekrar olmayan) giriş kaynağı: manual | einvoice | erp. */
+const INTAKE_SOURCE_SQL = `(SELECT e.source FROM invoice_intake_events e WHERE e.invoice_id = i.id AND NOT e.duplicate ORDER BY e.received_at LIMIT 1)`;
+export const ERP_PAYMENT_STATUS_TR: Record<string, string> = { PAID: 'Ödendi', PARTIAL: 'Kısmi', UNPAID: 'Ödenmedi', UNKNOWN: 'Bilinmiyor' };
+const ERP_PROVIDER_TR: Record<string, string> = { ORACLE_EBS: 'Oracle ERP', TAKLIT: 'Taklit Oracle (gerçek değil)' };
+
+/** Kaynak etiketi: ERP'den açılan fatura sağlayıcıyla (taklit "gerçek değil" der), e-Fatura yüklemesi, aksi elle. */
+export function invoiceSourceLabel(intakeSource: string | null, erpProviderKind: string | null): string {
+  if (intakeSource === 'erp' && erpProviderKind) return ERP_PROVIDER_TR[erpProviderKind] ?? 'ERP';
+  if (intakeSource === 'einvoice') return 'e-Fatura';
+  return 'Elle';
+}
+
+export async function invoiceErpInfo(tx: Tx, invoiceId: string) {
+  const r = (await tx.query<{ erp_invoice_id: string | null; erp_provider_kind: string | null; erp_payment_status: string | null; erp_payment_status_at: string | null;
+    erp_payment_source: string | null; intake: string | null }>(`SELECT i.erp_invoice_id, i.erp_provider_kind, i.erp_payment_status, i.erp_payment_status_at::text AS erp_payment_status_at,
+      i.erp_payment_source, ${INTAKE_SOURCE_SQL} AS intake FROM invoices i WHERE i.id = $1`, [invoiceId])).rows[0];
+  if (!r) return null;
+  const kind = r.intake === 'erp' && r.erp_provider_kind ? 'ERP' : r.intake === 'einvoice' ? 'EINVOICE' : 'MANUAL';
+  return {
+    kind, label: invoiceSourceLabel(r.intake, r.erp_provider_kind),
+    /** Elle/e-Fatura ile girilip sonra ERP faturasına bağlanan kayıt da ERP kimliğini taşır. */
+    erp: r.erp_invoice_id ? { invoiceId: r.erp_invoice_id, providerKind: r.erp_provider_kind, providerLabel: ERP_PROVIDER_TR[r.erp_provider_kind ?? ''] ?? null,
+      real: r.erp_provider_kind === 'ORACLE_EBS' } : null,
+    payment: r.erp_payment_status ? { status: r.erp_payment_status, statusLabel: ERP_PAYMENT_STATUS_TR[r.erp_payment_status] ?? r.erp_payment_status,
+      at: r.erp_payment_status_at, source: r.erp_payment_source, sourceLabel: r.erp_payment_source === 'MANUAL' ? 'Elle' : 'ERP' } : null,
+  };
 }
 
 // --- ERP aktarımı (worker) ve gelen durum olayları --------------------------------------------

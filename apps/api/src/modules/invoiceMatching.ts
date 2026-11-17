@@ -252,8 +252,14 @@ async function decideAndWrite(tx: Tx, ctx: TenantContext, inv: InvoiceFacts): Pr
   if (!decision) {
     // Ön süzgeç (aday aileler): domain `normalizeRef` ile aynı biçim (kırpılmış, yalnız ASCII a–z büyük harf); kesin karşılaştırma domain'de.
     const refs = [inv.erp_contract_ref, inv.erp_order_ref].map((x) => normalizeRef(x));
+    // v2 Faz 8 (D113): sipariş referansı v1 siparişte yoksa ERP'den okunan siparişin (erp_purchase_orders.po_no) sözleşme referansıyla
+    // (aynı şirkette tek aile: kod ya da sözleşme no) çözülür; v1 satırı önce gelir (eski davranış aynen).
     const orders = inv.erp_order_ref ? (await tx.query<{ code: string; familyId: string | null }>(`SELECT po.code, cv.family_id AS "familyId" FROM purchase_orders po
-        LEFT JOIN contract_versions cv ON cv.id = po.contract_version_id WHERE ${ASCII_UPPER('po.code')} = $1`, [refs[1]])).rows : [];
+        LEFT JOIN contract_versions cv ON cv.id = po.contract_version_id WHERE ${ASCII_UPPER('po.code')} = $1
+      UNION ALL
+      SELECT ep.po_no AS code, (SELECT CASE WHEN count(*) = 1 THEN min(f.id::text)::uuid END FROM contract_families f
+          WHERE f.company_id = $2 AND (${ASCII_UPPER('f.code')} = ${ASCII_UPPER('ep.contract_ref')} OR ${ASCII_UPPER('f.contract_no')} = ${ASCII_UPPER('ep.contract_ref')})) AS "familyId"
+        FROM erp_purchase_orders ep WHERE ${ASCII_UPPER('ep.po_no')} = $1 AND ep.contract_ref IS NOT NULL`, [refs[1], inv.company_id])).rows : [];
     const facts = (await tx.query<FamilyFacts>(`${FAMILY_FACTS_SQL} WHERE f.company_id = $1 AND (
         (SELECT ${SUPPLIER_ROOT('s')} FROM suppliers s WHERE s.id = f.supplier_id) = $2
         OR ($3 <> '' AND (${ASCII_UPPER('f.code')} = $3 OR ${ASCII_UPPER('f.contract_no')} = $3)) OR f.id = ANY($4::uuid[]))`,

@@ -88,10 +88,14 @@ export const ERP_FEATURE_CATALOG: Record<ErpFeature, ErpFeatureDef> = {
       { key: 'amount', label: 'Tutar', required: true, type: 'money' },
       { key: 'currency', label: 'Para birimi', required: true, type: 'text' },
       { key: 'orderDate', label: 'Sipariş tarihi', required: false, type: 'date' },
+      // Görev 5: isteğe bağlı. erpPoId yoksa sipariş no kimlik sayılır; sözleşme referansı faturanın Faz 7 eşleşmesine taşınır.
+      { key: 'erpPoId', label: 'ERP sipariş kimliği', required: false, type: 'text' },
+      { key: 'erpSupplierCode', label: 'ERP tedarikçi kodu', required: false, type: 'text' },
+      { key: 'contractRef', label: 'Sözleşme referansı', required: false, type: 'text' },
     ],
     ebsDefaultMap: {
       poNo: m('SEGMENT1', 'TRIM'), supplierTaxId: m('TAX_REGISTRATION_NUM', 'TRIM'), amount: m('AMOUNT', 'DECIMAL'),
-      currency: m('CURRENCY_CODE', 'UPPER'), orderDate: m('CREATION_DATE', 'DATE_YMD'),
+      currency: m('CURRENCY_CODE', 'UPPER'), orderDate: m('CREATION_DATE', 'DATE_YMD'), erpPoId: m('PO_HEADER_ID', 'TRIM'),
     },
     manualFallback: 'Faturada Satınalma sipariş referansını elle girer (salt okunur akış; uygulama sipariş yazmaz).',
   },
@@ -105,11 +109,17 @@ export const ERP_FEATURE_CATALOG: Record<ErpFeature, ErpFeatureDef> = {
       { key: 'currency', label: 'Para birimi', required: true, type: 'text' },
       { key: 'taxAmount', label: 'KDV tutarı', required: false, type: 'money' },
       { key: 'poNo', label: 'Sipariş no', required: false, type: 'text' },
+      // Görev 5: isteğe bağlı. erpInvoiceId yoksa "VKN:fatura no" kimlik sayılır; alıcı şirket VKN'si birden çok şirketli kiracıda
+      // faturanın şirketini belirler (eşlenmemişse ve kiracıda tek şirket yoksa satır reddedilir, şirket tahmin edilmez).
+      { key: 'erpInvoiceId', label: 'ERP fatura kimliği', required: false, type: 'text' },
+      { key: 'erpSupplierCode', label: 'ERP tedarikçi kodu', required: false, type: 'text' },
+      { key: 'contractRef', label: 'Sözleşme referansı', required: false, type: 'text' },
+      { key: 'companyTaxId', label: 'Alıcı şirket VKN', required: false, type: 'text' },
     ],
     ebsDefaultMap: {
       invoiceNo: m('INVOICE_NUM', 'TRIM'), supplierTaxId: m('TAX_REGISTRATION_NUM', 'TRIM'), invoiceDate: m('INVOICE_DATE', 'DATE_YMD'),
       totalAmount: m('INVOICE_AMOUNT', 'DECIMAL'), currency: m('INVOICE_CURRENCY_CODE', 'UPPER'),
-      taxAmount: m('TAX_AMOUNT', 'DECIMAL'), poNo: m('PO_NUMBER', 'TRIM'),
+      taxAmount: m('TAX_AMOUNT', 'DECIMAL'), poNo: m('PO_NUMBER', 'TRIM'), erpInvoiceId: m('INVOICE_ID', 'TRIM'),
     },
     manualFallback: 'Mevcut elle giriş ve e-Fatura yükleme (D98) aynen çalışır.',
   },
@@ -372,6 +382,26 @@ export function redactSecrets(message: string, secrets: string[]): string {
     .replace(/((?:password|passwd|pwd|client_secret|secret|access_token|refresh_token|token|api[_-]?key)=)[^&\s"']+/gi, '$1***');
   return out.slice(0, 500);
 }
+
+// ---------- ERP fatura kaydı (Görev 5) ----------
+
+/**
+ * ERP'den okunan tek fatura (eşleme uygulanmış, doğrulanmış). Tutarlar decimal string (`^-?\d+(\.\d{1,4})?$`), yuvarlanmaz;
+ * `grossAmount` = ERP toplamı (KDV dahil), `netAmount` = toplam − KDV. `companyTaxId` isteğe bağlıdır (alıcı şirket).
+ */
+export type ErpInvoiceRecord = {
+  erpInvoiceId: string;
+  invoiceNo: string;
+  supplierTaxId: string;
+  erpSupplierCode: string | null;
+  issueDate: string;
+  currency: string;
+  netAmount: string;
+  grossAmount: string;
+  contractRef: string | null;
+  poRef: string | null;
+  companyTaxId?: string | null;
+};
 
 // ---------- Elle değer uzlaştırma (R6) ----------
 

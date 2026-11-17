@@ -25,6 +25,7 @@ import * as kpi from './modules/kpi.ts';
 import * as gov from './modules/governance.ts';
 import * as integration from './modules/integration.ts';
 import * as erpEndpoints from './modules/integrationEndpoints.ts';
+import * as erpRead from './modules/erpRead.ts';
 import * as commercial from './modules/commercial.ts';
 import * as approvals from './modules/approvals.ts';
 import * as search from './modules/search.ts';
@@ -1653,6 +1654,12 @@ export async function buildApp(deps: AppDeps) {
     scoped(req, 'integration.endpoint.read', (tx) => erpEndpoints.listRuns(tx, (req.params as any).feature, (req.query as any).limit ?? 20)));
   app.get('/api/v1/integration/runs/:id/errors', { schema: { tags: ['integration'], params: idParams } }, async (req) =>
     scoped(req, 'integration.endpoint.read', (tx) => erpEndpoints.runErrors(tx, (req.params as any).id)));
+  // v2 Faz 8 Görev 5: ERP'den okunan masraf merkezleri (departman eşlemesi için liste) ve siparişler (salt okunur kopya).
+  app.get('/api/v1/integration/erp/cost-centers', { schema: { tags: ['integration'] } }, async (req) =>
+    scoped(req, 'integration.endpoint.read', (tx) => erpRead.listErpCostCenters(tx)));
+  app.get('/api/v1/integration/erp/purchase-orders', { schema: { tags: ['integration'],
+    querystring: { type: 'object', additionalProperties: false, properties: { supplierId: { type: 'string', format: 'uuid' } } } } }, async (req) =>
+    scoped(req, 'integration.endpoint.read', (tx) => erpRead.listErpPurchaseOrders(tx, { supplierId: (req.query as any).supplierId ?? null })));
 
   app.get('/api/v1/supplier-options', { schema: { tags: ['projects'] } }, async (req) => scoped(req, 'supplier.read', async (tx) => {
     const rows = (await tx.query<{ id: string; legalName: string; status: string; taxIdType: string | null; taxId: string | null; identityReviewRequired: boolean }>(

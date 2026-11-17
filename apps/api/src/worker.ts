@@ -17,6 +17,8 @@ import { configureMailChannel, DISPATCH_JOB, mailSender, processEmailDispatch, t
 import { EXPIRE_JOB, processApplicationExpiry, processApplicationSubmitted, SUBMITTED_JOB } from './modules/supplierApplications.ts';
 import { dailyRiskSchedules, processRiskJob, RISK_JOB_KINDS } from './modules/riskCycle.ts';
 import { dailyDocumentReminders, DOC_REMINDER_JOB, processDocumentReminderJob } from './modules/supplierDocReminders.ts';
+import { enqueueDueErpReads, ERP_READ_JOB, runErpReadJob, type ProviderResolver } from './modules/erpRead.ts';
+import type { Config } from './config.ts';
 
 /** İsteğe bağlı işçi bağımlılıkları; eski çağrılar etkilenmez. */
 export interface WorkerOptions {
@@ -26,6 +28,10 @@ export interface WorkerOptions {
   mailSender?: MailSender | null;
   /** v2 Faz 5 (R12): hatırlatma e-postasındaki portal bağlantısının kökü; verilmezse WEB_ORIGIN ortam değişkeni. */
   webOrigin?: string;
+  /** v2 Faz 8 (R7): ERP yapılandırması; verilirse `erp.read` işi çekilir (sağlayıcı yoksa çalışma istek atmadan kapanır). */
+  erp?: Pick<Config, 'env' | 'erp'> | null;
+  /** YALNIZ TEST: sağlayıcı seçimi (casus sağlayıcı); verilmezse yapılandırmadan. */
+  erpProvider?: ProviderResolver;
 }
 
 /**
@@ -38,7 +44,8 @@ export async function processJobs(pool: pg.Pool, store: ObjectStore, detectorPro
   const sender = opts.mailSender ?? null;
   // Kiracı dışa aktarımı saatler sürebilir: ayrı şeritte tek tek çalışır, ihbar/imza/silme işlerini bekletmez.
   const short = ['signature.detect', 'contract.notice_reminder', 'contract.end_reminder', 'contract.reminder_backfill', 'contract.obligation_due', 'retention.purge', ...(erpAdapterName ? ['erp.export'] : []), ...(hasAiProviders() ? ['ai.run'] : []),
-    ...(directory ? ['directory.sync'] : []), ...(sender ? [DISPATCH_JOB] : []), SUBMITTED_JOB, EXPIRE_JOB, ...RISK_JOB_KINDS, DOC_REMINDER_JOB];
+    ...(directory ? ['directory.sync'] : []), ...(sender ? [DISPATCH_JOB] : []), SUBMITTED_JOB, EXPIRE_JOB, ...RISK_JOB_KINDS, DOC_REMINDER_JOB,
+    ...(opts.erp ? [ERP_READ_JOB] : [])];
   const kinds = lane === 'export' ? ['tenant.export'] : lane === 'short' ? short : [...short, 'tenant.export'];
   const claimed = await withoutTenant(pool, async (c) =>
     (await c.query<{ id: string; tenant_id: string; company_id: string | null; kind: string; requested_by: string | null }>(
@@ -78,6 +85,11 @@ export async function processJobs(pool: pg.Pool, store: ObjectStore, detectorPro
       if (job.kind === 'contract.reminder_backfill') { await processReminderBackfill(pool, job.tenant_id, job.id); continue; }
       // v2 Faz 6 (R6, R7, R10): yıllık açılış, gecikme yükseltmesi ve çeyreklik görevler sistem işidir (isteyen yok).
       if (RISK_JOB_KINDS.includes(job.kind)) { await processRiskJob(pool, job.kind, job.tenant_id, job.id); continue; }
+      // v2 Faz 8 (R7): ERP okuması isteyenin güncel üyeliğiyle, kiracının bütün şirketlerinde; üyelik/izin yoksa çalışma kapanır (BLOCKED).
+      if (job.kind === ERP_READ_JOB && opts.erp) {
+        await runErpReadJob(pool, job, m, { config: opts.erp, ...(opts.erpProvider ? { provider: opts.erpProvider } : {}) });
+        continue;
+      }
       if (job.kind === 'retention.purge') { await withTenant(pool, { ...ctx, roles: [], companyIds: [] }, (tx) => processPurge(tx, store, job.id)); continue; }
       if (!m || (job.company_id && !m.company_ids.includes(job.company_id))) {
         await withTenant(pool, { ...ctx, companyIds: job.company_id ? [job.company_id] : [] }, (tx) =>
@@ -119,6 +131,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const reminderBackfill = dailyReminderBackfill();
   const riskSchedules = dailyRiskSchedules();
   const docReminders = dailyDocumentReminders();
+  let lastErpCheck = 0;
   const loop = async (lane: 'short' | 'export') => {
     while (!stopping) {
       // R8: gece eşitlemesi en fazla dakikada bir denetlenir (İstanbul 06:00 sonrası, kiracı başına günde bir iş).
@@ -133,8 +146,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         await riskSchedules(pool, new Date()).catch((e) => console.error('risk schedules enqueue failed', (e as Error).message));
         // v2 Faz 5 (R12): belge hatırlatmaları İstanbul gününde bir kez (052b kiracı kapısı; kiracı başına tekil iş anahtarı).
         await docReminders(pool, new Date()).catch((e) => console.error('document reminders enqueue failed', (e as Error).message));
+        // v2 Faz 8 (R7): zamanlanmış ERP okumaları dakikada bir denetlenir (yuva başına tek iş).
+        if (Date.now() - lastErpCheck >= 60_000) {
+          lastErpCheck = Date.now();
+          await enqueueDueErpReads(pool, new Date(), config).catch((e) => console.error('erp read enqueue failed', (e as { code?: string })?.code ?? 'error'));
+        }
       }
-      const n = await processJobs(pool, store, config.signatureDetectorProvider, 10, config.erpAdapter ?? null, lane, { directoryProvider: directory, mailSender: mail, webOrigin: config.webOrigin });
+      const n = await processJobs(pool, store, config.signatureDetectorProvider, 10, config.erpAdapter ?? null, lane, { directoryProvider: directory, mailSender: mail, webOrigin: config.webOrigin, erp: config });
       if (n === 0) await new Promise((r) => setTimeout(r, 2000));
     }
   };
