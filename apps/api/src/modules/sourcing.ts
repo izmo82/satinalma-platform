@@ -14,6 +14,7 @@ import { objectKey, type ObjectStore } from '../storage.ts';
 import * as approvals from './approvals.ts';
 import { resolveDepartment } from './departments.ts';
 import { queueRoundInvites, roundInviteEmails } from './portal.ts';
+import { coiSummary, completionState, ensureCoiTask, ensureCoiTasksFor } from './projectCompletion.ts';
 
 /**
  * Faz 2: proje → RFQ turu (görev ayrılıklı yayın onayı) → tedarikçi portalı (mühürlü teklif, sunucu saati)
@@ -125,7 +126,7 @@ export async function reviseCriteria(tx: Tx, ctx: TenantContext, id: string, ifM
   const p = await loadProject(tx, id, true);
   assertEtag(p, ifMatch);
   if (p.status === 'DRAFT') throw conflict('use_draft_update', 'Taslakta kriterler proje düzenlemesiyle değiştirilir.');
-  if (['CONTRACTING', 'CANCELLED'].includes(p.status)) throw conflict('project_closed', 'Karar onaylanmış veya iptal edilmiş projede kriter değişmez.');
+  if (['CONTRACTING', 'CANCELLED', 'COMPLETED'].includes(p.status)) throw conflict('project_closed', 'Karar onaylanmış, tamamlanmış veya iptal edilmiş projede kriter değişmez.');
   if (reason.trim().length < 10) throw unprocessable('reason_required', 'Ağırlık değişikliği için en az 10 karakterlik gerekçe gerekli.');
   checkCriteria(criteria);
   const rev = await insertCriteria(tx, ctx, p, criteria, reason.trim());
@@ -290,6 +291,8 @@ export async function decideException(tx: Tx, ctx: TenantContext, exceptionId: s
     for (const r of rounds) { await approvals.cancelRequest(tx, 'rfq_round', r.id); await closeTasks(tx, `rfq-publish:${r.id}`); }
     const awards = (await tx.query<{ id: string }>(`UPDATE awards SET status = 'REJECTED', decided_by = $2, decided_at = now(), decision_note = $3 WHERE project_id = $1 AND status = 'PROPOSED' RETURNING id`, [p.id, ctx.userId, reason])).rows;
     for (const a of awards) { await approvals.cancelRequest(tx, 'award', a.id); await closeTasks(tx, `award:${a.id}`); }
+    // v2 Faz 7 (R9): öneriyi kapatan karar veren de katılımcıdır (awards.decided_by).
+    if (awards.length) await ensureCoiTask(tx, ctx, p.id, ctx.userId);
     // Bu projenin kullanılmamış diğer istisnaları da düşer (onay kayıtları ve görevleriyle).
     const siblings = (await tx.query<{ id: string }>(`UPDATE sourcing_exceptions SET status = 'REJECTED', decided_at = now() WHERE project_id = $1 AND id <> $2 AND status IN ('REQUESTED','APPROVED') RETURNING id`, [p.id, exceptionId])).rows;
     for (const x of siblings) await approvals.cancelRequest(tx, 'sourcing_exception', x.id);
@@ -414,6 +417,9 @@ export async function getProject(tx: Tx, ctx: TenantContext, id: string) {
   // Yeni tur için geçerli politika (davet ve süre kuralları ekranda önceden görünür).
   const publishPolicy = (await approvals.planFor(tx, { action: 'RFQ_PUBLISH', companyId: p.company_id, category: p.category, currency: p.currency, amount: p.budget })).plan;
   const criteriaHistory = (await tx.query(`SELECT DISTINCT revision, reason, created_at AS "createdAt" FROM evaluation_criteria WHERE project_id = $1 ORDER BY revision`, [id])).rows;
+  // v2 Faz 7 (R5, R9): tamamlanma günü/yapan, tamamlanabilirlik (yetki sunucuda `can.complete`) ve çıkar çatışması beyan özeti.
+  const done = (await tx.query<{ completed_on: string | null; completed_by: string | null }>(`SELECT p.completed_on::text AS completed_on, u.display_name AS completed_by
+    FROM projects p LEFT JOIN users u ON u.id = p.completed_by WHERE p.id = $1`, [id])).rows[0];
   return {
     project: {
       id: p.id, code: p.code, title: p.title, category: p.category, need: p.need, currency: p.currency, budget: p.budget, budgetVerified: p.budget_verified,
@@ -421,6 +427,7 @@ export async function getProject(tx: Tx, ctx: TenantContext, id: string) {
       ownedByMe: p.owner_user_id === ctx.userId, etag: projectEtag(p), updatedAt: p.updated_at,
       departmentId: p.department_id,
       departmentName: p.department_id ? (await tx.query<{ name: string }>(`SELECT name FROM departments WHERE id = $1`, [p.department_id])).rows[0]?.name ?? null : null,
+      completedOn: done?.completed_on ?? null, completedBy: done?.completed_by ?? null,
     },
     lines: await currentLines(tx, id), criteria: await currentCriteria(tx, id), criteriaHistory,
     round: round && { id: round.id, roundNo: round.round_no, closesAt: round.closes_at, status: round.status, requestedByMe: round.requested_by === ctx.userId, closeReason: round.close_reason, approval: roundApproval,
@@ -428,6 +435,7 @@ export async function getProject(tx: Tx, ctx: TenantContext, id: string) {
       inviteEmails: round.status === 'OPEN' || round.status === 'CLOSED' ? await roundInviteEmails(tx, round.id) : [] },
     invitations, questions, evaluations, awards, exceptions: await listExceptions(tx, ctx, id),
     publishPolicy: { minInvitees: publishPolicy.minInvitees, minResponseDays: publishPolicy.minResponseDays, steps: publishPolicy.steps, explanation: publishPolicy.explanation },
+    completion: await completionState(tx, p), coi: await coiSummary(tx, ctx, id),
     serverTime: new Date(),
   };
 }
@@ -446,6 +454,8 @@ export async function scoreBid(tx: Tx, ctx: TenantContext, bidId: string, body: 
   await tx.query(`INSERT INTO bid_scores (tenant_id, company_id, project_id, bid_id, criterion_code, score, evidence, scored_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
     [ctx.tenantId, b.company_id, b.project_id, bidId, body.criterionCode, body.score, body.evidence.trim(), ctx.userId]);
   await audit(tx, ctx, 'bid.scored', 'bid', bidId, { criterion: body.criterionCode, score: body.score });
+  // v2 Faz 7 (R9): puan veren ve proje sahibi katılımcıdır; beyan vermemişse İşlerim görevi açılır.
+  await ensureCoiTasksFor(tx, ctx, b.project_id, ctx.userId);
   return { ok: true };
 }
 
@@ -519,6 +529,7 @@ export async function proposeAward(tx: Tx, ctx: TenantContext, id: string, body:
   await approvals.openRequest(tx, ctx, { companyId: p.company_id, entityType: 'award', entityId: a.id, action: 'AWARD', policyId, plan,
     title: `Seçim onayı: ${p.title}${notActive.length ? ` (aktif olmayan tedarikçi: ${notActive.map((b) => b.supplierName).join(', ')})` : ''}`, projectId: id });
   await audit(tx, ctx, 'award.proposed', 'award', a.id, { projectId: id, evaluationId: ev.id, total: v.total, lines: body.allocations.length });
+  await ensureCoiTasksFor(tx, ctx, id, ctx.userId);
   return { id: a.id, versionNo, total: v.total, warnings: notActive.map((b) => `${b.supplierName} aktif değil; onay için aktivasyon gerekir.`) };
 }
 
@@ -551,6 +562,7 @@ export async function decideAward(tx: Tx, ctx: TenantContext, awardId: string, b
   await bump(tx, a.project_id, body.approve ? 'CONTRACTING' : 'EVALUATION');
   await closeTasks(tx, `award:${awardId}`);
   await audit(tx, ctx, body.approve ? 'award.approved' : 'award.rejected', 'award', awardId, { projectId: a.project_id }, body.note);
+  await ensureCoiTasksFor(tx, ctx, a.project_id, ctx.userId);
   return { status: body.approve ? 'APPROVED' : 'REJECTED' };
 }
 

@@ -118,7 +118,8 @@ export async function createPo(tx: Tx, ctx: TenantContext, b: PoInput) {
     // Proje bağı kategori toleransını belirler: yalnız aynı şirketin, seçim kararı onaylanmış projesi bağlanabilir.
     const pr = (await tx.query<{ company_id: string; status: string }>(`SELECT company_id, status FROM projects WHERE id = $1`, [b.projectId])).rows[0];
     if (!pr) throw notFound();
-    if (pr.company_id !== b.companyId || pr.status !== 'CONTRACTING') throw unprocessable('project_not_awarded', 'Sipariş yalnız aynı şirketin, seçim kararı onaylanmış projesine bağlanabilir.');
+    // v2 Faz 7 (R5): tamamlanan proje de seçim kararı onaylanmış projedir (sipariş bağlanabilir kalır).
+    if (pr.company_id !== b.companyId || !['CONTRACTING', 'COMPLETED'].includes(pr.status)) throw unprocessable('project_not_awarded', 'Sipariş yalnız aynı şirketin, seçim kararı onaylanmış projesine bağlanabilir.');
   }
   if (b.contractVersionId) {
     await lockContracts(tx, [b.contractVersionId]);

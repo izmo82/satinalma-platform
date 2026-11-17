@@ -178,7 +178,7 @@ export async function decideBaseline(tx: Tx, ctx: TenantContext, id: string, b: 
   if (!x) throw notFound();
   // Onay da seçim kararından önce: karar sonrası onaylanan baz rapora girmez, o yüzden reddedilir.
   const ps = (await tx.query<{ status: string }>(`SELECT status FROM projects WHERE id = $1 FOR UPDATE`, [x.project_id])).rows[0]!.status;
-  if (['AWARD_APPROVAL', 'CONTRACTING', 'CANCELLED', 'NO_AWARD'].includes(ps)) throw conflict('project_closed', 'Seçim kararı aşamasına geçen projede baz onaylanmaz.');
+  if (['AWARD_APPROVAL', 'CONTRACTING', 'CANCELLED', 'NO_AWARD', 'COMPLETED'].includes(ps)) throw conflict('project_closed', 'Seçim kararı aşamasına geçen projede baz onaylanmaz.');
   if (x.status !== 'PROPOSED') throw conflict('already_decided', 'Bu baz için karar verildi.');
   if (x.proposed_by === ctx.userId) throw new ApiError(403, 'segregation_of_duties', 'Bazı öneren onaylayamaz (görev ayrılığı).');
   if (!b.approve && (b.note ?? '').trim().length < 5) throw unprocessable('note_required', 'Ret gerekçesi gerekli.');

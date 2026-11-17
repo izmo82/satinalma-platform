@@ -30,6 +30,8 @@ const HEAVY: [string, RegExp][] = [
   // v2 Faz 5: tedarikçi belgesi yüklemeleri (portal ve kart).
   ['POST', /^\/api\/v1\/portal\/documents$/],
   ['POST', /^\/api\/v1\/suppliers\/[^/]+\/documents$/],
+  // v2 Faz 7: uyum kanıtı yüklemesi.
+  ['POST', /^\/api\/v1\/projects\/[^/]+\/compliance-evidence$/],
   ['GET', /^\/api\/v1\/evaluations\/[^/]+\/(report\.xlsx|decision\.pdf)$/],
   ['GET', /^\/api\/v1\/reports\/summary(\.csv)?$/],
   ['POST', /^\/api\/v1\/tenant-exports(\/[^/]+\/download)?$/],

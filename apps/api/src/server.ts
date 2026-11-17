@@ -53,6 +53,7 @@ import { avScanner } from './av/index.ts';
 import * as applications from './modules/supplierApplications.ts';
 import * as supplierCard from './modules/supplierCard.ts';
 import * as offboarding from './modules/supplierOffboarding.ts';
+import * as completion from './modules/projectCompletion.ts';
 
 export interface AppDeps {
   config: Config;
@@ -394,6 +395,7 @@ export async function buildApp(deps: AppDeps) {
        FROM tasks t WHERE t.status = 'OPEN' AND ${taskRoleSql('$1')} AND ${visibleTaskSql()}
          AND (t.entity_type <> 'contract_approval_step' OR t.assignee_user_id = $3)
          AND (t.entity_type NOT IN ('contract_reminder', 'contract_rejection') OR t.assignee_user_id IS NULL OR t.assignee_user_id = $3)
+         AND (t.kind <> 'coi_declaration' OR t.assignee_user_id = $3)
          AND ($2 <> 'overdue' OR (t.due_at IS NOT NULL AND t.due_at < now()))
          AND ($2 <> 'mine' OR t.assignee_user_id IS NULL OR t.assignee_user_id = $3)
        -- Kişiye atanmış açık onay adımı en üstte (yoğun onaycıda rol kuyruğunun altında kalmasın, persona K2); sonra önceki sıra.
@@ -407,7 +409,8 @@ export async function buildApp(deps: AppDeps) {
               count(*) FILTER (WHERE due_at IS NOT NULL AND due_at < now())::int AS overdue, count(*)::int AS "all"
        FROM tasks t WHERE t.status = 'OPEN' AND ${taskRoleSql('$1')} AND ${visibleTaskSql()}
          AND (t.entity_type <> 'contract_approval_step' OR t.assignee_user_id = $2)
-         AND (t.entity_type NOT IN ('contract_reminder', 'contract_rejection') OR t.assignee_user_id IS NULL OR t.assignee_user_id = $2)`, [ctx.roles, ctx.userId])).rows[0]!;
+         AND (t.entity_type NOT IN ('contract_reminder', 'contract_rejection') OR t.assignee_user_id IS NULL OR t.assignee_user_id = $2)
+         AND (t.kind <> 'coi_declaration' OR t.assignee_user_id = $2)`, [ctx.roles, ctx.userId])).rows[0]!;
     // Menü sayaçları (modül başına "Benden beklenen"): listeden değil sayımdan; 200 sınırı ve sayfalama sayacı kısaltmaz.
     const byType = (await tx.query<{ entityType: string; n: number }>(
       `SELECT t.entity_type AS "entityType", count(*)::int AS n FROM tasks t WHERE t.status = 'OPEN' AND ${taskRoleSql('$1')} AND ${visibleTaskSql()}
@@ -1216,10 +1219,15 @@ export async function buildApp(deps: AppDeps) {
     return reply.status(201).header('etag', r.etag).send(r);
   });
   app.get('/api/v1/projects/:id', { schema: { tags: ['projects'], params: idParams } }, async (req, reply) => {
-    const r = await scoped(req, 'project.read', async (tx, ctx) => ({ ...(await sourcing.getProject(tx, ctx, (req.params as any).id)),
-      savingsBaselines: await kpi.projectBaselines(tx, ctx, (req.params as any).id),
-      can: { manage: can(ctx.roles, 'project.manage'), approveBaseline: can(ctx.roles, 'savings.approve'), requestException: can(ctx.roles, 'sourcing.exception.request'), approvePublish: can(ctx.roles, 'project.publish.approve'), score: can(ctx.roles, 'bid.score'),
-        evaluate: can(ctx.roles, 'evaluation.create'), propose: can(ctx.roles, 'award.propose'), decide: can(ctx.roles, 'award.decide'), answer: can(ctx.roles, 'rfq.answer') } }));
+    const r = await scoped(req, 'project.read', async (tx, ctx) => {
+      const d = await sourcing.getProject(tx, ctx, (req.params as any).id);
+      return { ...d,
+        savingsBaselines: await kpi.projectBaselines(tx, ctx, (req.params as any).id),
+        can: { manage: can(ctx.roles, 'project.manage'), approveBaseline: can(ctx.roles, 'savings.approve'), requestException: can(ctx.roles, 'sourcing.exception.request'), approvePublish: can(ctx.roles, 'project.publish.approve'), score: can(ctx.roles, 'bid.score'),
+          evaluate: can(ctx.roles, 'evaluation.create'), propose: can(ctx.roles, 'award.propose'), decide: can(ctx.roles, 'award.decide'), answer: can(ctx.roles, 'rfq.answer'),
+          // v2 Faz 7 (R5): "Projeyi tamamla" yalnız Satınalma'ya ve proje tamamlanabilirken (sözleşme aşaması + onaylı/eski kayıt sözleşme).
+          complete: d.completion.ready && can(ctx.roles, 'project.complete') } };
+    });
     return reply.header('etag', r.project.etag).send(r);
   });
   app.put('/api/v1/projects/:id', { schema: { tags: ['projects'], params: idParams, body: projectBody } }, async (req) =>
@@ -1283,6 +1291,44 @@ export async function buildApp(deps: AppDeps) {
   app.post('/api/v1/sourcing-exceptions/:id/decision', { schema: { tags: ['sourcing'], params: idParams, body: { type: 'object', additionalProperties: false, required: ['approve'],
     properties: { approve: { type: 'boolean' }, note: { type: 'string', maxLength: 2000 } } } } }, async (req) =>
     scoped(req, 'approval.decide', (tx, ctx) => sourcing.decideException(tx, ctx, (req.params as any).id, req.body as any)));
+  // --- v2 Faz 7 (D112) Görev 4: proje tamamlama (R5), çıkar çatışması beyanı (R9), uyum kanıtı ---
+  app.post('/api/v1/projects/:id/complete', { schema: { tags: ['projects'], params: idParams } }, async (req) =>
+    scoped(req, 'project.complete', (tx, ctx) => completion.completeProject(tx, ctx, (req.params as { id: string }).id)));
+  app.get('/api/v1/projects/:id/coi', { schema: { tags: ['projects'], params: idParams } }, async (req) =>
+    scoped(req, 'project.read', (tx, ctx) => completion.coiSummary(tx, ctx, (req.params as { id: string }).id)));
+  app.post('/api/v1/projects/:id/coi', { schema: { tags: ['projects'], params: idParams, body: { type: 'object', additionalProperties: false, required: ['kind'],
+    properties: { kind: { type: 'string', enum: ['NONE', 'DECLARED'] }, statement: { type: ['string', 'null'], maxLength: 4000 } } } } }, async (req, reply) =>
+    reply.status(201).send(await scoped(req, 'coi.declare', (tx, ctx) => completion.declareCoi(tx, ctx, (req.params as { id: string }).id,
+      req.body as { kind: 'NONE' | 'DECLARED'; statement?: string | null }))));
+  app.get('/api/v1/projects/:id/compliance-evidence', { schema: { tags: ['projects'], params: idParams,
+    querystring: { type: 'object', additionalProperties: false, properties: { checkKey: { type: 'string', maxLength: 60 } } } } }, async (req) =>
+    scoped(req, 'compliance.read', (tx) => completion.listEvidence(tx, (req.params as { id: string }).id, (req.query as { checkKey?: string }).checkKey)));
+  app.post('/api/v1/projects/:id/compliance-evidence', { schema: { tags: ['projects'], params: idParams, consumes: ['multipart/form-data'] } }, async (req, reply) => {
+    const id = (req.params as { id: string }).id;
+    // İzin ve proje görünürlüğü dosya okunmadan önce (yetkisiz istekte gövde işlenmez); denetim ve tarama işlem dışında,
+    // depoya yazma işlemden önce rastgele anahtarla; işlem başarısızsa nesne silinir (Faz 5 deseni).
+    const tenantId = await scoped(req, 'document.upload', async (tx, ctx) => { await completion.assertProjectVisible(tx, ctx, id); return ctx.tenantId; });
+    const fields: Record<string, string> = {};
+    let file: { filename: string; mimetype: string; body: Buffer } | null = null;
+    try {
+      for await (const part of req.parts({ limits: { fileSize: completion.EVIDENCE_MAX_BYTES, files: 1, fields: 10, fieldSize: 2000 } })) {
+        if (part.type === 'file') file = { filename: part.filename, mimetype: part.mimetype, body: await part.toBuffer() };
+        else fields[part.fieldname] = String(part.value ?? '');
+      }
+    } catch (err: any) {
+      if (err?.code === 'FST_REQ_FILE_TOO_LARGE') throw unprocessable('file_too_large', 'Dosya 25 MB sınırını aşıyor.');
+      throw err;
+    }
+    if (!file) throw unprocessable('file_required', 'Dosya seçin.');
+    const prepared = await completion.prepareEvidenceUpload({ ...file, fields }, tenantId, scanner);
+    await deps.store.put(prepared.storageKey, file.body, prepared.mimeType);
+    try {
+      return reply.status(201).send(await scoped(req, 'document.upload', (tx, ctx) => completion.addEvidence(tx, ctx, id, prepared)));
+    } catch (err) {
+      await deps.store.delete(prepared.storageKey).catch(() => req.log.warn({ key: prepared.storageKey }, 'compliance evidence cleanup failed'));
+      throw err;
+    }
+  });
   // --- Onay politikası (kurallı onay motoru) ---
   const amount2 = { type: 'string', pattern: '^\\d{1,18}(\\.\\d{1,2})?$' } as const;
   const ruleSchema = { type: 'object', additionalProperties: false, required: ['id', 'action', 'currency', 'minAmount', 'maxAmount', 'steps'],
