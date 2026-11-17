@@ -64,6 +64,9 @@ export const PERMISSIONS = {
   'contract.manage': ['PROCUREMENT', 'DEPARTMENT_USER'],
   // analiz-v2 §2.1: Departman kullanıcısı kendi departmanının sözleşme ve faturalarını görür (kapsam RLS'de, Görev 2).
   'contract.read': ['ADMIN', 'PROCUREMENT', 'DEPARTMENT_USER', 'AUDITOR'],
+  // v2 Faz 4 (R15): yapay zekâ okuma/inceleme isteme; departman kapsamı RLS'te. İnceleme kaydını okuma (+ onaycı görünürlüğü RLS'ten).
+  'contract.ai.request': ['PROCUREMENT', 'DEPARTMENT_USER'],
+  'contract.review.read': ['ADMIN', 'PROCUREMENT', 'DEPARTMENT_USER', 'AUDITOR'],
   'signature.requirement.define': ['PROCUREMENT'],
   'signature.review': ['PROCUREMENT'],
   'signature.analyze': ['PROCUREMENT'],

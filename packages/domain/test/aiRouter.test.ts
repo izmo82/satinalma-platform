@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { checkAiOutput, estimateCost, routeTask, type AiModel, type AiPolicy } from '../src/aiRouter.ts';
 import { syntheticVkn } from '../src/taxId.ts';
+import { AI_TASKS } from '../src/aiRouter.ts';
 
 const model = (o: Partial<AiModel> = {}): AiModel => ({ id: 'm1', provider: 'acme', modelId: 'small', modelVersion: '2026-01', tasks: ['AI02', 'AI06'],
   capabilities: { structuredOutput: true }, approvedRegions: ['eu'], trainsOnCustomerData: false, enabled: true,
@@ -77,5 +78,20 @@ describe('inceleme bulguları (regresyon)', () => {
       { name: 'currency', value: '100', page: 1, evidence: '100' },
     ] }, ['invoice_number', 'payable_amount', 'currency'], pages);
     expect(r.fields.map((f) => f.flags[0])).toEqual(['VALUE_NOT_IN_SOURCE', 'VALUE_NOT_IN_SOURCE', 'WEAK_SOURCE']);
+  });
+});
+
+describe('v2 Faz 4: AI14/AI15 ve modelId süzgeci', () => {
+  const m = (o: Partial<AiModel> = {}) => model({ tasks: ['AI06', 'AI14', 'AI15'], ...o });
+  it('AI14/AI15 görev matrisinde', () => {
+    expect(AI_TASKS.AI14.name).toBe('Sözleşme incelemesi (şablon + hukuk)');
+    expect(AI_TASKS.AI15.name).toBe('Kanıt belgesi okuma');
+  });
+  it('opts.modelId yalnız o modelId satırlarını aday yapar', () => {
+    const models = [m({ id: 'a', modelId: 'cheap', price: { unit: 'TOKEN_1M', input: '0.01', output: '0.01', currency: 'USD' } }), m({ id: 'b', modelId: 'claude-sonnet-5-5' })];
+    const u = { monthSpent: '0', todayCalls: 0 };
+    expect(routeTask('AI14', models, policy(), u, w)).toMatchObject({ decision: 'RUN', model: { id: 'a' } });
+    expect(routeTask('AI14', models, policy(), u, w, { modelId: 'claude-sonnet-5-5' })).toMatchObject({ decision: 'RUN', model: { id: 'b' } });
+    expect(routeTask('AI14', models, policy(), u, w, { modelId: 'yok' })).toMatchObject({ decision: 'NO_PROVIDER', reasons: ['yok için kayıtlı ve etkin model yok'] });
   });
 });

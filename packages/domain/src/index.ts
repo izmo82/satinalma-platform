@@ -16,3 +16,4 @@ export * from './ublTr.ts';
 export * from './supplierOption.ts';
 export * from './directory.ts';
 export * from './contractV2.ts';
+export * from './contractAi.ts';

@@ -6,7 +6,7 @@
 import { add, cmp, dec, str } from './money.ts';
 import { normalizeTaxId } from './taxId.ts';
 
-export type AiTask = 'AI01' | 'AI02' | 'AI03' | 'AI04' | 'AI05' | 'AI06' | 'AI07' | 'AI08' | 'AI09' | 'AI10' | 'AI11' | 'AI12' | 'AI13';
+export type AiTask = 'AI01' | 'AI02' | 'AI03' | 'AI04' | 'AI05' | 'AI06' | 'AI07' | 'AI08' | 'AI09' | 'AI10' | 'AI11' | 'AI12' | 'AI13' | 'AI14' | 'AI15';
 export type Capability = 'structuredOutput' | 'vision' | 'ocr' | 'signatureDetection';
 
 /** Görev matrisi (07): önce deterministik yöntem, yetkili insan kontrolü. Para/vergi/VKN/limit/puan/onay modele verilmez. */
@@ -24,6 +24,9 @@ export const AI_TASKS: Record<AiTask, { name: string; needs: Capability[]; deter
   AI11: { name: 'Yenileme özeti', needs: ['structuredOutput'], deterministic: 'Tarih motoru', human: 'Yetkili karar' },
   AI12: { name: 'Yıllık karne anlatısı', needs: ['structuredOutput'], deterministic: 'Şablon anlatı', human: 'Dönem/örneklem görünür' },
   AI13: { name: 'İmza görüntüsü', needs: ['vision', 'signatureDetection'], deterministic: '—', human: 'Taraf/sürüm bazlı insan' },
+  // v2 Faz 4: puan ve karar kodda/insanda; model yalnız bulgu ve kanıt döndürür.
+  AI14: { name: 'Sözleşme incelemesi (şablon + hukuk)', needs: ['structuredOutput'], deterministic: 'Puan kuralı (kod) + alıntı denetimi', human: 'Satınalma ve onaycılar; hukuki görüş değildir' },
+  AI15: { name: 'Kanıt belgesi okuma', needs: ['structuredOutput'], deterministic: 'Alıntı denetimi + kural motoru', human: 'Kural motoru ve yetkili karar' },
 };
 
 export interface AiModel {
@@ -57,10 +60,11 @@ export function estimateCost(m: AiModel, w: AiWorkload): string | null {
  * Yönlendirme: görev yeteneği → kiracı politikası (sağlayıcı, bölge, eğitim yok) → bütçe/kota. Politika yoksa ücretli AI kapalıdır.
  * %80'de uyarı, %100'de yeni ücretli iş bekler (T23); manuel iş akışı ve belge korunur.
  */
-export function routeTask(task: AiTask, models: AiModel[], policy: AiPolicy | null, usage: AiUsage, workload: AiWorkload): RouteDecision {
+export function routeTask(task: AiTask, models: AiModel[], policy: AiPolicy | null, usage: AiUsage, workload: AiWorkload, opts?: { modelId?: string }): RouteDecision {
   const need = AI_TASKS[task].needs;
-  const capable = models.filter((m) => m.enabled && m.tasks.includes(task) && need.every((c) => m.capabilities[c] === true));
+  const capable = models.filter((m) => (opts?.modelId === undefined || m.modelId === opts.modelId) && m.enabled && m.tasks.includes(task) && need.every((c) => m.capabilities[c] === true));
   if (!capable.length) {
+    if (opts?.modelId !== undefined) return { decision: 'NO_PROVIDER', estimatedCost: null, reasons: [`${opts.modelId} için kayıtlı ve etkin model yok`] };
     return { decision: 'NO_PROVIDER', estimatedCost: null, reasons: [task === 'AI13' && models.some((m) => m.enabled && m.capabilities.vision)
       ? 'Görüntü işleyen model var ama imza tespiti yeteneği kayıtlı değil; görüntü işleme imza tespiti sayılmaz.'
       : `${AI_TASKS[task].name} için kayıtlı ve etkin model yok.`] };
