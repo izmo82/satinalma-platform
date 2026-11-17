@@ -15,6 +15,8 @@ Bu not, önceki oturumun bağlamını yeni oturuma taşır. Önce bunu, sonra `d
 
 5. **16.11.2026, Faz 1 uygulandı (dal `v2-sadelestirme`, push yok):** tasarım onayı D94, kararlar D95–D100. Görev başına inceleme ile 8 görev + bütün dal incelemesi + tek düzeltme dalgası. Web ve iOS persona testi ve web işlev envanteri yürüyüşü yapıldı (`docs/envanter-faz1.md`: web 245/269, iOS 31 satır işaretli). Faz 1 durumu **PARTIAL**: kalan küçük düzeltmeler ve kullanıcı kararları `docs/implementation-status.md` v2 bölümünde. Ayrıntılı defter (git dışı): `.superpowers/sdd/2026-11-16-v2-faz1-sadelestirme/progress.md`. Geliştirme veritabanının 030 öncesi yedeği aynı klasörde `devdb-before-030.sql`.
 
+6. **17.11.2026:** Faz 1 kapandı (D102–D104, e2e 155/1/63, kalan UX04 önceden var). Faz 2 (Entra) planı `docs/superpowers/plans/2026-11-17-v2-faz2-entra.md`, kullanıcı onayı bekliyor.
+
 ## Sıradaki işler (sırayla)
 
 1. Figma'da kalan 31 ekranı ekran görüntüsüyle denetle, kusurları düğüm kimliğiyle hedefli düzelt.
