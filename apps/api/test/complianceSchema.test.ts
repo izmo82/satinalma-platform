@@ -3,6 +3,9 @@
 // uyum kanıtı, sürümlü kural setleri (yayımlı set ve kuralı değişmez), değişmez denetim koşusu ve kural sonuçları, elle işaret,
 // yapay zekâ önbelleği. Her yeni tabloda kiracı RLS'i, tedarikçi bağlamı kapalı, BT departman kullanıcısı İK projesinin/faturasının
 // kayıtlarını (ve kanıt belgesini) göremez. Tüm veri sentetiktir; demo faturalara (test veritabanında yoklar) dokunulmaz.
+// v2 Faz 7 (D112) Görev 2 inceleme (056a): R1 artık veritabanında — bağ görünür aileye, proje ve departman ailenin aynısı olmalı;
+// bu yüzden bağlama örneği ailenin projesini kullanır ve var olmayan aile FK'dan önce tetikleyicide (P0001) reddedilir. Yeni
+// testler: departmanlar arası doğrudan SQL bağ, beyan yalnız kendi adına, elle LINK olayı yapanı ister, kural/yayımlama yarışı.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import type pg from 'pg';
@@ -48,11 +51,11 @@ async function docVersion() {
     VALUES ($1, $2, $3, 1, $4, 'application/pdf', 100, $5, 'kanit.pdf', 'PASSED', $6) RETURNING id`,
     [w.tenantA, w.companyA1.id, doc, randomUUID().replaceAll('-', '').padEnd(64, '0'), `tenant/${randomUUID()}`, w.users.buyer.id])).id;
 }
-async function family(department: string) {
+async function family(department: string | null, projectId: string | null = null) {
   const w = h.world;
-  return (await one<{ id: string }>(`INSERT INTO contract_families (tenant_id, company_id, title, supplier_id, created_by, code, department_id)
-    VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-    [w.tenantA, w.companyA1.id, `Uyum sözleşmesi ${rand()} (SENTETİK)`, w.suppliers.s1, w.users.buyer.id, `SZL-UYM-${rand()}`, department])).id;
+  return (await one<{ id: string }>(`INSERT INTO contract_families (tenant_id, company_id, title, supplier_id, created_by, code, department_id, project_id)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+    [w.tenantA, w.companyA1.id, `Uyum sözleşmesi ${rand()} (SENTETİK)`, w.suppliers.s1, w.users.buyer.id, `SZL-UYM-${rand()}`, department, projectId])).id;
 }
 /** Sahip bağlantısıyla sentetik yeni fatura (auto_match varsayılanla). */
 async function invoice(department: string | null) {
@@ -118,8 +121,8 @@ describe('055 fatura eşleşmesi', () => {
   it('match_columns_updatable_refs_and_auto_match_insert_only', async () => {
     const w = h.world;
     const inv = await invoice(w.departments.ik);
-    const fam = await family(w.departments.ik);
     const proj = await project();
+    const fam = await family(w.departments.ik, proj);
     await withTenant(h.pool, all(), async (tx) => {
       const r = await tx.query(`UPDATE invoices SET contract_family_id = $2, project_id = $3, match_method = 'MANUAL', match_note = 'Elle bağlandı (sentetik)',
         matched_by = $4, matched_at = now() WHERE id = $1`, [inv.id, fam, proj, w.users.buyer.id]);
@@ -130,19 +133,62 @@ describe('055 fatura eşleşmesi', () => {
     await withTenant(h.pool, all(), (tx) => rejects(tx.query(`UPDATE invoices SET erp_order_ref = 'BAŞKA' WHERE id = $1`, [inv.id]), '42501'));
     // Biçim: bağ yöntemsiz olamaz; elle bağın yapanı bilinir; bağsız faturada proje olmaz; bilinmeyen yöntem; referans ≤ 60.
     const inv2 = await invoice(w.departments.ik);
-    await withTenant(h.pool, all(), (tx) => rejects(tx.query(`UPDATE invoices SET contract_family_id = $2, matched_at = now() WHERE id = $1`, [inv2.id, fam]), '23514'));
-    await withTenant(h.pool, all(), (tx) => rejects(tx.query(`UPDATE invoices SET contract_family_id = $2, match_method = 'MANUAL', matched_at = now() WHERE id = $1`, [inv2.id, fam]), '23514'));
+    await withTenant(h.pool, all(), (tx) => rejects(tx.query(`UPDATE invoices SET contract_family_id = $2, project_id = $3, matched_at = now() WHERE id = $1`, [inv2.id, fam, proj]), '23514'));
+    await withTenant(h.pool, all(), (tx) => rejects(tx.query(`UPDATE invoices SET contract_family_id = $2, project_id = $3, match_method = 'MANUAL', matched_at = now() WHERE id = $1`, [inv2.id, fam, proj]), '23514'));
     await withTenant(h.pool, all(), (tx) => rejects(tx.query(`UPDATE invoices SET project_id = $2 WHERE id = $1`, [inv2.id, proj]), '23514'));
-    await withTenant(h.pool, all(), (tx) => rejects(tx.query(`UPDATE invoices SET contract_family_id = $2, match_method = 'GUESS', matched_at = now() WHERE id = $1`, [inv2.id, fam]), '23514'));
+    await withTenant(h.pool, all(), (tx) => rejects(tx.query(`UPDATE invoices SET contract_family_id = $2, project_id = $3, match_method = 'GUESS', matched_at = now() WHERE id = $1`, [inv2.id, fam, proj]), '23514'));
     await rejects(h.owner.query(`INSERT INTO invoices (tenant_id, company_id, supplier_id, kind, invoice_no, issue_date, currency, created_by, erp_order_ref)
       VALUES ($1, $2, $3, 'INVOICE', $4, '2026-11-17', 'TRY', $5, $6)`, [w.tenantA, w.companyA1.id, w.suppliers.s1, `SNT${rand()}`, w.users.buyer.id, 'X'.repeat(61)]), '23514');
     // Otomatik bağ (yapan yok) geçerli; bağ kaldırma tüm sütunları boşaltır.
     await withTenant(h.pool, all(), async (tx) => {
-      expect((await tx.query(`UPDATE invoices SET contract_family_id = $2, match_method = 'SUPPLIER_DATE', matched_at = now() WHERE id = $1`, [inv2.id, fam])).rowCount).toBe(1);
+      expect((await tx.query(`UPDATE invoices SET contract_family_id = $2, project_id = $3, match_method = 'SUPPLIER_DATE', matched_at = now() WHERE id = $1`, [inv2.id, fam, proj])).rowCount).toBe(1);
       expect((await tx.query(`UPDATE invoices SET contract_family_id = NULL, project_id = NULL, match_method = NULL, matched_by = NULL, matched_at = NULL WHERE id = $1`, [inv2.id])).rowCount).toBe(1);
     });
-    // Var olmayan (ya da başka kiracının) sözleşmesine bağ kurulamaz (kiracı-bileşik FK).
-    await rejects(h.owner.query(`UPDATE invoices SET contract_family_id = $2, match_method = 'SUPPLIER_DATE', matched_at = now() WHERE id = $1`, [inv2.id, randomUUID()]), '23503');
+    // Var olmayan (ya da başka kiracının) sözleşmesine bağ kurulamaz (056a tetikleyicisi; ayrıca kiracı-bileşik FK).
+    await rejects(h.owner.query(`UPDATE invoices SET contract_family_id = $2, match_method = 'SUPPLIER_DATE', matched_at = now() WHERE id = $1`, [inv2.id, randomUUID()]),
+      'P0001', /contract_not_visible/);
+  });
+
+  it('r1_link_requires_visible_family_same_project_and_department', async () => {
+    const w = h.world;
+    const ikProj = await project();
+    const ikFam = await family(w.departments.ik, ikProj);
+    const btProj = await project({ department: w.departments.bt });
+    const btFam = await family(w.departments.bt, btProj);
+    const link = (invId: string, fam: string, proj: string | null) => (tx: pg.PoolClient) => tx.query(
+      `UPDATE invoices SET contract_family_id = $2, project_id = $3, match_method = 'MANUAL', matched_by = app_user_id(), matched_at = now() WHERE id = $1`, [invId, fam, proj]);
+    // BT kullanıcısı doğrudan SQL ile kendi (BT) faturasını İK sözleşmesine bağlayamaz (aile RLS'le görünmez).
+    const btInv = await invoice(w.departments.bt);
+    await withTenant(h.pool, dept([w.departments.bt]), (tx) => rejects(link(btInv.id, ikFam, ikProj)(tx), 'P0001', /contract_not_visible/));
+    // Departmanı İK'ya çevirip bağlamayı denemek de olmaz (fatura departman kapsamından çıkar).
+    await withTenant(h.pool, dept([w.departments.bt]), (tx) => rejects(tx.query(
+      `UPDATE invoices SET department_id = $2, contract_family_id = $3, project_id = $4, match_method = 'MANUAL', matched_by = app_user_id(), matched_at = now() WHERE id = $1`,
+      [btInv.id, w.departments.ik, ikFam, ikProj]), 'P0001'));
+    // Kendi departmanındaki sözleşmeye bağlar.
+    await withTenant(h.pool, dept([w.departments.bt]), async (tx) => expect((await link(btInv.id, btFam, btProj)(tx)).rowCount).toBe(1));
+    // Tüm departmanı gören (işçi/Satınalma) bile: proje ailenin projesi, departman ailenin departmanı olmalı.
+    const ikInv = await invoice(w.departments.ik);
+    await withTenant(h.pool, all(), (tx) => rejects(link(ikInv.id, ikFam, btProj)(tx), 'P0001', /project_mismatch/));
+    await withTenant(h.pool, all(), (tx) => rejects(link(ikInv.id, ikFam, null)(tx), 'P0001', /project_mismatch/));
+    await withTenant(h.pool, all(), (tx) => rejects(link(ikInv.id, btFam, btProj)(tx), 'P0001', /department_mismatch/));
+    // Departman devriyle birlikte bağ (R1/§2.3): aynı ifadede departman ailenin departmanına çekilir.
+    await withTenant(h.pool, all(), async (tx) => expect((await tx.query(
+      `UPDATE invoices SET department_id = $2, contract_family_id = $3, project_id = $4, match_method = 'SUPPLIER_DATE', matched_at = now() WHERE id = $1`,
+      [ikInv.id, w.departments.bt, btFam, btProj])).rowCount).toBe(1));
+    // Bağlı faturanın departmanı aileden ayrılamaz; bağ kaldırılınca serbest.
+    await withTenant(h.pool, all(), (tx) => rejects(tx.query(`UPDATE invoices SET department_id = $2 WHERE id = $1`, [ikInv.id, w.departments.ik]), 'P0001', /department_mismatch/));
+    await withTenant(h.pool, all(), async (tx) => {
+      await tx.query(`UPDATE invoices SET contract_family_id = NULL, project_id = NULL, match_method = NULL, matched_by = NULL, matched_at = NULL WHERE id = $1`, [ikInv.id]);
+      expect((await tx.query(`UPDATE invoices SET department_id = $2 WHERE id = $1`, [ikInv.id, w.departments.ik])).rowCount).toBe(1);
+    });
+    // Projesiz ve departmansız aile: fatura da projesiz ve departmansız olmalı; bağsız faturada (eski yollar) tetikleyici devreye girmez.
+    const bare = await family(null);
+    const plain = await invoice(null);
+    await withTenant(h.pool, all(), async (tx) => {
+      expect((await tx.query(`UPDATE invoices SET contract_family_id = $2, match_method = 'ERP_REF', matched_at = now() WHERE id = $1`, [plain.id, bare])).rowCount).toBe(1);
+    });
+    const loose = await invoice(null);
+    await withTenant(h.pool, all(), async (tx) => expect((await tx.query(`UPDATE invoices SET department_id = $2 WHERE id = $1`, [loose.id, w.departments.ik])).rowCount).toBe(1));
   });
 
   it('match_events_insert_only_tenant_and_department_scoped', async () => {
@@ -151,6 +197,11 @@ describe('055 fatura eşleşmesi', () => {
     const fam = await family(w.departments.ik);
     const ev = await withTenant(h.pool, all(), async (tx) => (await tx.query<{ id: string }>(`INSERT INTO invoice_match_events (tenant_id, company_id, invoice_id, action, family_id, method, actor)
       VALUES ($1, $2, $3, 'LINK', $4, 'MANUAL', $5) RETURNING id`, [w.tenantA, w.companyA1.id, inv.id, fam, w.users.buyer.id])).rows[0]!.id);
+    // Elle bağlama olayı yapanı ister (056a); otomatik bağ olayı yapansız olabilir.
+    await withTenant(h.pool, all(), (tx) => rejects(tx.query(`INSERT INTO invoice_match_events (tenant_id, company_id, invoice_id, action, family_id, method)
+      VALUES ($1, $2, $3, 'LINK', $4, 'MANUAL')`, [w.tenantA, w.companyA1.id, inv.id, fam]), '23514'));
+    await withTenant(h.pool, all(), async (tx) => expect((await tx.query(`INSERT INTO invoice_match_events (tenant_id, company_id, invoice_id, action, family_id, method)
+      VALUES ($1, $2, $3, 'LINK', $4, 'ERP_REF')`, [w.tenantA, w.companyA1.id, inv.id, fam])).rowCount).toBe(1));
     // Gerekçesiz (ya da 10 karakterden kısa) bağ kaldırma reddedilir; başarısız otomatik eşleşme nedeni zorunlu.
     await withTenant(h.pool, all(), (tx) => rejects(tx.query(`INSERT INTO invoice_match_events (tenant_id, company_id, invoice_id, action, family_id, reason, actor)
       VALUES ($1, $2, $3, 'UNLINK', $4, 'kısa', $5)`, [w.tenantA, w.companyA1.id, inv.id, fam, w.users.buyer.id]), '23514'));
@@ -169,6 +220,9 @@ describe('055 fatura eşleşmesi', () => {
       expect((await tx.query(`INSERT INTO invoice_match_events (tenant_id, company_id, invoice_id, action, reason) VALUES ($1, $2, $3, 'AUTO_FAILED', 'no_candidate')`,
         [w.tenantA, w.companyA1.id, btInv.id])).rowCount).toBe(1);
     });
+    // Olaydaki aile yazarken görünür olmalı (056a): BT kullanıcısı kendi faturasının olayına İK ailesini yazamaz.
+    await withTenant(h.pool, dept([w.departments.bt]), (tx) => rejects(tx.query(`INSERT INTO invoice_match_events (tenant_id, company_id, invoice_id, action, family_id, method, actor)
+      VALUES ($1, $2, $3, 'LINK', $4, 'MANUAL', $5)`, [w.tenantA, w.companyA1.id, btInv.id, fam, w.users.techEval.id]), '42501'));
     await withTenant(h.pool, dept([w.departments.ik]), async (tx) => expect(await count(tx, `invoice_match_events WHERE id = $1`, [ev])).toBe(1));
   });
 });
@@ -219,6 +273,9 @@ describe('055 beyan ve kanıt', () => {
       await rejects(h.owner.query(`UPDATE ${t} SET tenant_id = tenant_id WHERE id = $1`, [id]), 'P0001', /immutable_record/);
       await rejects(h.owner.query(`DELETE FROM ${t} WHERE id = $1`, [id]), 'P0001', /immutable_record/);
     }
+    // Beyan yalnız oturum kullanıcısının kendi adına (056a): Satınalma başkası adına beyan yazamaz.
+    await withTenant(h.pool, all(), (tx) => rejects(tx.query(`INSERT INTO coi_declarations (tenant_id, company_id, project_id, user_id, kind)
+      VALUES ($1, $2, $3, $4, 'NONE')`, [w.tenantA, w.companyA1.id, p, w.users.techEval.id]), '42501'));
     // İkinci beyan eklenir (son geçerli).
     await withTenant(h.pool, all(), async (tx) => {
       await tx.query(`INSERT INTO coi_declarations (tenant_id, company_id, project_id, user_id, kind, statement) VALUES ($1, $2, $3, $4, 'DECLARED', 'Tedarikçide akrabam çalışıyor (sentetik)')`,
@@ -242,6 +299,43 @@ describe('056 kural setleri', () => {
     await withTenant(h.pool, all(), (tx) => rejects(tx.query(`UPDATE procurement_rule_sets SET status = 'DRAFT', published_at = NULL, published_by = NULL WHERE id = $1`, [set]), 'P0001', /immutable_record/));
     await withTenant(h.pool, all(), (tx) => rejects(tx.query(`DELETE FROM procurement_rule_sets WHERE id = $1`, [set]), '42501'));
     await rejects(h.owner.query(`DELETE FROM procurement_rule_sets WHERE id = $1`, [set]), 'P0001', /immutable_record/);
+  });
+
+  it('rule_write_and_publish_do_not_race', async () => {
+    // İki bağlantı (056a FOR SHARE): taslağa kural ekleyen işlem açıkken yayımlama bekler; yayımlama açıkken kural ekleme bekler ve
+    // yayımlama işlenince reddedilir. Bekleme lock_timeout ile (55P03) gözlenir.
+    const w = h.world;
+    const set = await draftSetId();
+    const c1 = await h.owner.connect();
+    const c2 = await h.owner.connect();
+    try {
+      await c1.query('BEGIN');
+      await c1.query(`INSERT INTO procurement_rules (tenant_id, rule_set_id, code, name, check_type, weight) VALUES ($1, $2, $3, 'Yarış kuralı', 'MANUAL', 5)`, [w.tenantA, set, `R${rand()}`]);
+      await c2.query('BEGIN');
+      await c2.query(`SET LOCAL lock_timeout = '300ms'`);
+      await rejects(c2.query(`UPDATE procurement_rule_sets SET status = 'PUBLISHED', effective_from = '2026-01-01', published_by = created_by, published_at = now() WHERE id = $1`, [set]), '55P03');
+      await c2.query('ROLLBACK');
+      await c1.query('COMMIT');
+      // Ters yön: yayımlama açık, kural ekleme bekler; yayımlama işlenince bekleyen ekleme yayımlı seti görür.
+      await c2.query('BEGIN');
+      await c2.query(`UPDATE procurement_rule_sets SET status = 'PUBLISHED', effective_from = '2026-01-01', published_by = created_by, published_at = now() WHERE id = $1`, [set]);
+      await c1.query('BEGIN');
+      await c1.query(`SET LOCAL lock_timeout = '300ms'`);
+      await rejects(c1.query(`INSERT INTO procurement_rules (tenant_id, rule_set_id, code, name, check_type, weight) VALUES ($1, $2, $3, 'Geç kural', 'MANUAL', 5)`, [w.tenantA, set, `R${rand()}`]), '55P03');
+      await c1.query('ROLLBACK');
+      const late = c1.query(`INSERT INTO procurement_rules (tenant_id, rule_set_id, code, name, check_type, weight) VALUES ($1, $2, $3, 'Geç kural', 'MANUAL', 5)`, [w.tenantA, set, `R${rand()}`])
+        .then(() => null, (e: any) => e);
+      await new Promise((r) => setTimeout(r, 100));
+      await c2.query('COMMIT');
+      const err = await late;
+      expect(err?.code).toBe('P0001');
+      expect(err?.message).toMatch(/immutable_record: procurement_rules \(set PUBLISHED\)/);
+    } finally {
+      await c1.query('ROLLBACK').catch(() => {});
+      await c2.query('ROLLBACK').catch(() => {});
+      c1.release();
+      c2.release();
+    }
   });
 
   it('draft_rules_editable_one_draft_per_tenant_and_rule_shape', async () => {
