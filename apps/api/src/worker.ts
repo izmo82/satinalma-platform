@@ -4,6 +4,7 @@ import { createPool, withoutTenant, withTenant, type TenantContext } from './db.
 import { S3ObjectStore, type ObjectStore } from './storage.ts';
 import { processSignatureJob } from './modules/contracts.ts';
 import { processNoticeReminder, processObligationDue } from './modules/contractTerms.ts';
+import { processEndReminder } from './modules/contractReminders.ts';
 import { processErpExport } from './modules/invoices.ts';
 import { processAiRun } from './modules/ai.ts';
 import { processPurge, processTenantExport } from './modules/governance.ts';
@@ -26,7 +27,7 @@ export async function processJobs(pool: pg.Pool, store: ObjectStore, detectorPro
   lane: 'all' | 'short' | 'export' = 'all', opts: WorkerOptions = {}): Promise<number> {
   const directory = opts.directoryProvider ?? null;
   // Kiracı dışa aktarımı saatler sürebilir: ayrı şeritte tek tek çalışır, ihbar/imza/silme işlerini bekletmez.
-  const short = ['signature.detect', 'contract.notice_reminder', 'contract.obligation_due', 'retention.purge', ...(erpAdapterName ? ['erp.export'] : []), ...(hasAiProviders() ? ['ai.run'] : []),
+  const short = ['signature.detect', 'contract.notice_reminder', 'contract.end_reminder', 'contract.obligation_due', 'retention.purge', ...(erpAdapterName ? ['erp.export'] : []), ...(hasAiProviders() ? ['ai.run'] : []),
     ...(directory ? ['directory.sync'] : [])];
   const kinds = lane === 'export' ? ['tenant.export'] : lane === 'short' ? short : [...short, 'tenant.export'];
   const claimed = await withoutTenant(pool, async (c) =>
@@ -58,6 +59,7 @@ export async function processJobs(pool: pg.Pool, store: ObjectStore, detectorPro
       else if (job.kind === 'erp.export') await withTenant(pool, ctx, (tx) => processErpExport(tx, ctx, job.id, erpAdapterName));
       else if (job.kind === 'ai.run') await processAiRun(pool, ctx, store, job.id);
       else if (job.kind === 'tenant.export') await processTenantExport(pool, ctx, store, job.id);
+      else if (job.kind === 'contract.end_reminder') await withTenant(pool, ctx, (tx) => processEndReminder(tx, ctx, job.id));
       else if (job.kind === 'contract.obligation_due') await withTenant(pool, ctx, (tx) => processObligationDue(tx, ctx, job.id));
       else await withTenant(pool, ctx, (tx) => processSignatureJob(tx, ctx, store, job.id, detectorProvider));
     } catch (err) {

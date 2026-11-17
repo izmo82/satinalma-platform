@@ -1,5 +1,5 @@
 import {
-  addDays, contractStatus, missingRequired, noticeDeadline, planChain, reminderDates, termsDiff, normalizeRoles,
+  addDays, contractStatus, missingRequired, planChain, reminderDates, termsDiff, normalizeRoles,
   CONTRACT_TYPE_TR, REQUIRED_FIELD_TR, STEP_KIND_TR,
   type ChainSummary, type CommercialTerms, type ContractFields, type ContractStatus, type ContractType, type NoticeUnit, type RequiredField, type StepKind,
 } from '@sp/domain';
@@ -11,6 +11,7 @@ import { createContract } from './contracts.ts';
 import { saveTerms } from './contractTerms.ts';
 import { currentApprovers } from './approvers.ts';
 import { resolveDepartment } from './departments.ts';
+import { noticeBasis } from './contractReminders.ts';
 
 /**
  * v2 Faz 3 (D108+, R1–R5, R9, R10) Görev 4: sözleşme ekleme akışı. Taslak (aile + MAIN sürüm, proje zorunlu), zorunlu alanlar
@@ -511,11 +512,9 @@ export async function getContractV2(tx: Tx, ctx: TenantContext, familyId: string
 
   // Hatırlatıcılar (R7): kurulanlar (Görev 6 contract_reminders) ve plan (kiracı süreleriyle; onay tamamlanınca kurulur).
   const offsets = (await tx.query<{ offsets: number[] }>(`SELECT offsets FROM contract_reminder_settings`)).rows[0]?.offsets ?? [90, 60, 30, 7];
-  let nd: string | null = null;
-  if (!f.indefinite && f.auto_renewal && f.end_date && f.notice_amount != null && f.notice_unit) {
-    const h = (await tx.query<{ day: string }>(`SELECT day::text FROM tenant_holidays ORDER BY day`)).rows.map((r) => r.day);
-    nd = noticeDeadline(f.end_date, { amount: f.notice_amount, unit: f.notice_unit, nonWorkingDay: f.non_working_day_rule ?? 'PREVIOUS_WORKING_DAY' }, h).deadline;
-  }
+  // İhbar son günü Görev 6 kuralıyla (otomatik yenilemede bitişten; süresizde başlangıcın yıl dönümünden, ihbar süresi ailede).
+  const h = (await tx.query<{ day: string }>(`SELECT day::text FROM tenant_holidays ORDER BY day`)).rows.map((r) => r.day);
+  const nd = f.terms_id ? noticeBasis(f, h, day)?.deadline ?? null : null;
   const planned = f.terms_id ? reminderDates({ endDate: f.end_date, indefinite: f.indefinite, autoRenewal: !!f.auto_renewal, noticeDeadline: nd, offsets }) : [];
   const scheduled = (await tx.query<{ id: string; kind: 'END' | 'NOTICE'; offset_days: number; due_on: string }>(
     `SELECT id, kind, offset_days, due_on::text FROM contract_reminders WHERE family_id = $1 ORDER BY due_on, kind`, [familyId])).rows;

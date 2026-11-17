@@ -6,6 +6,7 @@ import type { TenantContext, Tx } from '../db.ts';
 import { audit } from '../audit.ts';
 import { closeTasks, openTask, v2Role } from '../tasks.ts';
 import { ApiError, conflict, notFound, unprocessable } from '../errors.ts';
+import { scheduleContractReminders, taskPrefix as reminderTaskPrefix } from './contractReminders.ts';
 
 /**
  * Faz 3 kalan: sözleşme koşulları (bedel/tavan, süre, ihbar), hukuk doğrulaması, ihbar son gününe göre uyarılar (T21),
@@ -103,8 +104,13 @@ export async function verifyTerms(tx: Tx, ctx: TenantContext, termsId: string) {
   await tx.query(`UPDATE contract_terms SET verified_by = $2, verified_at = now() WHERE id = $1`, [termsId, ctx.userId]);
   await closeTasks(tx, `terms-verify:${t.contract_version_id}`);
   const scheduled = await scheduleNotice(tx, ctx, t);
+  // v2 Faz 3 (R7): eski kayıtta (Faz 3 öncesi, onay zinciri yok) onay olmayacağından bitiş hatırlatıcıları doğrulamayla kurulur.
+  const cv = await loadCv(tx, t.contract_version_id);
+  const legacy = !cv.superseded_by_id && (await tx.query(`SELECT 1 FROM contract_families f WHERE f.id = $1 AND NOT f.intake_flow
+    AND NOT EXISTS (SELECT 1 FROM contract_approval_chains c WHERE c.family_id = f.id)`, [cv.family_id])).rowCount;
+  const contractReminders = legacy ? (await scheduleContractReminders(tx, ctx, cv.family_id)).reminders : [];
   await audit(tx, ctx, 'contract.terms_verified', 'contract_version', t.contract_version_id, { termsId, revision: t.revision, reminders: scheduled });
-  return { verified: true, reminders: scheduled };
+  return { verified: true, reminders: scheduled, contractReminders };
 }
 
 async function scheduleNotice(tx: Tx, ctx: TenantContext, t: TermsRow) {
@@ -154,15 +160,22 @@ export async function processNoticeReminder(tx: Tx, ctx: TenantContext, jobId: s
   return finish({ deadline: nd.deadline, offset });
 }
 
-export async function decideRenewal(tx: Tx, ctx: TenantContext, cvId: string, body: { decision: 'RENEW' | 'TERMINATE' | 'RENEGOTIATE'; rationale: string }) {
+export async function decideRenewal(tx: Tx, ctx: TenantContext, cvId: string, body: { decision: 'RENEW' | 'TERMINATE' | 'RENEGOTIATE' | 'NEW_PROJECT'; rationale: string }) {
   const cv = await loadCv(tx, cvId);
   const t = await latestTerms(tx, cvId);
-  if (!t || !t.verified_by) throw conflict('terms_not_verified', 'Yenileme kararı doğrulanmış koşullara bağlanır.');
+  // v2 Faz 3 (R7): onay zinciri bu koşulları onayladıysa da karar girilebilir (hatırlatıcı onayla kurulur, karar onu kapatır).
+  const approved = t && !t.verified_by && (await tx.query(`SELECT 1 FROM contract_approval_chains WHERE version_id = $1 AND terms_id = $2 AND outcome = 'APPROVED'`,
+    [cvId, t.id])).rowCount;
+  if (!t || (!t.verified_by && !approved)) throw conflict('terms_not_verified', 'Yenileme kararı doğrulanmış koşullara bağlanır.');
   if (body.rationale.trim().length < 10) throw unprocessable('rationale_required', 'Karar gerekçesi gerekli (en az 10 karakter).');
   const d = (await tx.query<{ id: string }>(`INSERT INTO renewal_decisions (tenant_id, company_id, contract_version_id, terms_id, decision, rationale, decided_by)
     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`, [ctx.tenantId, cv.company_id, cvId, t.id, body.decision, body.rationale.trim(), ctx.userId])).rows[0]!;
   await closeTasks(tx, `notice:${cv.family_id}:`);
-  if (body.decision === 'TERMINATE') {
+  // R7: bitiş/ihbar hatırlatıcısı karar girilene kadar açık kalır; dört kararın her biri kapatır.
+  await closeTasks(tx, reminderTaskPrefix(cv.family_id));
+  if (body.decision === 'NEW_PROJECT') {
+    // "Yeni proje açıldı": yeni ihtiyaç ayrı projede yürür; burada ek görev açılmaz.
+  } else if (body.decision === 'TERMINATE') {
     // Sözleşmenin bitmesi veri, erişim ve borç ilişkisini kendiliğinden kapatmaz (02 §11).
     const exit: [string, string, string][] = [
       ['data', 'Veri iadesi veya silme teyidi alın', 'SECURITY'], ['access', 'Tedarikçi hesap ve erişimlerini kapatın', 'SECURITY'],

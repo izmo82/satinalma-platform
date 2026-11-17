@@ -32,6 +32,7 @@ import * as directory from './modules/directory.ts';
 import * as approvers from './modules/approvers.ts';
 import * as templates from './modules/templates.ts';
 import * as intake from './modules/contractIntake.ts';
+import * as reminders from './modules/contractReminders.ts';
 import { directoryProvider, type DirectoryProvider } from './directory/provider.ts';
 import { taskRoleSql, visibleTaskSql } from './tasks.ts';
 import { decisionSummaryPdf, evaluationWorkbook } from './reports.ts';
@@ -339,9 +340,11 @@ export async function buildApp(deps: AppDeps) {
                 WHEN 'supplier' THEN (SELECT s.tax_id_type || ' ' || s.tax_id FROM suppliers s WHERE s.id = t.entity_id)
                 WHEN 'invoice' THEN (SELECT i.invoice_no FROM invoices i WHERE i.id = t.entity_id)
                 WHEN 'incident' THEN (SELECT x.code FROM supplier_incidents x WHERE x.id = t.entity_id)
+                WHEN 'contract_reminder' THEN (SELECT f.code FROM contract_families f WHERE f.id = t.entity_id)
               END AS "refNo"
        FROM tasks t WHERE t.status = 'OPEN' AND ${taskRoleSql('$1')} AND ${visibleTaskSql()}
          AND (t.entity_type <> 'contract_approval_step' OR t.assignee_user_id = $3)
+         AND (t.entity_type <> 'contract_reminder' OR t.assignee_user_id IS NULL OR t.assignee_user_id = $3)
          AND ($2 <> 'overdue' OR (t.due_at IS NOT NULL AND t.due_at < now()))
          AND ($2 <> 'mine' OR t.assignee_user_id IS NULL OR t.assignee_user_id = $3)
        ORDER BY CASE t.severity WHEN 'CRITICAL' THEN 0 WHEN 'HIGH' THEN 1 ELSE 2 END, t.due_at NULLS LAST, t.created_at
@@ -351,7 +354,8 @@ export async function buildApp(deps: AppDeps) {
       `SELECT count(*) FILTER (WHERE assignee_user_id IS NULL OR assignee_user_id = $2)::int AS mine,
               count(*) FILTER (WHERE due_at IS NOT NULL AND due_at < now())::int AS overdue, count(*)::int AS "all"
        FROM tasks t WHERE t.status = 'OPEN' AND ${taskRoleSql('$1')} AND ${visibleTaskSql()}
-         AND (t.entity_type <> 'contract_approval_step' OR t.assignee_user_id = $2)`, [ctx.roles, ctx.userId])).rows[0];
+         AND (t.entity_type <> 'contract_approval_step' OR t.assignee_user_id = $2)
+         AND (t.entity_type <> 'contract_reminder' OR t.assignee_user_id IS NULL OR t.assignee_user_id = $2)`, [ctx.roles, ctx.userId])).rows[0];
     return { items: r.rows, counts: c };
   }));
 
@@ -613,6 +617,14 @@ export async function buildApp(deps: AppDeps) {
   } } } }, async (req) => scoped(req, 'contract.manage', (tx, ctx) => intake.updateFields(tx, ctx, (req.params as { id: string }).id, req.body as intake.FieldsInput)));
   app.get('/api/v1/contracts/:id/v2', { schema: { tags: ['contracts'], params: idParams } }, async (req) =>
     scoped(req, 'contract.read', (tx, ctx) => intake.getContractV2(tx, ctx, (req.params as { id: string }).id)));
+  // --- Sözleşme hatırlatıcıları (v2 Faz 3, Görev 6: R7) -------------------------------------------------------------------
+  app.get('/api/v1/contracts/:id/reminders', { schema: { tags: ['contracts'], params: idParams } }, async (req) =>
+    scoped(req, 'contract.read', (tx, ctx) => reminders.getReminders(tx, ctx, (req.params as { id: string }).id)));
+  app.get('/api/v1/settings/contract-reminders', { schema: { tags: ['settings'] } }, async (req) =>
+    scoped(req, 'reminder.settings', (tx) => reminders.getSettings(tx)));
+  app.put('/api/v1/settings/contract-reminders', { schema: { tags: ['settings'], body: { type: 'object', required: ['offsets'], additionalProperties: false, properties: {
+    offsets: { type: 'array', minItems: 1, maxItems: 6, uniqueItems: true, items: { type: 'integer', minimum: 1, maximum: 365 } } } } } }, async (req) =>
+    scoped(req, 'reminder.settings', (tx, ctx) => reminders.putSettings(tx, ctx, req.body as { offsets: number[] })));
   const previewQuery = { type: 'object', additionalProperties: false, properties: { useDeputyForHead: { type: 'boolean' },
     extraApproverIds: { type: 'array', maxItems: 10, items: uuid } } } as const;
   app.get('/api/v1/contracts/:id/approval-preview', { schema: { tags: ['contracts'], params: idParams, querystring: previewQuery } }, async (req) =>
@@ -855,7 +867,7 @@ export async function buildApp(deps: AppDeps) {
   app.post('/api/v1/contract-terms/:id/verify', { schema: { tags: ['contracts'], params: idParams } }, async (req) =>
     scoped(req, 'contract.terms.verify', (tx, ctx) => lifecycle.verifyTerms(tx, ctx, (req.params as any).id)));
   app.post('/api/v1/contract-versions/:id/renewal-decision', { schema: { tags: ['contracts'], params: idParams, body: { type: 'object', required: ['decision', 'rationale'],
-    properties: { decision: { type: 'string', enum: ['RENEW', 'TERMINATE', 'RENEGOTIATE'] }, rationale: { type: 'string', maxLength: 4000 } } } } }, async (req, reply) =>
+    properties: { decision: { type: 'string', enum: ['RENEW', 'TERMINATE', 'RENEGOTIATE', 'NEW_PROJECT'] }, rationale: { type: 'string', maxLength: 4000 } } } } }, async (req, reply) =>
     reply.status(201).send(await scoped(req, 'contract.renewal.decide', (tx, ctx) => lifecycle.decideRenewal(tx, ctx, (req.params as any).id, req.body as any))));
   app.post('/api/v1/contract-versions/:id/obligations', { schema: { tags: ['contracts'], params: idParams, body: { type: 'object', additionalProperties: false,
     required: ['title', 'counterparty', 'ownerRole', 'firstDue', 'recurrence', 'until', 'evidenceRequired', 'sourceRef'],
