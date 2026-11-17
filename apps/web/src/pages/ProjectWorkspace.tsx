@@ -1,7 +1,9 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { api, apiBlob, ApiError } from '../lib/api.ts';
 import { useResource } from '../lib/useApi.ts';
+import { hasRole, useSession } from '../lib/session.tsx';
+import { statusTag } from '../lib/contractsV2.ts';
 import { fmtDate, fmtDateTime, fmtMoney } from '../lib/format.ts';
 import { costKindLabel, lineState, PROJECT_STAGES, projectStatus, supplierPickHint, type SupplierOption } from '../lib/labels.ts';
 import { Banner, Empty, ErrorState, Field, Loading, Tag } from '../ui/kit.tsx';
@@ -173,7 +175,8 @@ function ExceptionsPanel({ d, reload }: { d: Detail; reload: () => Promise<void>
   );
 }
 
-const TABS = [['ozet', 'Özet'], ['kalemler', 'Kalemler'], ['teklifler', 'Teklifler'], ['karsilastirma', 'Karşılaştırma'], ['karar', 'Karar']] as const;
+// v2 Faz 3 (R10, analiz §3.1): "Sözleşmeler" sekmesi eklendi (projeye bağlı sözleşmeler + "Bu projeye sözleşme ekle").
+const TABS = [['ozet', 'Özet'], ['kalemler', 'Kalemler'], ['teklifler', 'Teklifler'], ['karsilastirma', 'Karşılaştırma'], ['karar', 'Karar'], ['sozlesmeler', 'Sözleşmeler']] as const;
 const STAGE_TEXT: Record<string, string> = { DRAFT: 'Taslak', IN_APPROVAL: 'Onayda', OPEN: 'Teklife açık', EVALUATION: 'Değerlendirme', AWARD_APPROVAL: 'Seçim onayı', CONTRACTING: 'Sözleşme', CANCELLED: 'İptal edildi', NO_AWARD: 'Sonuçsuz kapandı' };
 
 function nextStep(d: Detail): string {
@@ -227,6 +230,7 @@ export function ProjectWorkspace() {
         {tab === 'teklifler' && <Bids d={d} reload={r.reload} />}
         {tab === 'karsilastirma' && <ComparisonTab d={d} reload={r.reload} />}
         {tab === 'karar' && <Decision d={d} reload={r.reload} />}
+        {tab === 'sozlesmeler' && <ProjectContracts projectId={d.project.id} />}
       </div>
     </div>
   );
@@ -680,4 +684,52 @@ async function saveBlob(path: string, name: string) {
   const blob = await apiBlob(path);
   const url = URL.createObjectURL(blob);
   const el = document.createElement('a'); el.href = url; el.download = name; el.click(); URL.revokeObjectURL(url);
+}
+
+interface ContractRow { id: string; title: string; code?: string | null; status?: string | null; statusLabel?: string | null; project?: { id: string } | null;
+  supplier?: { legalName: string } | null; supplierNames?: string[]; endDate?: string | null; indefinite?: boolean; amount?: string | null; currency?: string | null; departmentName: string | null }
+
+/** Projeye bağlı sözleşmeler. Liste ucu proje süzgeci sunmaz: görünür sözleşmeler sayfa sayfa alınıp proje bağıyla süzülür. */
+function ProjectContracts({ projectId }: { projectId: string }) {
+  const { me } = useSession();
+  const [state, setState] = useState<{ rows: ContractRow[] | null; error: unknown; partial: boolean }>({ rows: null, error: null, partial: false });
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    let off = false;
+    setState({ rows: null, error: null, partial: false });
+    (async () => {
+      const all: ContractRow[] = [];
+      let total = Infinity;
+      for (let page = 0; page < 10 && all.length < total; page++) {
+        const r = await api<{ items: ContractRow[]; total: number }>(`/api/v1/contracts?limit=100&offset=${all.length}`);
+        total = r.data.total; all.push(...r.data.items);
+        if (!r.data.items.length) break;
+      }
+      if (!off) setState({ rows: all.filter((c) => c.project?.id === projectId), error: null, partial: all.length < total });
+    })().catch((error) => { if (!off) setState({ rows: null, error, partial: false }); });
+    return () => { off = true; };
+  }, [projectId, attempt]);
+  const canAdd = hasRole(me, 'PROCUREMENT', 'DEPARTMENT_USER');
+  return (
+    <section className="panel">
+      <div className="panel-head"><h2 className="flex-1">Bağlı sözleşmeler</h2>
+        {canAdd && <Button size="sm" asChild><Link to={`/sozlesmeler/ekle?proje=${projectId}`}><Icon name="upload" />Bu projeye sözleşme ekle</Link></Button>}</div>
+      {state.error ? <ErrorState error={state.error} onRetry={() => setAttempt((x) => x + 1)} /> : !state.rows ? <Loading rows={3} /> : !state.rows.length ? (
+        <Empty icon="file" title="Bu projeye bağlı sözleşme yok">{canAdd ? 'Sözleşme eklerken proje seçimi zorunludur; buradan eklenen sözleşmede proje dolu gelir.' : null}</Empty>
+      ) : (
+        <ul className="divide-y divide-[#ebe6da]" aria-label="Projenin sözleşmeleri">
+          {state.rows.map((c) => (
+            <li key={c.id} className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3">
+              <div className="min-w-[200px] flex-1"><Link to={`/sozlesmeler/${c.id}?sekme=ozet`} className="font-semibold text-ink">{c.title}</Link>
+                <div className="text-sm text-ink-subtle">{[c.code, c.supplierNames?.length ? c.supplierNames.join(', ') : c.supplier?.legalName, c.departmentName].filter(Boolean).join(' · ')}</div></div>
+              <span className="tabular text-sm">{c.indefinite ? 'Süresiz' : c.endDate ? fmtDate(c.endDate) : '—'}</span>
+              <span className="tabular text-sm">{c.amount ? fmtMoney(c.amount, c.currency) : '—'}</span>
+              <Tag label={statusTag(c.status, c.statusLabel)} />
+            </li>
+          ))}
+        </ul>
+      )}
+      {state.partial && <p className="px-4 pb-3 text-sm text-ink-muted">İlk 1.000 sözleşmede arandı; daha eskileri Sözleşmeler listesinden bulun.</p>}
+    </section>
+  );
 }

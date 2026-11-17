@@ -1,3 +1,4 @@
+// v2 Faz 3 (D108+): Yönetim > Şablonlar artık gerçek şablon kütüphanesi (Figma 12); "Faz 3'te gelir" boş durumu kalktı. Sonraki faz boş durumu denetimi Satınalma kuralları için sürer; Şablonlar sekmesinin tablosu ve yükleme alanı denetlenir.
 // v2 Faz 2 (D105): Denetçi Kullanıcılar ve Entra ile Onaycılar sekmelerini salt okunur görür (directory.read, approver.read); Onaycılar artık
 // gerçek ekran ("Faz 2'de gelir" boş durumu kalktı); sekme açıklaması Entra bağlantı durumunu söyler.
 // v2 Faz 1 (D93/D95): yedi girişli menü, Yönetim sekmeleri, taşınan girişlerin yeni yerleri ve kaldırılan adreslerin açıklama ekranı.
@@ -71,7 +72,11 @@ test('Yönetim: departmanlar ve sonraki fazların boş durumları', async ({ pag
   await tabs.getByRole('link', { name: 'Onaycılar' }).click();
   await expect(page.getByRole('heading', { name: 'Onaycılar', level: 1 })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Departman sorumluları' })).toBeVisible();
-  for (const [tab, phase] of [['Şablonlar', 'Faz 3'], ['Satınalma kuralları', 'Faz 7']] as const) {
+  await tabs.getByRole('link', { name: 'Şablonlar' }).click();
+  await expect(page.getByRole('heading', { name: 'Şablonlar', level: 1 })).toBeVisible();
+  await expect(page.getByText(/Faz 3'te gelir/)).toHaveCount(0);
+  await expect(page.getByText('Yeni şablon ya da yeni sürüm için .docx dosyasını buraya bırakın')).toBeVisible();
+  for (const [tab, phase] of [['Satınalma kuralları', 'Faz 7']] as const) {
     await tabs.getByRole('link', { name: tab }).click();
     await expect(page.getByRole('heading', { name: tab, level: 1 })).toBeVisible();
     await expect(page.getByText(new RegExp(phase)).first()).toBeVisible();

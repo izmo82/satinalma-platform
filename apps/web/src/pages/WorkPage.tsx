@@ -17,7 +17,11 @@ export const entityHref = (t: { entityType: string; entityId: string; kind?: str
     : t.entityType === 'document_version' ? `/belgeler/${t.entityId}` : t.entityType === 'project' ? `/projeler/${t.entityId}`
     : t.entityType === 'invoice' ? `/faturalar/${t.entityId}`
     : t.entityType === 'incident' ? `/tedarikciler/olaylar/${t.entityId}` : t.entityType === 'tenant' ? '/yonetim/yapay-zeka'
-    : t.entityType === 'tenant_export' ? '/yonetim/denetim-izi' : '/islerim';
+    : t.entityType === 'tenant_export' ? '/yonetim/denetim-izi'
+    // v2 Faz 3 (D108): onay adımı → Onaylar sekmesi; hatırlatıcı → Hatırlatıcılar; red ve yeniden gönderim → Onaylar (aile kimliğiyle).
+    : t.entityType === 'contract_approval_step' ? `/sozlesmeler/onay-adimi/${t.entityId}`
+    : t.entityType === 'contract_reminder' ? `/sozlesmeler/aile/${t.entityId}?sekme=hatirlaticilar`
+    : t.entityType === 'contract_rejection' || t.entityType === 'contract_family' ? `/sozlesmeler/aile/${t.entityId}?sekme=onaylar` : '/islerim';
 // v2 (D93): Lira Defteri (recovery_case) ve imha (disposal_batch) görevleri sunucuda listelenmez; kaldırılan ekrana hedef yok.
 
 const VIEWS = [['mine', 'Benden beklenen'], ['overdue', 'Geciken'], ['all', 'Rolümdeki tüm işler']] as const;

@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { api, ApiError } from '../lib/api.ts';
 import { useSession } from '../lib/session.tsx';
@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Icon } from '../ui/icons.tsx';
 import { UblFindings, ublTitle, type UblCheck } from '../ui/UblCheck.tsx';
 
-interface Result {
+export interface Result {
   documentVersionId: string; duplicate: boolean; basicCheckStatus: string; basicCheckReason: string | null; avScanStatus: string;
   processing: { stage: string; message: string };
   invoice?: null | { created: boolean; invoiceId: string | null; duplicate: boolean; reason: string | null };
@@ -21,6 +21,30 @@ interface Result {
  */
 export function IntakePage({ kind: initialKind = 'INVOICE', title = 'Belge girişi', back }: { kind?: 'INVOICE' | 'CONTRACT'; title?: string; back?: { to: string; label: string } } = {}) {
   const { me } = useSession();
+  const backLink = back && <Button variant="outline" asChild><Link to={back.to}>{back.label}</Link></Button>;
+  if (!me?.companies.length) return <div className="page"><PageHeader title={title} actions={backLink} /><Banner tone="neutral" icon="lock" title="Belge yükleyebileceğiniz şirket yok">Şirket kapsamı tanımlı değil.</Banner></div>;
+  return (
+    <div className="page" style={{ maxWidth: 820 }}>
+      <PageHeader title={title} actions={backLink}>e-Fatura XML önce kural ile okunur. PDF/görüntü için OCR sağlayıcısı bağlı değilse alanlar elle girilir; sahte çıkarım yapılmaz.</PageHeader>
+      <IntakeForm initialKind={initialKind} />
+    </div>
+  );
+}
+
+/**
+ * Yükleme formu (şirket, belge türü, dosya). v2 Faz 3 (D108): sözleşme ekleme sihirbazının 1. adımı aynı formu kullanır; sihirbaz
+ * sözleşme türü için ek alanlar (proje, şablon) ve yükleme sonrası adımı verir. Diğer türlerde davranış aynen kalır.
+ */
+export function IntakeForm({ initialKind, extra, onResult, submitBlocked }: {
+  initialKind: 'INVOICE' | 'CONTRACT';
+  /** Seçili türe göre forma eklenen alanlar (dosyadan önce). */
+  extra?: (kind: string, companyId: string) => ReactNode;
+  /** Yükleme başarılıysa çağrılır; true dönerse sonuç kartı gösterilmez (çağıran sonraki adıma geçer). */
+  onResult?: (r: Result, ctx: { kind: string; companyId: string }) => Promise<boolean>;
+  /** Gönderimi engelleyen neden (ör. proje seçilmedi); düğme kapanır ve neden yazılır. */
+  submitBlocked?: (kind: string) => string | null;
+}) {
+  const { me } = useSession();
   // Düzeltme dalgası (I1, D98): Departman kullanıcısının yüklediği fatura onun tek departmanını alır; birden çok (ya da hiç) departmanı
   // varsa departman tahmin edilmez, sunucu fatura kaydı açmaz. Bu kullanıcıya Fatura türü sunulmaz.
   const invoiceBlocked = !!me && me.allDepartments === false && (me.departments?.length ?? 0) !== 1;
@@ -31,23 +55,23 @@ export function IntakePage({ kind: initialKind = 'INVOICE', title = 'Belge giri�
   const [error, setError] = useState<ApiError | null>(null);
   const [result, setResult] = useState<Result | null>(null);
   const inFlight = useRef(false);
+  const blocked = submitBlocked?.(kind) ?? null;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!file || inFlight.current) return;
+    if (!file || inFlight.current || blocked) return;
     inFlight.current = true; setBusy(true); setError(null); setResult(null);
     try {
       const fd = new FormData();
       fd.set('companyId', company); fd.set('kind', kind); fd.set('title', file.name); fd.set('file', file);
-      setResult((await api<Result>('/api/v1/documents', { method: 'POST', body: fd })).data);
+      const r = (await api<Result>('/api/v1/documents', { method: 'POST', body: fd })).data;
+      if (!(onResult && await onResult(r, { kind, companyId: company }))) setResult(r);
     } catch (err) { setError(err as ApiError); } finally { setBusy(false); inFlight.current = false; }
   }
 
-  const backLink = back && <Button variant="outline" asChild><Link to={back.to}>{back.label}</Link></Button>;
-  if (!me?.companies.length) return <div className="page"><PageHeader title={title} actions={backLink} /><Banner tone="neutral" icon="lock" title="Belge yükleyebileceğiniz şirket yok">Şirket kapsamı tanımlı değil.</Banner></div>;
+  if (!me) return null;
   return (
-    <div className="page" style={{ maxWidth: 820 }}>
-      <PageHeader title={title} actions={backLink}>e-Fatura XML önce kural ile okunur. PDF/görüntü için OCR sağlayıcısı bağlı değilse alanlar elle girilir; sahte çıkarım yapılmaz.</PageHeader>
+    <>
       {invoiceBlocked && initialKind === 'INVOICE' && (
         <Banner tone="info" title="Fatura yükleyemezsiniz">
           {(me?.departments?.length ?? 0) > 1 ? 'Birden fazla departmanınız olduğundan faturanın departmanı belirlenemez.' : 'Size atanmış departman yok.'} Faturaları Satınalma girer; sözleşme, teklif ve diğer belgeleri yükleyebilirsiniz.
@@ -57,6 +81,7 @@ export function IntakePage({ kind: initialKind = 'INVOICE', title = 'Belge giri�
         <Field label="Şirket">{(p) => <select className="input" {...p} value={company} onChange={(e) => setCompany(e.target.value)}>{me.companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>}</Field>
         <Field label="Belge türü">{(p) => <select className="input" {...p} value={kind} onChange={(e) => setKind(e.target.value)}>
           {!invoiceBlocked && <option value="INVOICE">Fatura</option>}<option value="CONTRACT">Sözleşme</option><option value="QUOTE">Teklif</option><option value="OTHER">Diğer</option></select>}</Field>
+        {extra?.(kind, company)}
         <Field label="Dosya" hint="PDF, PNG, JPEG veya XML · en fazla 25 MB. Aynı dosya tekrar yüklenirse yeni kayıt açılmaz.">
           {(p) => (
             <div className="flex flex-wrap items-center gap-3">
@@ -66,13 +91,16 @@ export function IntakePage({ kind: initialKind = 'INVOICE', title = 'Belge giri�
             </div>
           )}
         </Field>
-        <Button type="submit" disabled={!file || busy}><Icon name="upload" />{busy ? 'Yükleniyor…' : 'Yükle'}</Button>
+        <div className="flex flex-wrap items-center gap-3">
+          <Button type="submit" disabled={!file || busy || !!blocked}><Icon name="upload" />{busy ? 'Yükleniyor…' : 'Yükle'}</Button>
+          {blocked && <span className="text-sm text-ink-muted">{blocked}</span>}
+        </div>
       </form>
       <div style={{ marginTop: 16 }} aria-live="polite">
         {error && <Banner tone="danger" title={error.message} />}
         {result && <ResultView r={result} />}
       </div>
-    </div>
+    </>
   );
 }
 

@@ -10,23 +10,43 @@ import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { SignatureWorkspace } from './SignatureWorkspace.tsx';
 import { CommercialTab } from './ContractCommercial.tsx';
+import { familyOfVersion, type ContractV2 } from '../lib/contractsV2.ts';
+import { ApprovalsTab, ContractHeader, DocumentTab, HistoryTab, RemindersTab, ReviewTab, SummaryTab, type V2State } from './ContractOverview.tsx';
 
 // UX09 Sözleşme: imza, koşullar/ihbar ve yükümlülükler aynı sürüm üzerinde ayrı sekmeler.
-const TABS = [['imza', 'İmza kontrolü'], ['kosullar', 'Koşullar ve ihbar'], ['yukumlulukler', 'Yükümlülükler'], ['ticari', 'Fiyat, SLA ve teminat']] as const;
+// v2 Faz 3 (D108, Figma 10–11): Özet, Belge, İnceleme, Onaylar, Hatırlatıcılar ve Geçmiş sekmeleri eklendi; eskiler aynen kalır. Sekmesiz adres
+// (eski bağlantılar, İşlerim) eskisi gibi İmza kontrolü'nü açar; `?sekme=` değerleri (imza, kosullar, yukumlulukler, ticari) değişmedi.
+const TABS = [['ozet', 'Özet'], ['belge', 'Belge'], ['inceleme', 'İnceleme'], ['onaylar', 'Onaylar'], ['imza', 'İmza kontrolü'], ['kosullar', 'Koşullar ve ihbar'],
+  ['yukumlulukler', 'Yükümlülükler'], ['ticari', 'Fiyat, SLA ve teminat'], ['hatirlaticilar', 'Hatırlatıcılar'], ['gecmis', 'Geçmiş']] as const;
+const NEW_TABS = new Set(['ozet', 'belge', 'inceleme', 'onaylar', 'hatirlaticilar', 'gecmis']);
 
 export function ContractPage() {
+  const { id } = useParams();
   const [params, setParams] = useSearchParams();
-  const tab = params.get('sekme') ?? 'imza';
+  const tab = TABS.some(([k]) => k === params.get('sekme')) ? params.get('sekme')! : 'imza';
+  // Adres sözleşme sürümü kimliği taşır; yeni uçlar aile kimliğiyle çalışır.
+  const [family, setFamily] = useState<{ cv: string; id: string | null; error: unknown }>({ cv: '', id: null, error: null });
+  useEffect(() => {
+    let off = false;
+    setFamily({ cv: id!, id: null, error: null });
+    familyOfVersion(id!).then((f) => { if (!off) setFamily({ cv: id!, id: f, error: null }); }, (error) => { if (!off) setFamily({ cv: id!, id: null, error }); });
+    return () => { off = true; };
+  }, [id]);
+  const v2r = useResource<ContractV2>(family.id ? `/api/v1/contracts/${family.id}/v2` : null);
+  const v2: V2State = { data: v2r.data, error: v2r.error ?? family.error, loading: v2r.loading || (!family.id && !family.error), reload: v2r.reload };
+  const isNew = NEW_TABS.has(tab);
   return (
     <div className="flex h-full min-h-0 flex-col">
+      <ContractHeader v2={v2} withTitle={isNew} />
       <div role="tablist" aria-label="Sözleşme" className="flex shrink-0 gap-6 overflow-x-auto border-b border-border bg-surface px-8 max-[900px]:px-4">
         {TABS.map(([k, l]) => (
-          <button key={k} role="tab" aria-selected={tab === k} onClick={() => { const p = new URLSearchParams(params); k === 'imza' ? p.delete('sekme') : p.set('sekme', k); setParams(p, { replace: true }); }}
+          <button key={k} role="tab" aria-selected={tab === k} onClick={() => { const p = new URLSearchParams(params); k === 'imza' ? p.delete('sekme') : p.set('sekme', k); p.delete('gonderildi'); p.delete('taslak'); setParams(p, { replace: true }); }}
             className={cn('-mb-px min-h-10 whitespace-nowrap border-b-2 font-semibold transition-colors duration-150', tab === k ? 'border-ink text-ink' : 'border-transparent text-ink-muted hover:text-ink')}>{l}</button>
         ))}
       </div>
-      <div role="tabpanel" className="min-h-0 flex-1">
-        {tab === 'imza' ? <SignatureWorkspace /> : <Lifecycle tab={tab} />}
+      <div role="tabpanel" tabIndex={isNew && tab !== 'belge' ? 0 : undefined} className={cn('min-h-0 flex-1 outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-focus', isNew && tab !== 'belge' && 'overflow-auto')}>
+        {tab === 'imza' ? <SignatureWorkspace /> : tab === 'ozet' ? <SummaryTab v2={v2} /> : tab === 'belge' ? <DocumentTab v2={v2} /> : tab === 'inceleme' ? <ReviewTab />
+          : tab === 'onaylar' ? <ApprovalsTab v2={v2} /> : tab === 'hatirlaticilar' ? <RemindersTab v2={v2} /> : tab === 'gecmis' ? <HistoryTab v2={v2} /> : <Lifecycle tab={tab} />}
       </div>
     </div>
   );
@@ -52,7 +72,8 @@ interface Lc {
   can: { edit: boolean; verify: boolean; manageObligations: boolean; record: boolean; decide: boolean };
 }
 const VALUE_TYPE = { FIXED: 'Sabit bedel', CEILING: 'Tavan (limit)', UNPRICED: 'Bedelsiz' } as const;
-const DECISION = { RENEW: 'Yenile', TERMINATE: 'Feshet (yenileme yok)', RENEGOTIATE: 'Yeniden müzakere' } as const;
+// v2 Faz 3 (R7): NEW_PROJECT "Yeni proje açıldı" eklendi; mevcut üç karar aynen.
+const DECISION = { RENEW: 'Yenile', TERMINATE: 'Feshet (yenileme yok)', RENEGOTIATE: 'Yeniden müzakere', NEW_PROJECT: 'Yeni proje açıldı' } as const;
 const RECUR = { NONE: 'Tek sefer', MONTHLY: 'Aylık', QUARTERLY: 'Üç aylık', YEARLY: 'Yıllık' } as const;
 const PERIOD = {
   FULFILLED: { text: 'Yerine getirildi', tone: 'human', icon: 'stamp' }, MISSED: { text: 'Kaçırıldı', tone: 'danger', icon: 'x' },

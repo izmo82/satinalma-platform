@@ -17,6 +17,7 @@ import { ContractsPage } from './pages/ContractsPage.tsx';
 import { NotYetPage, RemovedPage } from './pages/NotYetPage.tsx';
 import { AdminIndex, AdminLayout, AdminTab, adminTabs, ApproversTab, IntegrationsTab, RulesTab, TemplatesTab as ContractTemplatesTab, UsersTab } from './pages/AdminPages.tsx';
 import { SectionTabs } from './ui/SectionTabs.tsx';
+import { TemplatesPage as ContractTemplatesPage } from './pages/TemplatesPage.tsx';
 import { ProjectsPage } from './pages/ProjectsPage.tsx';
 import { ProjectWizard } from './pages/ProjectWizard.tsx';
 import { ProjectWorkspace } from './pages/ProjectWorkspace.tsx';
@@ -26,6 +27,9 @@ import { GlobalSearch, NotificationBell } from './ui/TopBar.tsx';
 // PDF görüntüleyici içeren ağır ekranlar ayrı paket olarak yüklenir.
 const DocumentPage = lazy(() => import('./pages/DocumentPage.tsx').then((m) => ({ default: m.DocumentPage })));
 const ContractPage = lazy(() => import('./pages/ContractLifecycle.tsx').then((m) => ({ default: m.ContractPage })));
+const contractV2 = () => import('./pages/ContractOverview.tsx');
+const ContractRedirect = lazy(() => contractV2().then((m) => ({ default: m.ContractRedirect })));
+const ContractWizard = lazy(() => import('./pages/ContractWizard.tsx').then((m) => ({ default: m.ContractWizard })));
 const purchasing = () => import('./pages/PurchasingPages.tsx');
 const InvoicesPage = lazy(() => purchasing().then((m) => ({ default: m.InvoicesPage })));
 const InvoicePage = lazy(() => purchasing().then((m) => ({ default: m.InvoicePage })));
@@ -43,7 +47,7 @@ const AuditPage = lazy(() => import('./pages/AuditPage.tsx').then((m) => ({ defa
 /** Adresin ilk bölümü kendi listesi olmayan detaylar: kiracı değişince dönülecek liste. */
 const LIST_OF: Record<string, string> = { belgeler: '/sozlesmeler/ekle', degerlendirmeler: '/tedarikciler' };
 /** Alt adresi olan liste sayfaları (sekmeler, yükleme ekranları): kiracı değişince adres korunur. */
-const KEEP = new Set(['/tedarikciler/olaylar', '/tedarikciler/anketler', '/tedarikciler/performans-agirliklari', '/sozlesmeler/ekle', '/faturalar/yukle']);
+const KEEP = new Set(['/tedarikciler/olaylar', '/tedarikciler/anketler', '/tedarikciler/performans-agirliklari', '/sozlesmeler/ekle', '/sozlesmeler/sablonlar', '/faturalar/yukle']);
 /** Kiracı değişince gidilecek liste; null = adres kalır. */
 function listOf(path: string): string | null {
   if (KEEP.has(path) || path.startsWith('/yonetim/')) return null;
@@ -120,7 +124,7 @@ function Shell() {
     // Belge girişi → Sözleşmeler, Yapay zekâ ve dışa aktarım → Yönetim. Departman kullanıcısı Raporlar (report.read) ve Yönetim'i görmez.
     ...(hasRole(me, 'ADMIN', 'PROCUREMENT', 'DEPARTMENT_USER', 'AUDITOR') ? [
       { to: '/projeler', label: 'Projeler', icon: 'folder', count: load(['project']) },
-      { to: '/sozlesmeler', label: 'Sözleşmeler', icon: 'file', count: load(['contract_version', 'document_version']) },
+      { to: '/sozlesmeler', label: 'Sözleşmeler', icon: 'file', count: load(['contract_version', 'document_version', 'contract_family', 'contract_approval_step', 'contract_reminder', 'contract_rejection']) },
       { to: '/tedarikciler', label: 'Tedarikçiler', icon: 'users', count: load(['supplier', 'incident']) },
       { to: '/faturalar', label: 'Faturalar', icon: 'receipt', count: load(['invoice']) },
     ] : []),
@@ -198,7 +202,11 @@ function Shell() {
           <Route path="/tedarikciler/:id" element={<SupplierDetailPage />} />
           <Route path="/belgeler/:id" element={<DocumentPage />} />
           <Route path="/sozlesmeler" element={<ContractsPage />} />
-          <Route path="/sozlesmeler/ekle" element={<IntakePage key="sozlesme" kind="CONTRACT" title="Sözleşme ekle" back={{ to: '/sozlesmeler', label: 'Sözleşmeler' }} />} />
+          {/* v2 Faz 3 (D108): Sözleşme ekle sihirbazı; 1. adım aynı yükleme formu (teklif ve diğer türler de yüklenir). */}
+          <Route path="/sozlesmeler/ekle" element={<ContractWizard />} />
+          <Route path="/sozlesmeler/sablonlar" element={<ContractTemplatesPage />} />
+          <Route path="/sozlesmeler/aile/:id" element={<ContractRedirect by="family" />} />
+          <Route path="/sozlesmeler/onay-adimi/:id" element={<ContractRedirect by="step" />} />
           <Route path="/sozlesmeler/:id" element={<ContractPage />} />
           <Route path="/faturalar" element={<InvoicesPage />} />
           <Route path="/faturalar/yukle" element={<IntakePage key="fatura" kind="INVOICE" title="Fatura yükle" back={{ to: '/faturalar', label: 'Faturalar' }} />} />

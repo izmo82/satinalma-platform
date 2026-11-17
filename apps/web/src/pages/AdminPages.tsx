@@ -8,6 +8,7 @@ import { Banner, Empty, ErrorState, Field, Loading, PageHeader } from '../ui/kit
 import { SectionTabs } from '../ui/SectionTabs.tsx';
 import { Button } from '@/components/ui/button';
 import { ApproversPage } from './ApproversPage.tsx';
+import { TemplatesPage } from './TemplatesPage.tsx';
 import { ConnectionCard, DirectoryUsersCard, EntraDepartmentList, useDirectorySync, type AdminDepartment, type DirectoryConnection } from './DirectoryAdmin.tsx';
 
 // v2 Faz 1 (D93): Yönetim merkezi. Sekme sırası onaylı Figma ekranlarıyla aynı. Sonraki fazların sekmeleri yalnız hangi fazda
@@ -75,11 +76,9 @@ function Planned({ title, heading, children }: { title: string; heading: string;
 /** v2 Faz 2 (D105): onaycı ataması (Figma 21). Faz 1'deki "Faz 2'de gelir" boş durumu yerine gerçek ekran. */
 export const ApproversTab = () => <ApproversPage />;
 
-export const TemplatesTab = () => (
-  <Planned title="Şablonlar" heading="Sözleşme şablonları Faz 3'te gelir">
-    Sözleşme şablon kütüphanesi ve şablon sürümleri bu sekmede yönetilecek. Tedarikçi anket şablonları yerinde duruyor: <Link to="/tedarikciler/anketler">Tedarikçiler &gt; Anketler</Link>.
-  </Planned>
-);
+/** v2 Faz 3 (R8, Figma 12): Faz 1'deki "Faz 3'te gelir" boş durumu yerine şablon kütüphanesi (Sözleşmeler > Şablonlar ile aynı sayfa) ve
+ * Yöneticiye hatırlatıcı süreleri. Tedarikçi anket şablonları yerinde: Tedarikçiler > Anketler. */
+export const TemplatesTab = () => <TemplatesPage admin />;
 
 export const RulesTab = () => (
   <Planned title="Satınalma kuralları" heading="Satınalma kuralları kataloğu Faz 7'de gelir">
