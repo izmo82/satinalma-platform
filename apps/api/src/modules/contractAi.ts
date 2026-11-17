@@ -111,12 +111,13 @@ interface ExtractionRow {
 async function usableSupplierByVkn(tx: Tx, vkn: string): Promise<{ id: string; legalName: string } | null> {
   const r = (await tx.query<{ id: string; legal_name: string; status: string; merged_into_id: string | null }>(
     `SELECT id, legal_name, status, merged_into_id FROM suppliers WHERE country = 'TR' AND tax_id_type = 'VKN' AND tax_id = $1`, [vkn])).rows[0];
+  // createCandidateSupplier ile aynı sıra: reddedilmiş/arşivli → kart seçilmez (uç 409 verir); birleştirilmişse hedef (yoksa kartın kendisi).
   if (!r || r.status === 'REJECTED' || r.status === 'ARCHIVED') return null;
   if (r.merged_into_id) {
-    const t = (await tx.query<{ id: string; legal_name: string; status: string }>(`SELECT id, legal_name, status FROM suppliers WHERE id = $1`, [r.merged_into_id])).rows[0];
-    return t && !['MERGED', 'REJECTED', 'ARCHIVED'].includes(t.status) ? { id: t.id, legalName: t.legal_name } : null;
+    const t = (await tx.query<{ id: string; legal_name: string }>(`SELECT id, legal_name FROM suppliers WHERE id = $1`, [r.merged_into_id])).rows[0];
+    if (t) return { id: t.id, legalName: t.legal_name };
   }
-  return r.status === 'MERGED' ? null : { id: r.id, legalName: r.legal_name };
+  return { id: r.id, legalName: r.legal_name };
 }
 
 /** GET /contracts/:id/extractions: güncel sürümün okuma durumu ve alan önerileri (test sağlayıcısı etiketli). */
@@ -386,15 +387,18 @@ const templateUsage = (r: ReviewRow, selected: boolean) => {
 export const REVIEW_ACK_ACTION = 'contract.review_below_threshold_acknowledged';
 /**
  * Persona K3: eşik canlıdır (inceleme anına bağlı değil); onaycı, gönderenin gönderim anında gördüğü eşik altı uyarıyı onaylayarak gönderdiğini
- * bu kayıttan görür. Yalnız SON gönderimin olayı (aynı işlemde `contract.submitted` ile aynı zaman damgası); yoksa null. Puan ve eşik o anki değerdir.
+ * bu kayıttan görür. Yalnız güncel (en son, iptal edilmemiş) turun gönderim olayı; yoksa null. Puan ve eşik o anki değerdir.
  */
 export async function submitAcknowledgement(tx: Tx, familyId: string) {
+  // Yalnız güncel tur: en son tur iptal edilmemiş olmalı; olay o turun gönderim işleminde (aynı zaman damgası, aynı gönderen) yazılmıştır.
   const r = (await tx.query<{ data: { reviewId?: string; score?: number; threshold?: number; isTestProvider?: boolean }; at: Date; actor_user_id: string | null;
       display_name: string | null }>(
-    `SELECT a.data, a.at, a.actor_user_id, u.display_name FROM audit_events a LEFT JOIN users u ON u.id = a.actor_user_id
-     WHERE a.entity_type = 'contract_family' AND a.entity_id = $1 AND a.action = $2
-       AND a.at >= (SELECT max(s.at) FROM audit_events s WHERE s.entity_type = 'contract_family' AND s.entity_id = $1 AND s.action = 'contract.submitted')
-     ORDER BY a.at DESC, a.id DESC LIMIT 1`, [familyId, REVIEW_ACK_ACTION])).rows[0];
+    `WITH c AS (SELECT submitted_at, submitted_by, outcome FROM contract_approval_chains WHERE family_id = $1 ORDER BY submitted_at DESC, id DESC LIMIT 1)
+     SELECT a.data, a.at, a.actor_user_id, u.display_name FROM c
+       JOIN audit_events a ON a.entity_type = 'contract_family' AND a.entity_id = $1 AND a.action = $2 AND a.at = c.submitted_at AND a.actor_user_id = c.submitted_by
+       LEFT JOIN users u ON u.id = a.actor_user_id
+     WHERE c.outcome IS DISTINCT FROM 'CANCELLED'
+     ORDER BY a.id DESC LIMIT 1`, [familyId, REVIEW_ACK_ACTION])).rows[0];
   if (!r || typeof r.data.score !== 'number' || typeof r.data.threshold !== 'number') return null;
   return {
     reviewId: r.data.reviewId ?? null, score: r.data.score, threshold: r.data.threshold, isTestProvider: !!r.data.isTestProvider, at: r.at,

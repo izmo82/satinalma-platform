@@ -1,3 +1,5 @@
+// v2 Faz 4 (D109): ihbar-bitiş iletisi beklentisi "/Süresiz/" yerine yansız "İhbar süresi için bitiş tarihi gerekli." oldu — persona K1:
+// süresiz işaretlenmemiş sözleşmede "Süresiz sözleşmede…" yanıltıyordu; ileti v1 koşul formuyla ortak olduğundan yansız.
 import { describe, expect, it } from 'vitest';
 import { addMonths, noticeDeadline, occurrences, reminderSchedule, termsDiff, validateTerms, type CommercialTerms } from '../src/contractTerms.ts';
 
@@ -45,8 +47,7 @@ describe('koşullar', () => {
   it('doğrulama: kaynak madde zorunlu, süresiz sözleşmede bitişe göre ihbar yok, bedelsizde tutar yok', () => {
     expect(validateTerms(t)).toBeNull();
     expect(validateTerms({ ...t, sourceRef: '' })).toMatch(/madde/);
-    // v2 Faz 4 (D109): ileti "önce bitiş tarihini girin ya da süresiz işaretleyin" oldu (persona K1: süresiz işaretlenmemiş sözleşmede "Süresiz sözleşmede…" yanıltıyordu).
-    expect(validateTerms({ ...t, endDate: null })).toMatch(/önce bitiş tarihini girin ya da sözleşmeyi süresiz işaretleyin/);
+    expect(validateTerms({ ...t, endDate: null })).toBe('İhbar süresi için bitiş tarihi gerekli.');
     expect(validateTerms({ ...t, valueType: 'UNPRICED' })).toMatch(/Bedelsiz/);
     expect(validateTerms({ ...t, endDate: '2025-12-31' })).toMatch(/Bitiş/);
   });

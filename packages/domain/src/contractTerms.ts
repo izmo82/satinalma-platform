@@ -103,6 +103,9 @@ export interface CommercialTerms {
   fxDifference?: 'ALLOWED' | 'NOT_ALLOWED' | null;
 }
 
+/** İhbar süresi bitişe göre işler; bitiş yoksa kaydedilmez (v1 ve v2 ortak, yansız ileti). */
+export const NOTICE_NEEDS_END_DATE = 'İhbar süresi için bitiş tarihi gerekli.';
+
 export function validateTerms(t: CommercialTerms): string | null {
   if (!/^[A-Z]{3}$/.test(t.currency)) return 'Para birimi ISO kodu olmalı.';
   if (t.valueType === 'UNPRICED') { if (t.amount !== null) return 'Bedelsiz sözleşmede tutar girilmez.'; }
@@ -111,8 +114,8 @@ export function validateTerms(t: CommercialTerms): string | null {
   if (t.startDate && t.endDate && t.endDate < t.startDate) return 'Bitiş başlangıçtan önce olamaz.';
   if (t.limitBasis != null && t.limitBasis !== 'NET' && t.limitBasis !== 'GROSS') return 'Limit yöntemi vergi hariç veya vergi dahil olmalı.';
   if ((t.noticeAmount === null) !== (t.noticeUnit === null)) return 'İhbar süresi ve birimi birlikte girilir.';
-  // v2 Faz 4 (D109, persona K1): bitişi boş, süresiz işaretlenmemiş sözleşmede de doğru yönlendiren ileti.
-  if (t.noticeAmount !== null && !t.endDate) return 'İhbar süresi için önce bitiş tarihini girin ya da sözleşmeyi süresiz işaretleyin.';
+  // v2 Faz 4 (D109, persona K1): yansız ileti (v1 koşul formunda "Süresiz" denetimi yok); v2 ekleme ekranları "…ya da süresiz işaretleyin" diye çevirir.
+  if (t.noticeAmount !== null && !t.endDate) return NOTICE_NEEDS_END_DATE;
   if (t.autoRenewal && !t.renewalMonths) return 'Otomatik yenilemede yenileme süresi gerekli.';
   if (t.paymentDays != null && (!Number.isInteger(t.paymentDays) || t.paymentDays < 0 || t.paymentDays > 365)) return 'Vade 0–365 gün arasında tam sayı olmalı.';
   if (t.fxDifference != null && t.fxDifference !== 'ALLOWED' && t.fxDifference !== 'NOT_ALLOWED') return 'Kur farkı hükmü izin var veya izin yok olmalı.';

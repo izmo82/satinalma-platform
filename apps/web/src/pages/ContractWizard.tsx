@@ -457,6 +457,8 @@ function CompleteStep({ d, ex, reload, onNext, onBack }: { d: ContractV2; ex: Po
       const err = e as ApiError;
       // M1: karar/değer uyuşmazlığında kayıt bütünüyle geri alınır; kullanıcıya hiçbir alanın kaydedilmediği açıkça söylenir.
       if (err.code === 'decision_mismatch') setMsg({ tone: 'warn', text: `Kaydedilmedi: ${err.message}` });
+      // Persona K1: yansız domain iletisi v2 ekranında "Süresiz" seçeneğiyle birlikte yönlendirir.
+      else if (err.code === 'invalid_terms' && noticeNeedsEnd(f)) setMsg({ tone: 'danger', text: NOTICE_NEEDS_END });
       else setMsg({ tone: err.status === 409 ? 'warn' : 'danger', text: err.message });
       // Öneri artık güncel okumaya ait değilse (yeni sürüm/yeniden okuma) öneriler yenilenir.
       if (err.code === 'extraction_unknown' || err.code === 'decision_mismatch' || err.code === 'extraction_not_saved') await ex.reload();

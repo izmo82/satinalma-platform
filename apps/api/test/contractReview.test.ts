@@ -371,6 +371,11 @@ describe('eşik (R10) ve görünürlük', () => {
     expect((await requestReview(w, 'auditor', d.familyId)).status).toBe(403);
     expect((await call(w, 'buyerB', 'GET', `/api/v1/contracts/${d.familyId}/reviews`, undefined, {}, w.tenantB)).status).toBe(404);
     expect((await h.owner.query(`SELECT count(*)::int AS n FROM contract_reviews WHERE family_id = $1`, [d.familyId])).rows[0].n).toBe(1);
+    // Persona K3: içerik değişip tur iptal edilince eski turun onayı gösterilmez (yalnız güncel tur).
+    const changed = await call(w, 'techEval', 'PUT', `/api/v1/contracts/${d.familyId}/fields`, { amount: '1250001.00' });
+    expect(changed.status, JSON.stringify(changed.body)).toBe(200);
+    expect(changed.body.cancelledChainId).toBeTruthy();
+    expect((await call(w, 'techEval', 'GET', `/api/v1/contracts/${d.familyId}/v2`)).body.review.submitAcknowledgement).toBeNull();
   });
 
   it('eşik üstü ya da güncel olmayan incelemede olay yazılmaz; gönderimde eski "Onaylandı" kararı kayıtla uyuşmuyorsa "Düzeltildi" olur', async () => {

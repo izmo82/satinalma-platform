@@ -367,6 +367,10 @@ struct ContractFieldsView: View {
             continueNotice = Notice.from(error)
             // M1: karar/değer uyuşmazlığında kayıt bütünüyle geri alınır; hiçbir alanın kaydedilmediği açıkça söylenir.
             if let e = error as? APIError, e.code == "decision_mismatch" { continueNotice = Notice(tone: .warn, text: "Kaydedilmedi: \(e.message)") }
+            // Persona K1: yansız sunucu iletisi bu ekranda "Süresiz" seçeneğiyle birlikte yönlendirir.
+            if let e = error as? APIError, e.code == "invalid_terms", noticeNeedsEnd, noticeAmount != nil {
+                continueNotice = Notice(tone: .error, text: "İhbar süresi için önce bitiş tarihini girin ya da sözleşmeyi süresiz işaretleyin.")
+            }
             // Öneri artık güncel okumaya ait değilse (yeni sürüm/yeniden okuma) ya da değer öneriyle uyuşmuyorsa öneriler yenilenir.
             if let e = error as? APIError, ["extraction_unknown", "decision_mismatch", "extraction_duplicate", "extraction_not_saved"].contains(e.code), let familyId {
                 // Kararlar yeniden hesaplanır: eski "kullanıldı" işaretleri düşer (değerler formda kalır, kullanıcı yeniden karar verir).

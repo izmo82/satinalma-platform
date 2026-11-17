@@ -352,13 +352,15 @@ describe('alanlar ve gönderim', () => {
     expect(g.body.status.code).toBe('DRAFT');
   });
 
-  it('v2 Faz 4 persona K1: süresiz işaretlenmemiş, bitişi boş sözleşmede ihbar süresi 422 — ileti "Süresiz" demez, ne yapılacağını söyler', async () => {
+  // v2 Faz 4 (D109): persona K1 — eski ileti süresiz işaretlenmemiş sözleşmede "Süresiz sözleşmede…" diyordu; yeni ileti yansız (v1 formuyla ortak),
+  // v2 ekranları "…ya da süresiz işaretleyin" yönlendirmesini kendileri ekler. Eski testler değiştirilmedi; bu test eklendi.
+  it('v2 Faz 4 persona K1: süresiz işaretlenmemiş, bitişi boş sözleşmede ihbar süresi 422 — ileti "Süresiz" demez', async () => {
     const w = await fresh();
     const d = await draft(w);
     const { endDate: _e, ...rest } = fullFields(w);
     const r = await call(w, 'techEval', 'PUT', `/api/v1/contracts/${d.familyId}/fields`, { ...rest, indefinite: false, noticeAmount: 60, noticeUnit: 'DAY' });
     expect(r.status, JSON.stringify(r.body)).toBe(422);
-    expect(r.body.error).toMatchObject({ code: 'invalid_terms', message: 'İhbar süresi için önce bitiş tarihini girin ya da sözleşmeyi süresiz işaretleyin.' });
+    expect(r.body.error).toMatchObject({ code: 'invalid_terms', message: 'İhbar süresi için bitiş tarihi gerekli.' });
   });
 
   it('persona K1: boş sayısal alanlar null kalır (0 olmaz); boş ihbar "ihbar yok" kaydı, yalnız biri girilirse 422', async () => {
