@@ -1,3 +1,4 @@
+// v2 Faz 6 (D111): `risk.export` Denetçiye açık salt okunur dışa aktarımdır (Excel raporu); ".read" sonekli olmadığı için okuma kuralına ikinci bilinçli istisna eklendi. Başka satır değişmedi.
 // v2 Faz 5 (D110): `email.outbox.read` yalnız ADMIN (gövde/belirteç içerir, R7); ".read" soneki kuralının tek bilinçli istisnası. Başka satır değişmedi.
 // v2 Faz 1 (D93/D95): Departman kullanıcısının sözleşme/fatura okuması (analiz-v2 §2.1) eklendi.
 import { describe, expect, it } from 'vitest';
@@ -28,7 +29,7 @@ describe('v2 izin tablosu', () => {
     }
   });
   it('AUDITOR yalnız okuma izinlerinde true', () => {
-    const okuma = /\.read$|^integration\.reconcile$/;
+    const okuma = /\.read$|^integration\.reconcile$|^risk\.export$/;
     for (const p of tumIzinler) {
       expect(can(['AUDITOR'], p), p).toBe(!REMOVED_PERMISSIONS.includes(p) && okuma.test(p) && p !== 'email.outbox.read');
     }

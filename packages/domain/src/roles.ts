@@ -172,6 +172,14 @@ export const PERMISSIONS = {
   'portal.documents': ['SUPPLIER'],
   'portal.standing': ['SUPPLIER'],
   'portal.profile': ['SUPPLIER'],
+  // v2 Faz 6 (T1): yıllık tedarikçi risk değerlendirmesi.
+  'risk.read': ['ADMIN', 'PROCUREMENT', 'DEPARTMENT_USER', 'AUDITOR'],
+  'risk.assess': ['PROCUREMENT', 'DEPARTMENT_USER'],
+  'risk.opinion': ['PROCUREMENT', 'DEPARTMENT_USER'],
+  'risk.questions.manage': ['ADMIN'],
+  'risk.cycle.manage': ['ADMIN', 'PROCUREMENT'],
+  'risk.import': ['ADMIN', 'PROCUREMENT'],
+  'risk.export': ['ADMIN', 'PROCUREMENT', 'AUDITOR'],
 } as const satisfies Record<string, readonly Role[]>;
 
 export type Permission = keyof typeof PERMISSIONS;

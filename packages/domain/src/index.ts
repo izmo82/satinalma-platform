@@ -18,3 +18,4 @@ export * from './directory.ts';
 export * from './contractV2.ts';
 export * from './contractAi.ts';
 export * from './supplierPortal.ts';
+export * from './riskV2.ts';
