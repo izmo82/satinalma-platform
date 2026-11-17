@@ -1,3 +1,5 @@
+// v2 Faz 8 (D113, R10): `/faturalar/erp-mutabakati` artık Entegrasyonlar'ın "Fatura aktarım mutabakatı" bölümüne (`?bolum=mutabakat`) yönlenir;
+// beklenen adres yalnız bu sorguyu kabul edecek şekilde genişletildi (aynı sayfa, aynı "ERP mutabakatı" başlığı denetlenir).
 // v2 Faz 7 (D112): Yönetim > Satınalma kuralları artık gerçek ekran (Figma 19; "Faz 7'de gelir" boş durumu kalktı) ve Denetçi bu sekmeyi salt okunur
 // görür (rule.read, R6); Denetçinin beklenen sekme listesine eklendi. Boş durum denetimi yerine kural ekranının başlığı ve açıklaması denetlenir.
 // v2 Faz 6 (D111): Tedarikçiler bölüm sekmelerine (eski dört sekme aynı sırada) sona "Risk matrisi" eklendi; beklenen sekme listesi buna göre.
@@ -112,7 +114,7 @@ test('eski adresler yeni yerine yönlenir', async ({ page }) => {
   const id = '00000000-0000-4000-8000-000000000000';
   const cases: [string, RegExp, string | null][] = [
     ['/yapay-zeka', /\/yonetim\/yapay-zeka$/, 'Yapay zekâ'],
-    ['/faturalar/erp-mutabakati', /\/yonetim\/entegrasyonlar$/, 'ERP mutabakatı'],
+    ['/faturalar/erp-mutabakati', /\/yonetim\/entegrasyonlar\?bolum=mutabakat$/, 'ERP mutabakatı'],
     ['/olaylar', /\/tedarikciler\/olaylar$/, 'Tedarikçi olayları'],
     [`/olaylar/${id}`, new RegExp(`/tedarikciler/olaylar/${id}$`), null],
     ['/anketler', /\/tedarikciler\/anketler$/, 'Anket şablonları'],

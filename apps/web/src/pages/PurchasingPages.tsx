@@ -15,6 +15,7 @@ import { cn } from '@/lib/utils';
 import { allocationMatched, REMOVED_ISSUE_CODES } from '../../../../packages/domain/src/invoiceMatch.ts';
 import { DepartmentFilter, DepartmentName, useDepartmentParam, withDepartment } from '../ui/Departments.tsx';
 import { MatchCard, MatchDrawer, matchStateTag, type MatchState, type MatchView } from './InvoiceMatching.tsx';
+import { InvoiceErpPanel, type ErpSource } from './ErpManual.tsx';
 
 // UX10 Fatura. v2 (D93/D95): fatura onayı, istisna onayı, tolerans ve üçlü eşleştirme kaldırma listesinde; fatura girişi (elle ve
 // e-Fatura XML), UBL-TR denetimi, sözleşmeye tahsis (eşleştirme) ve sözleşme limiti kalır. Ödeme ERP'de yürür.
@@ -44,7 +45,7 @@ interface InvoiceRow { id: string; kind: keyof typeof KIND; invoiceNo: string; i
   netAmount: string; legalStatus: string; paymentStatus: string; decision: string | null; erpStatus: string | null; duplicateCount: number; matched: boolean; departmentId: string | null; departmentName: string | null;
   // v2 Faz 7 (R1): eşleşme durumu, sözleşme ve proje. Faz 8: kaynak etiketi.
   matchState?: MatchState; matchStateLabel?: string; matchMethod?: string | null; contract?: { id: string; code: string; title: string } | null; project?: { id: string; code: string; title: string } | null;
-  sourceLabel?: string | null }
+  sourceLabel?: string | null; erpPaymentStatusLabel?: string | null; erpProviderKind?: string | null }
 /** Eski tahsis kontrolü (bulgulardan): v2 durumunun yanında ikincil satır olarak görünür kalır. */
 const matchOf = (x: InvoiceRow) => (x.legalStatus !== 'RECEIVED' ? 'IPTAL' : x.matched ? 'ESLESTI' : 'ESLESMEDI');
 interface InvoiceList { items: InvoiceRow[]; counts?: { all: number; matched: number; unmatched: number }; can?: { match: boolean; retryQueue: boolean } }
@@ -136,7 +137,9 @@ export function InvoicesPage() {
                 {x.decision && <span className="mt-1 block text-sm text-ink-subtle">{PAST_DECISION[x.decision]}</span>}
                 {canMatch && x.matchState === 'UNMATCHED' && x.legalStatus === 'RECEIVED' && !x.decision &&
                   <Button size="xs" variant="outline" className="mt-1" onClick={() => setLinking(x)} aria-label={`${x.invoiceNo} faturasını elle bağla`}>Elle bağla</Button>}</TableCell>
-              {show('erp') && <TableCell className="text-sm text-ink-muted max-[900px]:hidden">{x.erpStatus ? ERP[x.erpStatus] : '—'}{x.paymentStatus === 'PAID' ? ' · ödendi (ERP)' : ''}</TableCell>}
+              {show('erp') && <TableCell className="text-sm text-ink-muted max-[900px]:hidden">{x.erpStatus ? ERP[x.erpStatus] : '—'}{x.paymentStatus === 'PAID' ? ' · ödendi (ERP)' : ''}
+                {/* v2 Faz 8 (R6): ERP ödeme durumu bilgisi (ERP'den ya da elle); v1 ödeme durumundan ayrı. */}
+                {x.erpPaymentStatusLabel && <span className="block">ERP ödeme: {x.erpPaymentStatusLabel}</span>}</TableCell>}
             </TableRow>
           ))}</TableBody>
         </Table>
@@ -151,6 +154,8 @@ function InvoiceForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
   const { me } = useSession();
   const sup = useResource<{ items: SupplierOption[] }>('/api/v1/supplier-options');
   const [f, setF] = useState({ companyId: me?.companies[0]?.id ?? '', supplierId: '', kind: 'INVOICE', invoiceNo: '', ettn: '', issueDate: '', currency: 'TRY', originalInvoiceId: '' });
+  // v2 Faz 8 (R6): ERP sözleşme/sipariş referansı elle (ERP sipariş okuması kapalıyken de açıkken de); boşsa gönderilmez.
+  const [refs, setRefs] = useState({ erpContractRef: '', erpOrderRef: '' });
   const [lines, setLines] = useState([{ description: '', quantity: '', unit: '', unitPrice: '', taxRate: '20' }]);
   const [declared, setDeclared] = useState({ declaredTaxTotal: '', declaredWithholding: '', declaredPayable: '' });
   const [err, setErr] = useState<string | null>(null);
@@ -160,7 +165,8 @@ function InvoiceForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
     <form className="panel mb-5" onSubmit={(e) => { e.preventDefault(); setBusy(true); setErr(null);
       void api<{ id: string; duplicate: boolean }>('/api/v1/invoices', { method: 'POST', json: { ...f, ettn: f.ettn || null, originalInvoiceId: f.kind === 'CREDIT_NOTE' ? f.originalInvoiceId || null : null,
         declaredTaxTotal: declared.declaredTaxTotal || null, declaredWithholding: declared.declaredWithholding || null, declaredPayable: declared.declaredPayable || null,
-        lines: lines.map((l) => ({ ...l, netAmount: net(l) })) } }).then((r) => onCreated(r.data.id), (x: ApiError) => setErr(x.message)).finally(() => setBusy(false)); }}>
+        lines: lines.map((l) => ({ ...l, netAmount: net(l) })),
+        ...(refs.erpContractRef.trim() ? { erpContractRef: refs.erpContractRef.trim() } : {}), ...(refs.erpOrderRef.trim() ? { erpOrderRef: refs.erpOrderRef.trim() } : {}) } }).then((r) => onCreated(r.data.id), (x: ApiError) => setErr(x.message)).finally(() => setBusy(false)); }}>
       <div className="panel-head"><h2>Fatura gir</h2><span className="text-sm text-ink-subtle">Aynı tedarikçi için aynı ETTN veya fatura no ikinci kayıt açmaz.</span></div>
       <div className="panel-body grid gap-3">
         <div className="grid grid-cols-4 gap-x-3 max-[900px]:grid-cols-2">
@@ -171,6 +177,8 @@ function InvoiceForm({ onCancel, onCreated }: { onCancel: () => void; onCreated:
           <Field label="ETTN (varsa)">{(p) => <input className="input mono" {...p} value={f.ettn} onChange={(e) => setF({ ...f, ettn: e.target.value })} />}</Field>
           <Field label="Fatura tarihi">{(p) => <input className="input" type="date" required {...p} value={f.issueDate} onChange={(e) => setF({ ...f, issueDate: e.target.value })} />}</Field>
           <Field label="Para birimi">{(p) => <input className="input" maxLength={3} {...p} value={f.currency} onChange={(e) => setF({ ...f, currency: e.target.value.toUpperCase() })} />}</Field>
+          <Field label="ERP sözleşme referansı (varsa)">{(p) => <input className="input mono" maxLength={60} {...p} value={refs.erpContractRef} onChange={(e) => setRefs({ ...refs, erpContractRef: e.target.value })} />}</Field>
+          <Field label="ERP sipariş referansı (varsa)">{(p) => <input className="input mono" maxLength={60} {...p} value={refs.erpOrderRef} onChange={(e) => setRefs({ ...refs, erpOrderRef: e.target.value })} />}</Field>
           {f.kind === 'CREDIT_NOTE' && <Field label="Özgün fatura kimliği">{(p) => <input className="input mono" {...p} value={f.originalInvoiceId} onChange={(e) => setF({ ...f, originalInvoiceId: e.target.value })} />}</Field>}
         </div>
         {lines.map((l, i) => (
@@ -219,8 +227,10 @@ interface InvDetail {
   status: string; exceptionCurrent: boolean | null; checkFingerprint: string;
   can: { manage: boolean; approve: boolean; approveException: boolean; match?: boolean };
   ublCheck: UblCheck | null;
-  /** v2 Faz 7 (R1–R4): eşleşme kartı. Faz 8 alanları (kaynak, ERP ödeme) bu görevde gösterilmez. */
+  /** v2 Faz 7 (R1–R4): eşleşme kartı. */
   match?: MatchView;
+  /** v2 Faz 8 (R6): kaynak (Oracle ERP / Taklit Oracle (gerçek değil) / Elle / e-Fatura), ERP fatura kimliği ve ödeme durumu bilgisi. */
+  erpSource?: ErpSource | null;
   sourceLabel?: string | null;
 }
 const SEV = { BLOCK: { text: 'Engel', tone: 'danger', icon: 'x' }, EXCEPTION: { text: 'İstisna', tone: 'warn', icon: 'alert' }, REVIEW: { text: 'İnceleme', tone: 'info', icon: 'help' } } as const;
@@ -288,6 +298,7 @@ export function InvoicePage() {
         </div>
         <aside className="grid content-start gap-5">
           {d.match && <MatchCard invoiceId={d.invoice.id} invoiceNo={d.invoice.invoiceNo} m={d.match} canMatch={!!d.can.match && d.invoice.legalStatus === 'RECEIVED'} onChanged={r.reload} />}
+          {d.erpSource && <InvoiceErpPanel invoiceId={d.invoice.id} src={d.erpSource} refs={{ contract: d.match?.erpContractRef ?? null, order: d.match?.erpOrderRef ?? null }} onChanged={r.reload} />}
           <section className="panel">
             <div className="panel-head"><h2>Tutar</h2></div>
             <div className="panel-body"><dl className="facts">

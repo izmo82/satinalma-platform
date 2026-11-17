@@ -1,4 +1,4 @@
-import { lazy, useCallback, useEffect, useReducer, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useReducer, useRef, useState, type ReactNode } from 'react';
 import { Link, Navigate, Outlet, useSearchParams } from 'react-router-dom';
 import { api, ApiError } from '../lib/api.ts';
 import { hasRole, useSession, type Me } from '../lib/session.tsx';
@@ -11,13 +11,13 @@ import { ApproversPage } from './ApproversPage.tsx';
 import { TemplatesPage } from './TemplatesPage.tsx';
 import { RiskQuestionsAdmin } from './RiskQuestionsAdmin.tsx';
 import { RulesPage } from './RulesPage.tsx';
+import { IntegrationsPage } from './IntegrationsPage.tsx';
+import { CostCentersPanel } from './ErpManual.tsx';
 import { cn } from '@/lib/utils';
 import { ConnectionCard, DirectoryUsersCard, EntraDepartmentList, useDirectorySync, type AdminDepartment, type DirectoryConnection } from './DirectoryAdmin.tsx';
 
 // v2 Faz 1 (D93): Yönetim merkezi. Sekme sırası onaylı Figma ekranlarıyla aynı. Sonraki fazların sekmeleri yalnız hangi fazda
 // geleceğini söyleyen boş durumdur; sahte denetim (düğme, form) yoktur. Denetçi yalnız okunur sekmeleri görür.
-
-const ErpReconciliationPage = lazy(() => import('./GovernancePages.tsx').then((m) => ({ default: m.ErpReconciliationPage })));
 
 type TabKey = 'kullanicilar' | 'onaycilar' | 'sablonlar' | 'satinalma-kurallari' | 'tedarikci-basvurusu' | 'entegrasyonlar' | 'e-posta-kutusu' | 'yapay-zeka' | 'denetim-izi';
 const TABS: { key: TabKey; label: string; roles: string[] }[] = [
@@ -70,17 +70,6 @@ export function AdminTab({ tab, children }: { tab: TabKey; children: ReactNode }
   return adminTabs(me).some((t) => t.key === tab) ? <>{children}</> : <AdminIndex />;
 }
 
-function Planned({ title, heading, children }: { title: string; heading: string; children: ReactNode }) {
-  return (
-    <div className="page">
-      <PageHeader title={title} />
-      <div className="rounded-md border border-border bg-surface">
-        <Empty icon="clock" title={heading}>{children}</Empty>
-      </div>
-    </div>
-  );
-}
-
 /** v2 Faz 2 (D105): onaycı ataması (Figma 21). Faz 1'deki "Faz 2'de gelir" boş durumu yerine gerçek ekran. */
 export const ApproversTab = () => <ApproversPage />;
 
@@ -106,16 +95,9 @@ export function TemplatesTab() {
 /** v2 Faz 7 (D112, Figma 19): Faz 1'deki "Faz 7'de gelir" boş durumu yerine sürümlü satınalma kuralı seti. */
 export const RulesTab = () => <RulesPage />;
 
-/** Entegrasyonlar: ERP mutabakatı (Satınalma yürütür, Denetçi okur). Yönetici rolünün bu uca yetkisi yok; açıklama görür. */
-export function IntegrationsTab() {
-  const { me } = useSession();
-  if (hasRole(me, 'PROCUREMENT', 'AUDITOR')) return <ErpReconciliationPage />;
-  return (
-    <Planned title="Entegrasyonlar" heading="ERP mutabakatı Satınalma ve Denetçi rollerine açık">
-      Fatura aktarımlarının ERP mutabakatını Satınalma yürütür, Denetçi okur. Oracle ERP ve Entra bağlantı ayarları sonraki fazlarda bu sekmeye gelir.
-    </Planned>
-  );
-}
+/** v2 Faz 8 (D113, R10): Entegrasyonlar iki bölümlü (Bağlantılar + Fatura aktarım mutabakatı). Satınalma ve Denetçi mutabakatı ilk ekranda
+ * görür (değişmeden); Yönetici bağlantıları ve mutabakat bölümünde eski açıklamayı. */
+export const IntegrationsTab = () => <IntegrationsPage />;
 
 interface Department { id: string; name: string }
 interface Member { userId: string; displayName: string; email: string; roles: string[]; departmentIds: string[] }
@@ -430,6 +412,8 @@ export function UsersTab() {
           {membersPanel}
         </div>
       )}
+      {/* v2 Faz 8 (D113, R6): departman masraf merkezi kodu (Yönetici; ERP listesinden seçim ya da elle). */}
+      {admin && <CostCentersPanel />}
       {canAssign && (
         <section className="panel mt-5" aria-labelledby="unassigned-h">
           <div className="panel-head"><h2 id="unassigned-h">Departmansız kayıtlar</h2></div>

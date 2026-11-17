@@ -9,6 +9,7 @@ import { hasPermission, hasRole, useSession } from '../lib/session.tsx';
 import { Banner, ErrorState, Field, Loading, Modal, Tag } from '../ui/kit.tsx';
 import { Icon } from '../ui/icons.tsx';
 import { StageWithStatus } from '../lib/supplierV2.tsx';
+import { SupplierErpPanel } from './ErpManual.tsx';
 import { ActivationHints, ContractsProjectsTab, DocumentsTab, LifecycleBanner, OffboardingTab, PortalUsersTab, ProfilePanel, ReasonDialog, ScoreRiskPanel, type CardV2 } from './SupplierCardV2.tsx';
 const SupplierAnnualRisk = lazy(() => import('./RiskPages.tsx').then((m) => ({ default: m.SupplierAnnualRisk })));
 
@@ -158,6 +159,8 @@ export function SupplierDetailPage() {
             ))}
           </div>
         </section>
+        {/* v2 Faz 8 (D113, R6): ERP tedarikçi kodu (Elle/ERP kaynağıyla) ve ERP'ye aktarım. */}
+        <SupplierErpPanel supplierId={s.id} />
       </div>
 
       <section className="panel" style={{ marginTop: 16 }} aria-labelledby="belgeler">

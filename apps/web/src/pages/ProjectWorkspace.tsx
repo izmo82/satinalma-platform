@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { ErpOutboundPanel } from './ErpManual.tsx';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { api, apiBlob, ApiError } from '../lib/api.ts';
 import { useResource } from '../lib/useApi.ts';
@@ -294,6 +295,8 @@ function Summary({ d, reload }: { d: Detail; reload: () => Promise<void> }) {
         <RoundPanel d={d} reload={reload} />
         <ExceptionsPanel d={d} reload={reload} />
         <SavingsPanel d={d} reload={reload} />
+        {/* v2 Faz 8 (D113, R6): ERP aktarımı (talep); ERP okuma izni olmayan rolde çizilmez. */}
+        <ErpOutboundPanel entityType="PROJECT" entityId={p.id} />
       </div>
     </div>
   );

@@ -72,7 +72,9 @@ function listOf(path: string): string | null {
 function Moved({ to }: { to: (p: Record<string, string | undefined>) => string }) {
   const params = useParams();
   const { search } = useLocation();
-  return <Navigate to={`${to(params)}${search}`} replace />;
+  const target = to(params);
+  // Hedefin kendi sorgusu varsa eski sorgu ona eklenir (v2 Faz 8: `?bolum=mutabakat`).
+  return <Navigate to={`${target}${search && target.includes('?') ? `&${search.slice(1)}` : search}`} replace />;
 }
 
 /** Veri yönetimi kalktı (saklama, hukuki saklama, imha); dışa aktarım sekmesi Yönetim > Denetim izi'ne taşındı. */
@@ -272,7 +274,8 @@ function Shell() {
           </Route>
           {/* v2 (D93): taşınan girişlerin eski adresleri kalıcı yönlenir. */}
           <Route path="/yapay-zeka" element={<Moved to={() => '/yonetim/yapay-zeka'} />} />
-          <Route path="/faturalar/erp-mutabakati" element={<Moved to={() => '/yonetim/entegrasyonlar'} />} />
+          {/* v2 Faz 8 (D113, R10): mutabakat Entegrasyonlar'ın ikinci bölümü; eski adres bu bölüme açılır (eski sorgu korunur). */}
+          <Route path="/faturalar/erp-mutabakati" element={<Moved to={() => '/yonetim/entegrasyonlar?bolum=mutabakat'} />} />
           <Route path="/olaylar" element={<Moved to={() => '/tedarikciler/olaylar'} />} />
           <Route path="/olaylar/:id" element={<Moved to={(p) => `/tedarikciler/olaylar/${p.id}`} />} />
           <Route path="/anketler" element={<Moved to={() => '/tedarikciler/anketler'} />} />

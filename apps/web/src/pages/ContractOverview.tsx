@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { ErpOutboundPanel } from './ErpManual.tsx';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { api, ApiError } from '../lib/api.ts';
 import { useResource } from '../lib/useApi.ts';
@@ -126,6 +127,8 @@ function Summary({ d, savedDraft }: { d: ContractV2; savedDraft: boolean }) {
               </> : <p className="text-ink-muted">Tedarikçi seçilmedi.</p>}
             </div>
           </section>
+          {/* v2 Faz 8 (D113, R6): ERP aktarımı (sözleşme başlığı); ERP okuma izni olmayan rolde çizilmez. */}
+          <ErpOutboundPanel entityType="CONTRACT_FAMILY" entityId={d.family.id} />
         </div>
       </div>
     </div>
