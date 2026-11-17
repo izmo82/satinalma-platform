@@ -15,6 +15,8 @@ struct ScanView: View {
     @State private var photoItems: [PhotosPickerItem] = []
     @State private var notice: Notice?
     @State private var removing: Draft?
+    /// v2 Faz 3: yüklenen sözleşme taraması → "Alanları doğrula" (Figma iOS 3).
+    @State private var verifying: Draft?
 
     var body: some View {
         List {
@@ -29,7 +31,7 @@ struct ScanView: View {
                     }
                     PhotosPicker(selection: $photoItems, maxSelectionCount: 30, matching: .images) { Label("Fotoğraflardan seç", systemImage: "photo.on.rectangle") }
                     Button { showFiles = true } label: { Label("PDF dosyası seç", systemImage: "doc") }
-                } footer: { Text("Belge önce bu cihazda şifreli taslak olarak saklanır; bağlantı varsa hemen yüklenir, yoksa bağlantı gelince.") }
+                } footer: { Text("Belge önce bu cihazda şifreli taslak olarak saklanır; bağlantı varsa hemen yüklenir, yoksa bağlantı gelince. Sözleşme yüklenince alanları siz doğrularsınız (yapay zekâ okuması Faz 4'te).") }
             } else {
                 ScanComposer(pages: $pages, importedPDF: $importedPDF) { pdf, count, title, kind, company in
                     do {
@@ -41,6 +43,7 @@ struct ScanView: View {
                             await drafts.upload(d.id, session: session)
                             if let r = drafts.drafts.first(where: { $0.id == d.id }) {
                                 notice = r.state == .uploaded ? Notice(tone: .info, text: "Yüklendi: \(r.serverMessage ?? "")") : Notice(tone: .warn, text: r.lastError ?? "Yüklenmedi; taslak korunuyor.")
+                                if r.state == .uploaded, r.kind == "CONTRACT", r.documentVersionId != nil { verifying = r }
                             }
                         }
                     } catch { notice = Notice(tone: .error, text: "Taslak kaydedilemedi: \(error.localizedDescription)") }
@@ -50,10 +53,16 @@ struct ScanView: View {
                 if let reason = drafts.unavailableReason { Label(reason, systemImage: "lock").font(.footnote).foregroundStyle(.orange) }
                 let mine = drafts.visible(userId: session.me?.user.id, tenantId: session.tenantId)
                 if mine.isEmpty { Text("Taslak yok.").foregroundStyle(.secondary) }
-                ForEach(mine) { d in DraftRow(draft: d, onUpload: { Task { await drafts.upload(d.id, session: session) } }, onRemove: { removing = d }) }
+                ForEach(mine) { d in
+                    DraftRow(draft: d, onUpload: { Task { await drafts.upload(d.id, session: session) } }, onRemove: { removing = d },
+                             onVerify: d.kind == "CONTRACT" && d.state == .uploaded && d.documentVersionId != nil ? { verifying = d } : nil)
+                }
             }
         }
         .navigationTitle("Tara")
+        .navigationDestination(item: $verifying) { d in
+            if let dv = d.documentVersionId { ContractFieldsView(documentVersionId: dv, draftId: d.id, familyId: d.contractFamilyId) }
+        }
         .fullScreenCover(isPresented: $showCamera) { DocumentCamera { imgs in pages = imgs.map { ScanPage(image: $0) } } .ignoresSafeArea() }
         .fileImporter(isPresented: $showFiles, allowedContentTypes: [.pdf]) { result in
             guard case .success(let url) = result else { return }
@@ -181,6 +190,8 @@ struct DraftRow: View {
     let draft: Draft
     let onUpload: () -> Void
     let onRemove: () -> Void
+    /// Sözleşme taraması yüklendiyse: alanları doğrula / taslağa devam et.
+    var onVerify: (() -> Void)? = nil
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             AdaptiveStack {
@@ -192,6 +203,12 @@ struct DraftRow: View {
             if let m = draft.serverMessage { Text(m + (draft.duplicate == true ? " (Bu dosya daha önce yüklenmişti; yeni kayıt açılmadı.)" : "")).font(.footnote) }
             if let e = draft.lastError { Text(e).font(.footnote).foregroundStyle(.orange) }
             if draft.ownerUserId == nil && draft.state != .uploaded { Text("Sahibi kayıtlı olmayan eski taslak: kimin adına yükleneceği bilinmediği için yüklenmez. Yeniden tarayın veya silin.").font(.footnote).foregroundStyle(.orange) }
+            if let onVerify {
+                Button(action: onVerify) {
+                    Label(draft.contractFamilyId == nil ? "Alanları doğrula" : "Sözleşme taslağına devam et", systemImage: "checklist")
+                }
+                .buttonStyle(.borderedProminent)
+            }
             HStack {
                 if (draft.state == .pending || draft.state == .failed) && draft.ownerUserId != nil && !draft.companyId.isEmpty { Button(draft.attempts > 0 ? "Tekrar yükle" : "Yükle", action: onUpload).buttonStyle(.bordered) }
                 if draft.state == .uploading { ProgressView() }

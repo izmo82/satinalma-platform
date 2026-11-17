@@ -105,10 +105,101 @@ struct InvoiceList: Decodable, Sendable { let items: [InvoiceRow] }
 
 struct ContractRow: Decodable, Identifiable, Sendable, Hashable {
     struct Signature: Decodable, Sendable, Hashable { let overall: String; let missingParties: [String] }
+    struct Ref: Decodable, Sendable, Hashable { let id: String; let code: String?; let title: String? }
+    struct Supplier: Decodable, Sendable, Hashable { let id: String; let legalName: String; let status: String }
     let id: String; let title: String; let versionNo: Int; let stage: String; let finalizedAt: String?
     let supplierNames: [String]?; let departmentName: String?; let signature: Signature
+    // v2 Faz 3 (Görev 4): türetilmiş durum ve özet alanları. Eski sunucuda yok; satır yine imza durumuyla görünür.
+    let familyId: String?; let status: String?; let statusLabel: String?
+    let project: Ref?; let supplier: Supplier?; let endDate: String?; let indefinite: Bool?; let amount: String?; let currency: String?
 }
 struct ContractList: Decodable, Sendable { let items: [ContractRow]; let total: Int }
+
+// MARK: Sözleşme v2 (Faz 3: ekleme, onay zinciri)
+
+struct UserRef: Decodable, Sendable, Hashable { let id: String; let displayName: String }
+
+/// `GET /api/v1/contracts/:familyId/v2` (Görev 4). Durum sunucuda türetilir; istemci yalnız gösterir.
+struct ContractV2: Decodable, Sendable {
+    struct Family: Decodable, Sendable { let id: String; let code: String; let title: String; let companyId: String; let departmentId: String?; let departmentName: String?; let createdBy: UserRef?; let intakeFlow: Bool }
+    struct Fields: Decodable, Sendable {
+        let projectId: String?; let supplierId: String?; let contractType: String?; let contractTypeLabel: String?; let ownerUserId: String?
+        let signedOn: String?; let indefinite: Bool; let contractNo: String?
+        let termsId: String?; let termsVerified: Bool?
+        let currency: String?; let valueType: String?; let amount: String?; let limitBasis: String?; let startDate: String?; let endDate: String?
+        let autoRenewal: Bool?; let renewalMonths: Int?; let noticeAmount: Int?; let noticeUnit: String?; let noticePeriod: String?
+    }
+    struct Missing: Decodable, Sendable, Hashable { let field: String; let label: String }
+    struct Status: Decodable, Sendable { let code: String; let label: String }
+    struct Step: Decodable, Identifiable, Sendable {
+        let id: String; let order: Int; let kind: String; let kindLabel: String; let assignedUser: UserRef?; let viaDeputy: Bool; let deputyUser: UserRef?
+        let decision: String?; let decidedAt: String?; let decidedBy: UserRef?; let reason: String?; let current: Bool
+    }
+    struct Chain: Decodable, Sendable {
+        let id: String; let status: String; let submittedBy: UserRef?; let submittedAt: String?; let note: String?; let closedAt: String?; let cancelReason: String?
+        let steps: [Step]
+    }
+    struct Project: Decodable, Sendable { let id: String; let code: String?; let title: String?; let visible: Bool }
+    struct Supplier: Decodable, Sendable { let id: String; let legalName: String; let status: String }
+    struct Document: Decodable, Sendable { let contractVersionId: String; let versionNo: Int; let documentVersionId: String?; let filename: String?; let sha256: String? }
+    struct Can: Decodable, Sendable { let edit: Bool; let submit: Bool; let decide: Bool }
+    let family: Family; let fields: Fields; let missing: [Missing]; let status: Status; let legacy: Bool
+    let chain: Chain?; let chainCount: Int
+    let project: Project?; let supplier: Supplier?; let owner: UserRef?; let document: Document?; let can: Can
+}
+
+/// `GET /api/v1/contract-approvals/mine` (Görev 5): İşlerim'deki onay görevleriyle aynı küme.
+struct MyApprovals: Decodable, Sendable {
+    struct Item: Decodable, Identifiable, Sendable {
+        struct Contract: Decodable, Sendable { let familyId: String; let code: String; let title: String }
+        let stepId: String; let taskId: String; let order: Int; let stepCount: Int; let kindLabel: String; let asDeputy: Bool
+        let contract: Contract; let canDecide: Bool
+        var id: String { stepId }
+    }
+    let items: [Item]
+}
+
+struct ApprovalDecisionResult: Decodable, Sendable {
+    struct Next: Decodable, Sendable { let kindLabel: String }
+    let chainStatus: String; let nextStep: Next?; let contract: ContractV2
+}
+
+struct ApprovalPreview: Decodable, Sendable {
+    struct Step: Decodable, Identifiable, Sendable { let order: Int; let kind: String; let kindLabel: String; let userId: String; let displayName: String; let viaDeputy: Bool; var id: Int { order } }
+    let ok: Bool; let steps: [Step]?; let message: String?
+}
+
+struct ContractDraftCreated: Decodable, Sendable {
+    struct Duplicate: Decodable, Sendable { let familyId: String; let code: String; let title: String }
+    let familyId: String; let duplicateOf: Duplicate?
+}
+
+struct ContractSubmitResult: Decodable, Sendable { let chainId: String; let contract: ContractV2 }
+
+struct ProjectOption: Decodable, Identifiable, Sendable, Hashable { let id: String; let code: String; let title: String; let departmentId: String?; let departmentName: String? }
+struct ProjectOptions: Decodable, Sendable { let items: [ProjectOption] }
+struct DepartmentOptions: Decodable, Sendable { let items: [Me.Department] }
+struct MemberOption: Decodable, Identifiable, Sendable, Hashable { let id: String; let displayName: String }
+struct CandidateSupplier: Decodable, Sendable { let id: String; let legalName: String; let status: String; let existing: Bool }
+
+enum ContractLabels {
+    static let types: [(String, String)] = [("SERVICE", "Hizmet"), ("HARDWARE", "Donanım"), ("MAINTENANCE", "Bakım-destek"), ("NDA", "Gizlilik"), ("CONSULTING", "Danışmanlık"), ("OTHER", "Diğer")]
+    static let limitBasis: [String: String] = ["NET": "KDV hariç", "GROSS": "KDV dahil"]
+    static let noticeUnit: [String: String] = ["DAY": "gün", "MONTH": "ay"]
+    static let decision: [String: String] = ["APPROVED": "Onayladı", "REJECTED": "Reddetti"]
+    static let chainStatus: [String: String] = ["OPEN": "Onayda", "APPROVED": "Onaylandı", "REJECTED": "Reddedildi", "CANCELLED": "İptal edildi"]
+    /// Yapay zekâ okuması bu fazda yok (Faz 4): sahte puan/bulgu gösterilmez.
+    static let aiNotConnected = "Yapay zekâ okuması bağlı değil (Faz 4); alanları belgeden siz girin."
+    /// Durum etiketi rengi: kırmızı eksik/ret/süre doldu, turuncu onayda/eski kayıt, yeşil yürürlükte, gri taslak.
+    static func tone(_ code: String?) -> Notice.Tone? {
+        switch code {
+        case "INCOMPLETE", "REJECTED", "EXPIRED": .error
+        case "IN_APPROVAL", "LEGACY": .warn
+        case "APPROVED": .info
+        default: nil
+        }
+    }
+}
 
 struct SupplierRow: Decodable, Identifiable, Sendable, Hashable {
     let id: String; let status: String; let taxIdType: String?; let taxId: String?; let legalName: String; let identityReviewRequired: Bool

@@ -27,6 +27,8 @@ struct Draft: Codable, Identifiable, Sendable, Hashable {
     /// Sahiplik: başka kullanıcının oturumunda listelenmez ve yüklenmez (yanlış kimlikle denetim kaydı oluşmaz).
     var ownerUserId: String?
     var tenantId: String?
+    /// v2 Faz 3: sözleşme taslağı açıldıysa ailesi; "Alanları doğrula" aynı taslağı açar, ikinci taslak açılmaz.
+    var contractFamilyId: String?
 }
 
 @MainActor
@@ -128,6 +130,9 @@ final class DraftStore {
         }
         return d
     }
+
+    /// Taranan sözleşme belgesi için açılan sözleşme taslağını (aile) bağlar.
+    func setContractFamily(_ id: UUID, familyId: String) { update(id) { $0.contractFamilyId = familyId } }
 
     func payload(_ d: Draft) throws -> Data { try decrypt(Data(contentsOf: fileURL(d.id))) }
 

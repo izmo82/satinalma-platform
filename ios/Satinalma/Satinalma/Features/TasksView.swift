@@ -37,6 +37,11 @@ struct TasksView: View {
 
 struct TaskRow: View {
     let task: TaskItem
+    /// Sözleşme görevlerinin türü (Figma İşlerim kartlarındaki üst satır).
+    static let kindLabel: [String: String] = [
+        "contract_approval": "Sözleşme onayı", "contract_rejected": "Reddedilen sözleşme", "contract_resubmit": "Yeniden onaya gönderin",
+        "contract_reminder": "Sözleşme bitişi",
+    ]
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             AdaptiveStack {
@@ -45,7 +50,9 @@ struct TaskRow: View {
                 HSpacer()
                 if let due = task.dueAt { Text("Son: \(Fmt.date(due))").font(.caption).foregroundStyle(.secondary) }
             }
+            if let kind = TaskRow.kindLabel[task.kind] { Text(kind).font(.footnote).foregroundStyle(.secondary) }
             Text(task.title).font(.body.weight(.semibold))
+            if task.kind == "contract_approval" { StatusBadge(code: "IN_APPROVAL", label: "Onayınızı bekliyor") }
             Text(task.reason).font(.subheadline).foregroundStyle(.secondary)
             Text(task.nextAction).font(.footnote)
         }
@@ -58,13 +65,18 @@ struct TaskRow: View {
 /// Fatura görevi salt okunur fatura ayrıntısını açar (v2: iOS fatura onayı kalktı).
 struct TaskDestination: View {
     let task: TaskItem
-    static func opensOnMobile(_ entityType: String) -> Bool { ["contract_version", "invoice", "incident", "document_version"].contains(entityType) }
+    static func opensOnMobile(_ entityType: String) -> Bool {
+        ["contract_version", "invoice", "incident", "document_version", "contract_approval_step", "contract_rejection", "contract_family", "contract_reminder"].contains(entityType)
+    }
     var body: some View {
         switch task.entityType {
         case "contract_version": SignatureView(contractVersionId: task.entityId)
         case "invoice": InvoiceView(invoiceId: task.entityId)
         case "incident": IncidentView(incidentId: task.entityId)
         case "document_version": DocumentPreview(documentVersionId: task.entityId, expectedSha256: nil, title: task.title)
+        // v2 Faz 3: onay adımı → Sözleşme onayı; ret, yeniden gönder ve bitiş hatırlatıcısı (kimlik = aile) → sözleşme özeti.
+        case "contract_approval_step": ContractApprovalView(stepId: task.entityId)
+        case "contract_rejection", "contract_family", "contract_reminder": ContractSummaryView(familyId: task.entityId)
         default:
             ContentUnavailableView("Bu iş webde yapılır", systemImage: "desktopcomputer",
                                    description: Text("\(task.title)\n\nBu kayıt türü için mobil ekran yok; aynı görev web uygulamasında açıktır."))
