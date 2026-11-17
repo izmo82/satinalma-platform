@@ -60,3 +60,11 @@ describe('dizin izinleri', () => {
     expect(can(['PROCUREMENT'], 'role.assign')).toBe(false);
   });
 });
+
+describe('normalizeDepartmentName (tr-TR katlama, SQL ile aynı olmalı)', () => {
+  it('İ/I ve boşluk türleri', () => {
+    expect(normalizeDepartmentName('İnsan Kaynakları')).toBe('insan kaynakları');
+    expect(normalizeDepartmentName('ISIK')).toBe('ısık');
+    expect(normalizeDepartmentName('Satın alma\t\tBirimi')).toBe('satın alma birimi');
+  });
+});
