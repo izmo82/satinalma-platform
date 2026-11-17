@@ -10,7 +10,7 @@ import { closeTasks, openTask, rederiveTaskDepartments, v2Role } from '../tasks.
 import { ApiError, conflict, forbidden, notFound, unprocessable } from '../errors.ts';
 import { ErpTimeout, erpAdapter } from '../erp/adapter.ts';
 import { criticalBlocks } from './supplierEval.ts';
-import { ALLOC_FAMILIES_SQL, autoMatchInvoice, MATCH_STATE_SQL, matchInfo, overrunCheckForInvoice, releaseLinkForAllocation, type AutoMatchResult } from './invoiceMatching.ts';
+import { ALLOC_FAMILIES_SQL, autoMatchInvoice, MATCH_STATE_SQL, lockInvoiceMatch, matchInfo, overrunCheckForInvoice, releaseLinkForAllocation, type AutoMatchResult } from './invoiceMatching.ts';
 import { MATCH_STATE_TR, type MatchState } from '@sp/domain';
 
 /**
@@ -409,6 +409,8 @@ async function finalDecision(tx: Tx, invoiceId: string) {
 }
 
 export async function setAllocations(tx: Tx, ctx: TenantContext, invoiceId: string, b: { allocations: AllocationInput[]; advanceOffset?: string; advanceInvoiceId?: string | null }) {
+  // Bütün faz incelemesi I3: elle bağlama ve otomatik eşleştirmeyle aynı fatura kilidi.
+  await lockInvoiceMatch(tx, invoiceId);
   const inv = (await tx.query<{ company_id: string; kind: string; supplier_id: string }>(`SELECT company_id, kind, supplier_id FROM invoices WHERE id = $1`, [invoiceId])).rows[0];
   if (!inv) throw notFound();
   if (await finalDecision(tx, invoiceId)) throw conflict('invoice_decided', 'Karar verilmiş faturanın tahsisi değişmez; iade/alacak belgesi kullanın.');

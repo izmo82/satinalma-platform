@@ -44,14 +44,24 @@ export interface ComplianceRule {
   weight: number; mandatory: boolean;
 }
 
-/** Kapsam: boş yöntem listesi = tüm yöntemler. Tutar bilinmiyorsa eşikli kural gizlenmez (uygulanır). */
-export function ruleApplies(rule: Pick<ComplianceRule, 'methods' | 'amountThreshold' | 'currency'>, project: { method: string; amount: string | null; currency: string }): boolean {
-  if (rule.methods.length > 0 && !rule.methods.includes(project.method)) return false;
+/**
+ * Kapsam: boş yöntem listesi = tüm yöntemler. Tutar bilinmiyorsa eşikli kural gizlenmez (uygulanır).
+ * Bütün faz incelemesi I4: eşik başka para birimindeyse kur çevrilmediği için kapsam belirlenemez (`FX_UNKNOWN`); kural kapsam dışı
+ * sayılmaz (zorunlu kural sessizce düşmesin), denetimde NO_DATA `FX_SCOPE_UNKNOWN_TR` olur.
+ */
+export type RuleScope = 'IN' | 'OUT' | 'FX_UNKNOWN';
+export const FX_SCOPE_UNKNOWN_TR = 'Kur çevrilmedi; kapsam belirlenemedi';
+export function ruleScope(rule: Pick<ComplianceRule, 'methods' | 'amountThreshold' | 'currency'>, project: { method: string; amount: string | null; currency: string }): RuleScope {
+  if (rule.methods.length > 0 && !rule.methods.includes(project.method)) return 'OUT';
   if (rule.amountThreshold !== null) {
-    if (rule.currency !== null && rule.currency !== project.currency) return false;
-    if (project.amount !== null && cmp(dec(project.amount), dec(rule.amountThreshold)) < 0) return false;
+    if (rule.currency !== null && rule.currency !== project.currency) return 'FX_UNKNOWN';
+    if (project.amount !== null && cmp(dec(project.amount), dec(rule.amountThreshold)) < 0) return 'OUT';
   }
-  return true;
+  return 'IN';
+}
+/** Kural kesin kapsamda mı (`ruleScope` = IN). Kur çevrilmemiş eşik (FX_UNKNOWN) burada false; denetim `ruleScope` kullanır. */
+export function ruleApplies(rule: Pick<ComplianceRule, 'methods' | 'amountThreshold' | 'currency'>, project: { method: string; amount: string | null; currency: string }): boolean {
+  return ruleScope(rule, project) === 'IN';
 }
 
 /** Puan = yarım yukarı yuvarlanmış 100 × PASS ağırlığı ÷ uygulanan ağırlık (tam sayı aritmetiği). Zorunlu PASS olmayan → Uyumsuz. */

@@ -531,3 +531,148 @@ describe('giriş ve hata eşlemesi', () => {
     expect((await inv(a.id)).department_id).toBe(h.world.departments.bt);
   });
 });
+
+describe('bütün faz incelemesi düzeltmeleri (I1, I3, I5, minörler)', () => {
+  const financeCtx = () => ({ tenantId: h.world.tenantA, userId: h.world.users.finance.id, roles: ['PROCUREMENT'], companyIds: [h.world.companyA1.id], departmentIds: [],
+    allDepartments: true, correlationId: `v2-faz7-final-${rand()}` });
+  const invoiceTask = async (invoiceId: string, department: string) => (await one<{ id: string }>(`INSERT INTO tasks (tenant_id, company_id, kind, entity_type, entity_id,
+      title, reason, next_action, assignee_role, department_id, dedupe_key) VALUES ($1,$2,'invoice_issue','invoice',$3,'Fatura işi (SENTETİK)','Sentetik','Sentetik','DEPARTMENT_USER',$4,$5) RETURNING id`,
+    [h.world.tenantA, h.world.companyA1.id, invoiceId, department, `final-fix:${invoiceId}`])).id;
+  const taskDept = async (id: string) => (await one<{ department_id: string | null }>(`SELECT department_id FROM tasks WHERE id = $1`, [id])).department_id;
+
+  it('I1: departman ataması bağlı (elle ve otomatik) ve tahsisli faturaları aynı işlemde taşır; fatura görevleri izler', async () => {
+    const s = await supplier();
+    const c = await contract({ supplierId: s });
+    const auto = await invoice(s);
+    expect(auto.match).toMatchObject({ state: 'MATCHED', familyId: c.familyId });
+    const other = await contract({ supplierId: s, start: '2025-01-01', end: '2025-12-31' });
+    const manual = await invoice(s, { date: '2027-02-01' });
+    expect((await call('finance', 'POST', `/api/v1/invoices/${manual.id}/match`, { familyId: c.familyId, acknowledgeOutOfRange: true })).status).toBe(200);
+    const alloc = await invoice(s, { date: '2027-02-02' });
+    expect((await call('finance', 'PUT', `/api/v1/invoices/${alloc.id}/allocations`, { allocations: [{ lineNo: 1, poLineId: null, contractVersionId: c.cvId, quantity: '1', amount: '1000.00' }] })).status).toBe(200);
+    const tAuto = await invoiceTask(auto.id, h.world.departments.bt);
+    const tAlloc = await invoiceTask(alloc.id, h.world.departments.bt);
+    const r = await call('finance', 'PUT', '/api/v1/department-assignments', { entityType: 'contract_family', ids: [c.familyId], departmentId: h.world.departments.ik });
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    for (const id of [auto.id, manual.id]) expect(await inv(id)).toMatchObject({ contract_family_id: c.familyId, project_id: c.projectId, department_id: h.world.departments.ik });
+    expect((await inv(alloc.id)).department_id).toBe(h.world.departments.ik);
+    expect(await taskDept(tAuto)).toBe(h.world.departments.ik);
+    expect(await taskDept(tAlloc)).toBe(h.world.departments.ik);
+    expect(r.body.tasksUpdated).toBeGreaterThanOrEqual(2);
+    // Başka ailenin faturası etkilenmez.
+    expect((await inv(manual.id)).contract_family_id).not.toBe(other.familyId);
+  });
+
+  it('I1: sözleşme alanlarında departman ya da proje değişince bağlı fatura aileyi izler (056a koruması hata vermez)', async () => {
+    const s = await supplier();
+    const c = await contract({ supplierId: s, chain: 'OPEN' });
+    const a = await invoice(s);
+    expect(a.match.state).toBe('UNMATCHED');
+    const l = await call('finance', 'POST', `/api/v1/invoices/${a.id}/match`, { familyId: c.familyId });
+    expect(l.status, JSON.stringify(l.body)).toBe(200);
+    const t = await invoiceTask(a.id, h.world.departments.bt);
+    const project2 = (await one<{ id: string }>(`INSERT INTO projects (tenant_id, company_id, code, title, category, owner_user_id, created_by, department_id)
+      VALUES ($1,$2,$3,'İkinci proje (SENTETİK)','Genel',$4,$4,$5) RETURNING id`, [h.world.tenantA, h.world.companyA1.id, `PRJ-IM2-${rand()}`, h.world.users.buyer.id, h.world.departments.ik])).id;
+    const r = await call('buyer', 'PUT', `/api/v1/contracts/${c.familyId}/fields`, { departmentId: h.world.departments.ik, projectId: project2 });
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(await inv(a.id)).toMatchObject({ contract_family_id: c.familyId, project_id: project2, department_id: h.world.departments.ik });
+    expect(await taskDept(t)).toBe(h.world.departments.ik);
+  });
+
+  it('I3: kuyruk yeniden denemesi elle bağlamanın kilidini bekler; bağ kurulduktan sonra Eşleşmedi görevi yeniden açılmaz', async () => {
+    const { linkInvoice } = await import('../src/modules/invoiceMatching.ts');
+    const s = await supplier();
+    const c1 = await contract({ supplierId: s });
+    await contract({ supplierId: s });
+    const a = await invoice(s);
+    expect(a.match).toMatchObject({ state: 'UNMATCHED', reason: 'multiple_active_contracts' });
+    const ctx = financeCtx();
+    let retry: Promise<any> | null = null;
+    let settled = false;
+    await withTenant(h.pool, ctx, async (tx) => {
+      await linkInvoice(tx, ctx, a.id, { familyId: c1.familyId });
+      retry = call('finance', 'POST', '/api/v1/invoices/match-queue/retry').then((x) => { settled = true; return x; });
+      await new Promise((r) => setTimeout(r, 400));
+      expect(settled).toBe(false); // kilit tutuluyor: otomatik eşleştirme aynı faturayı okuyamaz
+    });
+    const rr = await retry!;
+    expect(rr.status, JSON.stringify(rr.body)).toBe(200);
+    expect(await inv(a.id)).toMatchObject({ contract_family_id: c1.familyId, match_method: 'MANUAL' });
+    expect((await tasks(`invoice-unmatched:${a.id}`)).filter((t) => t.status === 'OPEN')).toEqual([]);
+    expect((await events(a.id)).map((e) => e.action)).toEqual(['AUTO_FAILED', 'LINK']);
+  });
+
+  it('I3: tahsis elle bağlamanın kilidini bekler ve bağ görülünce 409 invoice_matched (fatura hem bağlı hem tahsisli olmaz)', async () => {
+    const { linkInvoice } = await import('../src/modules/invoiceMatching.ts');
+    const s = await supplier();
+    const c1 = await contract({ supplierId: s });
+    const c2 = await contract({ supplierId: s });
+    const a = await invoice(s);
+    expect(a.match.state).toBe('UNMATCHED');
+    const ctx = financeCtx();
+    let put: Promise<any> | null = null;
+    let settled = false;
+    await withTenant(h.pool, ctx, async (tx) => {
+      await linkInvoice(tx, ctx, a.id, { familyId: c1.familyId });
+      put = call('finance', 'PUT', `/api/v1/invoices/${a.id}/allocations`, { allocations: [{ lineNo: 1, poLineId: null, contractVersionId: c2.cvId, quantity: '1', amount: '1000.00' }] })
+        .then((x) => { settled = true; return x; });
+      await new Promise((r) => setTimeout(r, 400));
+      expect(settled).toBe(false);
+    });
+    const p = await put!;
+    expect(p.status).toBe(409);
+    expect(p.body.error.code).toBe('invoice_matched');
+    expect((await rows(`SELECT 1 FROM invoice_allocations WHERE invoice_id = $1`, [a.id])).length).toBe(0);
+    expect((await inv(a.id)).contract_family_id).toBe(c1.familyId);
+  });
+
+  it('I5: demo fatura numaraları elle bağlanamaz ve bağı kaldırılamaz (409 demo_invoice_protected)', async () => {
+    const s = await supplier();
+    const c1 = await contract({ supplierId: s });
+    await contract({ supplierId: s });
+    for (const no of ['ANB2026000101', 'ANB2026000102', 'EGE2026000877']) {
+      const r = await call('finance', 'POST', '/api/v1/invoices', { companyId: h.world.companyA1.id, supplierId: s, kind: 'INVOICE', invoiceNo: no, issueDate: '2026-06-15', currency: 'TRY',
+        lines: [{ description: 'Demo numaralı sentetik fatura (SENTETİK)', quantity: '1', unit: 'adet', unitPrice: '10.00', netAmount: '10.00' }] });
+      expect(r.status, JSON.stringify(r.body)).toBe(201);
+      const id = r.body.id as string;
+      const link = await call('finance', 'POST', `/api/v1/invoices/${id}/match`, { familyId: c1.familyId });
+      expect(link.status).toBe(409);
+      expect(link.body.error.code).toBe('demo_invoice_protected');
+      expect((await inv(id)).contract_family_id).toBeNull();
+      await h.owner.query(`UPDATE invoices SET contract_family_id = $2, project_id = $3, department_id = $4, match_method = 'MANUAL', matched_by = $5, matched_at = now() WHERE id = $1`,
+        [id, c1.familyId, c1.projectId, c1.department, h.world.users.finance.id]);
+      const un = await call('finance', 'DELETE', `/api/v1/invoices/${id}/match`, { reason: 'Demo faturanın bağı kaldırılmaya çalışıldı (SENTETİK).' });
+      expect(un.status).toBe(409);
+      expect(un.body.error.code).toBe('demo_invoice_protected');
+      expect((await inv(id)).contract_family_id).toBe(c1.familyId);
+    }
+  });
+
+  it('minör: taklit ERP siparişiyle çözülen ERP referansı notta ve etikette "(taklit ERP)" taşır; yabancı para etiketi tr biçimli', async () => {
+    const s = await supplier();
+    const c = await contract({ supplierId: s });
+    await contract({ supplierId: s });
+    const po = `EPO-IM-${rand()}`;
+    await h.owner.query(`INSERT INTO erp_purchase_orders (tenant_id, erp_po_id, po_no, supplier_id, contract_ref, currency, amount, provider_kind)
+      VALUES ($1,$2,$3,$4,$5,'TRY','1000.00','TAKLIT')`, [h.world.tenantA, `erp-${rand()}`, po, s, c.code]);
+    const a = await invoice(s, { orderRef: po });
+    expect(a.match).toMatchObject({ state: 'MATCHED', method: 'ERP_REF', familyId: c.familyId });
+    expect((await inv(a.id)).match_note).toContain('(taklit ERP');
+    const d = await call('finance', 'GET', `/api/v1/invoices/${a.id}`);
+    expect(d.body.match).toMatchObject({ method: 'ERP_REF', methodLabel: 'ERP referansı (taklit ERP)' });
+    const ci = await call('finance', 'GET', `/api/v1/contracts/${c.familyId}/invoices`);
+    expect(ci.body.items.find((x: any) => x.id === a.id)).toMatchObject({ matchMethodLabel: 'ERP referansı (taklit ERP)' });
+    // v1 sipariş yolu taklit notu almaz.
+    const code = `PO-IM-${rand()}`;
+    await h.owner.query(`INSERT INTO purchase_orders (tenant_id, company_id, code, supplier_id, contract_version_id, currency, issued_by) VALUES ($1,$2,$3,$4,$5,'TRY',$6)`,
+      [h.world.tenantA, h.world.companyA1.id, code, s, c.cvId, h.world.users.buyer.id]);
+    const b = await invoice(s, { orderRef: code });
+    expect((await inv(b.id)).match_note).toBeNull();
+
+    const usd = await call('finance', 'POST', '/api/v1/invoices', { companyId: h.world.companyA1.id, supplierId: s, kind: 'INVOICE', invoiceNo: `SNT${rand()}`, issueDate: '2026-06-15',
+      currency: 'USD', erpContractRef: c.code, lines: [{ description: 'Lisans (SENTETİK)', quantity: '1', unit: 'adet', unitPrice: '1234.50', netAmount: '1234.50' }] });
+    expect(usd.body.match.state).toBe('MATCHED');
+    const u = (await call('finance', 'GET', `/api/v1/contracts/${c.familyId}/invoices`)).body.usage;
+    expect(u.foreignCurrency[0].label).toBe('USD faturalar toplama girmedi (kur çevrilmedi): 1.234,50 USD');
+  });
+});

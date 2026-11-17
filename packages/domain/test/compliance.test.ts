@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  COMPLIANCE_CHECKS, DEFAULT_RULESET, RESULT_TR, VERDICT_TR, activeRuleSet, complianceScore, ruleApplies, validateComplianceRule,
+  COMPLIANCE_CHECKS, DEFAULT_RULESET, RESULT_TR, VERDICT_TR, activeRuleSet, complianceScore, ruleApplies, ruleScope, FX_SCOPE_UNKNOWN_TR, validateComplianceRule,
   type ComplianceRule, type RuleResult,
 } from '../src/index.js';
 
@@ -68,6 +68,24 @@ describe('activeRuleSet (R6)', () => {
 const rule = (o: Partial<ComplianceRule> = {}): ComplianceRule => ({
   code: 'K1', name: 'Kural', description: null, checkType: 'DATA', checkKey: 'MIN_BIDS', params: { minBids: 3 },
   methods: [], amountThreshold: null, currency: null, weight: 10, mandatory: false, ...o,
+});
+
+describe('ruleScope (bütün faz incelemesi I4)', () => {
+  it('eşik başka para birimindeyse kural kapsam dışı sayılmaz: FX_UNKNOWN (zorunlu ve zorunsuz)', () => {
+    for (const mandatory of [true, false]) {
+      const r = rule({ amountThreshold: '100000.00', currency: 'TRY', mandatory });
+      expect(ruleScope(r, { method: 'INVITED_BIDS', amount: '500000', currency: 'USD' })).toBe('FX_UNKNOWN');
+      expect(ruleScope(r, { method: 'INVITED_BIDS', amount: null, currency: 'USD' })).toBe('FX_UNKNOWN');
+    }
+    expect(FX_SCOPE_UNKNOWN_TR).toBe('Kur çevrilmedi; kapsam belirlenemedi');
+  });
+  it('yöntem dışıysa para birimine bakılmadan OUT; aynı para biriminde eşik altı OUT, eşik ve üstü IN', () => {
+    const r = rule({ methods: ['INVITED_BIDS'], amountThreshold: '100', currency: 'TRY' });
+    expect(ruleScope(r, { method: 'SINGLE_SOURCE', amount: '5', currency: 'USD' })).toBe('OUT');
+    expect(ruleScope(r, { method: 'INVITED_BIDS', amount: '99.99', currency: 'TRY' })).toBe('OUT');
+    expect(ruleScope(r, { method: 'INVITED_BIDS', amount: '100', currency: 'TRY' })).toBe('IN');
+    expect(ruleScope(r, { method: 'INVITED_BIDS', amount: null, currency: 'TRY' })).toBe('IN');
+  });
 });
 
 describe('ruleApplies (R7)', () => {

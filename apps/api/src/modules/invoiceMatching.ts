@@ -9,7 +9,8 @@ import { queueEmail } from '../mail/index.ts';
 import { closeTasks, openTask, rederiveTaskDepartments } from '../tasks.ts';
 import { withTenantWideScope } from './contractChain.ts';
 import { listInfo } from './contractIntake.ts';
-import { familyInvoices } from './invoices.ts';
+import { familyInvoices, inheritDepartment } from './invoices.ts';
+import { PROTECTED_DEMO_INVOICES } from './erpRead.ts';
 
 /**
  * v2 Faz 7 (D112) Görev 3: fatura ↔ sözleşme ailesi eşleştirmesi (R1–R4).
@@ -113,7 +114,7 @@ function usageView(f: Pick<FamilyFacts, 'amount' | 'currency' | 'limit_basis' | 
   const u = contractUsage({ amount, currency, basis, invoices: rows.map((r) => ({ kind: r.kind, currency: r.currency, net: r.net, tax: r.tax })) });
   const warning = u.level === 'OVER' ? `Aşım: ${trMoney(u.overBy!, currency)}` : u.level === 'NEAR' ? 'Sınıra yakın' : null;
   return { amount, currency, basis, used: u.used, ratio: u.ratio, level: u.level, levelLabel: USAGE_LEVEL_TR[u.level], overBy: u.overBy, warning,
-    foreignCurrency: u.foreignCurrency.map((x) => ({ ...x, label: `${x.currency} faturalar toplama girmedi (kur çevrilmedi): ${x.total} ${x.currency}` })) };
+    foreignCurrency: u.foreignCurrency.map((x) => ({ ...x, label: `${x.currency} faturalar toplama girmedi (kur çevrilmedi): ${trMoney(x.total, x.currency)}` })) };
 }
 
 export async function familyUsage(tx: Tx, familyIds: string[]): Promise<Map<string, UsageView>> {
@@ -191,8 +192,10 @@ async function writeLink(tx: Tx, ctx: TenantContext, inv: InvoiceFacts, familyId
   const f = (await tx.query<{ project_id: string | null; department_id: string | null; code: string }>(
     `SELECT project_id, department_id, code FROM contract_families WHERE id = $1`, [familyId])).rows[0];
   if (!f) throw notFound();
-  await tx.query(`UPDATE invoices SET contract_family_id = $2, project_id = $3, department_id = $4, match_method = $5, matched_by = $6, matched_at = now(), match_note = $7
-    WHERE id = $1`, [inv.id, familyId, f.project_id, f.department_id, method, by, note]);
+  // Bütün faz incelemesi I3: yalnız hâlâ bağsız faturaya yazılır (eşzamanlı bağ/tahsis kilidin dışında kalırsa sessizce ezilmez).
+  const w = await tx.query(`UPDATE invoices SET contract_family_id = $2, project_id = $3, department_id = $4, match_method = $5, matched_by = $6, matched_at = now(), match_note = $7
+    WHERE id = $1 AND contract_family_id IS NULL`, [inv.id, familyId, f.project_id, f.department_id, method, by, note]);
+  if (w.rowCount !== 1) throw conflict('invoice_already_matched', 'Fatura bu arada başka bir sözleşmeye bağlandı; sayfayı yenileyin.');
   await tx.query(`INSERT INTO invoice_match_events (tenant_id, company_id, invoice_id, action, family_id, method, reason, actor) VALUES ($1,$2,$3,'LINK',$4,$5,$6,$7)`,
     [ctx.tenantId, inv.company_id, inv.id, familyId, method, note, by]);
   await closeTasks(tx, `invoice-unmatched:${inv.id}`);
@@ -200,6 +203,31 @@ async function writeLink(tx: Tx, ctx: TenantContext, inv: InvoiceFacts, familyId
   await audit(tx, ctx, 'invoice.matched', 'invoice', inv.id, { familyId, contractCode: f.code, method, projectId: f.project_id, departmentId: f.department_id,
     ...(inv.department_id !== f.department_id ? { departmentFrom: inv.department_id } : {}) }, note ?? undefined);
   await overrunCheck(tx, ctx, familyId);
+}
+
+/**
+ * Bütün faz incelemesi I1: ailenin departmanı ya da projesi değişince (departman ataması, sözleşme alanları) aynı işlemde
+ * (a) aileye saklı bağla bağlı faturalar ailenin departmanını ve projesini alır (056a `invoices_match_guard` kuralı),
+ * (b) aileye tahsisli faturalar departmanı yeniden devralır (inheritDepartment), (c) bu faturaların görevleri yeni departmanı izler.
+ * Sunucu içi kural: çağıranın göremediği departmandaki bağlı fatura da kayar, bu yüzden kiracı geneli kapsamda yazılır.
+ * Dönüş: departmanı yeniden türetilen görev sayısı.
+ */
+export async function resyncFamilyInvoices(tx: Tx, familyIds: string[]): Promise<number> {
+  const ids = [...new Set(familyIds)];
+  if (!ids.length) return 0;
+  return withTenantWideScope(tx, async () => {
+    const linked = (await tx.query<{ id: string }>(`UPDATE invoices SET department_id = f.department_id, project_id = f.project_id FROM contract_families f
+      WHERE invoices.contract_family_id = f.id AND f.id = ANY($1::uuid[])
+        AND (invoices.department_id IS DISTINCT FROM f.department_id OR invoices.project_id IS DISTINCT FROM f.project_id) RETURNING invoices.id`, [ids])).rows.map((r) => r.id);
+    const allocated = (await tx.query<{ id: string }>(`SELECT DISTINCT a.invoice_id AS id FROM invoice_allocations a
+        LEFT JOIN po_lines pl ON pl.id = a.po_line_id LEFT JOIN purchase_orders po ON po.id = pl.po_id
+        JOIN contract_versions cv ON cv.id = coalesce(a.contract_version_id, po.contract_version_id)
+      WHERE cv.family_id = ANY($1::uuid[])`, [ids])).rows.map((r) => r.id);
+    for (const inv of allocated) await inheritDepartment(tx, inv);
+    const invoiceIds = [...new Set([...linked, ...allocated])];
+    if (!invoiceIds.length) return 0;
+    return rederiveTaskDepartments(tx, `t.entity_type = 'invoice' AND t.entity_id = ANY($1::uuid[])`, [invoiceIds]);
+  });
 }
 
 /** Eşleşmeyen fatura: Satınalma kuyruğu görevi (+ departmanlıysa departman görevi). Aynı açık görev ikinci kez açılmaz. */
@@ -228,6 +256,8 @@ export type AutoMatchResult =
  * Faz 8 ERP girişi aynı işlevi çağırır.
  */
 export async function autoMatchInvoice(tx: Tx, ctx: TenantContext, invoiceId: string): Promise<AutoMatchResult> {
+  // Bütün faz incelemesi I3: elle bağlama ve tahsisle aynı fatura kilidi (kuyruk yeniden denemesi ile elle bağ/tahsis yarışmaz).
+  await lockInvoiceMatch(tx, invoiceId);
   const inv = await invoiceFacts(tx, invoiceId);
   if (!inv) return { state: 'SKIPPED', reason: 'not_found' };
   if (!inv.auto_match) return { state: 'SKIPPED', reason: 'auto_match_off' };
@@ -256,12 +286,14 @@ async function decideAndWrite(tx: Tx, ctx: TenantContext, inv: InvoiceFacts): Pr
     // (aynı şirkette tek aile: kod ya da sözleşme no) çözülür. v1 satırı varsa yalnız o konuşur (eski davranış aynen). ERP'de aynı numaralı
     // siparişler farklı ailelere (ya da biri aileye, biri hiçbirine) çıkıyorsa referans belirsizdir: çözülmemiş sayılır (Eşleşmedi kuyruğu).
     let orders: { code: string; familyId: string | null }[] = [];
+    let mockOrder = false;
     if (inv.erp_order_ref) {
-      const rows = (await tx.query<{ src: number; code: string; familyId: string | null }>(`SELECT 0 AS src, po.code, cv.family_id AS "familyId" FROM purchase_orders po
+      const rows = (await tx.query<{ src: number; code: string; familyId: string | null; mock: boolean }>(`SELECT 0 AS src, po.code, cv.family_id AS "familyId", false AS mock FROM purchase_orders po
           LEFT JOIN contract_versions cv ON cv.id = po.contract_version_id WHERE ${ASCII_UPPER('po.code')} = $1
         UNION ALL
         SELECT 1 AS src, ep.po_no AS code, (SELECT CASE WHEN count(*) = 1 THEN min(f.id::text)::uuid END FROM contract_families f
-            WHERE f.company_id = $2 AND (${ASCII_UPPER('f.code')} = ${ASCII_UPPER('ep.contract_ref')} OR ${ASCII_UPPER('f.contract_no')} = ${ASCII_UPPER('ep.contract_ref')})) AS "familyId"
+            WHERE f.company_id = $2 AND (${ASCII_UPPER('f.code')} = ${ASCII_UPPER('ep.contract_ref')} OR ${ASCII_UPPER('f.contract_no')} = ${ASCII_UPPER('ep.contract_ref')})) AS "familyId",
+            ep.provider_kind = 'TAKLIT' AS mock
           FROM erp_purchase_orders ep WHERE ${ASCII_UPPER('ep.po_no')} = $1
         ORDER BY src, code`, [refs[1], inv.company_id])).rows;
       const v1 = rows.filter((r) => r.src === 0);
@@ -270,6 +302,8 @@ async function decideAndWrite(tx: Tx, ctx: TenantContext, inv: InvoiceFacts): Pr
       else if (erp.length) {
         const fams = new Set(erp.map((r) => r.familyId));
         orders = [{ code: erp[0]!.code, familyId: fams.size === 1 ? erp[0]!.familyId : null }];
+        // Bütün faz incelemesi (minör): taklit sağlayıcıdan okunan sipariş eşleşmeyi sürüklerse not açıkça söyler.
+        mockOrder = erp.some((r) => r.mock);
       }
     }
     const facts = (await tx.query<FamilyFacts>(`${FAMILY_FACTS_SQL} WHERE f.company_id = $1 AND (
@@ -281,7 +315,8 @@ async function decideAndWrite(tx: Tx, ctx: TenantContext, inv: InvoiceFacts): Pr
       start: f.start_date, end: f.end_date, indefinite: f.indefinite, status: matcherStatus(statuses.get(f.id)?.status), projectId: f.project_id, departmentId: f.department_id }));
     const r = matchInvoice({ invoice: { supplierRootId: inv.supplier_root_id, issueDate: inv.issue_date, erpContractRef: inv.erp_contract_ref, erpOrderRef: inv.erp_order_ref },
       contracts, orders });
-    decision = r.method === 'UNMATCHED' ? { reason: r.reason } : { method: r.method, familyId: r.familyId, by: null, note: null };
+    decision = r.method === 'UNMATCHED' ? { reason: r.reason }
+      : { method: r.method, familyId: r.familyId, by: null, note: r.method === 'ERP_REF' && mockOrder ? MOCK_ERP_ORDER_NOTE : null };
   }
 
   if ('familyId' in decision) {
@@ -326,6 +361,22 @@ export async function retryMatchQueue(tx: Tx, ctx: TenantContext) {
   return res;
 }
 
+/** Taklit ERP siparişiyle çözülen ERP referansı eşleşmesinin notu; etiket `methodLabel`'a da "(taklit ERP)" ekler. */
+export const MOCK_ERP_ORDER_NOTE = 'Sipariş referansı taklit ERP siparişinden çözüldü (taklit ERP; gerçek ERP verisi değil).';
+const methodLabelOf = (method: MatchMethod | null, note: string | null) =>
+  method ? `${MATCH_METHOD_TR[method]}${method === 'ERP_REF' && note?.includes('(taklit ERP') ? ' (taklit ERP)' : ''}` : null;
+
+/** Fatura eşleşmesini değiştiren her yol (elle bağ/kaldırma, otomatik eşleştirme, tahsis) aynı işlem kilidini alır. */
+export async function lockInvoiceMatch(tx: Tx, invoiceId: string) {
+  await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`invoice-match:${invoiceId}`]);
+}
+/** Bütün faz incelemesi I5: demo faturalar (Faz 8 ile aynı liste) elle bağlanmaz, bağı kaldırılmaz. */
+function assertNotDemo(inv: Pick<InvoiceFacts, 'invoice_no'>) {
+  if ((PROTECTED_DEMO_INVOICES as readonly string[]).includes(inv.invoice_no.trim().toUpperCase())) {
+    throw conflict('demo_invoice_protected', 'Demo faturanın sözleşme eşleşmesi değiştirilmez.');
+  }
+}
+
 /** Bağlanabilir mi (R3): tahsisli/kararlı faturada 409; departman kullanıcısı yalnız kendi departmanındaki sözleşmeye. */
 function assertLinkable(inv: InvoiceFacts) {
   if (inv.decided) throw conflict('invoice_decided', 'Karar verilmiş faturanın eşleşmesi değiştirilemez.');
@@ -334,9 +385,10 @@ function assertLinkable(inv: InvoiceFacts) {
 const ownsDepartment = (ctx: TenantContext, departmentId: string | null) => ctx.allDepartments || (departmentId !== null && ctx.departmentIds.includes(departmentId));
 
 export async function linkInvoice(tx: Tx, ctx: TenantContext, invoiceId: string, b: { familyId: string; acknowledgeOutOfRange?: boolean; note?: string | null }) {
-  await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`invoice-match:${invoiceId}`]);
+  await lockInvoiceMatch(tx, invoiceId);
   const inv = await invoiceFacts(tx, invoiceId);
   if (!inv) throw notFound();
+  assertNotDemo(inv);
   assertLinkable(inv);
   if (inv.contract_family_id) throw conflict('invoice_already_matched', 'Fatura zaten bir sözleşmeye bağlı; başka sözleşmeye bağlamak için önce eşleşmeyi kaldırın.');
   const f = (await tx.query<FamilyFacts>(`${FAMILY_FACTS_SQL} WHERE f.id = $1`, [b.familyId])).rows[0];
@@ -354,9 +406,10 @@ export async function linkInvoice(tx: Tx, ctx: TenantContext, invoiceId: string,
 }
 
 export async function unlinkInvoice(tx: Tx, ctx: TenantContext, invoiceId: string, b: { reason: string }) {
-  await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`invoice-match:${invoiceId}`]);
+  await lockInvoiceMatch(tx, invoiceId);
   const inv = await invoiceFacts(tx, invoiceId);
   if (!inv) throw notFound();
+  assertNotDemo(inv);
   const reason = (b.reason ?? '').trim();
   if (reason.length < 10) throw unprocessable('reason_required', 'Eşleşmeyi kaldırma gerekçesi gerekli (en az 10 karakter).');
   if (!inv.contract_family_id) throw conflict('invoice_not_matched', 'Fatura bir sözleşmeye bağlı değil.');
@@ -416,7 +469,7 @@ export async function matchInfo(tx: Tx, invoiceId: string) {
   }
   const usage = usageFamily ? (await familyUsage(tx, [usageFamily])).get(usageFamily) ?? null : null;
   return {
-    state, stateLabel: MATCH_STATE_TR[state], method: r.method, methodLabel: r.method ? MATCH_METHOD_TR[r.method] : null, note: r.note,
+    state, stateLabel: MATCH_STATE_TR[state], method: r.method, methodLabel: methodLabelOf(r.method, r.note), note: r.note,
     matchedAt: r.matched_at, matchedBy: r.matched_by, autoMatch: r.auto_match,
     contract, project: r.project_id ? { id: r.project_id, code: r.pr_code, title: r.pr_title } : null,
     erpContractRef: r.erp_contract_ref, erpOrderRef: r.erp_order_ref, erpContractRefSource: r.erp_contract_ref_source, erpOrderRefSource: r.erp_order_ref_source,
@@ -463,18 +516,18 @@ export async function contractInvoices(tx: Tx, familyId: string) {
     return { ...x, matchState: s, matchStateLabel: MATCH_STATE_TR[s], matchMethod: null, matchMethodLabel: null };
   });
   const linked = (await tx.query<{ id: string; invoiceNo: string; issueDate: string; currency: string; kind: string; supplierId: string; supplierName: string;
-    amount: string; approved: boolean; decision: string | null; method: MatchMethod }>(
+    amount: string; approved: boolean; decision: string | null; method: MatchMethod; note: string | null }>(
     `SELECT i.id, i.invoice_no AS "invoiceNo", i.issue_date::text AS "issueDate", i.currency, i.kind, s.id AS "supplierId", s.legal_name AS "supplierName",
        (CASE i.kind WHEN 'CREDIT_NOTE' THEN -1 ELSE 1 END * (SELECT coalesce(sum(l.net_amount), 0) FROM invoice_lines l WHERE l.invoice_id = i.id))::numeric(20,2)::text AS amount,
        (EXISTS (SELECT 1 FROM invoice_decisions d WHERE d.invoice_id = i.id AND d.kind = 'APPROVAL') AND i.legal_status = 'RECEIVED') AS approved,
        (SELECT d.kind FROM invoice_decisions d WHERE d.invoice_id = i.id AND d.kind IN ('APPROVAL','REJECTION') ORDER BY d.decided_at DESC, d.id DESC LIMIT 1) AS decision,
-       i.match_method AS method
+       i.match_method AS method, i.match_note AS note
      FROM invoices i JOIN suppliers s ON s.id = i.supplier_id WHERE i.contract_family_id = $1 AND i.kind <> 'ADVANCE'
      ORDER BY i.issue_date DESC, i.invoice_no LIMIT 200`, [familyId])).rows.map((r) => ({
     id: r.id, invoiceNo: r.invoiceNo, date: r.issueDate, kind: r.kind, supplier: { id: r.supplierId, legalName: r.supplierName }, amount: r.amount, currency: r.currency,
     ...(r.approved ? { status: 'APPROVED', statusLabel: 'Onaylandı (tüketime sayılır)' } : r.decision === 'REJECTION' ? { status: 'REJECTED', statusLabel: 'Reddedildi' }
       : { status: 'PENDING', statusLabel: 'Karar bekliyor' }),
-    matchState: 'MATCHED' as MatchState, matchStateLabel: MATCH_STATE_TR.MATCHED, matchMethod: r.method, matchMethodLabel: MATCH_METHOD_TR[r.method],
+    matchState: 'MATCHED' as MatchState, matchStateLabel: MATCH_STATE_TR.MATCHED, matchMethod: r.method, matchMethodLabel: methodLabelOf(r.method, r.note),
   }));
   const items = [...allocated, ...linked].sort((a, b) => (a.date === b.date ? a.invoiceNo.localeCompare(b.invoiceNo) : a.date < b.date ? 1 : -1));
   const usage = (await familyUsage(tx, [familyId])).get(familyId) ?? null;

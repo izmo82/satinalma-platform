@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type pg from 'pg';
 import {
-  can, CHECK_TYPE_TR, COMPLIANCE_CHECKS, complianceScore, PROJECT_METHOD_TR, RESULT_TR, ruleApplies, VERDICT_TR,
+  can, CHECK_TYPE_TR, COMPLIANCE_CHECKS, complianceScore, FX_SCOPE_UNKNOWN_TR, PROJECT_METHOD_TR, RESULT_TR, ruleScope, VERDICT_TR,
   type ComplianceRule, type RuleResult, type Verdict,
 } from '@sp/domain';
 import { withTenant, type TenantContext, type Tx } from '../db.ts';
@@ -20,6 +20,9 @@ import {
   evidenceCacheKey, evidenceDocs, evidencePurpose, EVIDENCE_QUESTIONS, isEvidenceKey, latestMarks, loadAuditProject, runDataCheck, runEvidenceCheck,
   type EvidenceContext,
 } from './complianceChecks.ts';
+
+const trMoney = (v: string, currency: string) =>
+  `${new Intl.NumberFormat('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(v))} ${currency === 'TRY' ? '₺' : currency}`;
 
 /**
  * v2 Faz 7 (D112) Görev 6: uyum denetimi motoru (R6–R10). Tamamlanan proje, tamamlandığı gün (Europe/Istanbul) yürürlükte olan yayımlı
@@ -100,9 +103,16 @@ export async function runComplianceAudit(tx: Tx, ctx: TenantContext, projectId: 
   const results: ResultRow[] = [];
   let ai = null as { provider: string | null; isTest: boolean } | null;
   for (const rule of set.rules) {
-    if (!ruleApplies(rule, scope)) {
+    const inScope = ruleScope(rule, scope);
+    if (inScope === 'OUT') {
       results.push({ rule, result: 'NOT_APPLICABLE', method: null, evidence: [],
-        finding: `Kapsam dışı (proje yöntemi ${PROJECT_METHOD_TR[project.method]}${project.amount ? `, tutar ${project.amount} ${project.currency}` : ''}).` });
+        finding: `Kapsam dışı (proje yöntemi ${PROJECT_METHOD_TR[project.method]}${project.amount ? `, tutar ${trMoney(project.amount, project.currency)}` : ''}).` });
+      continue;
+    }
+    // Bütün faz incelemesi I4: eşik başka para birimindeyse kural kapsamda kalır, sonucu NO_DATA (zorunlu kural sessizce düşmez).
+    if (inScope === 'FX_UNKNOWN') {
+      results.push({ rule, result: 'NO_DATA', method: null, evidence: [],
+        finding: `${FX_SCOPE_UNKNOWN_TR} (kural eşiği ${trMoney(rule.amountThreshold!, rule.currency!)}, proje ${project.amount ? trMoney(project.amount, project.currency) : `tutarı yok, para birimi ${project.currency}`}).` });
       continue;
     }
     if (rule.checkType === 'DATA' && rule.checkKey) {
@@ -183,7 +193,7 @@ export async function prefetchEvidenceReadings(pool: pg.Pool, ctx: TenantContext
     const out: string[] = [];
     for (const rule of set.rules) {
       if (rule.checkType !== 'EVIDENCE_AI' || !isEvidenceKey(rule.checkKey) || marks.has(rule.code)) continue;
-      if (!ruleApplies(rule, { method: project.method, amount: project.amount, currency: project.currency })) continue;
+      if (ruleScope(rule, { method: project.method, amount: project.amount, currency: project.currency }) !== 'IN') continue;
       const pdfs = (await evidenceDocs(tx, projectId, rule)).filter((d) => d.mimeType === 'application/pdf');
       if (!pdfs.length) continue;
       const key = evidenceCacheKey(rule, pdfs.map((d) => d.sha256), modelId);
@@ -305,9 +315,14 @@ async function markableRules(tx: Tx, projectId: string, completedOn: string | nu
 export async function projectCompliance(tx: Tx, ctx: TenantContext, projectId: string) {
   const p = await projectHead(tx, projectId);
   const runs = (await tx.query<AuditRow>(`${AUDIT_SELECT} WHERE a.project_id = $1 ORDER BY a.run_no DESC`, [projectId])).rows;
-  const pending = (await tx.query<{ id: string; status: string; trigger: string }>(
-    `SELECT id, status, payload->>'trigger' AS trigger FROM jobs WHERE kind = $1 AND payload->>'projectId' = $2 AND status IN ('QUEUED','RUNNING')
-     ORDER BY created_at DESC LIMIT 1`, [AUDIT_JOB, projectId])).rows[0] ?? null;
+  // Bütün faz incelemesi (minör): sıradaki/çalışan iş yoksa en son iş BLOCKED/DEAD ise "çalıştırılamadı" olarak gösterilir (sessiz kalmaz).
+  const pending = (await tx.query<{ id: string; status: string; trigger: string; error_code: string | null }>(
+    `SELECT id, status, payload->>'trigger' AS trigger, error_code FROM jobs WHERE kind = $1 AND payload->>'projectId' = $2 AND status IN ('QUEUED','RUNNING')
+     ORDER BY created_at DESC LIMIT 1`, [AUDIT_JOB, projectId])).rows[0]
+    ?? (await tx.query<{ id: string; status: string; trigger: string; error_code: string | null }>(
+      `SELECT id, status, payload->>'trigger' AS trigger, error_code FROM jobs WHERE kind = $1 AND payload->>'projectId' = $2
+       ORDER BY created_at DESC, id DESC LIMIT 1`, [AUDIT_JOB, projectId])).rows.find((j) => j.status === 'BLOCKED' || j.status === 'DEAD')
+    ?? null;
   const marks = [...(await latestMarks(tx, projectId)).values()].sort((a, b) => a.ruleCode.localeCompare(b.ruleCode))
     .map((m) => ({ id: m.id, ruleCode: m.ruleCode, result: m.result, resultLabel: RESULT_TR[m.result], note: m.note, documentVersionId: m.documentVersionId,
       markedBy: m.markedByName, markedAt: m.markedAt }));
@@ -316,7 +331,9 @@ export async function projectCompliance(tx: Tx, ctx: TenantContext, projectId: s
     project: { id: p.id, code: p.code, title: p.title, status: p.status, completedOn: p.completed_on, departmentId: p.department_id, departmentName: p.department_name },
     latest: runs[0] ? await auditDetail(tx, runs[0].id) : null,
     runs: runs.map(summaryView),
-    pendingJob: pending ? { id: pending.id, status: pending.status, statusLabel: pending.status === 'RUNNING' ? 'Denetim sürüyor' : 'Denetim sırada',
+    pendingJob: pending ? { id: pending.id, status: pending.status,
+      statusLabel: pending.status === 'RUNNING' ? 'Denetim sürüyor' : pending.status === 'QUEUED' ? 'Denetim sırada' : 'Denetim işi çalıştırılamadı',
+      ...(pending.status === 'BLOCKED' || pending.status === 'DEAD' ? { failed: true, errorCode: pending.error_code } : {}),
       trigger: pending.trigger, triggerLabel: TRIGGER_TR[pending.trigger as Trigger] ?? null } : null,
     marks, markableRules: await markableRules(tx, projectId, p.completed_on),
     aiConnected: hasAiProviders(),

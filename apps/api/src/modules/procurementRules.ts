@@ -5,6 +5,8 @@ import {
 import type { TenantContext, Tx } from '../db.ts';
 import { audit } from '../audit.ts';
 import { conflict, notFound, unprocessable } from '../errors.ts';
+import { withTenantWideScope } from './contractChain.ts';
+import { enqueueAudit } from './projectCompletion.ts';
 
 /**
  * v2 Faz 7 (D112) Görev 5: sürümlü satınalma kuralları kataloğu (R6, R7).
@@ -320,7 +322,17 @@ export async function publishRuleSet(tx: Tx, ctx: TenantContext, setId: string, 
   const before = pickForDay(await publishedSets(tx), eff);
   await tx.query(`UPDATE procurement_rule_sets SET status = 'PUBLISHED', effective_from = $2::date, published_by = $3, published_at = now() WHERE id = $1`,
     [setId, eff, ctx.userId]);
+  // Bütün faz incelemesi I2: son koşusu "Kural seti yok" olan tamamlanmış projeler aynı işlemde yeniden denetim kuyruğuna girer
+  // (Yönetici görevi "ardından yeniden koşar" der; başarılı koşu görevi kapatır). Sunucu içi kural: kiracı geneli kapsam.
+  const reruns = await withTenantWideScope(tx, async () => {
+    const projects = (await tx.query<{ id: string; company_id: string }>(`SELECT p.id, p.company_id FROM projects p
+      WHERE p.status = 'COMPLETED' AND (SELECT a.status FROM compliance_audits a WHERE a.project_id = p.id ORDER BY a.run_no DESC LIMIT 1) = 'NO_RULESET'
+      ORDER BY p.id`)).rows;
+    for (const p of projects) await enqueueAudit(tx, ctx, p.company_id, p.id, 'RERUN', `audit:${p.id}:ruleset:${setId}`);
+    return projects.map((p) => p.id);
+  });
   await audit(tx, ctx, 'rule_set.published', 'procurement_rule_set', setId,
-    { versionNo: s.version_no, effectiveFrom: eff, ruleCount: rules.length, supersedes: before ? { setId: before.id, versionNo: before.version_no } : null });
-  return getRuleSet(tx, setId);
+    { versionNo: s.version_no, effectiveFrom: eff, ruleCount: rules.length, supersedes: before ? { setId: before.id, versionNo: before.version_no } : null,
+      ...(reruns.length ? { rerunProjects: reruns } : {}) });
+  return { ...(await getRuleSet(tx, setId)), rerunQueued: reruns.length };
 }

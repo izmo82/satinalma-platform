@@ -76,6 +76,8 @@ struct TaskRow: View {
         "risk_assessment_due": "Yıllık risk", "risk_assessment_department": "Yıllık risk", "risk_assessment_escalated": "Yıllık risk",
         "risk_quarterly_review": "Çeyreklik risk gözden geçirme", "risk_high_level": "Yıllık risk",
         "coi_declaration": "Çıkar çatışması beyanı",
+        "invoice_unmatched": "Eşleşmeyen fatura", "contract_overrun": "Sözleşme tutarı aşıldı",
+        "compliance_noncompliant": "Uyum denetimi: uyumsuz", "compliance_no_ruleset": "Uyum denetimi: kural seti yok",
     ]
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {

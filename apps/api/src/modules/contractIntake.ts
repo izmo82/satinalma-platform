@@ -11,6 +11,7 @@ import { createContract } from './contracts.ts';
 import { saveTerms } from './contractTerms.ts';
 import { currentApprovers } from './approvers.ts';
 import { resolveDepartment } from './departments.ts';
+import { resyncFamilyInvoices } from './invoiceMatching.ts';
 import { noticeBasis } from './contractReminders.ts';
 import { cancelOpenChain, CONTENT_CHANGED_REASON, membershipCoversSql, roleOf } from './contractChain.ts';
 import { applyAiDecisions, assertNoPendingCriticalSuggestions, auditReviewAtSubmit, reconcileConfirmed, requestExtractionForVersion, reviewSummary,
@@ -351,6 +352,8 @@ export async function updateFields(tx: Tx, ctx: TenantContext, familyId: string,
       await rederiveTaskDepartments(tx, `(t.entity_type = 'contract_family' AND t.entity_id = $1)
         OR (t.entity_type = 'contract_version' AND t.entity_id IN (SELECT id FROM contract_versions WHERE family_id = $1))`, [familyId]);
     }
+    // Bütün faz incelemesi I1: bağlı faturalar ailenin departmanını/projesini, tahsisli faturalar departmanı aynı işlemde izler.
+    if (cols.includes('department_id') || cols.includes('project_id')) await resyncFamilyInvoices(tx, [familyId]);
   }
   const changed = cols.length > 0 || termsSaved != null;
   let cancelled: string | null = null;

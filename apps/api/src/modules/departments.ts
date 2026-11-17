@@ -3,7 +3,7 @@ import type { TenantContext, Tx } from '../db.ts';
 import { audit } from '../audit.ts';
 import { ApiError, conflict, notFound, unprocessable } from '../errors.ts';
 import { rederiveTaskDepartments } from '../tasks.ts';
-import { inheritDepartment } from './invoices.ts';
+import { resyncFamilyInvoices } from './invoiceMatching.ts';
 
 /**
  * v2 Faz 1 (D93, analiz-v2 §2.3): departmanlar. Kayıt (proje, sözleşme, değerlendirme) departman taşır; bölüm kullanıcısı yalnız
@@ -99,8 +99,8 @@ const ASSIGN_TABLE: Record<AssignableEntity, string> = { project: 'projects', co
 /**
  * Proje, sözleşme ailesi veya tedarikçi değerlendirmesine departman atar (tekli ya da toplu; Yönetici ve Satınalma). Kayıtlar
  * çağıranın görebildiği (RLS) kayıtlar olmalı; biri görünmüyorsa hiçbiri değişmez (404). Her kayıt için `department.assigned`
- * denetim olayı. Aynı işlemde bağlı görevlerin departmanı yeniden türetilir; sözleşme ailesinde ona tahsisli faturalar
- * departmanı yeniden devralır (fatura → sözleşme kuralı, invoices.ts) ve onların görevleri de izler.
+ * denetim olayı. Aynı işlemde bağlı görevlerin departmanı yeniden türetilir; sözleşme ailesinde ona bağlı faturalar ailenin departmanını ve projesini alır, tahsisli faturalar
+ * departmanı yeniden devralır (resyncFamilyInvoices) ve onların görevleri de izler.
  */
 export async function assignDepartment(tx: Tx, ctx: TenantContext, b: { entityType: AssignableEntity; ids: string[]; departmentId: string }) {
   const table = ASSIGN_TABLE[b.entityType];
@@ -123,15 +123,11 @@ export async function assignDepartment(tx: Tx, ctx: TenantContext, b: { entityTy
       OR (t.entity_type = 'evaluation' AND t.entity_id IN (SELECT id FROM evaluations WHERE project_id = ANY($1::uuid[])))
       OR (t.entity_type = 'sourcing_exception' AND t.entity_id IN (SELECT id FROM sourcing_exceptions WHERE project_id = ANY($1::uuid[])))`, [ids]);
   } else if (b.entityType === 'contract_family') {
-    const invoices = (await tx.query<{ id: string }>(`SELECT DISTINCT a.invoice_id AS id FROM invoice_allocations a
-        LEFT JOIN po_lines pl ON pl.id = a.po_line_id LEFT JOIN purchase_orders po ON po.id = pl.po_id
-        JOIN contract_versions cv ON cv.id = coalesce(a.contract_version_id, po.contract_version_id)
-      WHERE cv.family_id = ANY($1::uuid[])`, [ids])).rows.map((r) => r.id);
-    for (const inv of invoices) await inheritDepartment(tx, inv);
+    // Bütün faz incelemesi I1: bağlı (saklı bağ) ve tahsisli faturalar aynı işlemde aileyi izler; görevleri de.
+    tasks += await resyncFamilyInvoices(tx, ids);
     tasks += await rederiveTaskDepartments(tx, `(t.entity_type = 'contract_family' AND t.entity_id = ANY($1::uuid[]))
       OR (t.entity_type = 'contract_version' AND t.entity_id IN (SELECT id FROM contract_versions WHERE family_id = ANY($1::uuid[])))
-      OR (t.entity_type = 'incident' AND t.entity_id IN (SELECT i.id FROM supplier_incidents i JOIN contract_versions cv ON cv.id = i.contract_version_id WHERE cv.family_id = ANY($1::uuid[])))
-      OR (t.entity_type = 'invoice' AND t.entity_id = ANY($2::uuid[]))`, [ids, invoices]);
+      OR (t.entity_type = 'incident' AND t.entity_id IN (SELECT i.id FROM supplier_incidents i JOIN contract_versions cv ON cv.id = i.contract_version_id WHERE cv.family_id = ANY($1::uuid[])))`, [ids]);
   } else {
     tasks += await rederiveTaskDepartments(tx, `t.entity_type = 'supplier_assessment' AND t.entity_id = ANY($1::uuid[])`, [ids]);
     // Kritik engel görevleri tedarikçiye bağlıdır; departmanı değerlendirmeden gelir (tekil anahtar assessment-blocker:<id>:<rol>).

@@ -20,7 +20,7 @@ struct InvoicesList: View {
                                 Text(x.invoiceNo).font(.body.weight(.semibold))
                                 // v2: durum sunucunun eşleşme durumundan; hukuken iptal/ret her zaman görünür. Sunucuda yoksa eski etiket.
                                 if x.legalStatus == "RECEIVED", let label = x.matchStateLabel {
-                                    Text(label).font(.caption).foregroundStyle(label == "Eşleşmedi" ? Color.orange : Color.secondary)
+                                    Text(label).font(.caption).foregroundStyle(x.needsMatchAttention ? Color.orange : Color.secondary)
                                 } else {
                                     Text(x.matchText).font(.caption).foregroundStyle(x.matched == true ? Color.secondary : Color.orange)
                                 }

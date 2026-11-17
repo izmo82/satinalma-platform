@@ -281,6 +281,76 @@ describe('denetim motoru (R6–R9) — sağlayıcı yok', () => {
     expect((await h.call('buyerB', 'GET', `/api/v1/projects/${p}/compliance`, { tenant: w.tenantB })).body.latest).toMatchObject({ ruleSetFallback: true });
   });
 
+  it('bütün faz incelemesi I2: set yayımı son koşusu NO_RULESET olan tamamlanmış projeleri yeniden kuyruğa alır; işçi koşunca Yönetici görevi kapanır', async () => {
+    const w = h.world;
+    const ctx: TenantContext = { userId: w.users.buyerB.id, tenantId: w.tenantB, roles: ['PROCUREMENT'], companyIds: [w.companyB1.id], departmentIds: [],
+      allDepartments: true, correlationId: randomUUID() };
+    const mk = async (title: string) => (await one<{ id: string }>(`INSERT INTO projects (tenant_id, company_id, code, title, category, owner_user_id, created_by, department_id, status,
+        currency, completed_on, completed_by) VALUES ($1,$2,$3,$4,'Genel',$5,$5,$6,'COMPLETED','TRY','2026-05-01',$5) RETURNING id`,
+      [w.tenantB, w.companyB1.id, `PRJ-UYR-${rand()}`, `${title} (SENTETİK)`, w.users.buyerB.id, w.departmentsB.bt])).id;
+    const none = await mk('Setsiz koşulmuş proje');
+    const done = await mk('Setle koşulmuş proje');
+    // Setsiz koşu (NO_RULESET + görev) sahip bağlantısıyla, kiracıda yayımlı set olsa da olmasa da aynı durum.
+    await h.owner.query(`INSERT INTO compliance_audits (tenant_id, company_id, project_id, run_no, trigger, status, summary, summary_source)
+      VALUES ($1,$2,$3,1,'COMPLETED','NO_RULESET','Otomatik özet: kural seti yok (SENTETİK)','AUTO')`, [w.tenantB, w.companyB1.id, none]);
+    await h.owner.query(`INSERT INTO tasks (tenant_id, company_id, kind, entity_type, entity_id, title, reason, next_action, assignee_role, dedupe_key)
+      VALUES ($1,$2,'compliance_no_ruleset','project',$3,'Kural seti yok (SENTETİK)','Kural seti yok','Seti yayımlayın','ADMIN',$4)`, [w.tenantB, w.companyB1.id, none, `compliance-no-ruleset:${none}`]);
+    const anySet = (await one<{ id: string } | undefined>(`SELECT id FROM procurement_rule_sets WHERE tenant_id = $1 AND status = 'PUBLISHED' LIMIT 1`, [w.tenantB]))?.id
+      ?? await publishedSet(1, '2026-09-01', [['K14', null, 'MANUAL', {}, 5, false]], w.tenantB);
+    await h.owner.query(`INSERT INTO compliance_audits (tenant_id, company_id, project_id, run_no, trigger, status, rule_set_id, score, verdict, summary, summary_source)
+      VALUES ($1,$2,$3,1,'COMPLETED','DONE',$4,100,'COMPLIANT','Otomatik özet (SENTETİK)','AUTO')`, [w.tenantB, w.companyB1.id, done, anySet]);
+    // Yeni taslak sürüm → yayım (Yönetici işlemi; uygulama rolüyle).
+    const nextNo = (await one<{ n: number }>(`SELECT coalesce(max(version_no), 0)::int + 1 AS n FROM procurement_rule_sets WHERE tenant_id = $1`, [w.tenantB])).n;
+    const draft = (await one<{ id: string }>(`INSERT INTO procurement_rule_sets (tenant_id, version_no, created_by) VALUES ($1,$2,$3) RETURNING id`,
+      [w.tenantB, nextNo, w.users.buyerB.id])).id;
+    await h.owner.query(`INSERT INTO procurement_rules (tenant_id, rule_set_id, code, name, check_type, check_key, params, weight, mandatory, sort_order)
+      VALUES ($1,$2,'K14','K14 kuralı (SENTETİK)','MANUAL',NULL,'{}',5,false,0)`, [w.tenantB, draft]);
+    const { publishRuleSet } = await import('../src/modules/procurementRules.ts');
+    const adminCtx: TenantContext = { ...ctx, roles: ['ADMIN'], correlationId: randomUUID() };
+    const day = await today();
+    const pub = await withTenant(h.pool, adminCtx, (tx) => publishRuleSet(tx, adminCtx, draft, { effectiveFrom: day }));
+    expect(pub.rerunQueued).toBeGreaterThanOrEqual(1);
+    const jobs = await rows<{ key: string; status: string }>(`SELECT idempotency_key AS key, status FROM jobs WHERE tenant_id = $1 AND kind = 'compliance.audit'
+      AND payload->>'projectId' = ANY($2::text[])`, [w.tenantB, [none, done]]);
+    expect(jobs).toEqual([{ key: `audit:${none}:ruleset:${draft}`, status: 'QUEUED' }]);
+    expect((await one(`SELECT data FROM audit_events WHERE entity_id = $1 AND action = 'rule_set.published'`, [draft])).data.rerunProjects).toContain(none);
+    await runWorker();
+    expect(await one(`SELECT run_no, status, trigger FROM compliance_audits WHERE project_id = $1 ORDER BY run_no DESC LIMIT 1`, [none]))
+      .toEqual({ run_no: 2, status: 'DONE', trigger: 'RERUN' });
+    expect(await one(`SELECT status FROM tasks WHERE dedupe_key = $1`, [`compliance-no-ruleset:${none}`])).toEqual({ status: 'DONE' });
+    expect((await rows(`SELECT 1 FROM compliance_audits WHERE project_id = $1`, [done]))).toHaveLength(1);
+  });
+
+  it('bütün faz incelemesi I4: eşik başka para birimindeyse kural kapsam dışı sayılmaz; NO_DATA "Kur çevrilmedi; kapsam belirlenemedi", zorunluysa Uyumsuz', async () => {
+    const w = h.world;
+    const ctx: TenantContext = { userId: w.users.buyerB.id, tenantId: w.tenantB, roles: ['PROCUREMENT'], companyIds: [w.companyB1.id], departmentIds: [],
+      allDepartments: true, correlationId: randomUUID() };
+    // Yalnız bu güne yürürlükte set (sahip bağlantısıyla; geçmiş tarih yalnız testte): K20 zorunlu, 1.000 ₺ eşikli elle kural; K21 eşiksiz elle kural.
+    const nextNo = (await one<{ n: number }>(`SELECT coalesce(max(version_no), 0)::int + 1 AS n FROM procurement_rule_sets WHERE tenant_id = $1`, [w.tenantB])).n;
+    const set = (await one<{ id: string }>(`INSERT INTO procurement_rule_sets (tenant_id, version_no, created_by) VALUES ($1,$2,$3) RETURNING id`, [w.tenantB, nextNo, w.users.buyerB.id])).id;
+    await h.owner.query(`INSERT INTO procurement_rules (tenant_id, rule_set_id, code, name, check_type, check_key, params, weight, mandatory, sort_order, min_amount, min_amount_currency)
+      VALUES ($1,$2,'K20','Eşikli zorunlu kural (SENTETİK)','MANUAL',NULL,'{}',10,true,0,1000,'TRY'), ($1,$2,'K21','Eşiksiz kural (SENTETİK)','MANUAL',NULL,'{}',5,false,1,NULL,NULL)`,
+      [w.tenantB, set]);
+    await h.owner.query(`UPDATE procurement_rule_sets SET status = 'PUBLISHED', effective_from = '2026-02-01', published_by = $2, published_at = now() WHERE id = $1`, [set, w.users.buyerB.id]);
+    const p = (await one<{ id: string }>(`INSERT INTO projects (tenant_id, company_id, code, title, category, owner_user_id, created_by, department_id, status, currency, budget,
+        completed_on, completed_by) VALUES ($1,$2,$3,'Dolar projesi (SENTETİK)','Genel',$4,$4,$5,'COMPLETED','USD',5000,'2026-02-15',$4) RETURNING id`,
+      [w.tenantB, w.companyB1.id, `PRJ-UYF-${rand()}`, w.users.buyerB.id, w.departmentsB.bt])).id;
+    const r = await withTenant(h.pool, ctx, (tx) => runComplianceAudit(tx, ctx, p, 'COMPLETED', { aiAvailable: false }));
+    expect(r).toMatchObject({ status: 'DONE', verdict: 'NONCOMPLIANT' });
+    const res = (await h.call('buyerB', 'GET', `/api/v1/projects/${p}/compliance`, { tenant: w.tenantB })).body;
+    expect(res.latest.ruleSet).toMatchObject({ id: set });
+    const k20 = res.latest.results.find((x: any) => x.ruleCode === 'K20' || x.code === 'K20');
+    expect(k20).toMatchObject({ result: 'NO_DATA', finding: expect.stringContaining('Kur çevrilmedi; kapsam belirlenemedi') });
+    expect(k20.finding).toContain('1.000,00 ₺');
+    expect(res.latest.results.find((x: any) => x.ruleCode === 'K21' || x.code === 'K21')).toMatchObject({ result: 'PENDING' });
+    expect(res.pendingJob).toBeNull();
+    // Minör: en son denetim işi BLOCKED/DEAD ise sessiz kalmaz ("Denetim işi çalıştırılamadı").
+    await h.owner.query(`INSERT INTO jobs (tenant_id, company_id, kind, idempotency_key, payload, requested_by, status, error_code) VALUES ($1,$2,'compliance.audit',$3,$4,$5,'BLOCKED','REQUESTER_NOT_AUTHORIZED')`,
+      [w.tenantB, w.companyB1.id, `audit:${p}:rerun:${randomUUID()}`, { projectId: p, trigger: 'RERUN' }, w.users.buyerB.id]);
+    const blocked = (await h.call('buyerB', 'GET', `/api/v1/projects/${p}/compliance`, { tenant: w.tenantB })).body.pendingJob;
+    expect(blocked).toMatchObject({ status: 'BLOCKED', statusLabel: 'Denetim işi çalıştırılamadı', failed: true, errorCode: 'REQUESTER_NOT_AUTHORIZED', trigger: 'RERUN' });
+  });
+
   it('Ruling 12: Faz 3 öncesi sözleşme doğrulanmışsa zincir kuralı karşılanır, doğrulanmamışsa veri yok', async () => {
     const v = await fullProject({ contract: 'LEGACY_VERIFIED' });
     await complete(v.id);

@@ -143,7 +143,12 @@ struct InvoiceRow: Decodable, Identifiable, Sendable, Hashable {
     /// v2 Faz 7 eşleşme durumu etiketi (sunucudan); yoksa nil ve eski etiket kullanılır.
     private let lossyState: Lossy<String>?
     var matchStateLabel: String? { lossyState?.value }
-    enum CodingKeys: String, CodingKey { case id, kind, invoiceNo, issueDate, currency, supplierName, netAmount, legalStatus, supplierStatus, supplierIdentityVerified, matched, departmentName; case lossyContract = "contract"; case lossyState = "matchStateLabel" }
+    /// v2 Faz 7 eşleşme durum kodu (MATCHED, ALLOCATED, MIXED, UNMATCHED); renk etikete değil koda bakar. Eski sunucuda nil.
+    private let lossyStateCode: Lossy<String>?
+    var matchState: String? { lossyStateCode?.value }
+    /// Dikkat isteyen durum: kod varsa UNMATCHED; kod yoksa eski "eşleşmedi" bayrağı.
+    var needsMatchAttention: Bool { matchState.map { $0 == "UNMATCHED" } ?? (matched != true) }
+    enum CodingKeys: String, CodingKey { case id, kind, invoiceNo, issueDate, currency, supplierName, netAmount, legalStatus, supplierStatus, supplierIdentityVerified, matched, departmentName; case lossyContract = "contract"; case lossyState = "matchStateLabel"; case lossyStateCode = "matchState" }
     var matchText: String { legalStatus != "RECEIVED" ? "Hukuken iptal/ret" : matched == true ? "Eşleşti" : "Eşleşmedi" }
 }
 struct InvoiceList: Decodable, Sendable { let items: [InvoiceRow] }
