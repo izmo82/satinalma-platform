@@ -119,7 +119,7 @@ struct ProfileView: View {
     var body: some View {
         List {
             if let me = session.me {
-                Section(header: Text("Oturum"), footer: Text("Kullanıcı ve departman bilginiz Entra'dan gelir.")) {
+                Section {
                     LabeledContent("Kullanıcı", value: me.user.displayName)
                     LabeledContent("Roller", value: Labels.roleNames(me.roles))
                     LabeledContent("Departmanlar", value: me.allDepartments == true ? "Tüm departmanlar" : (me.departments ?? []).map(\.name).joined(separator: ", ").ifEmpty("Departman atanmadı"))
@@ -131,6 +131,10 @@ struct ProfileView: View {
                         LabeledContent("Kiracı", value: me.memberships.first { $0.tenantId == me.activeTenantId }?.tenantName ?? "—")
                     }
                     LabeledContent("Şirket kapsamı", value: (me.companies ?? []).map(\.name).joined(separator: ", ").ifEmpty("Şirket erişimi yok"))
+                } header: {
+                    Text("Oturum")
+                } footer: {
+                    Text("Kullanıcı ve departman bilginiz Entra'dan gelir.")
                 }
             }
             if let err = session.lastError { Section { Text(err).foregroundStyle(.red) } }
