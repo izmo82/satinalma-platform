@@ -1,3 +1,4 @@
+// v2 Faz 8 (D113): 058a ile ERP referansları kaynaklı ve UPDATE izinli; kaynaksız (058a öncesi/eski yol) referans değişmez kalır, ret artık izin hatası (42501) değil kaynak koruması (P0001).
 // v2 Faz 7 (D112) Görev 2: 055/056 şeması — fatura eşleşme sütunları (auto_match 055 öncesi satırlarda false, yeni satırda true;
 // ERP referansı ve auto_match yazıldıktan sonra değişmez), eşleşme olayları, proje "Tamamlandı" durumu, çıkar çatışması beyanı,
 // uyum kanıtı, sürümlü kural setleri (yayımlı set ve kuralı değişmez), değişmez denetim koşusu ve kural sonuçları, elle işaret,
@@ -129,8 +130,8 @@ describe('055 fatura eşleşmesi', () => {
       expect(r.rowCount).toBe(1);
     });
     await withTenant(h.pool, all(), (tx) => rejects(tx.query(`UPDATE invoices SET auto_match = false WHERE id = $1`, [inv.id]), '42501'));
-    await withTenant(h.pool, all(), (tx) => rejects(tx.query(`UPDATE invoices SET erp_contract_ref = 'BAŞKA' WHERE id = $1`, [inv.id]), '42501'));
-    await withTenant(h.pool, all(), (tx) => rejects(tx.query(`UPDATE invoices SET erp_order_ref = 'BAŞKA' WHERE id = $1`, [inv.id]), '42501'));
+    await withTenant(h.pool, all(), (tx) => rejects(tx.query(`UPDATE invoices SET erp_contract_ref = 'BAŞKA' WHERE id = $1`, [inv.id]), 'P0001', /erp_source_conflict/));
+    await withTenant(h.pool, all(), (tx) => rejects(tx.query(`UPDATE invoices SET erp_order_ref = 'BAŞKA' WHERE id = $1`, [inv.id]), 'P0001', /erp_source_conflict/));
     // Biçim: bağ yöntemsiz olamaz; elle bağın yapanı bilinir; bağsız faturada proje olmaz; bilinmeyen yöntem; referans ≤ 60.
     const inv2 = await invoice(w.departments.ik);
     await withTenant(h.pool, all(), (tx) => rejects(tx.query(`UPDATE invoices SET contract_family_id = $2, project_id = $3, matched_at = now() WHERE id = $1`, [inv2.id, fam, proj]), '23514'));

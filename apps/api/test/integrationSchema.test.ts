@@ -2,6 +2,8 @@
 // açıkken), zarf şifreli sır (düz metin sütunu yok), çalışma/hata kaydı (hata değişmez, kapanan çalışma değişmez, taklit ⇒ mock),
 // ERP'ye yazma kaydı, masraf merkezi ve sipariş kopyası, tedarikçi/departman/fatura ERP sütunları (kaynak ERP|MANUAL).
 // Her yeni tabloda kiracı RLS'i, tedarikçi bağlamı kapalı, DELETE izni yok. Tüm veri sentetiktir.
+// 058a: fatura ERP referansları kaynaklı (NULL → değer, elle → elle; ERP/kaynaksız değer değişmez), ERP elle değerin yerine geçemez,
+// ERP yazma kaydında dış referans bir kez yazılır, CONFIRMED/MANUAL son durumdur.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
@@ -367,8 +369,8 @@ describe('058 ERP verisi', () => {
     await withTenant(h.pool, admin(), (tx) => rejects(tx.query(`UPDATE invoices SET erp_payment_source = NULL WHERE id = $1`, [b]), '23514'));
     // 055 ERP referansları (sözleşme / sipariş) yeniden eklenmedi ve hâlâ yalnız kayıt anında yazılır.
     const cols = (await h.owner.query<{ column_name: string }>(`SELECT column_name FROM information_schema.columns WHERE table_name = 'invoices' AND column_name LIKE 'erp_%' ORDER BY 1`)).rows.map((r) => r.column_name);
-    expect(cols).toEqual(['erp_contract_ref', 'erp_invoice_id', 'erp_order_ref', 'erp_payment_source', 'erp_payment_status', 'erp_payment_status_at', 'erp_provider_kind']);
-    await withTenant(h.pool, admin(), (tx) => rejects(tx.query(`UPDATE invoices SET erp_order_ref = 'SIP-1' WHERE id = $1`, [b]), '42501'));
+    expect(cols).toEqual(['erp_contract_ref', 'erp_contract_ref_source', 'erp_invoice_id', 'erp_order_ref', 'erp_order_ref_source', 'erp_payment_source',
+      'erp_payment_status', 'erp_payment_status_at', 'erp_provider_kind']);
     // Başka kiracı faturanın ERP alanlarını değiştiremez.
     await withTenant(h.pool, tenantB(), async (tx) => {
       expect((await tx.query(`UPDATE invoices SET erp_payment_status = 'PAID', erp_payment_source = 'MANUAL' WHERE id = $1`, [b])).rowCount).toBe(0);
@@ -384,12 +386,97 @@ describe('058 ERP verisi', () => {
        AND attname IN ('erp_invoice_id','erp_provider_kind','erp_payment_status','erp_payment_status_at','erp_payment_source') ORDER BY attname`)).rows;
     expect(meta).toHaveLength(5);
     expect(meta.every((m) => !m.attnotnull && !m.atthasdef && !m.atthasmissing)).toBe(true);
-    for (const f of ['057_v2_integration_endpoints.sql', '058_v2_erp_data.sql']) {
+    for (const f of ['057_v2_integration_endpoints.sql', '058_v2_erp_data.sql', '058a_v2_erp_fixes.sql']) {
       const sql = (await readFile(new URL(`../migrations/${f}`, import.meta.url), 'utf8')).replace(/--.*$/gm, '');
       expect(sql, f).not.toMatch(/\b(UPDATE\s+(ONLY\s+)?(invoices|suppliers|departments)\b|DELETE\s+FROM|TRUNCATE)/i);
     }
     const demo = await one<{ n: number }>(`SELECT count(*)::int AS n FROM invoices WHERE invoice_no IN ('ANB2026000101','ANB2026000102','EGE2026000877')
       AND (erp_invoice_id IS NOT NULL OR erp_payment_status IS NOT NULL OR erp_provider_kind IS NOT NULL)`);
     expect(demo.n).toBe(0);
+  });
+});
+
+describe('058a kaynak koruması', () => {
+  const inv = async (refs: { contract?: string; order?: string } = {}) => (await one<{ id: string }>(`INSERT INTO invoices (tenant_id, company_id, supplier_id,
+      kind, invoice_no, issue_date, currency, created_by, erp_contract_ref, erp_order_ref)
+    VALUES ($1, $2, $3, 'INVOICE', $4, '2026-11-17', 'TRY', $5, $6, $7) RETURNING id`,
+    [h.world.tenantA, h.world.companyA1.id, h.world.suppliers.s1, `SNT${rand()}`, h.world.users.buyer.id, refs.contract ?? null, refs.order ?? null])).id;
+  const upd = (id: string, set: string, params: unknown[] = []) =>
+    withTenant(h.pool, admin(), (tx) => tx.query(`UPDATE invoices SET ${set} WHERE id = $1`, [id, ...params]));
+  const conflict = (id: string, set: string, params: unknown[] = []) => rejects(upd(id, set, params), 'P0001', /erp_source_conflict/);
+
+  it('invoice_refs_null_to_value_manual_edit_erp_and_legacy_fixed', async () => {
+    // NULL → değer (elle ya da ERP); kaynak referanssız olamaz, bilinmeyen kaynak yok.
+    const a = await inv();
+    await rejects(upd(a, `erp_order_ref_source = 'MANUAL'`), '23514');
+    await rejects(upd(a, `erp_order_ref = 'SIP-1', erp_order_ref_source = 'ELLE'`), '23514');
+    expect((await upd(a, `erp_order_ref = 'SIP-EL-1', erp_order_ref_source = 'MANUAL', erp_contract_ref = 'SZL-ERP-1', erp_contract_ref_source = 'ERP'`)).rowCount).toBe(1);
+    // Elle değer elle düzeltilir; silinemez; ERP üzerine yazamaz (aynı değerle bile kaynağı ERP'ye çeviremez).
+    expect((await upd(a, `erp_order_ref = 'SIP-EL-2'`)).rowCount).toBe(1);
+    await conflict(a, `erp_order_ref = 'SIP-ERP-9', erp_order_ref_source = 'ERP'`);
+    await conflict(a, `erp_order_ref_source = 'ERP'`);
+    await conflict(a, `erp_order_ref = NULL, erp_order_ref_source = NULL`);
+    // ERP değeri değişmez: ne ERP ne elle.
+    await conflict(a, `erp_contract_ref = 'SZL-ERP-2'`);
+    await conflict(a, `erp_contract_ref = 'SZL-EL', erp_contract_ref_source = 'MANUAL'`);
+    expect((await upd(a, `erp_contract_ref = 'SZL-ERP-1'`)).rowCount).toBe(1);    // değişiklik yok: geçer
+    expect(await one(`SELECT erp_order_ref, erp_order_ref_source, erp_contract_ref, erp_contract_ref_source FROM invoices WHERE id = $1`, [a]))
+      .toEqual({ erp_order_ref: 'SIP-EL-2', erp_order_ref_source: 'MANUAL', erp_contract_ref: 'SZL-ERP-1', erp_contract_ref_source: 'ERP' });
+    // 058a öncesi / kaynaksız yazılmış referans (demo faturalar gibi): kaynak NULL kalır, değer ve kaynak değişmez.
+    const legacy = await inv({ contract: 'SZL-ESKI-1', order: 'SIP-ESKI-1' });
+    await conflict(legacy, `erp_order_ref = 'SIP-YENI'`);
+    await conflict(legacy, `erp_order_ref_source = 'MANUAL'`);
+    await conflict(legacy, `erp_contract_ref = NULL`);
+    expect(await one(`SELECT erp_contract_ref_source, erp_order_ref_source FROM invoices WHERE id = $1`, [legacy]))
+      .toEqual({ erp_contract_ref_source: null, erp_order_ref_source: null });
+    // Kayıt anında kaynakla yazmak da geçerli; başka kiracı göremez/güncelleyemez.
+    await withTenant(h.pool, tenantB(), async (tx) => expect((await tx.query(`UPDATE invoices SET erp_order_ref = 'B' WHERE id = $1`, [a])).rowCount).toBe(0));
+  });
+
+  it('erp_never_replaces_manual_supplier_department_payment', async () => {
+    const w = h.world;
+    const sup = w.suppliers.s3;
+    const run = (set: string, id: string, table: string) => withTenant(h.pool, admin(), (tx) => tx.query(`UPDATE ${table} SET ${set} WHERE id = $1`, [id]));
+    // ERP → ERP ve elle → elle, elle düzeltme ERP'nin yerine geçebilir; ERP elle değerin yerine geçemez.
+    expect((await run(`erp_supplier_code = 'TED-ERP-1', erp_supplier_code_source = 'ERP'`, sup, 'suppliers')).rowCount).toBe(1);
+    expect((await run(`erp_supplier_code = 'TED-ERP-2', erp_supplier_code_source = 'ERP'`, sup, 'suppliers')).rowCount).toBe(1);
+    expect((await run(`erp_supplier_code = 'TED-EL-1', erp_supplier_code_source = 'MANUAL'`, sup, 'suppliers')).rowCount).toBe(1);
+    await rejects(run(`erp_supplier_code = 'TED-ERP-3', erp_supplier_code_source = 'ERP'`, sup, 'suppliers'), 'P0001', /erp_source_conflict/);
+    expect((await run(`erp_supplier_code = 'TED-EL-2'`, sup, 'suppliers')).rowCount).toBe(1);
+    const dep = w.departments.tc;
+    expect((await run(`cost_center_code = 'MM-EL', cost_center_source = 'MANUAL'`, dep, 'departments')).rowCount).toBe(1);
+    await rejects(run(`cost_center_code = 'MM-ERP', cost_center_source = 'ERP'`, dep, 'departments'), 'P0001', /erp_source_conflict/);
+    await rejects(run(`cost_center_source = 'ERP'`, dep, 'departments'), 'P0001', /erp_source_conflict/);
+    const i = await inv();
+    expect((await upd(i, `erp_payment_status = 'UNPAID', erp_payment_source = 'ERP'`)).rowCount).toBe(1);
+    expect((await upd(i, `erp_payment_status = 'PARTIAL', erp_payment_status_at = '2026-11-15', erp_payment_source = 'ERP'`)).rowCount).toBe(1);
+    expect((await upd(i, `erp_payment_status = 'PAID', erp_payment_status_at = '2026-11-16', erp_payment_source = 'MANUAL'`)).rowCount).toBe(1);
+    await conflict(i, `erp_payment_status = 'UNPAID', erp_payment_source = 'ERP'`);
+    expect(await one(`SELECT erp_payment_status, erp_payment_source FROM invoices WHERE id = $1`, [i])).toEqual({ erp_payment_status: 'PAID', erp_payment_source: 'MANUAL' });
+  });
+
+  it('outbound_external_ref_write_once_confirmed_and_manual_terminal', async () => {
+    const w = h.world;
+    const mk = async (status = 'PENDING') => withTenant(h.pool, admin(), async (tx) => (await tx.query<{ id: string }>(`INSERT INTO erp_outbound_records
+        (tenant_id, feature, entity_type, entity_id, idempotency_key, status, external_ref, manual_by, manual_at)
+      VALUES ($1, 'CONTRACT_HEADER', 'CONTRACT_FAMILY', $2, $3, $4, $5, $6, $7) RETURNING id`,
+      [w.tenantA, randomUUID(), `ob-${randomUUID()}`, status, status === 'MANUAL' ? 'SZL-ELLE-1' : null,
+       status === 'MANUAL' ? w.users.buyer.id : null, status === 'MANUAL' ? new Date() : null])).rows[0]!.id);
+    const set = (id: string, s: string) => withTenant(h.pool, admin(), (tx) => tx.query(`UPDATE erp_outbound_records SET ${s} WHERE id = $1`, [id]));
+    const r = await mk();
+    expect((await set(r, `status = 'UNKNOWN', provider_kind = 'TAKLIT', external_ref = 'TKL-1', attempts = 1`)).rowCount).toBe(1);
+    await rejects(set(r, `external_ref = 'TKL-2'`), 'P0001', /write-once/);
+    await rejects(set(r, `external_ref = NULL`), 'P0001', /write-once/);
+    expect((await set(r, `status = 'SENT', attempts = 2, updated_at = now()`)).rowCount).toBe(1);
+    expect((await set(r, `status = 'CONFIRMED'`)).rowCount).toBe(1);
+    await rejects(set(r, `status = 'FAILED'`), 'P0001', /CONFIRMED outbound/);
+    await rejects(set(r, `updated_at = now()`), 'P0001', /CONFIRMED outbound/);
+    const m = await mk('MANUAL');
+    await rejects(set(m, `status = 'PENDING', manual_by = NULL, manual_at = NULL`), 'P0001', /MANUAL outbound/);
+    await rejects(set(m, `manual_note = 'değişti'`), 'P0001', /MANUAL outbound/);
+    // Başarısız gönderim elle iletildi olarak kapatılabilir (dış referansı yoksa).
+    const f = await mk();
+    expect((await set(f, `status = 'FAILED', last_error = 'Bağlantı yok (sentetik)'`)).rowCount).toBe(1);
+    expect((await set(f, `status = 'MANUAL', external_ref = 'SZL-ELLE-2', manual_by = '${w.users.buyer.id}', manual_at = now()`)).rowCount).toBe(1);
   });
 });
