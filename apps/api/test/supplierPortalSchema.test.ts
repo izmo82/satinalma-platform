@@ -1,6 +1,7 @@
 // v2 Faz 5 (D110) Görev 2: 052 tedarikçi portalı şeması — yeni tablolarda kiracı/tedarikçi RLS'i, girişsiz SECURITY DEFINER işlevleri
 // (kapalı ayar, açık başvuru tekilliği, R4b sayımları, tek kullanımlık belirteç), app_portal_standing() anahtar listesi (R15),
 // portal_update_contact, suppliers tedarikçi kapsamı (R17), bir kez yazılan kararlar ve görev ayrılığı. Tüm veri sentetik.
+// 052a inceleme düzeltmeleri: standing'e karne risk girdisi (scoreRiskLevel, yearSummary ile eşit) eklendi; anahtar listesi buna göre güncellendi.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
@@ -307,13 +308,14 @@ describe('052 tedarikçi kapsamı ve portal işlevleri', () => {
       [A, incident, u.buyer.id]);
 
     const standing = await withTenant(h.pool, supplierCtx('supplier1', s1), async (tx) => (await tx.query(`SELECT app_portal_standing() AS r`)).rows[0].r);
-    expect(Object.keys(standing).sort()).toEqual(['actions', 'missingDocs', 'pendingSurveys', 'residualLevel', 'review', 'surveys', 'verifiedIncidents']);
+    expect(Object.keys(standing).sort()).toEqual(['actions', 'missingDocs', 'pendingSurveys', 'residualLevel', 'review', 'scoreRiskLevel', 'surveys', 'verifiedIncidents']);
     // YES (2) + PARTIAL (1) / (2 uygulanabilir × 2) = %75; NOT_APPLICABLE paydada yok.
     expect(standing.surveys).toEqual([{ ratio: '75.0' }]);
     // 80×30 + 90×25 + 70×20 + 100×10 + 60×15 = 7950 → 79.5
     expect(standing.review).toEqual({ score: '79.5' });
     expect(standing.verifiedIncidents).toEqual([{ severity: 'HIGH' }]);
     expect(standing.residualLevel).toBe('MEDIUM');
+    expect(standing.scoreRiskLevel).toBe('MEDIUM');
     expect(standing.actions).toEqual([{ title: 'Kök neden analizi gönderin', dueDate: '2026-12-31', status: 'OPEN' }]);
     expect(standing.pendingSurveys).toBe(1);
     // Zorunlu: VERGI_LEVHASI (yok) ve IMZA_SIRKULERI (var, süresiz); ISO27001 kategori dışı.
@@ -324,7 +326,7 @@ describe('052 tedarikçi kapsamı ve portal işlevleri', () => {
 
     // Tedarikçi 2 yalnız kendi (boş) görünümünü alır; iç bağlam işlevi çağıramaz.
     const s2 = await withTenant(h.pool, supplierCtx('supplier2', h.world.suppliers.s2), async (tx) => (await tx.query(`SELECT app_portal_standing() AS r`)).rows[0].r);
-    expect(s2).toEqual({ surveys: [], review: null, verifiedIncidents: [], residualLevel: null, actions: [], pendingSurveys: 0, missingDocs: 1 });
+    expect(s2).toEqual({ surveys: [], review: null, verifiedIncidents: [], residualLevel: null, scoreRiskLevel: null, actions: [], pendingSurveys: 0, missingDocs: 1 });
     await withTenant(h.pool, internalA(), (tx) => rejects(tx.query(`SELECT app_portal_standing()`), '42501'));
     await withoutTenant(h.pool, (c) => rejects(c.query(`SELECT app_portal_standing()`), '42501'));
   });
@@ -420,5 +422,127 @@ describe('052 mevcut kayıtlar, ayrılış ve görev ayrılığı', () => {
     await rejects(ins('rfq_round_invite'), '23505');
     await ins('contract_reminder');
     await ins('contract_reminder');
+  });
+});
+
+describe('052a inceleme düzeltmeleri', () => {
+  it('score_risk_level_matches_year_summary_multi_template', async () => {
+    const A = h.world.tenantA; const s3 = h.world.suppliers.s3; const u = h.world.users; const dept = h.world.departments.bt;
+    const template = async (name: string) => {
+      const id = (await h.owner.query<{ id: string }>(`INSERT INTO questionnaire_templates (tenant_id, code, version, name, category, created_by)
+        VALUES ($1, $2, 1, $3, 'Bilgi teknolojileri', $4) RETURNING id`, [A, `T2B-${rand()}`, name, u.security.id])).rows[0]!.id;
+      const q = (await h.owner.query<{ id: string }>(`INSERT INTO questionnaire_questions (tenant_id, template_id, ordinal, control_id, reference, text)
+        VALUES ($1, $2, 1, 'K-1', 'Kurum kontrolü', 'Sentetik soru') RETURNING id`, [A, id])).rows[0]!.id;
+      await h.owner.query(`UPDATE questionnaire_templates SET status = 'PUBLISHED', published_by = $2, published_at = now() WHERE id = $1`, [id, u.security.id]);
+      return { id, q };
+    };
+    const tA = await template('Sentetik BT anketi'); const tB = await template('Sentetik tesis anketi');
+    const assess = async (tpl: string, status: string, factors: object, residual: string | null, reviewedAt: string | null) =>
+      (await h.owner.query<{ id: string }>(`INSERT INTO supplier_assessments (tenant_id, supplier_id, template_id, scope, inherent_factors, created_by, department_id,
+         status, residual_level, residual_reason, residual_accepted_by, residual_accepted_at, reviewed_by, reviewed_at)
+       VALUES ($1, $2, $3, 'Sentetik kapsam', $4, $5, $6, $7, $8::text, CASE WHEN $8::text IS NULL THEN NULL ELSE 'Sentetik kalan risk kabul gerekçesi' END,
+         CASE WHEN $8::text IS NULL THEN NULL ELSE $9::uuid END, CASE WHEN $8::text IS NULL THEN NULL ELSE now() END,
+         CASE WHEN $10::timestamptz IS NULL THEN NULL ELSE $9::uuid END, $10::timestamptz) RETURNING id`,
+        [A, s3, tpl, factors, u.security.id, dept, status, residual, u.buyer.id, reviewedAt])).rows[0]!.id;
+    const critical = { dataSensitivity: 'HIGH', accessLevel: 'HIGH', criticality: 'LOW', substitutability: 'LOW', subcontractorDependence: 'LOW' };
+    const high = { dataSensitivity: 'LOW', accessLevel: 'LOW', criticality: 'HIGH', substitutability: 'LOW', subcontractorDependence: 'LOW' };
+    // a1: içsel CRITICAL ama kalan risk LOW kabul edildi, en son incelenen; a2: kalan risk yok → içsel HIGH; a3 açık, a4 yenilenmiş (sayılmaz).
+    const a1 = await assess(tA.id, 'REVIEWED', critical, 'LOW', new Date().toISOString());
+    await assess(tB.id, 'REVIEWED', high, null, new Date(Date.now() - 86_400_000).toISOString());
+    await assess(tB.id, 'OPEN', critical, null, null);
+    await assess(tA.id, 'SUPERSEDED', critical, 'CRITICAL', new Date(Date.now() - 2 * 86_400_000).toISOString());
+    await h.owner.query(`INSERT INTO assessment_answers (tenant_id, assessment_id, question_id, response, answered_by) VALUES ($1, $2, $3, 'YES', $4)`, [A, a1, tA.q, u.security.id]);
+
+    const standing = await withTenant(h.pool, { ...supplierCtx('supplier2', s3), userId: u.supplier3.id }, async (tx) => (await tx.query(`SELECT app_portal_standing() AS r`)).rows[0].r);
+    const card = await h.call('buyer', 'GET', `/api/v1/suppliers/${s3}/scorecard`);
+    expect(card.status).toBe(200);
+    expect(standing.scoreRiskLevel).toBe('HIGH');
+    expect(standing.scoreRiskLevel).toBe(card.body.performance.riskLevel);
+    expect(standing.residualLevel).toBe('LOW');
+    const ratios = standing.surveys.map((x: { ratio: string }) => Number(x.ratio));
+    expect(ratios.length).toBe(card.body.performance.surveyCount);
+    expect(Math.round((ratios.reduce((a: number, b: number) => a + b, 0) / ratios.length) * 10) / 10).toBe(card.body.performance.surveyMean);
+  });
+
+  it('expired_unverified_application_does_not_squat_tax_id', async () => {
+    const a = app();
+    const first = await create(slugA, a);
+    await rejects(create(slugA, { ...a, contactEmail: `ikinci-${rand()}@example.test` }), 'SP409', /application_exists/);
+    await h.owner.query(`UPDATE supplier_applications SET token_expires_at = now() - interval '1 second' WHERE id = $1`, [first.id]);
+    const second = await create(slugA, { ...a, contactEmail: `ucuncu-${rand()}@example.test` });
+    expect(second.id).not.toBe(first.id);
+    expect((await h.owner.query(`SELECT status, token_hash FROM supplier_applications WHERE id = $1`, [first.id])).rows[0]).toEqual({ status: 'EXPIRED', token_hash: null });
+    await rejects(pub(`SELECT public_application_verify($1) AS r`, [hashOf(first.token)]), 'SP410', /token_invalid/);
+  });
+
+  it('invalid_inputs_become_sp422', async () => {
+    await rejects(create(slugA, app(), [doc('VERGI_LEVHASI', { sizeBytes: 'abc' })]), 'SP422', /document_fields/);
+    await rejects(create(slugA, app(), [doc('VERGI_LEVHASI', { validUntil: '2027-13-45' })]), 'SP422', /document_fields/);
+    await rejects(create(slugA, app(), [doc('VERGI_LEVHASI', { mimeType: 'application/zip' })]), 'SP422', /document_fields/);
+    await rejects(create(slugA, app({ legalName: 'x'.repeat(400) })), 'SP422', /fields/);
+    await rejects(create(slugA, app({ contactPhone: '1'.repeat(100) })), 'SP422', /fields/);
+    await rejects(create(slugA, app({ country: 'TUR' })), 'SP422', /tax_id/);
+    await rejects(create(slugA, app({ taxId: undefined })), 'SP422', /tax_id/);
+    await rejects(create(slugA, app({ taxIdType: 'PASAPORT' })), 'SP422', /tax_id/);
+    await rejects(h.owner.query(`INSERT INTO supplier_applications (tenant_id, country, legal_name, tax_id_type, tax_id, contact_name, contact_email)
+      VALUES ($1, '1A', 'Ülke kodu denemesi', 'FOREIGN', 'X1', 'Ad Soyad', 'u@example.test')`, [h.world.tenantA]), '23514');
+  });
+
+  it('needs_documents_requires_requested_list', async () => {
+    const { id, token: vt } = await create(slugA, app());
+    await pub(`SELECT public_application_verify($1) AS r`, [hashOf(vt)]);
+    await withTenant(h.pool, internalA(), (tx) => rejects(tx.query(`UPDATE supplier_applications SET status = 'NEEDS_DOCUMENTS', token_hash = $2, token_purpose = 'COMPLETE',
+      token_expires_at = now() + interval '1 day' WHERE id = $1`, [id, hashOf(token())]), '23514'));
+  });
+
+  it('supplier_session_inserts_only_portal_documents_and_cannot_update_supplier', async () => {
+    const s1 = supplierCtx('supplier1', h.world.suppliers.s1);
+    const ins = (via: string) => withTenant(h.pool, s1, (tx) => tx.query(`INSERT INTO supplier_documents (tenant_id, supplier_id, type_code, title, original_filename, mime_type,
+      size_bytes, sha256, storage_key, basic_check_status, av_scan_status, valid_until, uploaded_via, uploaded_by)
+      VALUES ($1, $2, 'VERGI_LEVHASI', 'Vergi levhası', 'v.pdf', 'application/pdf', 10, $3, $4, 'PASSED', 'NOT_CONFIGURED', '2027-05-01', $5, $6)`,
+      [h.world.tenantA, h.world.suppliers.s1, sha(randomUUID()), `p/${randomUUID()}`, via, h.world.users.supplier1.id]));
+    await rejects(ins('INTERNAL'), '42501');
+    await ins('PORTAL');
+    const before = (await h.owner.query(`SELECT contact_phone, row_version FROM suppliers WHERE id = $1`, [h.world.suppliers.s1])).rows[0];
+    await withTenant(h.pool, s1, async (tx) => {
+      expect((await tx.query(`UPDATE suppliers SET contact_phone = '000' WHERE id = $1`, [h.world.suppliers.s1])).rowCount).toBe(0);
+      expect((await tx.query(`SELECT portal_update_contact('Portal Kişisi', '0312 222 22 22', null) AS r`)).rows[0].r.contactPhone).toBe('0312 222 22 22');
+    });
+    expect((await h.owner.query(`SELECT row_version FROM suppliers WHERE id = $1`, [h.world.suppliers.s1])).rows[0].row_version).toBe(before.row_version + 1);
+    await withTenant(h.pool, internalA(), async (tx) =>
+      expect((await tx.query(`UPDATE suppliers SET contact_phone = '0212 999 99 99' WHERE id = $1`, [h.world.suppliers.s1])).rowCount).toBe(1));
+  });
+
+  it('supersede_same_supplier_same_type_no_cycle', async () => {
+    const ins = async (supplierId: string, typeCode: string) => (await h.owner.query<{ id: string }>(`INSERT INTO supplier_documents (tenant_id, supplier_id, type_code, title,
+      original_filename, mime_type, size_bytes, sha256, storage_key, basic_check_status, av_scan_status, valid_until, uploaded_via, uploaded_by)
+      VALUES ($1, $2, $3, 'Belge', 'b.pdf', 'application/pdf', 10, $4, $5, 'PASSED', 'NOT_CONFIGURED', '2027-01-01', 'INTERNAL', $6) RETURNING id`,
+      [h.world.tenantA, supplierId, typeCode, sha(randomUUID()), `s/${randomUUID()}`, h.world.users.buyer.id])).rows[0]!.id;
+    const s3 = h.world.suppliers.s3;
+    const a = await ins(s3, 'VERGI_LEVHASI'); const b = await ins(s3, 'VERGI_LEVHASI');
+    const otherType = await ins(s3, 'ISO27001'); const otherSupplier = await ins(h.world.suppliers.s2, 'VERGI_LEVHASI');
+    const sup = (from: string, to: string) => withTenant(h.pool, internalA(), (tx) => tx.query(`UPDATE supplier_documents SET superseded_by_id = $2 WHERE id = $1`, [from, to]));
+    await rejects(sup(a, otherType), '23514');
+    await rejects(sup(a, otherSupplier), '23514');
+    await sup(a, b);
+    await rejects(sup(b, a), '23514', /cycle/);
+  });
+
+  it('round_invite_unique_by_user_and_reminder_links_write_once', async () => {
+    const roundId = randomUUID();
+    const invite = () => withTenant(h.pool, internalA(), (tx) => tx.query(`INSERT INTO email_outbox (tenant_id, to_user_id, subject, body_text, related_type, related_id, status)
+      VALUES ($1, $2, 'Teklif daveti: Sentetik', 'Gövde', 'rfq_round_invite', $3, 'NOT_CONFIGURED')`, [h.world.tenantA, h.world.users.supplier1.id, roundId]));
+    await invite();
+    await rejects(invite(), '23505');
+
+    const docId = (await h.owner.query<{ id: string }>(`SELECT id FROM supplier_documents WHERE tenant_id = $1 AND supplier_id IS NOT NULL AND valid_until IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM supplier_document_reminders r WHERE r.document_id = supplier_documents.id AND r.offset_days = 7) LIMIT 1`, [h.world.tenantA])).rows[0]!.id;
+    const mails = (await h.owner.query<{ id: string }>(`SELECT id FROM email_outbox WHERE tenant_id = $1 LIMIT 2`, [h.world.tenantA])).rows.map((r) => r.id);
+    const rem = await withTenant(h.pool, internalA(), async (tx) => (await tx.query<{ id: string }>(`INSERT INTO supplier_document_reminders (tenant_id, document_id, offset_days, due_on)
+      VALUES ($1, $2, 7, current_date) RETURNING id`, [h.world.tenantA, docId])).rows[0]!.id);
+    await withTenant(h.pool, internalA(), (tx) => tx.query(`UPDATE supplier_document_reminders SET email_outbox_id = $2 WHERE id = $1`, [rem, mails[0]]));
+    await withTenant(h.pool, internalA(), (tx) => rejects(tx.query(`UPDATE supplier_document_reminders SET email_outbox_id = $2 WHERE id = $1`, [rem, mails[1]]), 'P0001'));
+    await withTenant(h.pool, internalA(), (tx) => rejects(tx.query(`UPDATE supplier_document_reminders SET due_on = current_date + 1 WHERE id = $1`, [rem]), '42501'));
+    await withTenant(h.pool, internalA(), (tx) => rejects(tx.query(`DELETE FROM supplier_document_reminders WHERE id = $1`, [rem]), '42501'));
   });
 });
