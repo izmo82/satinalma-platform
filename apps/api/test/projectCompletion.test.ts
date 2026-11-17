@@ -113,6 +113,16 @@ describe('R5: projeyi tamamla', () => {
     expect((await call('buyer', 'GET', '/api/v1/projects')).body.items.find((x: any) => x.id === p)?.status).toBe('COMPLETED');
   });
 
+  it('eşzamanlı iki tamamlama: biri 200, diğeri 409; tek iş', async () => {
+    const p = await rawProject();
+    await contract(p, 'APPROVED');
+    const rs = await Promise.all([call('buyer', 'POST', `/api/v1/projects/${p}/complete`), call('finance', 'POST', `/api/v1/projects/${p}/complete`)]);
+    expect(rs.map((r) => r.status).sort()).toEqual([200, 409]);
+    expect(rs.find((r) => r.status === 409)!.body.error.code).toBe('invalid_state');
+    expect((await rows(`SELECT 1 FROM jobs WHERE kind = 'compliance.audit' AND idempotency_key = $1`, [`audit:${p}:completed`])).length).toBe(1);
+    expect((await rows(`SELECT 1 FROM audit_events WHERE action = 'project.completed' AND entity_id = $1`, [p])).length).toBe(1);
+  });
+
   it('eski kayıt (zincirsiz, 051a öncesi) sözleşme de tamamlamaya yeter', async () => {
     const p = await rawProject();
     await contract(p, 'LEGACY');
@@ -241,6 +251,27 @@ describe('R9: çıkar çatışması beyanı', () => {
     const done = (await call('buyer', 'GET', `/api/v1/projects/${s.id}/coi`)).body;
     expect(done).toMatchObject({ complete: true, hasConflict: true, status: 'DECLARED', missing: [] });
     expect((await coiTasks(s.id)).every((t) => t.status === 'DONE')).toBe(true);
+  });
+});
+
+describe('R9 düzeltme 1: tamamlamada eksik beyan görevleri; tamamlanan projede puan yok', () => {
+  it('görevi hiç açılmamış katılımcılara tamamlamada görev açılır (beyan verene açılmaz); sonra puan 409', async () => {
+    const s = await sourcedProject();
+    expect((await call('techEval', 'POST', `/api/v1/bids/${s.b1}/scores`, { criterionCode: 'TECH', score: '75', evidence: 'Referans görüşmesi (sentetik).' })).status).toBe(200);
+    const ev = await call('buyer', 'POST', `/api/v1/projects/${s.id}/evaluations`);
+    const award = await call('buyer', 'POST', `/api/v1/projects/${s.id}/awards`, { evaluationId: ev.body.id, rationale: 'En yüksek ağırlıklı puan (sentetik).',
+      allocations: [{ projectLineId: s.lineId, supplierId: h.world.suppliers.s1, quantity: '12' }] });
+    expect((await call('legal2', 'POST', `/api/v1/awards/${award.body.id}/decision`, { approve: true })).status).toBe(200);
+    expect((await call('legal2', 'POST', `/api/v1/projects/${s.id}/coi`, { kind: 'NONE' })).status).toBe(201);
+    // Faz 7 öncesi proje benzetimi: katılım olayları görev açmadan yaşanmış.
+    await h.owner.query(`DELETE FROM tasks WHERE kind = 'coi_declaration' AND entity_id = $1`, [s.id]);
+    await contract(s.id, 'APPROVED');
+    expect((await call('buyer', 'POST', `/api/v1/projects/${s.id}/complete`)).status).toBe(200);
+    const open = (await coiTasks(s.id)).filter((t) => t.status === 'OPEN').map((t) => t.assignee_user_id).sort();
+    expect(open).toEqual([h.world.users.buyer.id, h.world.users.techEval.id].sort());
+    const late = await call('techEval', 'POST', `/api/v1/bids/${s.b1}/scores`, { criterionCode: 'TECH', score: '90', evidence: 'Tamamlandıktan sonra deneme (sentetik).' });
+    expect(late.status).toBe(409);
+    expect(late.body.error).toMatchObject({ code: 'invalid_state', message: 'Tamamlanan projede teklif puanlanamaz.' });
   });
 });
 

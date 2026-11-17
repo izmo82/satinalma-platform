@@ -443,9 +443,12 @@ export async function getProject(tx: Tx, ctx: TenantContext, id: string) {
 // --- Puan, kur, değerlendirme -------------------------------------------------------------
 
 export async function scoreBid(tx: Tx, ctx: TenantContext, bidId: string, body: { criterionCode: string; score: string; evidence: string }) {
-  const b = (await tx.query<{ project_id: string; company_id: string; round_status: string; closes_at: Date }>(
-    `SELECT b.project_id, b.company_id, r.status AS round_status, r.closes_at FROM bids b JOIN rfq_rounds r ON r.id = b.round_id WHERE b.id = $1`, [bidId])).rows[0];
+  const b = (await tx.query<{ project_id: string; company_id: string; round_status: string; closes_at: Date; project_status: string }>(
+    `SELECT b.project_id, b.company_id, r.status AS round_status, r.closes_at, p.status AS project_status
+     FROM bids b JOIN rfq_rounds r ON r.id = b.round_id JOIN projects p ON p.id = b.project_id WHERE b.id = $1`, [bidId])).rows[0];
   if (!b) throw notFound();
+  // v2 Faz 7 (R5): tamamlanan projenin puanları denetim dayanağıdır; sonradan değişmez.
+  if (b.project_status === 'COMPLETED') throw conflict('invalid_state', 'Tamamlanan projede teklif puanlanamaz.');
   if (b.round_status === 'OPEN' && b.closes_at.getTime() > Date.now()) throw conflict('bids_sealed', 'Tur kapanmadan teklif puanlanamaz.');
   const c = (await currentCriteria(tx, b.project_id)).find((x) => x.code === body.criterionCode);
   if (!c || c.kind !== 'SCORE') throw unprocessable('unknown_criterion', 'Puanlanabilir kriter bulunamadı (fiyat puanı hesaplanır, elle girilmez).');

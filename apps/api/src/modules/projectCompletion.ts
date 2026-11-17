@@ -60,6 +60,8 @@ export async function completeProject(tx: Tx, ctx: TenantContext, projectId: str
   // Tamamlanma günü Europe/Istanbul takvimine göre (R5, R6: kural seti bu güne göre seçilir).
   const done = (await tx.query<{ completed_on: string }>(`UPDATE projects SET status = 'COMPLETED', completed_on = (now() AT TIME ZONE 'Europe/Istanbul')::date,
       completed_by = $2, row_version = row_version + 1, updated_at = now() WHERE id = $1 RETURNING completed_on::text AS completed_on`, [projectId, ctx.userId])).rows[0]!;
+  // R9: tamamlamada beyan vermemiş tüm katılımcılara görev (Faz 7 öncesi puan/öneri/karar olayı yaşamış projeler dahil; idempotent).
+  for (const userId of (await participants(tx, projectId, p.owner_user_id)).keys()) await ensureCoiTask(tx, ctx, projectId, userId);
   const auditJobId = await enqueueAudit(tx, ctx, p.company_id, projectId, 'COMPLETED');
   await audit(tx, ctx, 'project.completed', 'project', projectId,
     { completedOn: done.completed_on, contracts: qualifying.map((c) => ({ familyId: c.familyId, status: c.status })), auditJobId });
