@@ -257,6 +257,10 @@ async function resolveDepartment(tx: Tx, ctx: TenantContext, name: string | null
       id = (await tx.query<{ id: string }>(`INSERT INTO departments (tenant_id, name, source, normalized_name) VALUES ($1, $2, 'ENTRA', $3) RETURNING id`,
         [ctx.tenantId, display, key])).rows[0]!.id;
       await audit(tx, ctx, 'department.created', 'department', id, { name: display, source: 'ENTRA' });
+    } else {
+      // Elle açılmış departman Entra adıyla eşleşti: artık Entra'dan gelir ("Entra dışı departman" etiketi düşer).
+      const changed = (await tx.query<{ id: string }>(`UPDATE departments SET source = 'ENTRA' WHERE id = $1 AND source = 'MANUAL' RETURNING id`, [id])).rows[0];
+      if (changed) await audit(tx, ctx, 'department.source_changed', 'department', id, { before: 'MANUAL', after: 'ENTRA' });
     }
     await tx.query(`INSERT INTO department_aliases (tenant_id, normalized_name, department_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`, [ctx.tenantId, key, id]);
   }
@@ -465,8 +469,10 @@ export async function listDirectoryUsers(tx: Tx, f: { q?: string; departmentId?:
 }
 
 /**
- * R3: dizin kullanıcısına rol verir. Kullanıcı yoksa davetli kullanıcı açılır (ilk girişte `auth_link_invited_user` bağlar); aynı
- * e-postayla var olan kullanıcı (bu kiracıda üye, başka kiracıda OIDC ya da davetli; büyük/küçük harf duyarsız) yeniden kullanılır.
+ * R3: dizin kullanıcısına rol verir. Kullanıcı yoksa davetli kullanıcı açılır (ilk girişte `auth_link_invited_user` bağlar). 046 kuralları
+ * (büyük/küçük harf duyarsız e-posta): bu kiracıda (herhangi durumda) üyeliği olan kullanıcı ya da hiçbir kurumda üyeliği olmayan
+ * `invite|` kullanıcısı yeniden kullanılır; e-postayı başka kurumdaki ya da bu kiracıda üyeliği olmayan bir kullanıcı (OIDC dahil)
+ * taşıyorsa hiçbir şey açılmaz ya da bağlanmaz, 409 `user_in_other_tenant` döner.
  * Yeni üyelik: kiracının bütün şirketleri, departman Entra'dan. Boş dizi = üyelik REVOKED.
  * Review Focus 3: kiracının etkin Yönetici üyelikleri eşitlemeyle aynı sırada (user_id) FOR UPDATE kilitlenir; son Yönetici ve
  * kendi Yönetici rolünü düşürme reddedilir. Kilit sırası eşitlemeyle aynı: önce dizin kaydı, sonra üyelikler.

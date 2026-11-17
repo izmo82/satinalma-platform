@@ -242,4 +242,12 @@ describe('Yapılandırma yükleyicisi', () => {
     expect((await load({ DIRECTORY_PROVIDER: 'test', DIRECTORY_TEST_FIXTURE: '/a.json' })).directory).toEqual({ kind: 'test', testFixture: '/a.json' });
   });
   it('geçersiz değer reddedilir', async () => { await expect(load({ DIRECTORY_PROVIDER: 'foo' })).rejects.toThrow(/DIRECTORY_PROVIDER/); });
+  it('üretimde test dizini reddedilir (AUTH_MODE=dev korumasıyla aynı)', async () => {
+    const prod = { NODE_ENV: 'production', AUTH_MODE: 'oidc', OIDC_ISSUER: 'https://idp.example.test', OIDC_AUDIENCE: 'a',
+      OIDC_JWKS_URL: 'https://idp.example.test/jwks', OIDC_CLIENT_ID: 'c' };
+    await expect(load({ ...prod, DIRECTORY_PROVIDER: 'test', DIRECTORY_TEST_FIXTURE: '/a.json' })).rejects.toThrow(/DIRECTORY_PROVIDER=test is forbidden in production/);
+    expect((await load({ ...prod })).directory).toEqual({ kind: 'none' });
+    expect((await load({ ...prod, DIRECTORY_PROVIDER: 'graph', ENTRA_TENANT_ID: 't', ENTRA_CLIENT_ID: 'c', ENTRA_CLIENT_SECRET: SECRET })).directory)
+      .toMatchObject({ kind: 'graph' });
+  });
 });

@@ -204,7 +204,11 @@ export function ConnectionCard({ conn, admin, sync, onSaved }: { conn: Directory
             <span className="mono break-all">{provider.tenantLabel}</span>
             <span className="text-sm text-ink-subtle">{provider.label}</span>
           </div>
-          {admin ? <ScopeTypeControl value={type} onChange={setType} disabled={!!busy} /> : (
+          {admin ? <ScopeTypeControl value={type} onChange={(t) => {
+            // Tür değişince eski değer (ör. grup kimliği) yeni türe taşınmaz; kayıtlı türe dönülürse kayıtlı değer geri gelir.
+            if (t !== type) setValue(t === conn.scope?.type ? conn.scope.value : '');
+            setType(t);
+          }} disabled={!!busy} /> : (
             <div className="grid content-start gap-1"><span className="text-sm font-semibold">Kapsam türü</span>
               <span>{SCOPE_TYPES.find((t) => t.value === conn.scope?.type)?.label ?? <span className="text-ink-muted">Tanımlanmadı</span>}</span></div>
           )}
@@ -260,6 +264,10 @@ function RoleCell({ u, admin, onSaved }: { u: DirUser; admin: boolean; onSaved: 
   const [msg, setMsg] = useState<{ tone: 'info' | 'danger'; text: string } | null>(null);
   const current = u.roles ?? [];
   const dirty = [...sel].sort().join() !== [...current].sort().join();
+  // Sunucu e-postasız kullanıcıya rol vermez (davet e-postayla bağlanır); yalnız var olan erişimi kaldırmak mümkündür.
+  const noEmail = !u.email;
+  const reasonId = useId();
+  const noEmailReason = noEmail && <p id={reasonId} className="text-sm text-ink-muted">E-postası olmayan kullanıcıya rol verilemez.</p>;
   async function save() {
     setBusy(true); setMsg(null);
     try {
@@ -275,22 +283,24 @@ function RoleCell({ u, admin, onSaved }: { u: DirUser; admin: boolean; onSaved: 
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <span>{current.length ? roleText(current) : <span className="text-ink-muted">Rol yok</span>}</span>
         {admin && !open && (
-          <Button size="sm" variant="ghost" className="h-7 px-2 text-sm underline-offset-2 hover:underline"
+          <Button size="sm" variant="ghost" className="h-7 px-2 text-sm underline-offset-2 hover:underline" disabled={noEmail && !current.length}
+            aria-describedby={noEmail ? reasonId : undefined}
             aria-label={`${u.displayName} rolünü değiştir`} onClick={() => { setSel(current); setMsg(null); setOpen(true); }}>Değiştir</Button>
         )}
       </div>
+      {noEmailReason}
       {open && (
         <fieldset className="grid gap-1.5 rounded-md border border-border bg-white p-2">
           <legend className="sr-only">{u.displayName} rolleri</legend>
           {ROLE_OPTIONS.map(([r, l]) => (
             <label key={r} className="inline-flex min-h-7 items-center gap-2 text-sm">
-              <input type="checkbox" className="size-4 accent-ink" checked={sel.includes(r)} disabled={busy}
+              <input type="checkbox" className="size-4 accent-ink" checked={sel.includes(r)} disabled={busy || (noEmail && !sel.includes(r))}
                 onChange={(e) => setSel(e.target.checked ? [...sel, r] : sel.filter((x) => x !== r))} />{l}
             </label>
           ))}
           {!sel.length && current.length > 0 && <p className="text-sm text-warn">Rol seçilmezse kullanıcının erişimi kaldırılır.</p>}
           <div className="flex flex-wrap gap-2">
-            <Button size="sm" disabled={busy || !dirty} onClick={() => void save()} aria-label={`${u.displayName} rollerini kaydet`}>{busy ? 'Kaydediliyor…' : 'Kaydet'}</Button>
+            <Button size="sm" disabled={busy || !dirty || (noEmail && sel.length > 0)} onClick={() => void save()} aria-label={`${u.displayName} rollerini kaydet`}>{busy ? 'Kaydediliyor…' : 'Kaydet'}</Button>
             <Button size="sm" variant="outline" disabled={busy} onClick={() => { setOpen(false); setMsg(null); }}>Vazgeç</Button>
           </div>
         </fieldset>
@@ -336,7 +346,7 @@ export function DirectoryUsersCard({ admin, deps, version, onChanged }: { admin:
                   {r.data.items.map((u) => (
                     <tr key={u.id}>
                       <td data-label="Ad"><span className="block font-semibold">{u.displayName}</span>
-                        <span className="block text-sm text-ink-muted [overflow-wrap:anywhere]">{u.email ?? 'E-posta yok: rol verilemez'}</span>
+                        <span className="block text-sm text-ink-muted [overflow-wrap:anywhere]">{u.email ?? 'E-posta yok'}</span>
                         {u.jobTitle && <span className="block text-sm text-ink-subtle">{u.jobTitle}</span>}</td>
                       <td data-label="Departman (Entra)">{u.departmentName ?? <span className="text-ink-muted">Entra'da departman yok</span>}</td>
                       <td data-label="Rol"><RoleCell u={u} admin={admin} onSaved={onChanged} /></td>

@@ -69,9 +69,11 @@ function req(name: string): string {
   return v;
 }
 
-function loadDirectory(): Config['directory'] {
+function loadDirectory(env: Config['env']): Config['directory'] {
   const kind = process.env.DIRECTORY_PROVIDER || 'none';
   if (kind === 'none') return { kind: 'none' };
+  // Test dizini (sentetik fixture) üretimde asla açılamaz; AUTH_MODE=dev korumasıyla aynı ortam tespiti.
+  if (kind === 'test' && env === 'production') throw new Error('DIRECTORY_PROVIDER=test is forbidden in production');
   if (kind === 'test') return { kind: 'test', testFixture: req('DIRECTORY_TEST_FIXTURE') };
   if (kind === 'graph') {
     // Eksik değişkenin yalnız adı yazılır; değer (özellikle sır) hiçbir ileti içinde yer almaz.
@@ -127,7 +129,7 @@ export function loadConfig(): Config {
     extraWebOrigins: (process.env.WEB_EXTRA_ORIGINS ?? '').split(',').map((o) => o.trim()).filter(Boolean),
     trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
     reportCacheSeconds: Number(process.env.REPORT_CACHE_SECONDS ?? 120),
-    directory: loadDirectory(),
+    directory: loadDirectory(env),
     session: {
       secret: process.env.SESSION_SECRET || null,
       // Üretimde çerez yalnız HTTPS'te; web kökeni https ise yerelde de Secure.

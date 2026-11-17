@@ -132,6 +132,53 @@ describe('askıya alma ve currentApprovers', () => {
     expect(cur.director?.userId).toBe(id(w, 'legal'));
     expect(cur.directorDeputy?.userId).toBe(id(w, 'legal2'));
   });
+
+  it('pasifleşen atanmış kişi başka satırın kaydını engellemez; aynı yerde kalan pasif kişi korunur; yeniden/yeni atama 422', async () => {
+    const w = await fresh();
+    await as(w, 'tenantAdmin', 'PUT', U, { organization: { leadUserId: id(w, 'buyer'), directorUserId: id(w, 'legal') },
+      departments: [{ departmentId: w.departments.bt, headUserId: id(w, 'finance'), deputyUserId: id(w, 'masterData') }] });
+    await h.owner.query(`UPDATE memberships SET status = 'SUSPENDED' WHERE tenant_id = $1 AND user_id = $2`, [w.tenantA, id(w, 'finance')]);
+    await h.owner.query(`UPDATE memberships SET status = 'SUSPENDED' WHERE tenant_id = $1 AND user_id = $2`, [w.tenantA, id(w, 'buyer')]);
+    // Başka departmanı değiştir: 200, pasif satır değişmez.
+    const ok = await as(w, 'tenantAdmin', 'PUT', U, { departments: [{ departmentId: w.departments.ik, headUserId: id(w, 'legal'), deputyUserId: null }] });
+    expect(ok.status).toBe(200);
+    const row = async (dep: string) => (await h.owner.query<{ primary_user_id: string | null; deputy_user_id: string | null }>(
+      `SELECT primary_user_id, deputy_user_id FROM approver_assignments WHERE tenant_id = $1 AND kind = 'DEPARTMENT_HEAD' AND department_id = $2`, [w.tenantA, dep])).rows[0];
+    expect(await row(w.departments.bt)).toEqual({ primary_user_id: id(w, 'finance'), deputy_user_id: id(w, 'masterData') });
+    // Aynı satırda yalnız vekil değişse de pasif sorumlu yerinde kalabilir; kurum satırında pasif sorumlu korunarak direktör değişir.
+    expect((await as(w, 'tenantAdmin', 'PUT', U, { departments: [{ departmentId: w.departments.bt, headUserId: id(w, 'finance'), deputyUserId: id(w, 'legal2') }] })).status).toBe(200);
+    expect((await as(w, 'tenantAdmin', 'PUT', U, { organization: { leadUserId: id(w, 'buyer'), directorUserId: id(w, 'legal2') } })).status).toBe(200);
+    // Pasif kişiyi yeni yere atamak (başka departman, vekil yerine, kurum unvanı) 422.
+    for (const body of [
+      { departments: [{ departmentId: w.departments.tc, headUserId: id(w, 'finance'), deputyUserId: null }] },
+      { departments: [{ departmentId: w.departments.bt, headUserId: id(w, 'legal2'), deputyUserId: id(w, 'finance') }] },
+      { organization: { leadUserId: id(w, 'legal'), directorUserId: id(w, 'buyer') } },
+    ]) expect((await as(w, 'tenantAdmin', 'PUT', U, body)).status, JSON.stringify(body)).toBe(422);
+    expect(await row(w.departments.bt)).toEqual({ primary_user_id: id(w, 'finance'), deputy_user_id: id(w, 'legal2') });
+    expect(await row(w.departments.tc)).toBeUndefined();
+  });
+
+  it('rolü kaldırılmış (roles boş, REVOKED) atanmış kişi null değil pasif kişi döner ve kayıt korunur', async () => {
+    const w = await fresh();
+    await as(w, 'tenantAdmin', 'PUT', U, { departments: [{ departmentId: w.departments.bt, headUserId: id(w, 'finance'), deputyUserId: id(w, 'masterData') }] });
+    await h.owner.query(`UPDATE memberships SET status = 'REVOKED', roles = '{}' WHERE tenant_id = $1 AND user_id = $2`, [w.tenantA, id(w, 'finance')]);
+    await h.owner.query(`UPDATE memberships SET roles = '{}' WHERE tenant_id = $1 AND user_id = $2`, [w.tenantA, id(w, 'masterData')]);
+    const r = await as(w, 'tenantAdmin', 'GET', U);
+    const bt = r.body.departments.find((d: any) => d.departmentId === w.departments.bt);
+    expect(bt.head).toMatchObject({ userId: id(w, 'finance'), active: false });
+    expect(bt.deputy).toMatchObject({ userId: id(w, 'masterData'), active: false });
+    expect(bt.status).toBe('INACTIVE');
+    const cand = r.body.candidates.map((c: any) => c.userId);
+    expect(cand).not.toContain(id(w, 'finance'));
+    expect(cand).not.toContain(id(w, 'masterData'));
+    // Başka satırın kaydı bu satırı silmez; yeniden atama 422.
+    expect((await as(w, 'tenantAdmin', 'PUT', U, { departments: [{ departmentId: w.departments.ik, headUserId: id(w, 'legal'), deputyUserId: null }] })).status).toBe(200);
+    expect((await as(w, 'tenantAdmin', 'PUT', U, { departments: [{ departmentId: w.departments.ik, headUserId: id(w, 'finance'), deputyUserId: null }] })).status).toBe(422);
+    const after = (await as(w, 'tenantAdmin', 'GET', U)).body.departments.find((d: any) => d.departmentId === w.departments.bt);
+    expect(after.head?.userId).toBe(id(w, 'finance'));
+    const ctx = { tenantId: w.tenantA, userId: id(w, 'tenantAdmin'), roles: ['ADMIN'], companyIds: [], correlationId: 'c', departmentIds: [], allDepartments: true } as any;
+    expect((await withTenant(h.pool, ctx, (tx) => currentApprovers(tx, w.departments.bt))).head).toBeNull();
+  });
 });
 
 describe('öneri', () => {

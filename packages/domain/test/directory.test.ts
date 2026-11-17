@@ -19,6 +19,12 @@ describe('inScope', () => {
     expect(inScope({ onPremisesDistinguishedName: 'CN=Ali,OU=XSatinalma,OU=Kullanicilar,DC=moment' }, sfx)).toBe(false);
     expect(inScope({ onPremisesDistinguishedName: null }, sfx)).toBe(false);
   });
+  it('virgül çevresindeki boşluk DN ve sonekte yok sayılır', () => {
+    expect(inScope({ onPremisesDistinguishedName: 'CN=Ali, OU=Satinalma , OU=Kullanicilar,DC=moment' }, sfx)).toBe(true);
+    expect(inScope({ onPremisesDistinguishedName: 'CN=Ali,OU=Satinalma,OU=Kullanicilar,DC=moment' }, ' OU=Satinalma, OU=Kullanicilar ,  DC=moment ')).toBe(true);
+    expect(inScope({ onPremisesDistinguishedName: 'CN=Ali, OU=XSatinalma, OU=Kullanicilar, DC=moment' }, 'OU=Satinalma, OU=Kullanicilar, DC=moment')).toBe(false);
+    expect(inScope({ onPremisesDistinguishedName: '  ' }, sfx)).toBe(false);
+  });
 });
 
 describe('planMembershipDepartments', () => {

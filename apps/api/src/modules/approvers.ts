@@ -16,7 +16,10 @@ export type DeptInput = { departmentId: string; headUserId: string | null; deput
 type Kind = 'DEPARTMENT_HEAD' | 'PROCUREMENT_LEAD' | 'PROCUREMENT_DIRECTOR';
 type Row = { kind: Kind; department_id: string | null; primary_user_id: string | null; deputy_user_id: string | null };
 
-/** Kiracıdaki iç (tedarikçi olmayan) üyelikler; tedarikçi rolü taşıyanlar dışarıda. */
+/**
+ * Kiracıdaki iç (tedarikçi olmayan) üyelikler; tedarikçi rolü taşıyanlar dışarıda. Rolü kalmamış (dizin rolü kaldırınca roles='{}'),
+ * askıdaki ya da kaldırılmış üyelikler `active:false` kişi olarak döner: atanmış kişi "Atanmadı" değil "(pasif)" görünür ve kayıt korunur.
+ */
 async function loadPeople(tx: Tx): Promise<Map<string, Person>> {
   const rows = (await tx.query<{ id: string; display_name: string; email: string; status: string; roles: string[] }>(
     `SELECT u.id, u.display_name, u.email, m.status, m.roles FROM memberships m JOIN users u ON u.id = m.user_id
@@ -24,8 +27,8 @@ async function loadPeople(tx: Tx): Promise<Map<string, Person>> {
   const map = new Map<string, Person>();
   for (const r of rows) {
     const roles = normalizeRoles(r.roles);
-    if (roles.length === 0 || roles.includes('SUPPLIER')) continue;
-    map.set(r.id, { userId: r.id, displayName: r.display_name, email: r.email, active: r.status === 'ACTIVE' });
+    if (roles.includes('SUPPLIER')) continue;
+    map.set(r.id, { userId: r.id, displayName: r.display_name, email: r.email, active: r.status === 'ACTIVE' && roles.length > 0 });
   }
   return map;
 }
@@ -132,11 +135,21 @@ export async function setApprovers(tx: Tx, ctx: TenantContext, b: { organization
     if (n !== deptIds.length) throw unprocessable('department_unknown', 'Seçilen departman bu kurumda tanımlı değil.');
   }
   for (const d of b.departments ?? []) next.push({ kind: 'DEPARTMENT_HEAD', departmentId: d.departmentId, primaryUserId: d.headUserId ?? null, deputyUserId: d.deputyUserId ?? null });
+  const key = (kind: string, dept: string | null) => `${kind}:${dept ?? ''}`;
+  const beforeMap = new Map(before.map((r) => [key(r.kind, r.department_id), { primary: r.primary_user_id, deputy: r.deputy_user_id }]));
   for (const n of next) {
-    const err = validateApprover(n, candidates);
+    // "Etkin olmalı" kuralı yalnız yeni atanan ya da değişen kişiye uygulanır: aynı yerde kalan (sonradan askıya alınmış) kişi
+    // başka satırların kaydını engellemez; askıdaki birini yeniden ya da yeni yere atamak yine 422.
+    const prev = beforeMap.get(key(n.kind, n.departmentId));
+    const allowed = new Set(candidates);
+    if (prev?.primary && prev.primary === n.primaryUserId) allowed.add(prev.primary);
+    if (prev?.deputy && prev.deputy === n.deputyUserId) allowed.add(prev.deputy);
+    const err = validateApprover(n, allowed);
     if (err) throw unprocessable('approver_invalid', err, { kind: n.kind, departmentId: n.departmentId });
   }
-  for (const n of next) {
+  // Kilit sırası sabit (kind, departmentId): eşzamanlı iki kayıt aynı satırları farklı sırada kilitleyip kilitlenmez.
+  const ordered = [...next].sort((a, b) => a.kind.localeCompare(b.kind) || (a.departmentId ?? '').localeCompare(b.departmentId ?? ''));
+  for (const n of ordered) {
     await tx.query(
       `INSERT INTO approver_assignments (tenant_id, kind, department_id, primary_user_id, deputy_user_id, updated_by, updated_at)
        VALUES ($1, $2, $3, $4, $5, $6, now())
@@ -144,8 +157,6 @@ export async function setApprovers(tx: Tx, ctx: TenantContext, b: { organization
        SET primary_user_id = EXCLUDED.primary_user_id, deputy_user_id = EXCLUDED.deputy_user_id, updated_by = EXCLUDED.updated_by, updated_at = now()`,
       [ctx.tenantId, n.kind, n.departmentId, n.primaryUserId, n.deputyUserId, ctx.userId]);
   }
-  const key = (kind: string, dept: string | null) => `${kind}:${dept ?? ''}`;
-  const beforeMap = new Map(before.map((r) => [key(r.kind, r.department_id), { primary: r.primary_user_id, deputy: r.deputy_user_id }]));
   const changes = next.map((n) => ({ kind: n.kind, departmentId: n.departmentId,
     before: beforeMap.get(key(n.kind, n.departmentId)) ?? { primary: null, deputy: null }, after: { primary: n.primaryUserId, deputy: n.deputyUserId } }));
   await audit(tx, ctx, 'approvers.set', 'approver_assignments', ctx.tenantId, { before: changes.map((c) => ({ kind: c.kind, departmentId: c.departmentId, ...c.before })),

@@ -12,8 +12,10 @@ export function normalizeDepartmentName(name: string): string {
 
 /** OU_FILTER kapsamı: DN, ouSuffix ile virgül sınırında biter (büyük/küçük harf duyarsız). */
 export function inScope(user: { onPremisesDistinguishedName: string | null }, ouSuffix: string): boolean {
-  const dn = user.onPremisesDistinguishedName?.trim().toLowerCase();
-  const suffix = ouSuffix.trim().toLowerCase();
+  // Virgül çevresindeki boşluk yok sayılır (`OU=Satış, DC=örnek` = `OU=Satış,DC=örnek`); hem DN'de hem yapılandırılan sonekte.
+  const norm = (v: string) => v.trim().replace(/\s*,\s*/g, ',').toLowerCase();
+  const dn = user.onPremisesDistinguishedName ? norm(user.onPremisesDistinguishedName) : '';
+  const suffix = norm(ouSuffix);
   if (!dn || !suffix) return false;
   if (dn === suffix) return true;
   return dn.endsWith(',' + suffix);

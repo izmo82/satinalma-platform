@@ -92,9 +92,16 @@ export function ApproversPage() {
     if (!draft || busy) return;
     setBusy(true); setMsg(null);
     try {
+      // Yalnız değişen satırlar gönderilir: sonradan pasifleşen ama dokunulmamış atama başka satırların kaydını engellemez.
+      const orgChanged = (Object.keys(draft.org) as OrgKey[]).some((k) => draft.org[k] !== initial.org[k]);
+      const changedDepts = data.departments.filter((d) => {
+        const a = draft.depts[d.departmentId] ?? { head: '', deputy: '' };
+        const b = initial.depts[d.departmentId] ?? { head: '', deputy: '' };
+        return a.head !== b.head || a.deputy !== b.deputy;
+      });
       await api('/api/v1/approver-assignments', { method: 'PUT', json: {
-        organization: { leadUserId: draft.org.lead || null, leadDeputyUserId: draft.org.leadDeputy || null, directorUserId: draft.org.director || null, directorDeputyUserId: draft.org.directorDeputy || null },
-        departments: data.departments.map((d) => ({ departmentId: d.departmentId, headUserId: draft.depts[d.departmentId]?.head || null, deputyUserId: draft.depts[d.departmentId]?.deputy || null })),
+        ...(orgChanged ? { organization: { leadUserId: draft.org.lead || null, leadDeputyUserId: draft.org.leadDeputy || null, directorUserId: draft.org.director || null, directorDeputyUserId: draft.org.directorDeputy || null } } : {}),
+        departments: changedDepts.map((d) => ({ departmentId: d.departmentId, headUserId: draft.depts[d.departmentId]?.head || null, deputyUserId: draft.depts[d.departmentId]?.deputy || null })),
       } });
       await r.reload();
       setMsg({ tone: 'info', text: 'Onaycılar kaydedildi.' });

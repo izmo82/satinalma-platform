@@ -154,10 +154,27 @@ describe('dizin eşitleme', () => {
     ]));
     expect(r.status).toBe('SUCCEEDED');
     for (const o of ['a', 'b', 'c']) expect((await dirUser(w.tenantA, o))!.department_id).toBe(w.departments.bt);
-    expect(await count(`SELECT count(*)::int AS n FROM departments WHERE tenant_id = $1 AND source = 'ENTRA'`, [w.tenantA])).toBe(0);
+    // Fix wave (D105): yeni departman açılmaz; eşleşen elle açılmış departman Entra kaynağına geçer (tek denetim kaydı).
+    expect(await count(`SELECT count(*)::int AS n FROM departments WHERE tenant_id = $1 AND source = 'ENTRA' AND id <> $2`, [w.tenantA, w.departments.bt])).toBe(0);
     const alias = (await h.owner.query<{ normalized_name: string; department_id: string }>(
       `SELECT normalized_name, department_id FROM department_aliases WHERE tenant_id = $1`, [w.tenantA])).rows;
     expect(alias).toEqual([{ normalized_name: 'bilgi teknolojileri', department_id: w.departments.bt }]);
+  });
+
+  it('ad eşleşmesiyle bulunan elle açılmış departman ENTRA kaynağına geçer, denetim kaydı bir kez yazılır', async () => {
+    const w = await freshWorld();
+    await enable(w.tenantA);
+    const src = async () => (await h.owner.query<{ source: string }>(`SELECT source FROM departments WHERE id = $1`, [w.departments.bt])).rows[0]!.source;
+    expect(await src()).toBe('MANUAL');
+    const ik = (await h.owner.query<{ source: string }>(`SELECT source FROM departments WHERE id = $1`, [w.departments.ik])).rows[0]!.source;
+    await sync(w, fakeProvider([du('a', 'a@example.test', 'BİLGİ  TEKNOLOJİLERİ')]));
+    expect(await src()).toBe('ENTRA');
+    // Eşleşmeyen elle açılmış departman değişmez.
+    expect((await h.owner.query<{ source: string }>(`SELECT source FROM departments WHERE id = $1`, [w.departments.ik])).rows[0]!.source).toBe(ik);
+    await sync(w, fakeProvider([du('a', 'a@example.test', 'Bilgi Teknolojileri')]));
+    const audits = (await h.owner.query<{ data: unknown }>(
+      `SELECT data FROM audit_events WHERE tenant_id = $1 AND action = 'department.source_changed' AND entity_id = $2`, [w.tenantA, w.departments.bt])).rows;
+    expect(audits).toEqual([{ data: { before: 'MANUAL', after: 'ENTRA' } }]);
   });
 
   it('birleştirilmiş departmanın takma adı hedefe yazar', async () => {

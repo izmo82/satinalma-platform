@@ -3,6 +3,8 @@
 // Sağlayıcı yoksa testler sessizce atlanmaz, açık iletiyle başarısız olur. Veri değiştiren adımlar yalnız 1440'ta. Rol ataması
 // (rol.deneme@example.test) ve Tıbbi Cihaz onaycı ataması sonunda eski haline döner. Kalıcı olan: ilk test kapsamı (GROUP, açık)
 // kaydeder ve eşitleme çalıştırır; bağlantı ayarı, eşitleme çalıştırması ve directory_users satırları paylaşılan veritabanında kalır.
+// Eşitleme ayrıca adı eşleşen elle açılmış departmanları (ör. Bilgi Teknolojileri) kalıcı olarak ENTRA kaynağına geçirir ve takma ad yazar.
+// v2 Faz 2 (D105) düzeltme dalgası: e-postasız kullanıcıda rol denetimi kapalı ve gerekçe satır içinde; kapsam türü değişince değer temizlenir.
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 
@@ -80,6 +82,12 @@ test('Yönetici test dizinini eşitler; test etiketi bağlantı kartında ve eş
   await enabled.check();
   const save = card.getByRole('button', { name: 'Kapsamı kaydet' });
   if (await save.isEnabled()) { await save.click(); await expect(card.getByText('Kapsam kaydedildi.')).toBeVisible(); }
+  // Tür değişince değer temizlenir (OU örneği kalır); kayıtlı türe dönülünce kayıtlı değer geri gelir.
+  await card.getByText('OU filtresi', { exact: true }).click();
+  await expect(scope).toHaveValue('');
+  await expect(card.getByText('OU=Satinalma,OU=Kullanicilar,DC=moment')).toBeVisible();
+  await card.getByText('Güvenlik grubu', { exact: true }).click();
+  await expect(scope).toHaveValue('sp-satinalma-kullanicilari (sentetik)');
   await page.getByRole('button', { name: 'Şimdi eşitle' }).click();
   await expect(page.getByTestId('sync-status').getByText('Eşitleme tamamlandı.')).toBeVisible({ timeout: 60_000 });
   await expect(page.getByTestId('sync-status').getByText(TEST_LABEL)).toBeVisible();
@@ -88,7 +96,10 @@ test('Yönetici test dizinini eşitler; test etiketi bağlantı kartında ve eş
   await expect(users.getByText('Rol Deneme (sentetik)')).toBeVisible();
   await expect(users.getByText('Kapalı Hesap (sentetik)')).toBeVisible();
   await expect(users.getByRole('row').filter({ hasText: 'Kapalı Hesap (sentetik)' })).toContainText("Entra'da kapalı ya da kapsam dışı");
-  await expect(users.getByRole('row').filter({ hasText: 'Postasız Kullanıcı (sentetik)' })).toContainText('E-posta yok');
+  const postasiz = users.getByRole('row').filter({ hasText: 'Postasız Kullanıcı (sentetik)' });
+  await expect(postasiz).toContainText('E-posta yok');
+  await expect(postasiz.getByText('E-postası olmayan kullanıcıya rol verilemez.')).toBeVisible();
+  await expect(postasiz.getByRole('button', { name: 'Postasız Kullanıcı (sentetik) rolünü değiştir' })).toBeDisabled();
   expect(await fits(page)).toBe(true);
 });
 
