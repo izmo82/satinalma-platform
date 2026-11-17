@@ -10,7 +10,8 @@ import { makeHarness } from './harness.ts';
 
 let h: Awaited<ReturnType<typeof makeHarness>>;
 let auth: DevAuthProvider;
-let yearSeq = 2040;
+// Geçmiş yıllar: çeyreklik gözden geçirme dönemi bugünkü çeyrekten sonra olamaz.
+let yearSeq = 2010;
 const nextYear = () => yearSeq++;
 const rand = () => randomUUID().slice(0, 8);
 const extra: Record<string, { id: string; email: string }> = {};
@@ -225,6 +226,17 @@ describe('R9: seviye 4–5 aksiyon ve kontrol planı; revizyon değişmez; R10 g
     // Son kontrol satırı iptal edilemez (seviye 4 tamamlanmış).
     const cancel = await call('techEval', 'PATCH', `/api/v1/risk/actions/${con.body.id}`, { status: 'CANCELLED' });
     expect([cancel.status, cancel.body.error?.code]).toEqual([422, 'action_plan_required']);
+    // Tamamlanmış seviye 4 kayıtta açık plan satırı sahipsiz ya da geçmiş tarihli bırakılamaz.
+    for (const patch of [{ ownerUserId: null }, { dueOn: null }, { dueOn: '2020-01-01' }]) {
+      const r = await call('techEval', 'PATCH', `/api/v1/risk/actions/${con.body.id}`, patch);
+      expect([r.status, r.body.error?.code], JSON.stringify(patch)).toEqual([422, 'action_plan_required']);
+    }
+    expect((await call('techEval', 'PATCH', `/api/v1/risk/actions/${con.body.id}`, { dueOn: '2099-07-31' })).status).toBe(200);
+    // Yalnız Denetçi (ya da Yönetici) olan kullanıcı sahip olamaz.
+    for (const who of ['auditor', 'tenantAdmin'] as const) {
+      const r = await call('techEval', 'PATCH', `/api/v1/risk/actions/${con.body.id}`, { ownerUserId: h.world.users[who].id });
+      expect([r.status, r.body.error?.code], who).toEqual([422, 'invalid_owner']);
+    }
   });
 
   it('aksiyon sahibi başka departmanda: yalnız durum + not; değerlendirmeyi görmez', async () => {
@@ -280,9 +292,15 @@ describe('R9: seviye 4–5 aksiyon ve kontrol planı; revizyon değişmez; R10 g
     expect((await call('techEval', 'POST', url, { period: `${a.year}-2`, outcome: 'UPDATE' })).status).toBe(409);
 
     const rev1 = await one(`SELECT * FROM risk_assessment_revisions WHERE assessment_id = $1 AND revision_no = 1`, [a.id]);
+    // Gelecek dönem reddedilir.
+    expect((await call('techEval', 'POST', url, { period: '2099-1', outcome: 'NO_CHANGE' })).body.error?.code).toBe('invalid_period');
+    // Eski son tarih geçmişte; yeniden açılış bugün + ayar (varsayılan 90 gün) yeni son tarih verir, gecikmiş sayılmaz.
+    await h.owner.query(`UPDATE risk_assessments SET due_on = '2012-03-31' WHERE id = $1`, [a.id]);
     const u = await call('techEval', 'POST', url, { period: `${a.year}-3`, outcome: 'UPDATE' });
     expect(u.status, JSON.stringify(u.body)).toBe(201);
-    expect(u.body.assessment).toMatchObject({ status: 'OPEN', pendingReviewPeriod: `${a.year}-3` });
+    expect(u.body.assessment).toMatchObject({ status: 'OPEN', pendingReviewPeriod: `${a.year}-3`, overdue: false });
+    const expectDue = (await one(`SELECT ((now() AT TIME ZONE 'Europe/Istanbul')::date + 90)::text AS d`)).d;
+    expect(u.body.assessment.dueOn).toBe(expectDue);
     expect(u.body.draft).toMatchObject({ criteria: ROW54, questionSetId: setId, answers: ANSWERS_50 });
     // Açıkken "Değişiklik yok" yapılamaz.
     expect((await call('techEval', 'POST', url, { period: `${a.year}-4`, outcome: 'NO_CHANGE' })).body.error?.code).toBe('not_completed');
@@ -322,10 +340,10 @@ describe('R9: seviye 4–5 aksiyon ve kontrol planı; revizyon değişmez; R10 g
     expect(y).toMatchObject({ year: a.year, status: 'COMPLETED', level: 3, riskScore: '0.00', criticalityDisplay: '4,59', revisionCount: 2 });
     expect(y.openActions.map((x: any) => x.kind)).toEqual(['CONTROL']);
     const cur = await withTenant(h.pool, { tenantId: h.world.tenantA, userId: h.world.users.buyer.id, roles: ['PROCUREMENT'], companyIds: [], departmentIds: [],
-      allDepartments: true, correlationId: 'risk-current' }, (tx) => currentRisk(tx, h.world.suppliers.s1, `${a.year}-12-31`));
+      allDepartments: true, correlationId: 'risk-current' }, (tx) => currentRisk(tx, h.world.suppliers.s1, '2026-12-31'));
     expect(cur).toMatchObject({ assessmentId: a.id, year: a.year, revisionNo: 2, level: 3, riskScore: '0.00', column: 5 });
     const none = await withTenant(h.pool, { tenantId: h.world.tenantA, userId: h.world.users.buyer.id, roles: ['PROCUREMENT'], companyIds: [], departmentIds: [],
-      allDepartments: true, correlationId: 'risk-current' }, (tx) => currentRisk(tx, h.world.suppliers.s3, `${a.year}-12-31`));
+      allDepartments: true, correlationId: 'risk-current' }, (tx) => currentRisk(tx, h.world.suppliers.s3, '2026-12-31'));
     expect(none).toBeNull();
   });
 });
@@ -358,6 +376,10 @@ describe('R5: departman yalıtımı, katkıcı görüşü, sorumlu departman se�
     expect((await call('tc', 'GET', `/api/v1/risk/matrix?year=${a.year}`)).body.byStatus).toMatchObject({ OPEN: 0, COMPLETED: 0 });
     // Denetçi görüş ekleyemez.
     expect((await call('auditor', 'POST', `/api/v1/risk/assessments/${a.id}/opinions`, { body: 'Sentetik' })).status).toBe(403);
+    // İptal edilmiş değerlendirmeye görüş eklenmez.
+    await h.owner.query(`UPDATE risk_assessments SET status = 'CANCELLED' WHERE id = $1`, [a.id]);
+    const cx = await call('ik', 'POST', `/api/v1/risk/assessments/${a.id}/opinions`, { body: 'Sentetik görüş' });
+    expect([cx.status, cx.body.error?.code]).toEqual([409, 'cancelled']);
   });
 
   it('departmansız kayıt yalnız tümünü görenlere; Satınalma departman seçer, görev departmanı türetilir', async () => {
