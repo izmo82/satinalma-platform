@@ -298,6 +298,10 @@ export async function createCandidateSupplier(tx: Tx, ctx: TenantContext, body: 
   if (!ins.rows[0]) {
     const ex = (await tx.query<{ id: string; legal_name: string; status: string; tax_id: string; contact_email: string | null; merged_into_id: string | null }>(
       `SELECT id, legal_name, status, tax_id, contact_email, merged_into_id FROM suppliers WHERE country = 'TR' AND tax_id_type = 'VKN' AND tax_id = $1`, [norm.normalized])).rows[0]!;
+    if (ex.status === 'REJECTED' || ex.status === 'ARCHIVED') {
+      throw conflict('supplier_unusable', `Bu VKN ile kayıtlı "${ex.legal_name}" kartı ${ex.status === 'REJECTED' ? 'reddedilmiş' : 'arşivlenmiş'}; sözleşmede kullanılamaz. Satınalma ile görüşün.`,
+        { supplierId: ex.id, status: ex.status });
+    }
     if (ex.merged_into_id) {
       const target = (await tx.query<{ id: string; legal_name: string; status: string; tax_id: string; contact_email: string | null }>(
         `SELECT id, legal_name, status, tax_id, contact_email FROM suppliers WHERE id = $1`, [ex.merged_into_id])).rows[0];

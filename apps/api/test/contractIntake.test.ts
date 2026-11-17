@@ -135,6 +135,22 @@ describe('taslak', () => {
     const bad = await call(w, 'techEval', 'POST', '/api/v1/contract-drafts', { documentVersionId: d.documentVersionId, projectId: d.projectId, templateVersionId: randomUUID() });
     expect(bad.status).toBe(422);
     expect(bad.body.error.code).toBe('template_unknown');
+    // Yeni sürüm gelince eski sürüm geçersiz: taslakta ve alanlarda 422 template_superseded.
+    const chunks2: Buffer[] = [];
+    const z2 = new ZipStreamWriter({ write: async (c) => { chunks2.push(c); } });
+    await z2.addFile('word/document.xml', Buffer.from('<w:document>sablon v2</w:document>'));
+    await z2.finish();
+    const v2t = await multipart(w, 'masterData', `/api/v1/contract-templates/${t.body.id}/versions`, { validFrom: '2026-06-01' },
+      { name: 'sablon2.docx', mime: DOCX_MIME, data: Buffer.concat(chunks2) });
+    expect(v2t.status, JSON.stringify(v2t.body)).toBe(201);
+    const old = await call(w, 'techEval', 'POST', '/api/v1/contract-drafts', { documentVersionId: d.documentVersionId, projectId: d.projectId, templateVersionId: t.body.versionId });
+    expect(old.status).toBe(422);
+    expect(old.body.error.code).toBe('template_superseded');
+    const d2 = await draft(w);
+    const oldField = await call(w, 'techEval', 'PUT', `/api/v1/contracts/${d2.familyId}/fields`, { templateVersionId: t.body.versionId });
+    expect(oldField.status).toBe(422);
+    expect(oldField.body.error.code).toBe('template_superseded');
+    expect((await call(w, 'techEval', 'PUT', `/api/v1/contracts/${d2.familyId}/fields`, { templateVersionId: v2t.body.versionId })).status).toBe(200);
   });
 });
 
@@ -158,6 +174,13 @@ describe('aday tedarikçi (R9)', () => {
     const seeded = (await h.owner.query<{ tax_id: string }>(`SELECT tax_id FROM suppliers WHERE id = $1`, [w.suppliers.s1])).rows[0]!.tax_id;
     const ex = await call(w, 'techEval', 'POST', '/api/v1/suppliers/candidates', { legalName: 'Anadolu', vkn: seeded });
     expect(ex.body).toMatchObject({ id: w.suppliers.s1, status: 'ACTIVE', existing: true });
+    // Reddedilmiş kart: mevcut kart önerilmez, 409 supplier_unusable.
+    await h.owner.query(`UPDATE suppliers SET status = 'REJECTED', rejection_reason = 'Sentetik red' WHERE id = $1`, [r.body.id]);
+    const rejected = await call(w, 'techEval', 'POST', '/api/v1/suppliers/candidates', { legalName: 'Deneme', vkn });
+    expect(rejected.status).toBe(409);
+    expect(rejected.body.error.code).toBe('supplier_unusable');
+    expect(rejected.body.error.message).toMatch(/reddedilmiş/);
+    await h.owner.query(`UPDATE suppliers SET status = 'CANDIDATE', rejection_reason = NULL WHERE id = $1`, [r.body.id]);
     const own = await call(w, 'techEval', 'POST', '/api/v1/suppliers/candidates', { legalName: 'Kendi şirketimiz', vkn: w.companyA1.vkn });
     expect(own.status).toBe(422);
     expect(own.body.error.code).toBe('own_company_tax_id');
@@ -184,6 +207,10 @@ describe('alanlar ve gönderim', () => {
     expect(other.status).toBe(403);
     expect(other.body.error.code).toBe('not_contract_owner');
     expect((await v2(w, 'security', d.familyId)).body.can.edit).toBe(false);
+    // Bölüm kullanıcısı sözleşmeyi başka departmana taşıyamaz.
+    const foreignDept = await call(w, 'techEval', 'PUT', `/api/v1/contracts/${d.familyId}/fields`, { departmentId: w.departments.ik });
+    expect(foreignDept.status).toBe(403);
+    expect(foreignDept.body.error.code).toBe('department_forbidden');
     // Satınalma düzenleyebilir.
     const proc = await call(w, 'legal', 'PUT', `/api/v1/contracts/${d.familyId}/fields`, { contractType: 'SERVICE' });
     expect(proc.status).toBe(200);
@@ -234,6 +261,13 @@ describe('alanlar ve gönderim', () => {
     // Görev onaycının İşlerim'inde; onaycı karar verebilir, ekleyen veremez.
     const mine = (await call(w, 'security', 'GET', '/api/v1/tasks?view=mine')).body.items;
     expect(mine.map((t: any) => t.id)).toContain(s.body.firstTaskId);
+    // Aynı roldeki başka kullanıcı (ekleyen, Departman kullanıcısı) "Tümü" görünümünde kişiye atanmış onay adımı görevini görmez; sayılar şişmez.
+    const others = (await call(w, 'techEval', 'GET', '/api/v1/tasks?view=all')).body;
+    expect(others.items.map((t: any) => t.id)).not.toContain(s.body.firstTaskId);
+    expect(others.items.some((t: any) => t.kind === 'contract_approval')).toBe(false);
+    expect(others.counts.all).toBe(others.items.length);
+    const selin = (await call(w, 'security', 'GET', '/api/v1/tasks?view=all')).body;
+    expect(selin.counts.all).toBe(selin.items.length);
     expect((await v2(w, 'security', d.familyId)).body.can.decide).toBe(true);
     expect((await v2(w, 'legal', d.familyId)).body.can.decide).toBe(false);
     // İkinci gönderim açık zincirde 409.
@@ -329,6 +363,12 @@ describe('eski kayıt ve liste', () => {
       signatureMethod: 'NOT_REQUIRED', originalCustodyRequired: false, departmentId: w.departments.bt, supplierId: w.suppliers.s1,
       parties: [{ role: 'BUYER', displayName: w.companyA1.name, legalEntityId: w.companyA1.id }] });
     expect(old.status, JSON.stringify(old.body)).toBe(201);
+    // Geçişten sonra eski uçla açılan sözleşme eski kayıt değildir (051a): alanlarına göre Eksik alan.
+    const now = (await v2(w, 'legal', old.body.familyId)).body;
+    expect(now.status.code).toBe('INCOMPLETE');
+    expect(now.legacy).toBe(false);
+    // Faz 3 öncesi kayıt (intake_flow false) eski kayıttır.
+    await h.owner.query(`UPDATE contract_families SET intake_flow = false WHERE id = $1`, [old.body.familyId]);
     const g = (await v2(w, 'legal', old.body.familyId)).body;
     expect(g.status.code).toBe('INCOMPLETE');
     expect(g.legacy).toBe(true);
@@ -374,5 +414,82 @@ describe('eski kayıt ve liste', () => {
     expect(s.body.contract.status.code).toBe('IN_APPROVAL');
     expect(s.body.contract.legacy).toBe(false);
     expect(s.body.contract.chain.steps[1]).toMatchObject({ kind: 'PROCUREMENT_LEAD', assignedUser: { id: w.users.legal2.id }, viaDeputy: true });
+  });
+});
+
+describe('inceleme düzeltmeleri (Görev 4, tur 1)', () => {
+  it('geçişten sonra eski uçla açılan sözleşme alanları tamamlanınca LEGACY değil Taslak olur', async () => {
+    const w = await fresh();
+    const dv = await uploadContract(w, 'legal');
+    const c = await call(w, 'legal', 'POST', '/api/v1/contracts', { title: 'Yeni ama eski uçtan (SENTETİK)', documentVersionId: dv, stage: 'EXECUTION',
+      signatureMethod: 'NOT_REQUIRED', originalCustodyRequired: false, departmentId: w.departments.bt,
+      parties: [{ role: 'BUYER', displayName: w.companyA1.name, legalEntityId: w.companyA1.id }] });
+    expect(c.status).toBe(201);
+    const proj = await project(w, 'buyer', w.departments.bt);
+    const f = await call(w, 'legal', 'PUT', `/api/v1/contracts/${c.body.familyId}/fields`, { ...fullFields(w), projectId: proj });
+    expect(f.status, JSON.stringify(f.body)).toBe(200);
+    expect(f.body.status).toEqual({ code: 'DRAFT', label: 'Taslak' });
+    expect(f.body.legacy).toBe(false);
+    expect(f.body.family.intakeFlow).toBe(true);
+  });
+
+  it('onaylanan sözleşmede alan değişmez (409 contract_approved); yeni sürüm eklenince durum Taslak ve yeniden gönderilebilir', async () => {
+    const w = await fresh();
+    await approvers(w);
+    const d = await draft(w);
+    await call(w, 'techEval', 'PUT', `/api/v1/contracts/${d.familyId}/fields`, fullFields(w));
+    const s = await call(w, 'techEval', 'POST', `/api/v1/contracts/${d.familyId}/submit`, {});
+    expect(s.status).toBe(200);
+    // Karar akışı Görev 5'te; burada sahip bağlantısıyla bütün adımlar onaylanıp zincir kapanır.
+    await h.owner.query(`UPDATE contract_approval_steps SET decided_by = assigned_user_id, decided_at = now(), decision = 'APPROVED' WHERE chain_id = $1`, [s.body.chainId]);
+    await h.owner.query(`UPDATE contract_approval_chains SET closed_at = now(), outcome = 'APPROVED' WHERE id = $1`, [s.body.chainId]);
+    const g = (await v2(w, 'techEval', d.familyId)).body;
+    expect(g.status).toEqual({ code: 'APPROVED', label: 'Yürürlükte' });
+    expect(g.can).toEqual({ edit: false, submit: false, decide: false });
+    const edit = await call(w, 'techEval', 'PUT', `/api/v1/contracts/${d.familyId}/fields`, { amount: '1.00' });
+    expect(edit.status).toBe(409);
+    expect(edit.body.error.code).toBe('contract_approved');
+    expect(edit.body.error.message).toBe('Onaylanmış sözleşme değiştirilemez; değişiklik için yeni sürüm ekleyin.');
+    expect((await call(w, 'legal', 'PUT', `/api/v1/contracts/${d.familyId}/fields`, { contractNo: 'SZ-1' })).status).toBe(409);
+    const resend = await call(w, 'techEval', 'POST', `/api/v1/contracts/${d.familyId}/submit`, {});
+    expect(resend.status).toBe(409);
+    expect(resend.body.error.code).toBe('contract_approved');
+
+    // Yeni sürüm (zeyilname): onay güncel belgeyi kapsamaz → durum yeniden türetilir, alanlar yeni sürüme girilir, Taslak.
+    const newDoc = await uploadContract(w);
+    const nv = await call(w, 'techEval', 'POST', `/api/v1/contract-versions/${d.contractVersionId}/versions`,
+      { documentVersionId: newDoc, kind: 'AMENDMENT', stage: 'DRAFT' }) as any;
+    const token = await auth.issue(`dev|${w.users.techEval.email}`);
+    const res = await h.app.inject({ method: 'POST', url: `/api/v1/contract-versions/${d.contractVersionId}/versions`,
+      headers: { authorization: `Bearer ${token}`, 'x-tenant-id': w.tenantA, 'if-match': g.document.etag }, payload: { documentVersionId: newDoc, kind: 'AMENDMENT', stage: 'DRAFT' } });
+    expect(nv.status).toBe(428); // If-Match olmadan eski kural aynen
+    expect(res.statusCode, res.body).toBe(201);
+    const after = (await v2(w, 'techEval', d.familyId)).body;
+    expect(after.status.code).not.toBe('APPROVED');
+    expect(after.document.versionNo).toBe(2);
+    const refill = await call(w, 'techEval', 'PUT', `/api/v1/contracts/${d.familyId}/fields`, fullFields(w));
+    expect(refill.status, JSON.stringify(refill.body)).toBe(200);
+    expect(refill.body.status).toEqual({ code: 'DRAFT', label: 'Taslak' });
+    expect(refill.body.chain).toMatchObject({ id: s.body.chainId, status: 'APPROVED' });
+    expect(refill.body.can.submit).toBe(true);
+    expect((await call(w, 'techEval', 'POST', `/api/v1/contracts/${d.familyId}/submit`, {})).status).toBe(200);
+  });
+
+  it('görev ayrılığı: onaya gönderen de ekleyen sayılır (zincirde vekile gider, karar veremez)', async () => {
+    const w = await fresh();
+    await approvers(w);
+    const d = await draft(w);
+    await call(w, 'techEval', 'PUT', `/api/v1/contracts/${d.familyId}/fields`, fullFields(w));
+    // Satınalma direktörü (Mine) başkasının sözleşmesini gönderir: direktör adımı vekile (Ferda) gider.
+    const pv = (await call(w, 'masterData', 'GET', `/api/v1/contracts/${d.familyId}/approval-preview`)).body;
+    expect(pv.steps[2]).toMatchObject({ kind: 'PROCUREMENT_DIRECTOR', userId: w.users.finance.id, viaDeputy: true });
+    const s = await call(w, 'masterData', 'POST', `/api/v1/contracts/${d.familyId}/submit`, {});
+    expect(s.status, JSON.stringify(s.body)).toBe(200);
+    expect(s.body.contract.chain.steps[2]).toMatchObject({ assignedUser: { id: w.users.finance.id }, viaDeputy: true });
+    // Gönderen sonradan açık adımın etkin vekili olsa da karar veremez.
+    await approvers(w, 'security', 'masterData');
+    expect((await v2(w, 'masterData', d.familyId)).body.can.decide).toBe(false);
+    await approvers(w, 'security', 'buyer');
+    expect((await v2(w, 'buyer', d.familyId)).body.can.decide).toBe(true);
   });
 });

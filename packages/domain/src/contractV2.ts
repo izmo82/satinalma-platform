@@ -97,8 +97,11 @@ export function planChain(input: {
   };
   useDeputyForHead: boolean;
   extras: string[];
+  /** Görev ayrılığı: ekleyen gibi sayılan diğer kişiler (ör. onaya gönderen). creatorId her zaman dışarıda kalır. */
+  excludedIds?: string[];
 }): { steps: PlannedStep[] } | PlanChainError {
-  const { creatorId, approvers: a } = input;
+  const { approvers: a } = input;
+  const excluded = new Set([input.creatorId, ...(input.excludedIds ?? [])]);
   const steps: PlannedStep[] = [];
 
   const slots: { kind: StepKind; main: Person | null; deputy: Person | null; missing: PlanChainError['error']; forceDeputy: boolean }[] = [
@@ -110,15 +113,15 @@ export function planChain(input: {
     if (!s.main) return { error: s.missing, kind: s.kind };
     let person: Person = s.main;
     let viaDeputy = false;
-    if (s.forceDeputy || person.id === creatorId) {
-      if (!s.deputy || s.deputy.id === creatorId) return { error: 'no_eligible_approver', kind: s.kind };
+    if (s.forceDeputy || excluded.has(person.id)) {
+      if (!s.deputy || excluded.has(s.deputy.id)) return { error: 'no_eligible_approver', kind: s.kind };
       person = s.deputy;
       viaDeputy = true;
     }
     steps.push({ order: steps.length + 1, kind: s.kind, userId: person.id, viaDeputy });
   }
   for (const id of input.extras) {
-    if (id === creatorId) return { error: 'no_eligible_approver', kind: 'EXTRA' };
+    if (excluded.has(id)) return { error: 'no_eligible_approver', kind: 'EXTRA' };
     steps.push({ order: steps.length + 1, kind: 'EXTRA', userId: id, viaDeputy: false });
   }
   return { steps };

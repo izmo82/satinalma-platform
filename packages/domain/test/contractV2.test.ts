@@ -189,3 +189,20 @@ describe('izinler', () => {
     expect(can(['AUDITOR'], 'supplier.candidate.create')).toBe(false);
   });
 });
+
+describe('planChain excludedIds (görev ayrılığı: gönderen de ekleyen sayılır)', () => {
+  const P = (id: string) => ({ id });
+  const approvers = { head: P('h'), deputy: P('hd'), lead: P('l'), leadDeputy: P('ld'), director: P('d'), directorDeputy: P('dd') };
+  const input = { creatorId: 'c', approvers, useDeputyForHead: false, extras: [] as string[] };
+  it('gönderen satınalma sorumlusuysa o adım vekile gider', () => {
+    const r = planChain({ ...input, excludedIds: ['l'] });
+    expect('steps' in r && r.steps[1]).toEqual({ order: 2, kind: 'PROCUREMENT_LEAD', userId: 'ld', viaDeputy: true });
+  });
+  it('vekil de dışlanmışsa no_eligible_approver', () => {
+    expect(planChain({ ...input, excludedIds: ['d', 'dd'] })).toEqual({ error: 'no_eligible_approver', kind: 'PROCUREMENT_DIRECTOR' });
+  });
+  it('dışlanan kişi ek onaycı olamaz; boş liste eski davranış', () => {
+    expect(planChain({ ...input, excludedIds: ['x'], extras: ['x'] })).toEqual({ error: 'no_eligible_approver', kind: 'EXTRA' });
+    expect(planChain({ ...input, excludedIds: [] })).toEqual(planChain(input));
+  });
+});

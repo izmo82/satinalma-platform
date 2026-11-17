@@ -97,12 +97,25 @@ async function chainRows(tx: Tx, familyIds: string[]): Promise<Map<string, Chain
   return out;
 }
 
-const summary = (c: ChainRow): ChainSummary => (c.closed_at ? { status: c.outcome! } : { status: 'OPEN', nextStepKind: c.next_kind });
+/**
+ * Zincir özeti. Onaylanan zincirin sürümü ailenin güncel sürümü değilse (onaydan sonra yeni sürüm eklendi) onay güncel belgeyi
+ * kapsamaz: özet "iptal" sayılır ve durum Taslak (yeniden onay gerekir) türetilir.
+ */
+const summary = (c: ChainRow, currentVersionId: string | null): ChainSummary =>
+  !c.closed_at ? { status: 'OPEN', nextStepKind: c.next_kind }
+    : c.outcome === 'APPROVED' && c.version_id !== currentVersionId ? { status: 'CANCELLED' } : { status: c.outcome! };
+
+/** Son zincir güncel sürüm için onaylandı mı: bu durumda alanlar değişmez, yeniden gönderilmez (değişiklik yeni sürümle). */
+const approvedCurrent = (f: FamilyRow, chains: ChainRow[]) => {
+  const l = chains.at(-1);
+  return !!l && l.outcome === 'APPROVED' && l.version_id === f.version_id;
+};
 
 function statusOf(f: FamilyRow, chains: ChainRow[], day = today()) {
   const missing = missingRequired(fieldsOf(f));
+  // Eski kayıt: Faz 3 geçişinden (051a) önce açılmış (intake_flow false) ve hiç onay zinciri yok.
   const legacy = !f.intake_flow && chains.length === 0;
-  const s = contractStatus({ missing, chains: chains.map(summary), legacy, endDate: f.end_date, indefinite: f.indefinite, today: day });
+  const s = contractStatus({ missing, chains: chains.map((c) => summary(c, f.version_id)), legacy, endDate: f.end_date, indefinite: f.indefinite, today: day });
   return { missing, legacy, code: s.code, label: s.label };
 }
 
@@ -146,6 +159,16 @@ const isProcurement = (ctx: TenantContext) => normalizeRoles(ctx.roles).includes
 /** Onaycı aileyi görür ama yazamaz (R6): yazma, ailenin departman kapsamındadır. */
 const writable = (ctx: TenantContext, f: FamilyRow) => ctx.allDepartments || (f.department_id != null && ctx.departmentIds.includes(f.department_id));
 const editAllowed = (ctx: TenantContext, f: FamilyRow) => writable(ctx, f) && (f.created_by === ctx.userId || isProcurement(ctx));
+const assertNotApproved = (f: FamilyRow, chains: ChainRow[]) => {
+  if (approvedCurrent(f, chains)) throw conflict('contract_approved', 'Onaylanmış sözleşme değiştirilemez; değişiklik için yeni sürüm ekleyin.');
+};
+async function templateVersion(tx: Tx, id: string) {
+  const tv = (await tx.query<{ contract_type: string; superseded_at: Date | null }>(`SELECT t.contract_type, tv.superseded_at FROM contract_template_versions tv
+    JOIN contract_templates t ON t.id = tv.template_id WHERE tv.id = $1`, [id])).rows[0];
+  if (!tv) throw unprocessable('template_unknown', 'Seçilen şablon sürümü bulunamadı.');
+  if (tv.superseded_at) throw unprocessable('template_superseded', 'Bu şablon sürümü geçersiz (yerine yeni sürüm geldi); güncel sürümü seçin.');
+  return tv;
+}
 
 function assertCanEdit(ctx: TenantContext, f: FamilyRow) {
   if (!writable(ctx, f)) throw new ApiError(403, 'department_forbidden', 'Bu sözleşmeyi görebilirsiniz ama düzenleyemezsiniz.');
@@ -185,12 +208,7 @@ export async function createDraft(tx: Tx, ctx: TenantContext, body: { documentVe
   if (!doc) throw notFound();
   if (doc.company_id !== project.company_id) throw unprocessable('project_company_mismatch', 'Belge ve proje aynı şirkete ait olmalı.');
   let contractType: string | null = null;
-  if (body.templateVersionId) {
-    const tv = (await tx.query<{ contract_type: string }>(`SELECT t.contract_type FROM contract_template_versions tv JOIN contract_templates t ON t.id = tv.template_id WHERE tv.id = $1`,
-      [body.templateVersionId])).rows[0];
-    if (!tv) throw unprocessable('template_unknown', 'Seçilen şablon sürümü bulunamadı.');
-    contractType = tv.contract_type;
-  }
+  if (body.templateVersionId) contractType = (await templateVersion(tx, body.templateVersionId)).contract_type;
   // Aynı belge (sha256) başka bir sözleşmede: engellemez, uyarır. Yalnız çağıranın görebildiği sözleşmeler (RLS).
   const dup = (await tx.query<{ id: string; code: string; title: string }>(`SELECT f.id, f.code, f.title FROM contract_versions cv
       JOIN document_versions dv ON dv.id = cv.document_version_id JOIN contract_families f ON f.id = cv.family_id
@@ -234,6 +252,7 @@ export async function updateFields(tx: Tx, ctx: TenantContext, familyId: string,
   const f = await loadFamily(tx, familyId);
   assertCanEdit(ctx, f);
   if (!f.version_id) throw notFound();
+  assertNotApproved(f, (await chainRows(tx, [familyId])).get(familyId) ?? []);
   const has = (k: keyof FieldsInput) => Object.prototype.hasOwnProperty.call(body, k);
   const set: Record<string, unknown> = {};
   const put = (col: string, cur: unknown, next: unknown) => { if ((cur ?? null) !== (next ?? null)) set[col] = next ?? null; };
@@ -266,9 +285,7 @@ export async function updateFields(tx: Tx, ctx: TenantContext, familyId: string,
     put('owner_user_id', f.owner_user_id, body.ownerUserId);
   }
   if (has('templateVersionId')) {
-    if (body.templateVersionId && !(await tx.query(`SELECT 1 FROM contract_template_versions WHERE id = $1`, [body.templateVersionId])).rowCount) {
-      throw unprocessable('template_unknown', 'Seçilen şablon sürümü bulunamadı.');
-    }
+    if (body.templateVersionId && body.templateVersionId !== f.template_version_id) await templateVersion(tx, body.templateVersionId);
     put('template_version_id', f.template_version_id, body.templateVersionId);
   }
   if (has('contractType')) put('contract_type', f.contract_type, body.contractType);
@@ -380,8 +397,9 @@ async function plan(tx: Tx, ctx: TenantContext, f: FamilyRow, opts: { useDeputyF
   if (bad.length) throw unprocessable('approver_invalid', 'Ek onaycı yalnız etkin Satınalma ya da Departman kullanıcısı olabilir.', { userIds: bad });
   const a = f.department_id ? await currentApprovers(tx, f.department_id) : { ...(await currentApprovers(tx, '00000000-0000-0000-0000-000000000000')), head: null, deputy: null };
   const p = (x: { userId: string } | null) => (x ? { id: x.userId } : null);
+  // Görev ayrılığı: ekleyen ve onaya gönderen (çağıran) kendi zincirinde onaycı olmaz.
   const res = planChain({
-    creatorId: f.created_by, useDeputyForHead: !!opts.useDeputyForHead, extras,
+    creatorId: f.created_by, excludedIds: [ctx.userId], useDeputyForHead: !!opts.useDeputyForHead, extras,
     approvers: { head: p(a.head), deputy: p(a.deputy), lead: p(a.lead), leadDeputy: p(a.leadDeputy), director: p(a.director), directorDeputy: p(a.directorDeputy) },
   });
   if ('error' in res) return { ok: false, error: res.error, kind: res.kind, kindLabel: STEP_KIND_TR[res.kind], message: PLAN_MESSAGES[res.error]!(STEP_KIND_TR[res.kind]) };
@@ -420,6 +438,7 @@ export async function submitContract(tx: Tx, ctx: TenantContext, familyId: strin
   const f = await loadFamily(tx, familyId);
   assertCanEdit(ctx, f);
   const chains = (await chainRows(tx, [familyId])).get(familyId) ?? [];
+  assertNotApproved(f, chains);
   if (chains.some((c) => !c.closed_at)) throw conflict('chain_open', 'Bu sözleşme zaten onayda; yeni gönderim için önce içerik değişmeli ya da karar beklenmeli.');
   const missing = missingRequired(fieldsOf(f));
   if (missing.length) {
@@ -466,9 +485,9 @@ export async function getContractV2(tx: Tx, ctx: TenantContext, familyId: string
        LEFT JOIN users xu ON xu.id = s.decided_by WHERE s.chain_id = $1 ORDER BY s.step_order`, [latest.id])).rows : [];
   const currentStep = latest && !latest.closed_at ? steps.find((s) => !s.decision) ?? null : null;
 
-  // Karar yetkisi (R4): adıma sabitlenen kişi ya da o unvanın şu anki etkin vekili; ekleyen kendi sözleşmesine karar veremez.
+  // Karar yetkisi (R4): adıma sabitlenen kişi ya da o unvanın şu anki etkin vekili; ekleyen ve gönderen karar veremez.
   let decide = false;
-  if (currentStep && f.created_by !== ctx.userId) {
+  if (currentStep && f.created_by !== ctx.userId && latest!.submitted_by !== ctx.userId) {
     if (currentStep.assigned_user_id === ctx.userId) decide = true;
     else if (currentStep.kind !== 'EXTRA') {
       const a = await currentApprovers(tx, currentStep.department_id ?? '00000000-0000-0000-0000-000000000000');
@@ -501,7 +520,7 @@ export async function getContractV2(tx: Tx, ctx: TenantContext, familyId: string
   const scheduled = (await tx.query<{ id: string; kind: 'END' | 'NOTICE'; offset_days: number; due_on: string }>(
     `SELECT id, kind, offset_days, due_on::text FROM contract_reminders WHERE family_id = $1 ORDER BY due_on, kind`, [familyId])).rows;
 
-  const canEdit = editAllowed(ctx, f);
+  const canEdit = editAllowed(ctx, f) && !approvedCurrent(f, chains);
   const openChain = chains.some((c) => !c.closed_at);
   const person = (id: string | null, name: string | null) => (id ? { id, displayName: name ?? '' } : null);
   return {

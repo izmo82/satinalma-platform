@@ -341,6 +341,7 @@ export async function buildApp(deps: AppDeps) {
                 WHEN 'incident' THEN (SELECT x.code FROM supplier_incidents x WHERE x.id = t.entity_id)
               END AS "refNo"
        FROM tasks t WHERE t.status = 'OPEN' AND ${taskRoleSql('$1')} AND ${visibleTaskSql()}
+         AND (t.entity_type <> 'contract_approval_step' OR t.assignee_user_id = $3)
          AND ($2 <> 'overdue' OR (t.due_at IS NOT NULL AND t.due_at < now()))
          AND ($2 <> 'mine' OR t.assignee_user_id IS NULL OR t.assignee_user_id = $3)
        ORDER BY CASE t.severity WHEN 'CRITICAL' THEN 0 WHEN 'HIGH' THEN 1 ELSE 2 END, t.due_at NULLS LAST, t.created_at
@@ -349,7 +350,8 @@ export async function buildApp(deps: AppDeps) {
     const c = (await tx.query<{ mine: number; overdue: number; all: number }>(
       `SELECT count(*) FILTER (WHERE assignee_user_id IS NULL OR assignee_user_id = $2)::int AS mine,
               count(*) FILTER (WHERE due_at IS NOT NULL AND due_at < now())::int AS overdue, count(*)::int AS "all"
-       FROM tasks t WHERE t.status = 'OPEN' AND ${taskRoleSql('$1')} AND ${visibleTaskSql()}`, [ctx.roles, ctx.userId])).rows[0];
+       FROM tasks t WHERE t.status = 'OPEN' AND ${taskRoleSql('$1')} AND ${visibleTaskSql()}
+         AND (t.entity_type <> 'contract_approval_step' OR t.assignee_user_id = $2)`, [ctx.roles, ctx.userId])).rows[0];
     return { items: r.rows, counts: c };
   }));
 
