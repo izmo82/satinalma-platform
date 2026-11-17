@@ -205,6 +205,7 @@ test.describe('v2 Faz 7: fatura eşleştirme ve uyum denetimi (veri değiştiren
     await page.getByRole('button', { name: 'Kuralı kaydet' }).click();
     await expect(page.getByText(/güncellendi\./)).toBeVisible();
     await page.getByRole('button', { name: 'Yayımla' }).click();
+    await page.getByRole('dialog', { name: /yayımlansın mı/ }).getByRole('button', { name: 'Yayımla' }).click();
     await expect(page.getByText(/yayımlandı; .* tarihinden itibaren yürürlükte/)).toBeVisible();
     await expect(page.getByText('Yürürlükte', { exact: true }).first()).toBeVisible();
     await expect(page.getByRole('button', { name: 'Kural ekle' })).toHaveCount(0);
@@ -222,7 +223,7 @@ test.describe('v2 Faz 7: fatura eşleştirme ve uyum denetimi (veri değiştiren
     await page.goto('/faturalar');
     const chips = page.getByRole('group', { name: 'Eşleşme süzgeci' });
     await chips.getByRole('button', { name: /^Eşleşmedi kuyruğu/ }).click();
-    await expect(page).toHaveURL(/durum=ESLESMEDI/);
+    await expect(page).toHaveURL(/durum=KUYRUK/);
     const row = page.getByRole('row').filter({ hasText: invNo });
     await expect(row.getByText('Eşleşmedi', { exact: true }).first()).toBeVisible();
     await expect(row.getByText(/Tahsis kontrolü: Eşleşmedi/)).toBeVisible();
@@ -350,7 +351,11 @@ test('Faz 7 ekranları: taşma ve erişilebilirlik (her genişlik, salt okunur)'
   await login(page, 'alper.satinalma@example.test');
   await page.goto('/faturalar');
   const chips = page.getByRole('group', { name: 'Eşleşme süzgeci' });
-  for (const n of [/^Tümü/, /^Eşleşmedi kuyruğu/, /^Eşleşti/, /^Hukuken iptal\/ret/]) await expect(chips.getByRole('button', { name: n })).toBeVisible();
+  for (const n of [/^Tümü/, /^Eşleşmedi kuyruğu/, /^Eşleşti/, /^Tahsis kontrolü eksik/, /^Hukuken iptal\/ret/]) await expect(chips.getByRole('button', { name: n })).toBeVisible();
+  // Eski adres (tahsis tabanlı "Eşleşmedi") aynı anlamla açılır; yeni v2 kuyruğunun adresi ayrı.
+  await page.goto('/faturalar?durum=ESLESMEDI');
+  await expect(chips.getByRole('button', { name: /^Tahsis kontrolü eksik/ })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByText(/Tahsis kontrolü: Eşleşti/)).toHaveCount(0);
   for (const c of ['Sözleşme', 'Departman', 'Eşleşme']) await expect(page.getByRole('columnheader', { name: c, exact: true }).first()).toBeVisible();
   expect(await fits(page)).toBe(true);
   await axe(page, 'Faturalar');

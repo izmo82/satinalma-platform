@@ -34,10 +34,11 @@ const PAST_DECISION: Record<string, string> = { APPROVAL: 'Onaylandı (v1 kaydı
  *  Liste alan adı paketinde tektir (API görevleri de aynı listeyle süzer). */
 const REMOVED_ISSUES = new Set(REMOVED_ISSUE_CODES);
 const ERP: Record<string, string> = { PENDING: 'ERP: aktarım bekliyor', UNKNOWN: 'ERP: belirsiz (zaman aşımı) — sorgulanacak', CONFIRMED: 'ERP: aktarıldı', FAILED: 'ERP: hata', NOT_CONFIGURED: 'ERP bağlantısı yapılandırılmadı' };
-// v2 Faz 7 (D112, Figma 17): süzgeç değerleri (URL `durum`) aynı; "Eşleşmedi kuyruğu" ve "Eşleşti" sunucunun eşleşme durumuyla (R1) süzer ve
-// sunucu sayaçlarını gösterir. Hukuken iptal/ret ayrı süzgeç olarak kalır.
-const MATCH_FILTERS = [['', 'Tümü'], ['ESLESMEDI', 'Eşleşmedi kuyruğu'], ['ESLESTI', 'Eşleşti'], ['IPTAL', 'Hukuken iptal/ret']] as const;
-const SERVER_MATCH: Record<string, string> = { ESLESMEDI: 'UNMATCHED', ESLESTI: 'MATCHED' };
+// v2 Faz 7 (D112, Figma 17): "Eşleşmedi kuyruğu" (yeni URL değeri KUYRUK) ve "Eşleşti" sunucunun eşleşme durumuyla (R1) süzer ve sunucu
+// sayaçlarını gösterir. Eski tahsis tabanlı "Eşleşmedi" süzgeci "Tahsis kontrolü eksik" adıyla aynı URL değeriyle (ESLESMEDI) kalır;
+// eski bağlantılar ve kayıtlı görünümler aynı anlamı açar. Hukuken iptal/ret aynen.
+const MATCH_FILTERS = [['', 'Tümü'], ['KUYRUK', 'Eşleşmedi kuyruğu'], ['ESLESTI', 'Eşleşti'], ['ESLESMEDI', 'Tahsis kontrolü eksik'], ['IPTAL', 'Hukuken iptal/ret']] as const;
+const SERVER_MATCH: Record<string, string> = { KUYRUK: 'UNMATCHED', ESLESTI: 'MATCHED' };
 
 interface InvoiceRow { id: string; kind: keyof typeof KIND; invoiceNo: string; issueDate: string; currency: string; supplierName: string; supplierStatus: string; supplierIdentityVerified: boolean;
   netAmount: string; legalStatus: string; paymentStatus: string; decision: string | null; erpStatus: string | null; duplicateCount: number; matched: boolean; departmentId: string | null; departmentName: string | null;
@@ -75,12 +76,13 @@ export function InvoicesPage() {
   const setParam = (k: string, v: string) => { const p = new URLSearchParams(params); v ? p.set(k, v) : p.delete(k); setParams(p, { replace: true }); };
   const toggleCol = (c: string) => { const n = new Set(hidden); n.has(c) ? n.delete(c) : n.add(c); setParam('gizle', [...n].sort().join(',')); };
   const all = r.data?.items ?? [];
-  // Eşleşme süzgeçleri sunucuda (R1 türetimi); hukuken iptal/ret istemcide.
-  const matches = (x: InvoiceRow, k: string) => k !== 'IPTAL' || matchOf(x) === 'IPTAL';
+  // v2 eşleşme süzgeçleri sunucuda (R1 türetimi); eski tahsis kontrolü ve hukuken iptal/ret istemcide (yüklenen liste üzerinde).
+  const matches = (x: InvoiceRow, k: string) => k === 'IPTAL' || k === 'ESLESMEDI' ? matchOf(x) === k : true;
   const items = all.filter((x) => matches(x, durum) && (!para || x.currency === para));
   const counts = r.data?.counts;
-  const chipCount = (k: string) => k === 'IPTAL' ? (durum === '' || durum === 'IPTAL' ? all.filter((x) => matchOf(x) === 'IPTAL').length : undefined)
-    : counts ? (k === '' ? counts.all : k === 'ESLESMEDI' ? counts.unmatched : counts.matched) : undefined;
+  const clientSide = !SERVER_MATCH[durum];
+  const chipCount = (k: string) => k === 'IPTAL' || k === 'ESLESMEDI' ? (clientSide ? all.filter((x) => matchOf(x) === k).length : undefined)
+    : counts ? (k === '' ? counts.all : k === 'KUYRUK' ? counts.unmatched : counts.matched) : undefined;
   const canMatch = !!r.data?.can?.match;
   const currencies = [...new Set(all.map((x) => x.currency))].sort();
   const COLS = [['tedarikci', 'Tedarikçi'], ['sozlesme', 'Sözleşme'], ['proje', 'Proje'], ['erp', 'ERP / ödeme'], ['tarih', 'Tarih']] as const;
@@ -130,7 +132,7 @@ export function InvoicesPage() {
               <TableCell>
                 {/* v2 Faz 7: birincil durum sunucunun eşleşme durumu; hukuki iptal/ret her zaman görünür; eski tahsis kontrolü ikincil satır. */}
                 {x.matchState ? <span className="flex flex-wrap gap-1"><Tag label={matchStateTag(x.matchState, x.matchStateLabel)} />{matchOf(x) === 'IPTAL' && <Tag label={MATCH.IPTAL} />}</span> : <Tag label={MATCH[matchOf(x)]} />}
-                {x.matchState && matchOf(x) !== 'IPTAL' && <span className="mt-1 block text-sm text-ink-subtle">Tahsis kontrolü: {MATCH[matchOf(x)].text}</span>}
+                {x.matchState && matchOf(x) === 'ESLESMEDI' && <span className="mt-1 block text-sm text-ink-subtle">Tahsis kontrolü: Eşleşmedi</span>}
                 {x.decision && <span className="mt-1 block text-sm text-ink-subtle">{PAST_DECISION[x.decision]}</span>}
                 {canMatch && x.matchState === 'UNMATCHED' && x.legalStatus === 'RECEIVED' && !x.decision &&
                   <Button size="xs" variant="outline" className="mt-1" onClick={() => setLinking(x)} aria-label={`${x.invoiceNo} faturasını elle bağla`}>Elle bağla</Button>}</TableCell>
@@ -241,9 +243,11 @@ export function InvoicePage() {
       <p className="text-sm text-ink-subtle"><Link to="/faturalar" className="text-ink-subtle">Faturalar</Link> / {d.invoice.invoiceNo}</p>
       <div className="mb-4 mt-1 flex flex-wrap items-start gap-3">
         <h1 className="min-w-0 flex-1">{KIND[d.invoice.kind]} {d.invoice.invoiceNo} · {d.invoice.supplierName}</h1>
-        {/* v2 Faz 7: birincil durum eşleşme kartındaki sunucu durumu; eski tahsis kontrolü yanında ikincil etiket olarak kalır. */}
-        {d.match ? <span className="flex flex-wrap items-center gap-2"><Tag label={matchStateTag(d.match.state, d.match.stateLabel)} />
-          <span className="flex items-center gap-1.5 text-sm text-ink-subtle">Tahsis kontrolü: <Tag label={MATCH[match]} /></span></span> : <Tag label={MATCH[match]} />}
+        {/* v2 Faz 7 (iOS a6ac440 ile aynı kural): birincil durum sunucunun eşleşme durumu; hukuki iptal/ret etiketi yanında; eski tahsis
+            kontrolü yalnız başarısızsa ikincil metin. */}
+        {d.match ? <span className="grid justify-items-end gap-1"><span className="flex flex-wrap items-center gap-2"><Tag label={matchStateTag(d.match.state, d.match.stateLabel)} />
+          {match === 'IPTAL' && <Tag label={MATCH.IPTAL} />}</span>
+          {match === 'ESLESMEDI' && <span className="text-sm text-ink-subtle">Tahsis kontrolü: Eşleşmedi</span>}</span> : <Tag label={MATCH[match]} />}
       </div>
       <div className="mb-5 flex flex-wrap gap-x-6 gap-y-1 text-sm text-ink-muted">
         {supplierNote && <span className="text-warn">Tedarikçi: {supplierNote}</span>}

@@ -47,13 +47,14 @@ export function ComplianceAudits() {
               <div className="flex items-center justify-between gap-2"><span className="tabular text-sm text-ink-subtle">{x.projectCode}</span><Tag label={verdictTag(x)} /></div>
               <Link className="font-semibold text-ink" to={`/projeler/${x.projectId}?sekme=uyum`}>{x.projectTitle}</Link>
               <div className="text-sm text-ink-muted">Puan {x.score ?? '—'} · {x.ruleSetVersion ? `sürüm ${x.ruleSetVersion}` : 'set yok'} · {fmtDate(x.completedOn)}</div>
+              {x.ruleSetNote && <div className="text-sm text-warn">{x.ruleSetNote}</div>}
               <div className="text-sm">Departman: <DepartmentName name={x.departmentName} /></div>
               <div className="flex flex-wrap items-center gap-2"><Tag label={providerTag(x)} /><Button size="xs" variant="outline" onClick={() => void download(x)} aria-label={`${x.projectCode} PDF indir`}>PDF</Button></div>
             </li>))}
         </ul>
         <div className="max-[640px]:hidden"><Table>
           <TableHeader><TableRow className="hover:bg-transparent"><TableHead>Proje</TableHead><TableHead>Departman</TableHead><TableHead>Tamamlanma</TableHead><TableHead className="text-right">Puan</TableHead>
-            <TableHead>Hüküm</TableHead><TableHead>Kural seti</TableHead><TableHead className="max-[1100px]:hidden">Yapay zekâ</TableHead><TableHead><span className="sr-only">PDF</span></TableHead></TableRow></TableHeader>
+            <TableHead>Hüküm</TableHead><TableHead>Kural seti</TableHead><TableHead>Yapay zekâ</TableHead><TableHead><span className="sr-only">PDF</span></TableHead></TableRow></TableHeader>
           <TableBody>{r.data.items.map((x) => (
             <TableRow key={x.auditId}>
               <TableCell className="min-w-[220px]"><Link className="font-semibold text-ink" to={`/projeler/${x.projectId}?sekme=uyum`}>{x.projectTitle}</Link><span className="tabular block text-sm text-ink-subtle">{x.projectCode} · koşu {x.runNo}</span></TableCell>
@@ -62,7 +63,7 @@ export function ComplianceAudits() {
               <TableCell className="tabular text-right font-semibold">{x.score ?? '—'}</TableCell>
               <TableCell><Tag label={verdictTag(x)} /></TableCell>
               <TableCell className="text-sm">{x.ruleSetVersion ? `Sürüm ${x.ruleSetVersion}` : '—'}{x.ruleSetNote && <span className="block text-warn">{x.ruleSetNote}</span>}</TableCell>
-              <TableCell className="max-[1100px]:hidden"><Tag label={providerTag(x)} /></TableCell>
+              <TableCell><Tag label={providerTag(x)} /></TableCell>
               <TableCell><Button size="sm" variant="outline" onClick={() => void download(x)} aria-label={`${x.projectCode} PDF indir`}>PDF indir</Button></TableCell>
             </TableRow>))}</TableBody>
         </Table></div>

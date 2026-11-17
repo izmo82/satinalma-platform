@@ -1,3 +1,4 @@
+// v2 Faz 7 (D112): tahsis sonrası beklenen etiket v2 eşleşme durumu ("Tahsisle (eski kayıt)"); eski "Eşleşti" etiketi yalnız v2 durumu olmayan yanıtta.
 // v2 Faz 1 (D93/D95): sipariş/kabul, fatura finans onayı, istisna onayı ve tolerans onaylı kaldırma listesinde (atlanır). Kalanlar yeni yollarından sınanır: Fatura gir ve tekrar gelen fatura, sözleşmeye tahsis (eşleştirme), e-Fatura XML yükleme (/faturalar/yukle), fatura ekranlarının taşmaması. Bulgu metni v2 dilinde ("sözleşmeye tahsis edilmedi").
 import { expect, test, type Page } from '@playwright/test';
 import { syntheticVkn } from '../../../packages/domain/src/taxId.ts';
@@ -116,7 +117,10 @@ test('Fatura gir → sözleşmeye tahsis → eşleşti; onay denetimi yok; tekra
   await target.selectOption({ label: contract });
   await page.getByRole('button', { name: 'Tahsisi kaydet ve kontrol et' }).click();
   await expect(page.getByText('Sözleşme: Yazılım Lisans ve Destek Sözleşmesi (SENTETİK)')).toBeVisible();
-  await expect(page.getByText('Eşleşti', { exact: true }).first()).toBeVisible();
+  // v2 Faz 7 (D112): birincil etiket v2 eşleşme durumu (tek sözleşmeye tahsis = "Tahsisle (eski kayıt)"); tahsis kontrolü geçtiği için
+  // ikincil "Tahsis kontrolü: Eşleşmedi" satırı yok (iOS a6ac440 ile aynı kural).
+  await expect(page.getByText('Tahsisle (eski kayıt)', { exact: true }).first()).toBeVisible();
+  await expect(page.getByText('Tahsis kontrolü: Eşleşmedi')).toHaveCount(0);
   for (const b of ['Finans onayı', 'Reddet', 'İstisnayı onayla']) await expect(page.getByRole('button', { name: b })).toHaveCount(0);
   // Aynı fatura ikinci kez girilirse mevcut kayıt açılır.
   await page.goto('/faturalar');
@@ -282,7 +286,8 @@ test('eski sipariş bağı uyuşmazlıkta: bağ kaldırılır ve sözleşmeye ye
   await login(page, 'kerem.hukuk@example.test');
   await page.goto(`/faturalar/${invoiceId}`);
   await expect(page.getByRole('heading', { level: 1 })).toContainText(no);
-  await expect(page.getByText('Eşleşmedi', { exact: true }).first()).toBeVisible();
+  // v2 Faz 7 (D112): eski sipariş bağı v2'de "Tahsisle (eski kayıt)" birincil durumdur; başarısız tahsis kontrolü ikincil metinde.
+  await expect(page.getByText('Tahsis kontrolü: Eşleşmedi').first()).toBeVisible();
   await page.getByRole('button', { name: 'Tahsisi düzenle' }).click();
   const target = page.getByLabel('Satır 1 hedef');
   await expect(target.locator('option', { hasText: `Sipariş ${poCode}` })).toHaveCount(1);

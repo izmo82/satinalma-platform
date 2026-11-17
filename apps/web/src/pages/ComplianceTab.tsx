@@ -36,7 +36,7 @@ export function CompletionBar({ projectId, info, onDone }: { projectId: string; 
       <div aria-live="polite">{done && <Banner tone="info" icon="check" title={done} />}</div>
       <p className="flex flex-wrap items-center gap-2 text-sm text-ink-muted"><Tag label={{ text: 'Tamamlandı', tone: 'ok', icon: 'check' }} />
         {info.completedOn && <span>{fmtDate(info.completedOn)}{info.completedBy ? ` · ${info.completedBy}` : ''}</span>}
-        <Link to="?sekme=uyum">Uyum denetimini aç</Link></p>
+        {hasPermission(me, 'compliance.read') && <Link to="?sekme=uyum">Uyum denetimini aç</Link>}</p>
     </div>
   );
   if (info.status !== 'CONTRACTING' || !hasRole(me, 'PROCUREMENT')) return err ? <Banner tone="warn" title={err} /> : null;
@@ -259,7 +259,7 @@ export function ComplianceTab({ projectId, projectCode }: { projectId: string; p
               </div>
             </div>
             {a.ruleSetNote && <Banner tone="warn" title={a.ruleSetNote} />}
-            {a.status === 'NO_RULESET' && <Banner tone="warn" title="Kural seti yok">Bu kurumda yayımlanmış satınalma kuralı seti olmadığı için proje puanlanamadı. Yönetici, Yönetim &gt; Satınalma kuralları sekmesinden bir set yayımladıktan sonra “Yeniden denetle” ile rapor üretilir.</Banner>}
+            {a.status === 'NO_RULESET' && <Banner tone="warn" title="Kural seti yok">Bu kurumda yayımlanmış satınalma kuralı seti olmadığı için proje puanlanamadı. Yönetici, Yönetim &gt; Satınalma kuralları sekmesinden bir set yayımlayınca bu proje kendiliğinden yeniden denetlenir.</Banner>}
             {a.status === 'FAILED' && <Banner tone="danger" title="Denetim yapılamadı">Koşu hata ile bitti; puan ve hüküm yok. “Yeniden denetle” ile tekrar deneyin.</Banner>}
             {a.failedMandatory.length > 0 && <Banner tone="danger" title="Karşılanmayan zorunlu kurallar">{a.failedMandatory.map((f) => `${f.code} ${f.name} (${f.resultLabel})`).join(' · ')}</Banner>}
             {!d.aiConnected && <p className="text-sm text-ink-muted"><Icon name="info" size={14} className="mr-1 inline" />Yapay zekâ bağlı değil: kanıt kuralları belgeye bakılarak elle işaretlenir.</p>}
@@ -313,6 +313,7 @@ function EvidencePanel({ projectId, rules, evidence, evLoading, marks, canUpload
   const ruleOf = (checkKey: string) => rules.find((r) => keyOf(r) === checkKey || r.code === checkKey);
   const [up, setUp] = useState<{ checkKey: string; kind: string; title: string; file: File | null }>({ checkKey: rules[0] ? keyOf(rules[0]) : '', kind: 'RESEARCH', title: '', file: null });
   const [mark, setMark] = useState<{ ruleCode: string; result: 'PASS' | 'FAIL'; note: string; documentVersionId: string } | null>(null);
+  const [fileKey, setFileKey] = useState(0);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ tone: 'info' | 'warn' | 'danger'; text: string } | null>(null);
   const upload = async () => {
@@ -320,7 +321,7 @@ function EvidencePanel({ projectId, rules, evidence, evLoading, marks, canUpload
     setBusy(true); setMsg(null);
     const fd = new FormData();
     fd.set('checkKey', up.checkKey); fd.set('kind', up.kind); if (up.title.trim()) fd.set('title', up.title.trim()); fd.set('file', up.file);
-    try { await api(`/api/v1/projects/${projectId}/compliance-evidence`, { method: 'POST', body: fd }); setMsg({ tone: 'info', text: `${up.file.name} kanıt olarak yüklendi.` }); setUp({ ...up, title: '', file: null }); await onChanged(); }
+    try { await api(`/api/v1/projects/${projectId}/compliance-evidence`, { method: 'POST', body: fd }); setMsg({ tone: 'info', text: `${up.file.name} kanıt olarak yüklendi.` }); setUp({ ...up, title: '', file: null }); setFileKey((k) => k + 1); await onChanged(); }
     catch (e) { setMsg({ tone: 'warn', text: (e as ApiError).message }); } finally { setBusy(false); }
   };
   const sendMark = async () => {
@@ -375,7 +376,7 @@ function EvidencePanel({ projectId, rules, evidence, evLoading, marks, canUpload
             <Field label="Belge türü">{(p) => <select className="input" {...p} value={up.kind} onChange={(e) => setUp({ ...up, kind: e.target.value })}>
               {EVIDENCE_KINDS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>}</Field>
             <Field label="Başlık (isteğe bağlı)">{(p) => <input className="input" maxLength={200} {...p} value={up.title} onChange={(e) => setUp({ ...up, title: e.target.value })} />}</Field>
-            <Field label="Dosya" hint="PDF, PNG ya da JPEG; en çok 25 MB.">{(p) => <input className="input" type="file" required accept="application/pdf,image/png,image/jpeg" {...p}
+            <Field label="Dosya" hint="PDF, PNG ya da JPEG; en çok 25 MB.">{(p) => <input key={fileKey} className="input" type="file" required accept="application/pdf,image/png,image/jpeg" {...p}
               onChange={(e) => setUp({ ...up, file: e.target.files?.[0] ?? null })} />}</Field>
             <div className="col-span-full"><Button type="submit" size="sm" disabled={busy || !up.file || !up.checkKey}><Icon name="upload" />Kanıtı yükle</Button></div>
           </form>

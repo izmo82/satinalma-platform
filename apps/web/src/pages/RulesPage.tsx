@@ -83,9 +83,10 @@ function SetView({ d, today, manage, scheduled, onChanged, setMsg, fail }: { d: 
   const [editing, setEditing] = useState<Rule | 'new' | null>(null);
   const [removing, setRemoving] = useState<Rule | null>(null);
   const [date, setDate] = useState(today);
+  const [confirmPublish, setConfirmPublish] = useState(false);
   const [busy, setBusy] = useState(false);
   const publish = async () => {
-    setBusy(true); setMsg(null);
+    setConfirmPublish(false); setBusy(true); setMsg(null);
     try {
       const x = (await api<{ rerunQueued?: number }>(`/api/v1/procurement-rule-sets/${d.id}/publish`, { method: 'POST', json: { effectiveFrom: date } })).data;
       setMsg({ tone: 'info', text: `Sürüm ${d.versionNo} yayımlandı; ${fmtDate(date)} tarihinden itibaren yürürlükte.${x.rerunQueued ? ` Kural seti olmadan denetlenmiş ${x.rerunQueued} proje yeniden denetlenecek.` : ''}` });
@@ -134,7 +135,7 @@ function SetView({ d, today, manage, scheduled, onChanged, setMsg, fail }: { d: 
         </Table>
       )}
       {manage && (
-        <form className="panel" onSubmit={(e) => { e.preventDefault(); void publish(); }}>
+        <form className="panel" onSubmit={(e) => { e.preventDefault(); setConfirmPublish(true); }}>
           <div className="panel-head"><h2>Yayımla</h2></div>
           <div className="panel-body grid gap-2">
             <p className="text-sm text-ink-muted">Yayımlanan set değiştirilemez. Yürürlük tarihi bugün ya da ileri bir gün olabilir; o günden sonra tamamlanan projeler bu setle denetlenir.
@@ -146,12 +147,19 @@ function SetView({ d, today, manage, scheduled, onChanged, setMsg, fail }: { d: 
           </div>
         </form>
       )}
+      {confirmPublish && <Modal title={`Sürüm ${d.versionNo} yayımlansın mı?`} onClose={() => setConfirmPublish(false)} footer={<>
+        <Button variant="ghost" onClick={() => setConfirmPublish(false)}>Vazgeç</Button><Button disabled={busy} onClick={() => void publish()}>Yayımla</Button></>}>
+        <p>Yayım geri alınamaz; yayımlanan set değiştirilemez. Sürüm {d.versionNo}, {fmtDate(date)} tarihinden itibaren tamamlanan projelerde uygulanır. Kural seti olmadan denetlenmiş projeler bu setle kendiliğinden yeniden denetlenir.</p>
+      </Modal>}
       {removing && <Modal title={`${removing.code} kuralını çıkar`} onClose={() => setRemoving(null)} footer={<>
         <Button variant="ghost" onClick={() => setRemoving(null)}>Vazgeç</Button><Button disabled={busy} onClick={() => void remove(removing)}>Kuralı çıkar</Button></>}>
         <p>{removing.name} bu taslaktan çıkarılır. Yayımlanmış sürümler etkilenmez.</p></Modal>}
     </div>
   );
 }
+
+/** tr-TR ya da nokta ondalıklı sayı metnini API biçimine çevirir: "1.000,50" → "1000.50", "70,5" → "70.5", "1000.50" aynen. */
+const toDecimalString = (v: string) => { const t = v.trim().replace(/\s/g, ''); return t.includes(',') ? t.replace(/\./g, '').replace(',', '.') : t; };
 
 interface FormState { code: string; name: string; description: string; checkType: 'DATA' | 'EVIDENCE_AI' | 'MANUAL'; checkKey: string; params: Record<string, string>;
   methods: string[]; amountThreshold: string; currency: string; weight: string; mandatory: boolean }
@@ -172,9 +180,9 @@ function RuleForm({ setId, rule, checks, onCancel, onSaved }: { setId: string; r
   const save = async () => {
     setBusy(true); setErr(null);
     // Ondalık parametreler metin olarak gönderilir (para/oran hassasiyeti); tam sayı parametreler sayı.
-    const params = f.checkType === 'MANUAL' ? {} : Object.fromEntries((check?.params ?? []).map((p) => [p.key, p.kind === 'int' ? Number(f.params[p.key]) : (f.params[p.key] ?? '').replace(',', '.')]));
+    const params = f.checkType === 'MANUAL' ? {} : Object.fromEntries((check?.params ?? []).map((p) => [p.key, p.kind === 'int' ? Number(f.params[p.key]) : toDecimalString(f.params[p.key] ?? '')]));
     const body = { code: f.code.trim(), name: f.name.trim(), description: f.description.trim() || null, checkType: f.checkType, checkKey: f.checkType === 'MANUAL' ? null : f.checkKey || null,
-      params, methods: f.methods, amountThreshold: f.amountThreshold.trim() ? f.amountThreshold.trim().replace(',', '.') : null, currency: f.amountThreshold.trim() ? (f.currency.trim() || 'TRY').toUpperCase() : null,
+      params, methods: f.methods, amountThreshold: f.amountThreshold.trim() ? toDecimalString(f.amountThreshold) : null, currency: f.amountThreshold.trim() ? (f.currency.trim() || 'TRY').toUpperCase() : null,
       weight: Number(f.weight), mandatory: f.mandatory };
     try {
       if (rule) await api(`/api/v1/procurement-rule-sets/${setId}/rules/${rule.id}`, { method: 'PUT', json: { ...body, sortOrder: rule.sortOrder } });

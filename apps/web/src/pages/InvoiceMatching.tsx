@@ -78,7 +78,11 @@ export function MatchDrawer({ invoiceId, invoiceNo, onClose, onDone }: { invoice
       const x = e as ApiError;
       // Sunucu tarih dışı bağlamada onay ister: onay penceresi açılır, onaylanınca aynı istek onayla yinelenir.
       if (x.code === 'out_of_range_ack_required') setConfirmRange({ start: x.details?.start ?? chosen.startDate, end: x.details?.end ?? chosen.endDate, issueDate: x.details?.issueDate ?? r.data?.invoice.issueDate ?? null });
-      else setErr(x);
+      else {
+        setErr(x);
+        // Çatışmada (ör. başka kullanıcı bağladı ya da tahsis girdi) adaylar ve engel durumu sunucudan yeniden alınır.
+        if (x.status === 409) { setPick(''); setAck(false); void r.reload(); }
+      }
     } finally { setBusy(false); }
   };
   return (

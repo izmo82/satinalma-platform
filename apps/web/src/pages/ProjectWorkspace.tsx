@@ -209,7 +209,7 @@ export function ProjectWorkspace() {
   const { me } = useSession();
   const { id } = useParams();
   const [params, setParams] = useSearchParams();
-  const tab = params.get('sekme') ?? 'ozet';
+  const tabParam = params.get('sekme') ?? 'ozet';
   const r = useResource<Detail>(`/api/v1/projects/${id}`);
   if (r.loading && !r.data) return <div className="page"><Loading rows={6} /></div>;
   if (r.error) return <div className="page"><ErrorState error={r.error} onRetry={r.reload} /></div>;
@@ -217,6 +217,8 @@ export function ProjectWorkspace() {
   const stageIdx = PROJECT_STAGES.indexOf(d.project.status as (typeof PROJECT_STAGES)[number]);
   // Sekmeler yetkiye göre: Faturalar (fatura ya da sözleşme okuma), Uyum denetimi (compliance.read). Diğerleri aynen.
   const tabs = TABS.filter(([k]) => k === 'faturalar' ? hasPermission(me, 'invoice.read') || hasPermission(me, 'contract.read') : k === 'uyum' ? hasPermission(me, 'compliance.read') : true);
+  // Yetkiyle gizlenen sekmenin adresi (ör. ?sekme=uyum) varsayılan sekmeyi açar; gizli içerik çizilmez.
+  const tab = tabs.some(([k]) => k === tabParam) ? tabParam : 'ozet';
   return (
     <div className="page">
       <div className="mb-1 text-sm text-ink-subtle"><Link to="/projeler" className="text-ink-subtle">Projeler</Link> / <span className="tabular">{d.project.code}</span></div>
