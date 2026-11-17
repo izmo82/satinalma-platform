@@ -115,30 +115,26 @@ const departmentBound = (roles: string[]) => roles.length > 0 && roles.every((r)
 
 /** Bir kullanıcının satırı: rol adı, Departman kullanıcısı için departman seçimi (onay kutuları) ve kaydet. */
 function MemberItem({ m, deps, onSaved }: { m: Member; deps: Department[]; onSaved: () => Promise<void> }) {
-  const [sel, setSel] = useState<string[]>(m.departmentIds);
-  // v2 Faz 2 (D105): liste yeniden kurulmadan yenilenir (eşitleme, rol, birleştirme). Sunucu değeri değişince: düzenlenmemiş satır yeni
-  // değere geçer; kaydedilmemiş düzenleme korunur. Her iki durumda da artık listede olmayan (birleştirilmiş) departman seçimden düşer.
-  const [base, setBase] = useState<string[]>(m.departmentIds);
-  const serverKey = [...m.departmentIds].sort().join();
-  const depKey = deps.map((d) => d.id).join();
-  useEffect(() => {
-    const known = new Set(deps.map((d) => d.id));
-    const wasClean = [...sel].sort().join() === [...base].sort().join();
-    const next = (wasClean ? m.departmentIds : sel).filter((id) => known.has(id));
-    if (next.join() !== sel.join()) setSel(next);
-    if ([...base].sort().join() !== serverKey) setBase(m.departmentIds);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [serverKey, depKey]);
+  // v2 Faz 2 (D105): liste yeniden kurulmadan yenilenir (eşitleme, rol, birleştirme) ve departmanlar ile üyelikler ayrı yanıtlarla, her
+  // sırada gelebilir. Bu yüzden yerel kopya yalnız kullanıcı düzenlediğinde tutulur: düzenlenmemiş satır her çizimde güncel sunucu
+  // değerinden türetilir; düzenleme korunur. Her iki durumda listede olmayan (birleştirilmiş) departman seçimde yoktur ve gönderilmez.
+  const known = new Set(deps.map((d) => d.id));
+  const key = (ids: string[]) => [...ids].sort().join();
+  const server = m.departmentIds.filter((id) => known.has(id));
+  const [local, setLocal] = useState<string[] | null>(null);
+  const sel = local ? local.filter((id) => known.has(id)) : server;
+  const change = (next: string[]) => setLocal(key(next) === key(server) ? null : next);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ tone: 'info' | 'danger'; text: string } | null>(null);
   const editable = departmentBound(m.roles);
-  const dirty = [...sel].sort().join() !== [...m.departmentIds].sort().join();
+  const dirty = local !== null && key(sel) !== key(server);
   const roles = [...new Set(m.roles.map((r) => roleLabel[r] ?? 'Rol tanımsız'))].join(', ');
   async function save() {
     setBusy(true); setMsg(null);
     try {
       await api(`/api/v1/memberships/${m.userId}/departments`, { method: 'PUT', json: { departmentIds: sel } });
       await onSaved();
+      setLocal(null);
       // K7: "Kaydediliyor…" ile başarı mesajı aynı anda görünmesin; mesaj liste yenilendikten sonra.
       setMsg({ tone: 'info', text: 'Departmanlar kaydedildi.' });
     } catch (err) { setMsg({ tone: 'danger', text: err instanceof ApiError ? err.message : 'Departmanlar kaydedilemedi.' }); }
@@ -158,7 +154,7 @@ function MemberItem({ m, deps, onSaved }: { m: Member; deps: Department[]; onSav
             {deps.map((d) => (
               <label key={d.id} className="inline-flex min-h-8 items-center gap-2">
                 <input type="checkbox" className="size-4 accent-ink" checked={sel.includes(d.id)} disabled={busy}
-                  onChange={(e) => setSel(e.target.checked ? [...sel, d.id] : sel.filter((x) => x !== d.id))} />{d.name}
+                  onChange={(e) => change(e.target.checked ? [...sel, d.id] : sel.filter((x) => x !== d.id))} />{d.name}
               </label>
             ))}
           </div>
