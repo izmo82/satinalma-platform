@@ -1,5 +1,5 @@
 import {
-  contractUsage, matchInvoice, matchState, normalizeRoles, MATCH_METHOD_TR, MATCH_REASON_TR, MATCH_STATE_TR, USAGE_LEVEL_TR,
+  contractUsage, matchInvoice, matchState, normalizeRef, normalizeRoles, MATCH_METHOD_TR, MATCH_REASON_TR, MATCH_STATE_TR, USAGE_LEVEL_TR,
   type LinkContract, type MatchMethod, type MatchState, type UnmatchedReason, type UsageLevel,
 } from '@sp/domain';
 import type { TenantContext, Tx } from '../db.ts';
@@ -21,6 +21,8 @@ import { familyInvoices } from './invoices.ts';
  * - Kullanım (R4) kodla hesaplanır (domain `contractUsage`); aşım bilgi amaçlıdır, engel değildir; ilk aşımda bir kez görev + e-posta.
  */
 
+/** Domain `normalizeRef` ile aynı: kırpılmış, yalnız ASCII a–z büyük harf (veritabanı yerel ayarından bağımsız). */
+const ASCII_UPPER = (x: string) => `translate(btrim(${x}), 'abcdefghijklmnopqrstuvwxyz', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ')`;
 const SUPPLIER_ROOT = (alias: string) => `coalesce(${alias}.merged_into_id, ${alias}.id)`;
 const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' }).format(new Date());
 const trDate = (d: string | null) => (d ? `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}` : null);
@@ -130,9 +132,16 @@ export async function familyUsage(tx: Tx, familyIds: string[]): Promise<Map<stri
  * Departman kullanıcısının işlemi kişi görevini/e-postayı yazamaz, bu yüzden kısa bölüm kiracı geneli kapsamda yazılır (withTenantWideScope).
  */
 async function overrunCheck(tx: Tx, ctx: TenantContext, familyId: string) {
-  const usage = (await familyUsage(tx, [familyId])).get(familyId);
-  if (!usage || usage.level !== 'OVER') return;
-  await withTenantWideScope(tx, () => notifyOverrun(tx, ctx, familyId, usage));
+  // Kullanım kiracı geneli kapsamda: aileye sayılan faturaların hepsi (çağıranın görmediği departmanınkiler dahil) toplanır.
+  await withTenantWideScope(tx, async () => {
+    const usage = (await familyUsage(tx, [familyId])).get(familyId);
+    if (usage?.level === 'OVER') await notifyOverrun(tx, ctx, familyId, usage);
+  });
+}
+/** Tahsis girişinden sonra (M1): faturanın tahsis edildiği ailelerde ilk aşım bildirimi. */
+export async function overrunCheckForInvoice(tx: Tx, ctx: TenantContext, invoiceId: string) {
+  const fams = (await tx.query<{ fams: string[] }>(`SELECT ${ALLOC_FAMILIES_SQL('i')} AS fams FROM invoices i WHERE i.id = $1`, [invoiceId])).rows[0]?.fams ?? [];
+  for (const f of fams) await overrunCheck(tx, ctx, f);
 }
 async function notifyOverrun(tx: Tx, ctx: TenantContext, familyId: string, usage: UsageView) {
   const key = `overrun:${familyId}`;
@@ -226,7 +235,13 @@ export async function autoMatchInvoice(tx: Tx, ctx: TenantContext, invoiceId: st
   if (inv.allocations > 0) return { state: 'SKIPPED', reason: 'allocated' };
   if (inv.decided) return { state: 'SKIPPED', reason: 'decided' };
   if (inv.unlinked) return { state: 'SKIPPED', reason: 'manually_unlinked' };
+  // Karar ve yazım sunucu içi kuraldır (I1): aday arama, durum ve bağ kiracı geneli kapsamda; çağıranın departman RLS'i
+  // (ör. BT kullanıcısının e-Fatura yüklemesi) eşleştirme sonucunu değiştirmez. Fatura departmanı bağlanan sözleşmeninkini alır.
+  return withTenantWideScope(tx, () => decideAndWrite(tx, ctx, inv));
+}
 
+async function decideAndWrite(tx: Tx, ctx: TenantContext, inv: InvoiceFacts): Promise<AutoMatchResult> {
+  let errorCode: string | null = null;
   let decision: { method: MatchMethod; familyId: string; by: string | null; note: string | null } | { reason: UnmatchedReason } | null = null;
   if (inv.kind === 'CREDIT_NOTE' && inv.original_invoice_id) {
     const o = (await tx.query<{ contract_family_id: string | null; match_method: MatchMethod | null; matched_by: string | null; invoice_no: string }>(
@@ -235,13 +250,13 @@ export async function autoMatchInvoice(tx: Tx, ctx: TenantContext, invoiceId: st
       note: `Özgün fatura ${o.invoice_no} eşleşmesini izler.` };
   }
   if (!decision) {
-    // Ön süzgeç (aday aileler): büyük/küçük harf duyarsız; kesin karşılaştırma domain `matchInvoice` içinde.
-    const refs = [inv.erp_contract_ref, inv.erp_order_ref].map((x) => (x ?? '').trim());
+    // Ön süzgeç (aday aileler): domain `normalizeRef` ile aynı biçim (kırpılmış, yalnız ASCII a–z büyük harf); kesin karşılaştırma domain'de.
+    const refs = [inv.erp_contract_ref, inv.erp_order_ref].map((x) => normalizeRef(x));
     const orders = inv.erp_order_ref ? (await tx.query<{ code: string; familyId: string | null }>(`SELECT po.code, cv.family_id AS "familyId" FROM purchase_orders po
-        LEFT JOIN contract_versions cv ON cv.id = po.contract_version_id WHERE lower(btrim(po.code)) = lower($1)`, [refs[1]])).rows : [];
+        LEFT JOIN contract_versions cv ON cv.id = po.contract_version_id WHERE ${ASCII_UPPER('po.code')} = $1`, [refs[1]])).rows : [];
     const facts = (await tx.query<FamilyFacts>(`${FAMILY_FACTS_SQL} WHERE f.company_id = $1 AND (
         (SELECT ${SUPPLIER_ROOT('s')} FROM suppliers s WHERE s.id = f.supplier_id) = $2
-        OR ($3 <> '' AND (lower(btrim(f.code)) = lower($3) OR lower(btrim(f.contract_no)) = lower($3))) OR f.id = ANY($4::uuid[]))`,
+        OR ($3 <> '' AND (${ASCII_UPPER('f.code')} = $3 OR ${ASCII_UPPER('f.contract_no')} = $3)) OR f.id = ANY($4::uuid[]))`,
       [inv.company_id, inv.supplier_root_id, refs[0], orders.map((o) => o.familyId).filter(Boolean)])).rows;
     const statuses = await familyStatuses(tx, facts.map((f) => f.id));
     const contracts: LinkContract[] = facts.map((f) => ({ familyId: f.id, code: f.code, contractNo: f.contract_no, supplierRootId: f.supplier_root_id ?? '',
@@ -261,7 +276,9 @@ export async function autoMatchInvoice(tx: Tx, ctx: TenantContext, invoiceId: st
     } catch (e) {
       await tx.query('ROLLBACK TO SAVEPOINT invoice_auto_match');
       if (e instanceof ApiError) throw e;
-      decision = { reason: 'no_active_contract' };
+      // M2: karar verildi ama yazılamadı; yalnız hata kodu denetime yazılır (ileti/ayrıntı değil).
+      errorCode = typeof (e as { code?: unknown })?.code === 'string' ? (e as { code: string }).code : 'unknown';
+      decision = { reason: 'link_failed' };
     }
   }
   const reason = decision.reason;
@@ -269,7 +286,7 @@ export async function autoMatchInvoice(tx: Tx, ctx: TenantContext, invoiceId: st
   // Aynı sebeple tekrar deneme olay günlüğünü şişirmez.
   if (!(last?.action === 'AUTO_FAILED' && last.reason === reason)) {
     await tx.query(`INSERT INTO invoice_match_events (tenant_id, company_id, invoice_id, action, reason) VALUES ($1,$2,$3,'AUTO_FAILED',$4)`, [ctx.tenantId, inv.company_id, inv.id, reason]);
-    await audit(tx, ctx, 'invoice.match_failed', 'invoice', inv.id, { reason });
+    await audit(tx, ctx, 'invoice.match_failed', 'invoice', inv.id, { reason, ...(errorCode ? { errorCode } : {}) });
   }
   await openUnmatchedTasks(tx, ctx, inv, MATCH_REASON_TR[reason]);
   return { state: 'UNMATCHED', reason, reasonLabel: MATCH_REASON_TR[reason] };
@@ -280,6 +297,7 @@ export async function retryMatchQueue(tx: Tx, ctx: TenantContext) {
   const ids = (await tx.query<{ id: string }>(`SELECT i.id FROM invoices i WHERE i.auto_match AND i.contract_family_id IS NULL
       AND NOT EXISTS (SELECT 1 FROM invoice_allocations a WHERE a.invoice_id = i.id)
       AND NOT EXISTS (SELECT 1 FROM invoice_decisions d WHERE d.invoice_id = i.id AND d.kind IN ('APPROVAL','REJECTION'))
+      AND NOT EXISTS (SELECT 1 FROM invoice_match_events e WHERE e.invoice_id = i.id AND e.action = 'UNLINK')
     ORDER BY i.created_at LIMIT 500`)).rows.map((r) => r.id);
   const res = { checked: ids.length, matched: 0, unmatched: 0, skipped: 0 };
   for (const id of ids) {

@@ -293,6 +293,9 @@ describe('Eşleşmedi kuyruğu ve elle bağlama (R3)', () => {
     expect(retry.status).toBe(200);
     expect(retry.body).toMatchObject({ checked: expect.any(Number), matched: expect.any(Number), unmatched: expect.any(Number), skipped: expect.any(Number) });
     expect((await inv(a.id)).contract_family_id).toBeNull();
+    // M5: elle bağı kaldırılan fatura yeniden deneme penceresine hiç girmez.
+    const window = await call('finance', 'POST', '/api/v1/invoices/match-queue/retry');
+    expect(window.body.skipped).toBe(0);
     expect((await call('finance', 'DELETE', `/api/v1/invoices/${a.id}/match`, { reason: 'Tekrar kaldırma denemesi (SENTETİK).' })).body.error.code).toBe('invoice_not_matched');
     // Departman kullanıcısının yeniden deneme izni yok.
     expect((await call('security', 'POST', '/api/v1/invoices/match-queue/retry')).status).toBe(403);
@@ -371,6 +374,16 @@ describe('sözleşme ve proje faturaları, kullanım ve aşım (R4)', () => {
     expect((await rows(`SELECT 1 FROM email_outbox WHERE related_id = $1`, [c.familyId])).length).toBe(1);
   });
 
+  it('M1: tahsisle aşılan sözleşmede de ilk aşımda bir kez görev', async () => {
+    const s = await supplier();
+    const c = await contract({ supplierId: s, amount: '300.00', owner: h.world.users.legal.id });
+    const late = await invoice(s, { net: '400.00', date: '2027-05-01' });
+    expect(late.match.state).toBe('UNMATCHED');
+    expect(await tasks(`overrun:${c.familyId}`)).toEqual([]);
+    expect((await call('finance', 'PUT', `/api/v1/invoices/${late.id}/allocations`, { allocations: [{ lineNo: 1, poLineId: null, contractVersionId: c.cvId, quantity: '1', amount: '400.00' }] })).status).toBe(200);
+    expect((await tasks(`overrun:${c.familyId}`)).length).toBe(1);
+  });
+
   it('vergi dahil (GROSS) limitte KDV katılır; tahsisle türeyen fatura da sayılır', async () => {
     const s = await supplier();
     const c = await contract({ supplierId: s, amount: '10000.00', basis: 'GROSS' });
@@ -445,6 +458,41 @@ describe('giriş ve hata eşlemesi', () => {
     expect(await inv(up.body.invoice.invoiceId)).toMatchObject({ contract_family_id: c.familyId, match_method: 'ERP_REF', erp_contract_ref: c.code, erp_contract_ref_source: 'MANUAL' });
     const bad = await h.upload('finance', file(), { companyId: w.companyA1.id, kind: 'INVOICE', title: 'e-Fatura (SENTETİK)', erpOrderRef: 'X'.repeat(61) });
     expect(bad.status).toBe(400);
+  });
+
+  it('I1: Departman kullanıcısının e-Fatura girişi kiracı geneli kapsamda eşleşir (BT kullanıcısı İK sözleşmesini görmese de)', async () => {
+    const w = h.world;
+    const s = await supplier();
+    await contract({ supplierId: s, department: w.departments.bt });
+    const ik = await contract({ supplierId: s, department: w.departments.ik });
+    const otherIk = await contract({ supplierId: await supplier(), department: w.departments.ik });
+    const vkn = (await one<{ tax_id: string }>(`SELECT tax_id FROM suppliers WHERE id = $1`, [s])).tax_id;
+    const up = (fields: Record<string, string> = {}) => h.upload('security', { name: `efatura-${rand()}.xml`, mime: 'application/xml', data: ublInvoiceXml({ invoiceNo: `EFT${rand()}`,
+      ettn: randomUUID(), sellerVkn: vkn, sellerName: 'Eşleşme Tedarikçi (SENTETİK)', buyerVkn: w.companyA1.vkn, buyerName: w.companyA1.name, issueDate: '2026-06-15',
+      lines: [{ name: 'Hizmet (SENTETİK)', qty: '1', unitCode: 'C62', price: '100', net: '100.00', rate: '20', tax: '20.00' }], taxTotal: '20.00', amount: '120.00' }) },
+      { companyId: w.companyA1.id, kind: 'INVOICE', title: 'e-Fatura (SENTETİK)', ...fields });
+    const a = await up();
+    expect(a.status, JSON.stringify(a.body)).toBe(201);
+    expect(a.body.invoice.created).toBe(true);
+    expect((await events(a.body.invoice.invoiceId)).map((e) => e.reason)).toEqual(['multiple_active_contracts']);
+    expect((await inv(a.body.invoice.invoiceId)).department_id).toBe(w.departments.bt);
+
+    const b = await up({ erpContractRef: ik.code });
+    expect(b.body.invoice.created).toBe(true);
+    expect(await inv(b.body.invoice.invoiceId)).toMatchObject({ contract_family_id: ik.familyId, match_method: 'ERP_REF', department_id: w.departments.ik, project_id: ik.projectId });
+
+    const c = await up({ erpContractRef: otherIk.code });
+    expect(c.body.invoice.created).toBe(true);
+    expect((await inv(c.body.invoice.invoiceId)).contract_family_id).toBeNull();
+    expect((await events(c.body.invoice.invoiceId)).map((e) => e.reason)).toEqual(['ref_supplier_mismatch']);
+  });
+
+  it('M4: referans büyük/küçük harf ve I/i farkıyla eşleşir (ASCII büyük harf)', async () => {
+    const s = await supplier();
+    const c = await contract({ supplierId: s });
+    await contract({ supplierId: s });
+    const a = await invoice(s, { contractRef: `  ${c.code.toLowerCase()} ` });
+    expect(a.match).toMatchObject({ state: 'MATCHED', method: 'ERP_REF', familyId: c.familyId });
   });
 
   it('ERP referansı 60 karakteri aşamaz', async () => {

@@ -10,7 +10,7 @@ import { closeTasks, openTask, rederiveTaskDepartments, v2Role } from '../tasks.
 import { ApiError, conflict, forbidden, notFound, unprocessable } from '../errors.ts';
 import { ErpTimeout, erpAdapter } from '../erp/adapter.ts';
 import { criticalBlocks } from './supplierEval.ts';
-import { ALLOC_FAMILIES_SQL, autoMatchInvoice, MATCH_STATE_SQL, matchInfo, releaseLinkForAllocation, type AutoMatchResult } from './invoiceMatching.ts';
+import { ALLOC_FAMILIES_SQL, autoMatchInvoice, MATCH_STATE_SQL, matchInfo, overrunCheckForInvoice, releaseLinkForAllocation, type AutoMatchResult } from './invoiceMatching.ts';
 import { MATCH_STATE_TR, type MatchState } from '@sp/domain';
 
 /**
@@ -440,6 +440,8 @@ export async function setAllocations(tx: Tx, ctx: TenantContext, invoiceId: stri
   if (result.check.issues.some((x) => x.code === 'SUPPLIER_MISMATCH')) throw unprocessable('allocation_supplier_mismatch', 'Seçilen sipariş veya sözleşme bu faturanın tedarikçisine ait değil; aynı ünvanlı başka bir kayıt olabilir.');
   await audit(tx, ctx, 'invoice.allocated', 'invoice', invoiceId, { allocations: b.allocations.length, advanceOffset: b.advanceOffset ?? '0',
     ...(departmentId !== undefined ? { departmentId } : {}), ...(unlinkedFamily ? { unlinkedFamilyId: unlinkedFamily } : {}) });
+  // v2 Faz 7 (R4): tahsisle türeyen fatura da kullanıma sayılır; ilk aşımda bir kez bildirim.
+  await overrunCheckForInvoice(tx, ctx, invoiceId);
   return result;
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { MATCH_METHOD_TR, MATCH_REASON_TR, MATCH_STATE_TR, contractUsage, matchInvoice, matchState, can } from '../src/index.js';
+import { MATCH_METHOD_TR, MATCH_REASON_TR, MATCH_STATE_TR, contractUsage, matchInvoice, matchState, normalizeRef, can } from '../src/index.js';
 
 const C = (o: Partial<Parameters<typeof matchInvoice>[0]['contracts'][number]> = {}) => ({
   familyId: 'F1', code: 'SOZ-001', contractNo: 'SZ-2026-1', supplierRootId: 'S1', start: '2026-01-01', end: '2026-12-31',
@@ -42,6 +42,12 @@ describe('matchInvoice (R2)', () => {
   it('başka tedarikçinin sözleşmesi tarihle eşleşmez', () => {
     expect(matchInvoice({ invoice: inv(), contracts: [C({ supplierRootId: 'S2' })], orders: [] })).toEqual({ method: 'UNMATCHED', reason: 'no_active_contract' });
   });
+  it('referans karşılaştırması ASCII büyük harf: yerel ayardan bağımsız (I/i), Türkçe harfler korunur', () => {
+    expect(normalizeRef('  szl-im-01 ')).toBe('SZL-IM-01');
+    expect(normalizeRef('SZL-ım')).toBe('SZL-ıM');
+    expect(matchInvoice({ invoice: inv({ erpContractRef: 'szl-im-7' }), contracts: [C({ code: 'SZL-IM-7' })], orders: [] })).toEqual({ method: 'ERP_REF', familyId: 'F1' });
+    expect(matchInvoice({ invoice: inv({ erpOrderRef: 'po-im-9' }), contracts: [C()], orders: [{ code: 'PO-IM-9', familyId: 'F1' }] })).toEqual({ method: 'ERP_REF', familyId: 'F1' });
+  });
   it('çözülemeyen referans tarih eşleşmesine düşmez: ref_not_found', () => {
     expect(matchInvoice({ invoice: inv({ erpContractRef: 'YOK' }), contracts: [C()], orders: [] })).toEqual({ method: 'UNMATCHED', reason: 'ref_not_found' });
     expect(matchInvoice({ invoice: inv({ erpOrderRef: 'PO-X' }), contracts: [C()], orders: [] })).toEqual({ method: 'UNMATCHED', reason: 'ref_not_found' });
@@ -59,7 +65,7 @@ describe('matchInvoice (R2)', () => {
     expect(ok).toEqual({ method: 'ERP_REF', familyId: 'F1' });
   });
   it('Türkçe etiketler eksiksiz', () => {
-    for (const k of ['ref_not_found', 'ref_conflict', 'ref_supplier_mismatch', 'no_active_contract', 'multiple_active_contracts'] as const) expect(MATCH_REASON_TR[k]).toBeTruthy();
+    for (const k of ['ref_not_found', 'ref_conflict', 'ref_supplier_mismatch', 'no_active_contract', 'multiple_active_contracts', 'link_failed'] as const) expect(MATCH_REASON_TR[k]).toBeTruthy();
     for (const k of ['ERP_REF', 'SUPPLIER_DATE', 'MANUAL'] as const) expect(MATCH_METHOD_TR[k]).toBeTruthy();
     expect(MATCH_STATE_TR.ALLOCATED).toBe('Tahsisle (eski kayıt)');
     expect(MATCH_STATE_TR.MATCHED).toBe('Eşleşti');

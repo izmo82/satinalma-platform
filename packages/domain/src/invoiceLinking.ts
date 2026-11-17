@@ -9,7 +9,8 @@ export interface LinkContract {
   start: string | null; end: string | null; indefinite: boolean; status: 'APPROVED' | 'LEGACY' | string;
   projectId: string | null; departmentId: string | null;
 }
-export type UnmatchedReason = 'ref_not_found' | 'ref_conflict' | 'ref_supplier_mismatch' | 'no_active_contract' | 'multiple_active_contracts';
+/** `link_failed`: karar verildi ama bağ kaydedilemedi (API yedeği; `matchInvoice` döndürmez). */
+export type UnmatchedReason = 'ref_not_found' | 'ref_conflict' | 'ref_supplier_mismatch' | 'no_active_contract' | 'multiple_active_contracts' | 'link_failed';
 export type MatchResult =
   | { method: 'ERP_REF' | 'SUPPLIER_DATE'; familyId: string }
   | { method: 'UNMATCHED'; reason: UnmatchedReason };
@@ -20,6 +21,7 @@ export const MATCH_REASON_TR: Record<UnmatchedReason, string> = {
   ref_supplier_mismatch: 'ERP referansı başka tedarikçinin sözleşmesini gösteriyor',
   no_active_contract: 'Tedarikçinin fatura tarihinde geçerli onaylı sözleşmesi yok',
   multiple_active_contracts: 'Tedarikçinin fatura tarihinde birden çok geçerli sözleşmesi var',
+  link_failed: 'Sözleşme bulundu ama bağ kaydedilemedi; faturayı elle bağlayın',
 };
 export const MATCH_METHOD_TR = {
   ERP_REF: 'ERP referansı',
@@ -35,7 +37,12 @@ export const MATCH_STATE_TR = {
 } as const;
 export type MatchState = keyof typeof MATCH_STATE_TR;
 
-const norm = (s: string | null | undefined): string => (s ?? '').trim().toLocaleLowerCase('tr-TR');
+/**
+ * Referans karşılaştırması: kırpılmış ve yalnız ASCII a–z büyük harfe çevrilmiş (yerel ayardan bağımsız; tr-TR "I"→"ı" sorunu yok).
+ * API ön süzgeci SQL'de aynı biçimi kullanır (`translate(btrim(x), 'a..z', 'A..Z')`).
+ */
+export const normalizeRef = (s: string | null | undefined): string => (s ?? '').trim().replace(/[a-z]/g, (c) => c.toUpperCase());
+const norm = normalizeRef;
 
 /** Tarih (YYYY-MM-DD) sözleşme geçerlilik aralığında mı; süresiz sözleşmede yalnız başlangıç aranır. */
 function inRange(c: LinkContract, day: string): boolean {
