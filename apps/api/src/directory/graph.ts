@@ -33,7 +33,7 @@ export interface GraphOptions { sleep?: (ms: number) => Promise<void> }
 
 interface GraphUser {
   id?: unknown; displayName?: unknown; mail?: unknown; userPrincipalName?: unknown; department?: unknown;
-  jobTitle?: unknown; accountEnabled?: unknown; onPremisesDistinguishedName?: unknown; manager?: { id?: unknown } | null;
+  jobTitle?: unknown; accountEnabled?: unknown; onPremisesDistinguishedName?: unknown;
 }
 const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() !== '' ? v : null);
 
@@ -48,7 +48,7 @@ function mapUser(u: GraphUser): DirectoryUser | null {
     userPrincipalName: str(u.userPrincipalName) ?? '',
     department: str(u.department),
     jobTitle: str(u.jobTitle),
-    managerObjectId: str(u.manager?.id),
+    managerObjectId: null, // $batch ile çözülür
     accountEnabled: u.accountEnabled !== false,
     onPremisesDistinguishedName: str(u.onPremisesDistinguishedName),
   };
@@ -113,8 +113,30 @@ export function graphProvider(
     return { value: j.value as GraphUser[], next };
   }
 
+  // Yönetici arama: en çok 20 alt istek/$batch. Hatalar öldürücü değildir; çözülemeyen yönetici null kalır.
+  async function resolveManagers(users: DirectoryUser[]): Promise<void> {
+    for (let i = 0; i < users.length; i += 20) {
+      const chunk = users.slice(i, i + 20);
+      try {
+        const res = await send(`${GRAPH}/v1.0/$batch`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${await getToken()}`, 'content-type': 'application/json', accept: 'application/json' },
+          body: JSON.stringify({ requests: chunk.map((u, k) => ({ id: String(k), method: 'GET', url: `/users/${encodeURIComponent(u.objectId)}/manager?$select=id` })) }),
+        });
+        if (!res.ok) continue;
+        const j = await res.json() as { responses?: { id?: unknown; status?: unknown; body?: { id?: unknown } }[] };
+        for (const r of Array.isArray(j.responses) ? j.responses : []) {
+          const u = chunk[Number(r.id)];
+          if (u && r.status === 200) u.managerObjectId = str(r.body?.id);
+        }
+      } catch { /* yönetici bilgisi isteğe bağlı: eşitlemeyi düşürmez */ }
+    }
+  }
+
   function firstUrl(scope: DirectoryScope): string {
-    const q = `$select=${SELECT}&$expand=${encodeURIComponent('manager($select=id)')}&$top=999`;
+    // $expand üye uç noktalarında güvenilir değil: yönetici ayrıca $batch ile çözülür. $count=true + ConsistencyLevel:eventual
+    // `microsoft.graph.user` türü dökümü (gelişmiş sorgu) için gerekir.
+    const q = `$select=${SELECT}&$top=999&$count=true`;
     const id = encodeURIComponent(scope.value);
     switch (scope.type) {
       case 'GROUP': return `${GRAPH}/v1.0/groups/${id}/transitiveMembers/microsoft.graph.user?${q}`;
@@ -146,7 +168,9 @@ export function graphProvider(
         if (page.next && pages >= MAX_PAGES) throw fail('too_many_pages');
         url = page.next;
       }
-      return scope.type === 'OU_FILTER' ? out.filter((u) => inScope(u, scope.value)) : out;
+      const result = scope.type === 'OU_FILTER' ? out.filter((u) => inScope(u, scope.value)) : out;
+      await resolveManagers(result);
+      return result;
     },
   };
 }

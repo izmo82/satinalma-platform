@@ -20,15 +20,21 @@ const json = (body: unknown, status = 200, headers: Record<string, string> = {})
 const isToken = (u: string) => u.startsWith('https://login.microsoftonline.com/tenant-1/oauth2/v2.0/token');
 const gu = (n: number, extra: Record<string, unknown> = {}) => ({
   id: `id-${n}`, displayName: `Kişi ${n} (sentetik)`, mail: `k${n}@example.test`, userPrincipalName: `k${n}@example.test`,
-  department: 'Finans', jobTitle: null, accountEnabled: true, onPremisesDistinguishedName: null, manager: { id: 'mgr-1' }, ...extra,
+  department: 'Finans', jobTitle: null, accountEnabled: true, onPremisesDistinguishedName: null, ...extra,
 });
+// $batch taklidi: her alt istek için yönetici 'mgr-1' (id'si 'nomgr' ile başlayan kullanıcı için 404).
+function batchOk(init?: RequestInit) {
+  const reqs = JSON.parse(String(init!.body)).requests as { id: string; url: string }[];
+  return json({ responses: reqs.map((r) => r.url.includes('/nomgr') ? { id: r.id, status: 404, body: {} } : { id: r.id, status: 200, body: { id: 'mgr-1' } }) });
+}
 const noSleep = { sleep: async () => {} };
 
 describe('Graph sağlayıcısı', () => {
   it('iki sayfalı grup: nextLink izlenir, kullanıcılar birleşir, alanlar eşlenir', async () => {
     const page2 = 'https://graph.microsoft.com/v1.0/groups/g1/transitiveMembers/microsoft.graph.user?$skiptoken=abc';
-    const { f, calls } = fakeFetch((u) => {
+    const { f, calls } = fakeFetch((u, init) => {
       if (isToken(u)) return json({ access_token: 'tok-1', expires_in: 3600 });
+      if (u.endsWith('/$batch')) return batchOk(init);
       if (u === page2) return json({ value: [gu(3, { mail: null })] });
       return json({ value: [gu(1), gu(2)], '@odata.nextLink': page2 });
     });
@@ -42,7 +48,9 @@ describe('Graph sağlayıcısı', () => {
     const first = calls.find((c) => c.url.includes('/groups/g1/'))!;
     expect(first.url).toContain('/groups/g1/transitiveMembers/microsoft.graph.user');
     expect(first.url).toContain('$top=999');
-    expect(decodeURIComponent(first.url)).toContain('$expand=manager($select=id)');
+    expect(first.url).not.toContain('$expand');
+    expect(first.url).toContain('$count=true');
+    expect((first.init!.headers as Record<string, string>).consistencylevel).toBe('eventual');
     expect(decodeURIComponent(first.url)).toContain('$select=id,displayName,mail,userPrincipalName,department,jobTitle,accountEnabled,onPremisesDistinguishedName');
     expect((first.init!.headers as Record<string, string>).authorization).toBe('Bearer tok-1');
     const tokenCall = calls.find((c) => isToken(c.url))!;
@@ -51,8 +59,9 @@ describe('Graph sağlayıcısı', () => {
   });
 
   it('ADMIN_UNIT ve OU_FILTER adresleri', async () => {
-    const { f, calls } = fakeFetch((u) => {
+    const { f, calls } = fakeFetch((u, init) => {
       if (isToken(u)) return json({ access_token: 't' });
+      if (u.endsWith('/$batch')) return batchOk(init);
       return json({ value: [
         gu(1, { onPremisesDistinguishedName: 'CN=A,OU=BT,DC=example,DC=test' }),
         gu(2, { onPremisesDistinguishedName: 'CN=B,OU=Finans,DC=example,DC=test' }),
@@ -71,6 +80,7 @@ describe('Graph sağlayıcısı', () => {
     let n = 0; const sleeps: number[] = [];
     const { f } = fakeFetch((u) => {
       if (isToken(u)) return json({ access_token: 't' });
+      if (u.endsWith('/$batch')) return json({ responses: [] });
       return ++n === 1 ? json({}, 429, { 'retry-after': '0' }) : json({ value: [gu(1)] });
     });
     const p = directoryProvider(cfg, f, { sleep: async (ms) => { sleeps.push(ms); } })!;
@@ -136,6 +146,52 @@ describe('Graph sağlayıcısı', () => {
     const p = directoryProvider(cfg, f, noSleep)!;
     await expect(p.listUsers({ type: 'GROUP', value: 'g' })).rejects.toMatchObject({ code: 'bad_response' });
     expect(calls.some((c) => c.url.includes('evil.example.test'))).toBe(false);
+  });
+});
+
+describe('Yönetici çözümü ($batch)', () => {
+  it('üye uç noktalarında $expand görülürse 400: eşitleme yine de başarılı', async () => {
+    const { f } = fakeFetch((u, init) => {
+      if (isToken(u)) return json({ access_token: 't' });
+      if (u.endsWith('/$batch')) return batchOk(init);
+      if (decodeURIComponent(u).includes('$expand')) return json({}, 400);
+      return json({ value: [gu(1), gu(2, { id: 'nomgr-2' })] });
+    });
+    for (const type of ['GROUP', 'ADMIN_UNIT'] as const) {
+      const users = await directoryProvider(cfg, f, noSleep)!.listUsers({ type, value: 'x' });
+      expect(users.map((x) => x.managerObjectId)).toEqual(['mgr-1', null]);
+    }
+  });
+  it('20den fazla kullanıcı birden çok $batch isteğine bölünür; belirteç yalnız Graph\'a gider', async () => {
+    const { f, calls } = fakeFetch((u, init) => {
+      if (isToken(u)) return json({ access_token: 'tok-b' });
+      if (u.endsWith('/$batch')) return batchOk(init);
+      return json({ value: Array.from({ length: 45 }, (_, i) => gu(i + 1)) });
+    });
+    const users = await directoryProvider(cfg, f, noSleep)!.listUsers({ type: 'GROUP', value: 'g' });
+    expect(users).toHaveLength(45);
+    const batches = calls.filter((c) => c.url.endsWith('/$batch'));
+    expect(batches).toHaveLength(3);
+    expect(batches.map((b) => JSON.parse(String(b.init!.body)).requests.length)).toEqual([20, 20, 5]);
+    for (const b of batches) {
+      expect(b.url).toBe('https://graph.microsoft.com/v1.0/$batch');
+      expect((b.init!.headers as Record<string, string>).authorization).toBe('Bearer tok-b');
+    }
+    expect(users.every((x) => x.managerObjectId === 'mgr-1')).toBe(true);
+  });
+  it('başarısız $batch ya da 404 alt isteği: yönetici null, eşitleme düşmez', async () => {
+    const { f } = fakeFetch((u) => {
+      if (isToken(u)) return json({ access_token: 't' });
+      if (u.endsWith('/$batch')) return json({}, 500);
+      return json({ value: [gu(1)] });
+    });
+    expect((await directoryProvider(cfg, f, noSleep)!.listUsers({ type: 'GROUP', value: 'g' }))[0]!.managerObjectId).toBeNull();
+    const { f: f2 } = fakeFetch((u) => {
+      if (isToken(u)) return json({ access_token: 't' });
+      if (u.endsWith('/$batch')) throw new Error('ağ');
+      return json({ value: [gu(1)] });
+    });
+    expect((await directoryProvider(cfg, f2, noSleep)!.listUsers({ type: 'GROUP', value: 'g' }))[0]!.managerObjectId).toBeNull();
   });
 });
 
