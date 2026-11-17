@@ -10,6 +10,7 @@ import { aiProvider, costFromPrice, type AiInput, type AiResult } from '../ai/pr
 import { pageTexts } from '../ai/text.ts';
 import { isContractAiTask } from '../ai/prompts.ts';
 import { DEFAULT_AI_MODEL_ID } from '../config.ts';
+import { isTestProvider, TEST_PROVIDER_LABEL } from '../ai/testProvider.ts';
 
 /**
  * AI yönetişimi (07, T22–T24): her istek önce yönlendirme kapısından geçer ve deftere yazılır (çalışmasa da).
@@ -43,12 +44,19 @@ export interface AiRequest {
   promptVersion?: string;
   /** R9/R11 "Yeniden oku/incele": son deneme FAILED ise yeni deneme satırı açılır (eski satır geçmişte kalır). Çalışmış iş tekrar ücret yaratmaz. */
   retryFailed?: boolean;
+  /**
+   * v2 Faz 4 Görev 5 (R9/R14): idempotent anahtarın ek parçası (ör. AI14 şablon sürümü `tpl-{id|none}`, AI15 soru kümesi özeti `q-{özet}`).
+   * Anahtar `{görev}:{tür}:{varlık}:{belge sürümü}:{ek}:{istem sürümü}`; ek yoksa anahtar birebir eskisi.
+   */
+  variant?: string;
+  /** İş yükü (jobs.payload) ek alanları (ör. AI15 amaç ve sorular). Yalnız iş kuyruğa girerken yazılır; defterde metin saklanmaz. */
+  jobPayload?: Record<string, unknown>;
 }
 
 /** AI isteği: yönlendirme kararı + defter kaydı (idempotent). RUN ise iş kuyruğa girer; değilse sebep döner ve manuel akış sürer. */
 export async function requestAi(tx: Tx, ctx: TenantContext, r: AiRequest) {
   const base = `${r.task}:${r.entityType}:${r.entityId}:${r.documentVersionId ?? ''}`;
-  const key = r.promptVersion ? `${base}:${r.promptVersion}` : base;
+  const key = [base, r.variant, r.promptVersion].filter((x) => !!x).join(':');
   await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`ai:${ctx.tenantId}:${key}`]);
   // v1 (istem sürümsüz) anahtar birebir; sürümlü anahtarda "Yeniden oku" denemeleri `:rN` ekiyle ayrı satırdır, en sonuncusu geçerlidir.
   let existing = r.promptVersion
@@ -77,7 +85,7 @@ export async function requestAi(tx: Tx, ctx: TenantContext, r: AiRequest) {
       estimated, currency, attemptKey, ctx.userId, r.promptVersion ?? null])).rows[0]!;
   if (status === 'QUEUED') {
     await tx.query(`INSERT INTO jobs (tenant_id, company_id, kind, idempotency_key, payload, requested_by) VALUES ($1,$2,'ai.run',$3,$4,$5) ON CONFLICT DO NOTHING`,
-      [ctx.tenantId, r.companyId ?? null, `ai-run-${run.id}`, { runId: run.id }, ctx.userId]);
+      [ctx.tenantId, r.companyId ?? null, `ai-run-${run.id}`, { ...(r.jobPayload ?? {}), runId: run.id }, ctx.userId]);
     if (decision.decision === 'RUN' && decision.warnings.length) {
       await openTask(tx, ctx, { companyId: null, kind: 'ai_budget', entityType: 'tenant', entityId: ctx.tenantId, title: 'AI bütçesi %80 eşiğini aştı', reason: decision.warnings.join(' '),
         nextAction: '%100\'de yeni ücretli AI işleri bekler; bütçeyi gözden geçirin.', assigneeRole: 'TENANT_ADMIN', dedupeKey: `ai-budget-80:${new Date().toISOString().slice(0, 7)}` });
@@ -92,14 +100,18 @@ const WAITING = ['WAITING_QUOTA', 'NO_PROVIDER', 'NOT_ALLOWED'];
 /** Bekleyen işi yeniden yönlendirir (bütçe yenilendi, politika değişti veya sağlayıcı kuruldu). Sözleşme görevleri aynı model ayarı ve istem sürümüyle. */
 export async function retryRun(tx: Tx, ctx: TenantContext, runId: string, opts: { modelId?: string } = {}) {
   const r = (await tx.query<{ task: AiTask; entity_type: string; entity_id: string; document_version_id: string | null; company_id: string | null; status: string; page_count: number | null;
-      prompt_version: string | null }>(
-    `SELECT r.task, r.entity_type, r.entity_id, r.document_version_id, r.company_id, r.status, dv.page_count, r.prompt_version FROM ai_runs r LEFT JOIN document_versions dv ON dv.id = r.document_version_id WHERE r.id = $1`, [runId])).rows[0];
+      prompt_version: string | null; idempotency_key: string }>(
+    `SELECT r.task, r.entity_type, r.entity_id, r.document_version_id, r.company_id, r.status, dv.page_count, r.prompt_version, r.idempotency_key FROM ai_runs r LEFT JOIN document_versions dv ON dv.id = r.document_version_id WHERE r.id = $1`, [runId])).rows[0];
   if (!r) throw notFound();
   if (!WAITING.includes(r.status)) throw unprocessable('not_waiting', 'Yalnız bekleyen (kota, sağlayıcı veya izin) iş yeniden denenir.');
   const pages = r.page_count ?? 1;
   const contract = isContractAiTask(r.task);
   // Görev 4 inceleme M5: sözleşme görevini yeniden yönlendirmek sözleşmede okuma istemektir: contract.ai.request + ailenin yazma kapsamı.
   if (contract) {
+    // Görev 5: AI15'in konusu belge sürümüdür (sözleşme sürümü değil) ve soruları isteyen kuraldan gelir; buradan yeniden yönlendirilemez.
+    if (r.entity_type !== 'contract_version') {
+      throw unprocessable('retry_by_requester', 'Bu yapay zekâ işi, onu isteyen kural tarafından yeniden istenir; buradan yeniden denenemez.');
+    }
     if (!can(ctx.roles, 'contract.ai.request')) throw forbidden('contract.ai.request');
     const fam = (await tx.query<{ department_id: string | null }>(`SELECT f.department_id FROM contract_versions cv JOIN contract_families f ON f.id = cv.family_id
       WHERE cv.id = $1`, [r.entity_id])).rows[0];
@@ -108,7 +120,17 @@ export async function retryRun(tx: Tx, ctx: TenantContext, runId: string, opts: 
   }
   return requestAi(tx, ctx, { task: r.task, entityType: r.entity_type, entityId: r.entity_id, documentVersionId: r.document_version_id, companyId: r.company_id,
     workload: contract ? contractWorkload(pages) : { pages, inputTokens: 1500 * pages, outputTokens: 500 },
-    ...(contract ? { modelId: opts.modelId ?? DEFAULT_AI_MODEL_ID, promptVersion: r.prompt_version ?? undefined } : {}) });
+    ...(contract ? { modelId: opts.modelId ?? DEFAULT_AI_MODEL_ID, promptVersion: r.prompt_version ?? undefined, variant: keyVariant(r) } : {}) });
+}
+
+/** Defterdeki idempotent anahtarın ek parçası (requestAi `variant`); yoksa undefined. Deneme eki (`:rN`) yok sayılır. */
+export function keyVariant(r: { task: string; entity_type: string; entity_id: string; document_version_id: string | null; prompt_version: string | null; idempotency_key: string }) {
+  const prefix = `${r.task}:${r.entity_type}:${r.entity_id}:${r.document_version_id ?? ''}`;
+  if (!r.idempotency_key.startsWith(prefix)) return undefined;
+  let rest = r.idempotency_key.slice(prefix.length).replace(/:r\d+$/, '');
+  if (r.prompt_version && rest.endsWith(`:${r.prompt_version}`)) rest = rest.slice(0, -(r.prompt_version.length + 1));
+  rest = rest.replace(/^:/, '');
+  return rest || undefined;
 }
 
 /** Sözleşme görevlerinin tahmini iş boyutu (bütçe kapısı için; gerçekleşen ücret yanıt kullanımıyla yazılır). */
@@ -117,13 +139,19 @@ export const contractWorkload = (pages: number): AiWorkload => ({ pages, inputTo
 /** v2 Faz 4: görev başına sonuç yazıcısı. Model çıktısı veridir; yazıcı kodla denetler ve yalnız öneri kaydı açar. */
 export interface AiRunRow {
   id: string; task: AiTask; status: string; document_version_id: string | null; company_id: string | null; provider: string; model_id: string;
-  entity_type: string; entity_id: string; prompt_version: string | null; price: AiModel['price']; page_count: number | null;
+  entity_type: string; entity_id: string; prompt_version: string | null; price: AiModel['price']; page_count: number | null; idempotency_key: string;
 }
 export interface WriterResult { flags: string[]; fields: number; data?: Record<string, unknown> }
-export type ResultWriter = (tx: Tx, ctx: TenantContext, w: { run: AiRunRow; pages: string[]; output: unknown }) => Promise<WriterResult>;
-interface TaskHandler {
-  /** Görevin ek girdisi (ör. AI14 şablon metni); hazırlık işleminde, çağrıdan önce. */
-  prepare?: (tx: Tx, ctx: TenantContext, run: AiRunRow, store: ObjectStore) => Promise<Partial<AiInput>>;
+export type ResultWriter = (tx: Tx, ctx: TenantContext, w: {
+  run: AiRunRow; pages: string[]; output: unknown;
+  /** Görev 5: yanıttaki model kimliği, hazırlık kancasının ek girdisi (ör. şablon metni) ve iş yükü (ör. AI15 soruları). */
+  model?: string | null; input?: Partial<AiInput>; payload?: Record<string, unknown>;
+}) => Promise<WriterResult>;
+/** Hazırlık kancasının çağrı yapmadan (ücretsiz) başarısız olması: sebep Türkçe, belge metni içermez. */
+export class AiPrepareError extends Error { override name = 'AiPrepareError'; }
+export interface TaskHandler {
+  /** Görevin ek girdisi (ör. AI14 şablon metni); hazırlık işleminde, çağrıdan önce. `AiPrepareError` → iş ücretsiz FAILED. */
+  prepare?: (tx: Tx, ctx: TenantContext, run: AiRunRow, store: ObjectStore, payload: Record<string, unknown>) => Promise<Partial<AiInput>>;
   write: ResultWriter;
 }
 /**
@@ -132,6 +160,8 @@ interface TaskHandler {
  */
 const RESULT_WRITERS: Partial<Record<AiTask, () => Promise<TaskHandler>>> = {
   AI06: async () => ({ write: (await import('./contractAi.ts')).writeContractExtraction }),
+  AI14: async () => (await import('./contractAi.ts')).REVIEW_HANDLER,
+  AI15: async () => (await import('./contractAi.ts')).EVIDENCE_HANDLER,
 };
 
 /**
@@ -142,9 +172,9 @@ const RESULT_WRITERS: Partial<Record<AiTask, () => Promise<TaskHandler>>> = {
 export async function processAiRun(pool: pg.Pool, ctx: TenantContext, store: ObjectStore, jobId: string) {
   const finishJob = (tx: Tx, status: string, result: unknown) => tx.query(`UPDATE jobs SET status = $2, result = $3, updated_at = now() WHERE id = $1`, [jobId, status, result]);
   const prep = await withTenant(pool, ctx, async (tx) => {
-    const j = (await tx.query<{ payload: { runId: string } }>(`SELECT payload FROM jobs WHERE id = $1`, [jobId])).rows[0]!;
+    const j = (await tx.query<{ payload: { runId: string } & Record<string, unknown> }>(`SELECT payload FROM jobs WHERE id = $1`, [jobId])).rows[0]!;
     const run = (await tx.query<AiRunRow>(
-      `SELECT r.id, r.task, r.status, r.document_version_id, r.company_id, m.provider, m.model_id, r.entity_type, r.entity_id, r.prompt_version, m.price,
+      `SELECT r.id, r.task, r.status, r.document_version_id, r.company_id, m.provider, m.model_id, r.entity_type, r.entity_id, r.prompt_version, m.price, r.idempotency_key,
          (SELECT page_count FROM document_versions WHERE id = r.document_version_id) AS page_count
        FROM ai_runs r JOIN ai_models m ON m.id = r.model_ref WHERE r.id = $1 FOR UPDATE OF r`, [j.payload.runId])).rows[0];
     if (!run || run.status !== 'QUEUED') { await finishJob(tx, 'SUCCEEDED', { skipped: true }); return null; }
@@ -164,13 +194,22 @@ export async function processAiRun(pool: pg.Pool, ctx: TenantContext, store: Obj
     // Sözleşme görevinin yazıcısı yoksa ücretli çağrı yapılmaz (çıktı kaydedilemezdi).
     const handler = RESULT_WRITERS[run.task] ? await RESULT_WRITERS[run.task]!() : null;
     if (contract && !handler) return fail('Bu görevin sonuç kaydı henüz desteklenmiyor; çağrı yapılmadı.', 'NO_WRITER');
-    const extra = handler?.prepare ? await handler.prepare(tx, ctx, run, store) : {};
+    let extra: Partial<AiInput> = {};
+    if (handler?.prepare) {
+      // Görev 5: hazırlık (ör. şablon metni) çağrıdan önce; kayıt noktasıyla yalnız o kısım geri alınır ve iş ücretsiz başarısız olur.
+      await tx.query('SAVEPOINT ai_prepare');
+      try { extra = await handler.prepare(tx, ctx, run, store, j.payload); await tx.query('RELEASE SAVEPOINT ai_prepare'); }
+      catch (e) {
+        await tx.query('ROLLBACK TO SAVEPOINT ai_prepare');
+        return fail(e instanceof AiPrepareError ? e.message : `Hazırlık başarısız: ${(e as Error).name}; çağrı yapılmadı.`, 'PREPARE');
+      }
+    }
     await tx.query(`UPDATE ai_runs SET status = 'RUNNING' WHERE id = $1`, [run.id]);
     await tx.query(`UPDATE jobs SET status = 'RUNNING', updated_at = now() WHERE id = $1`, [jobId]);
-    return { run, dv, handler, extra, contract };
+    return { run, dv, handler, extra, contract, payload: j.payload as Record<string, unknown> };
   });
   if (!prep) return;
-  const { run, dv, handler, extra, contract } = prep;
+  const { run, dv, handler, extra, contract, payload } = prep;
   const allowed = ALLOWED_FIELDS[run.task] ?? [];
   let res: AiResult; let pages: string[]; let called = false;
   try {
@@ -199,7 +238,7 @@ export async function processAiRun(pool: pg.Pool, ctx: TenantContext, store: Obj
   try {
     await withTenant(pool, ctx, async (tx) => {
       if (handler) {
-        const w = await handler.write(tx, ctx, { run, pages, output: res.output });
+        const w = await handler.write(tx, ctx, { run, pages, output: res.output, model: res.model ?? null, input: extra, payload });
         await tx.query(`UPDATE ai_runs SET status = 'SUCCEEDED', actual_cost = $2, flags = $3, input_tokens = $4, output_tokens = $5, response_model = $6, finished_at = now() WHERE id = $1`,
           [run.id, cost, JSON.stringify(w.flags), ...ledger]);
         const ignored = w.flags.filter((f) => f.startsWith('IGNORED_'));
@@ -243,15 +282,49 @@ function failureReason(e: unknown): string {
   return code ? `Sağlayıcı hatası (${code}): ${(e as Error).message}`.slice(0, 500) : `Sağlayıcı/okuma hatası: ${(e as Error).name}`;
 }
 
-export async function overview(tx: Tx) {
-  const runs = (await tx.query(`SELECT r.id, r.task, r.status, r.reason, r.estimated_cost::text AS "estimatedCost", r.actual_cost::text AS "actualCost", r.cost_currency AS "costCurrency",
-      r.flags, r.entity_type AS "entityType", r.entity_id AS "entityId", r.created_at AS "createdAt", m.provider, m.model_id AS "modelId"
-    FROM ai_runs r LEFT JOIN ai_models m ON m.id = r.model_ref ORDER BY r.created_at DESC LIMIT 100`)).rows;
+/** v2 Faz 4 (R1, Görev 5): sağlayıcı yapılandırmasının ekran özeti. Test sağlayıcısı her yerde etiketli; gerçek sağlayıcı kurum dışıdır. */
+export const PROVIDER_LABELS = { none: 'Bağlı değil', test: 'Test sağlayıcısı — gerçek değil', anthropic: 'Anthropic API (kurum dışı)' } as const;
+export type AiProviderConfig = { provider: 'none' | 'test' | 'anthropic'; modelId: string } | null | undefined;
+export function providerSummary(cfg: AiProviderConfig) {
+  const kind = cfg?.provider ?? 'none';
+  return { kind, modelId: cfg?.modelId ?? DEFAULT_AI_MODEL_ID, label: PROVIDER_LABELS[kind], external: kind === 'anthropic' };
+}
+
+/** R13: gerçek sözleşmelerle doğruluk ölçülmedi; düzenek yalnız test sağlayıcısıyla sınandı (gerçek ölçüm değil). */
+export const ACCURACY_NOT_RUN = 'Gerçek sözleşmelerle doğruluk ölçümü yapılmadı (NOT_RUN).';
+export const DEFAULT_REVIEW_THRESHOLD = 60;
+export async function contractSettings(tx: Tx) {
+  const r = (await tx.query<{ review_threshold: number; updated_at: Date; updated_by_name: string | null }>(
+    `SELECT s.review_threshold, s.updated_at, u.display_name AS updated_by_name FROM contract_ai_settings s LEFT JOIN users u ON u.id = s.updated_by`)).rows[0];
+  return { reviewThreshold: r?.review_threshold ?? DEFAULT_REVIEW_THRESHOLD, defaultThreshold: DEFAULT_REVIEW_THRESHOLD,
+    updatedAt: r?.updated_at ?? null, updatedBy: r?.updated_by_name ?? null };
+}
+/** R10: eşik ayarı (Yönetici, ai.policy.manage); denetim `ai.contract_settings.updated`. */
+export async function setContractSettings(tx: Tx, ctx: TenantContext, b: { reviewThreshold: number }) {
+  if (!Number.isInteger(b.reviewThreshold) || b.reviewThreshold < 0 || b.reviewThreshold > 100) throw unprocessable('invalid_threshold', 'Eşik 0 ile 100 arasında tam sayı olmalı.');
+  const before = (await contractSettings(tx)).reviewThreshold;
+  await tx.query(`INSERT INTO contract_ai_settings (tenant_id, review_threshold, updated_by, updated_at) VALUES ($1,$2,$3,now())
+    ON CONFLICT (tenant_id) DO UPDATE SET review_threshold = EXCLUDED.review_threshold, updated_by = EXCLUDED.updated_by, updated_at = now()`,
+    [ctx.tenantId, b.reviewThreshold, ctx.userId]);
+  await audit(tx, ctx, 'ai.contract_settings.updated', 'tenant', ctx.tenantId, { reviewThreshold: { from: before, to: b.reviewThreshold } });
+  return contractSettings(tx);
+}
+
+export async function overview(tx: Tx, cfg?: AiProviderConfig) {
+  const runs = (await tx.query<Record<string, unknown> & { provider: string | null }>(`SELECT r.id, r.task, r.status, r.reason, r.estimated_cost::text AS "estimatedCost", r.actual_cost::text AS "actualCost", r.cost_currency AS "costCurrency",
+      r.flags, r.entity_type AS "entityType", r.entity_id AS "entityId", r.created_at AS "createdAt", m.provider, m.model_id AS "modelId",
+      r.requested_by AS "requestedById", u.display_name AS "requestedBy", r.document_version_id AS "documentVersionId", r.prompt_version AS "promptVersion",
+      r.input_tokens AS "inputTokens", r.output_tokens AS "outputTokens", r.response_model AS "responseModel", r.finished_at AS "finishedAt"
+    FROM ai_runs r LEFT JOIN ai_models m ON m.id = r.model_ref LEFT JOIN users u ON u.id = r.requested_by ORDER BY r.created_at DESC LIMIT 100`)).rows;
   return {
     tasks: Object.entries(AI_TASKS).map(([code, t]) => ({ code, ...t })),
-    models: (await models(tx)).map((m) => ({ ...m, adapterInstalled: !!aiProvider(m.provider) })),
-    policy: await policy(tx), usage: await usage(tx, (await policy(tx))?.budgetCurrency ?? 'USD'), runs,
-    quality: { status: 'BLOCKED', reason: 'Etiketli Türkçe golden set (en az 300 belge) ve izinli sağlayıcı yok; kalite ölçümü yapılmadı.' },
+    models: (await models(tx)).map((m) => ({ ...m, adapterInstalled: !!aiProvider(m.provider), isTestProvider: isTestProvider(m.provider) })),
+    policy: await policy(tx), usage: await usage(tx, (await policy(tx))?.budgetCurrency ?? 'USD'),
+    runs: runs.map((r) => ({ ...r, isTestProvider: isTestProvider(r.provider), providerLabel: isTestProvider(r.provider) ? TEST_PROVIDER_LABEL : null })),
+    provider: providerSummary(cfg),
+    contractSettings: await contractSettings(tx),
+    quality: { status: 'BLOCKED', reason: `${ACCURACY_NOT_RUN} Etiketli gerçek sözleşmeler (20–30) ve izinli gerçek sağlayıcı yok; ölçülmeden "okuyor" denmez. Değerlendirme düzeneği yalnız test sağlayıcısıyla sınandı (gerçek ölçüm değil).`,
+      contractAccuracy: 'NOT_RUN' },
   };
 }
 

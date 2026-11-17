@@ -659,6 +659,13 @@ export async function buildApp(deps: AppDeps) {
   app.post('/api/v1/contracts/:id/extractions', { schema: { tags: ['contracts'], params: idParams } }, async (req) =>
     scoped(req, 'contract.ai.request', (tx, ctx) => contractAi.requestContractExtraction(tx, ctx, (req.params as { id: string }).id,
       { force: true, modelId: contractAi.contractAiModelId(deps.config.ai) })));
+  // --- Sözleşme incelemesi (v2 Faz 4, Görev 5: R7–R10). Yapay zekâ ön incelemesidir, hukuki görüş değildir; puan onay vermez, engellemez. ---
+  app.get('/api/v1/contracts/:id/reviews', { schema: { tags: ['contracts'], params: idParams } }, async (req) =>
+    scoped(req, 'contract.review.read', (tx, ctx) => contractAi.getContractReviews(tx, ctx, (req.params as { id: string }).id)));
+  // "İncele" / "Yeniden incele": çalışmış iş yeni ücret yaratmaz; başarısız iş yeni deneme açar.
+  app.post('/api/v1/contracts/:id/reviews', { schema: { tags: ['contracts'], params: idParams } }, async (req) =>
+    scoped(req, 'contract.ai.request', (tx, ctx) => contractAi.requestContractReview(tx, ctx, (req.params as { id: string }).id,
+      { force: true, modelId: contractAi.contractAiModelId(deps.config.ai) })));
   // --- Sözleşme hatırlatıcıları (v2 Faz 3, Görev 6: R7) -------------------------------------------------------------------
   app.get('/api/v1/contracts/:id/reminders', { schema: { tags: ['contracts'], params: idParams } }, async (req) =>
     scoped(req, 'contract.read', (tx, ctx) => reminders.getReminders(tx, ctx, (req.params as { id: string }).id)));
@@ -1150,7 +1157,13 @@ export async function buildApp(deps: AppDeps) {
 
   // --- Faz 5: AI yönetişimi (07, T22–T24) ---
   app.get('/api/v1/ai/overview', { schema: { tags: ['ai'] } }, async (req) => scoped(req, 'ai.read', async (tx, ctx) =>
-    ({ ...(await ai.overview(tx)), can: { manage: can(ctx.roles, 'ai.policy.manage') } })));
+    ({ ...(await ai.overview(tx, deps.config.ai)), can: { manage: can(ctx.roles, 'ai.policy.manage') } })));
+  // v2 Faz 4 Görev 5 (R10): sözleşme inceleme eşiği (kiracı ayarı; Yönetici değiştirir).
+  app.get('/api/v1/ai/contract-settings', { schema: { tags: ['ai'] } }, async (req) => scoped(req, 'ai.read', async (tx, ctx) =>
+    ({ ...(await ai.contractSettings(tx)), can: { manage: can(ctx.roles, 'ai.policy.manage') } })));
+  app.put('/api/v1/ai/contract-settings', { schema: { tags: ['ai'], body: { type: 'object', required: ['reviewThreshold'], additionalProperties: false,
+    properties: { reviewThreshold: { type: 'integer', minimum: 0, maximum: 100 } } } } }, async (req) =>
+    scoped(req, 'ai.policy.manage', (tx, ctx) => ai.setContractSettings(tx, ctx, req.body as { reviewThreshold: number })));
   app.put('/api/v1/ai/policy', { schema: { tags: ['ai'], body: { type: 'object', required: ['allowedProviders', 'allowedRegions', 'monthlyBudget', 'budgetCurrency', 'dailyCallLimit', 'allowUpgrade'], additionalProperties: false,
     properties: { allowedProviders: { type: 'array', maxItems: 20, items: { type: 'string', minLength: 1, maxLength: 60 } }, allowedRegions: { type: 'array', maxItems: 20, items: { type: 'string', minLength: 1, maxLength: 40 } },
       // null önce: tür dönüştürme boş değeri "" veya 0'a çevirmesin (boş = sınırsız).

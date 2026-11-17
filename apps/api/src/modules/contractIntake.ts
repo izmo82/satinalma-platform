@@ -1,5 +1,5 @@
 import {
-  addDays, contractStatus, missingRequired, planChain, reminderDates, termsDiff, normalizeRoles,
+  addDays, can, contractStatus, missingRequired, planChain, reminderDates, termsDiff, normalizeRoles,
   CONTRACT_TYPE_TR, REQUIRED_FIELD_TR, STEP_KIND_TR,
   type ChainSummary, type CommercialTerms, type ContractFields, type ContractStatus, type ContractType, type NoticeUnit, type RequiredField, type StepKind,
 } from '@sp/domain';
@@ -13,7 +13,8 @@ import { currentApprovers } from './approvers.ts';
 import { resolveDepartment } from './departments.ts';
 import { noticeBasis } from './contractReminders.ts';
 import { cancelOpenChain, CONTENT_CHANGED_REASON, membershipCoversSql, roleOf } from './contractChain.ts';
-import { applyAiDecisions, assertNoPendingCriticalSuggestions, reconcileConfirmed, requestExtractionForVersion, type AiDecisionInput } from './contractAi.ts';
+import { applyAiDecisions, assertNoPendingCriticalSuggestions, auditReviewAtSubmit, reconcileConfirmed, requestExtractionForVersion, reviewSummary,
+  type AiDecisionInput, type SavedContractValues } from './contractAi.ts';
 
 /**
  * v2 Faz 3 (D108+, R1–R5, R9, R10) Görev 4: sözleşme ekleme akışı. Taslak (aile + MAIN sürüm, proje zorunlu), zorunlu alanlar
@@ -360,20 +361,26 @@ export async function updateFields(tx: Tx, ctx: TenantContext, familyId: string,
   // v2 Faz 4 (R6): kararlar kaydedilen (güncel) değerlerle karşılaştırılır; uyuşmazlıkta 422 ve bütün işlem (alanlar dahil) geri alınır.
   // Görev 4 inceleme I1: değer değişince eski "Onaylandı" kararı "Düzeltildi" olur.
   if (body.aiDecisions?.length || changed) {
-    const g = await loadFamily(tx, familyId);
-    const sup = g.supplier_id ? (await tx.query<{ legal_name: string; tax_id: string | null }>(`SELECT legal_name, tax_id FROM suppliers WHERE id = $1`, [g.supplier_id])).rows[0] : undefined;
-    const dv = (await tx.query<{ document_version_id: string }>(`SELECT document_version_id FROM contract_versions WHERE id = $1`, [g.version_id])).rows[0]!.document_version_id;
-    const saved = {
-      title: g.title, contractType: g.contract_type, supplierName: sup?.legal_name ?? null, supplierVkn: sup?.tax_id ?? null, signedOn: g.signed_on,
-      startDate: g.start_date, endDate: g.end_date, indefinite: g.indefinite,
-      noticeAmount: g.indefinite ? g.termination_notice_amount : g.notice_amount, noticeUnit: g.indefinite ? g.termination_notice_unit : g.notice_unit,
-      amount: g.amount, currency: g.currency, limitBasis: g.terms_id ? g.limit_basis : null, autoRenewal: g.terms_id ? g.auto_renewal : null,
-      contractNo: g.contract_no, paymentDays: g.payment_days, governingCourt: g.governing_court, priceEscalation: g.price_escalation,
-    };
+    const { dv, saved } = await savedValues(tx, familyId);
     if (changed) await reconcileConfirmed(tx, ctx, familyId, dv, saved, (body.aiDecisions ?? []).map((d) => d.extractionId));
     if (body.aiDecisions?.length) await applyAiDecisions(tx, ctx, familyId, dv, saved, body.aiDecisions);
   }
   return { ...(await getContractV2(tx, ctx, familyId)), changed, cancelledChainId: cancelled };
+}
+
+/** Kaydedilmiş insan değerleri (yapay zekâ önerisiyle karşılaştırma için) ve güncel belge sürümü. */
+async function savedValues(tx: Tx, familyId: string): Promise<{ dv: string; saved: SavedContractValues }> {
+  const g = await loadFamily(tx, familyId);
+  const sup = g.supplier_id ? (await tx.query<{ legal_name: string; tax_id: string | null }>(`SELECT legal_name, tax_id FROM suppliers WHERE id = $1`, [g.supplier_id])).rows[0] : undefined;
+  const dv = (await tx.query<{ document_version_id: string }>(`SELECT document_version_id FROM contract_versions WHERE id = $1`, [g.version_id])).rows[0]!.document_version_id;
+  const saved = {
+    title: g.title, contractType: g.contract_type, supplierName: sup?.legal_name ?? null, supplierVkn: sup?.tax_id ?? null, signedOn: g.signed_on,
+    startDate: g.start_date, endDate: g.end_date, indefinite: g.indefinite,
+    noticeAmount: g.indefinite ? g.termination_notice_amount : g.notice_amount, noticeUnit: g.indefinite ? g.termination_notice_unit : g.notice_unit,
+    amount: g.amount, currency: g.currency, limitBasis: g.terms_id ? g.limit_basis : null, autoRenewal: g.terms_id ? g.auto_renewal : null,
+    contractNo: g.contract_no, paymentDays: g.payment_days, governingCourt: g.governing_court, priceEscalation: g.price_escalation,
+  };
+  return { dv, saved };
 }
 
 // --- Zincir iptali (R5): contractChain.ts (Görev 5'te eski uçlar da çağırdığı için taşındı; adlar burada da dışa aktarılır) ---------
@@ -470,7 +477,10 @@ export async function submitContract(tx: Tx, ctx: TenantContext, familyId: strin
   }
   if (!f.version_id || !f.terms_id) throw unprocessable('missing_fields', 'Koşullar girilmemiş.', { missing: [] });
   // v2 Faz 4 (R6): güncel belge sürümünün kritik yapay zekâ önerisi karar bekliyorsa gönderilmez (okuma yoksa/çalışmadıysa engel yok).
-  const dv = (await tx.query<{ document_version_id: string }>(`SELECT document_version_id FROM contract_versions WHERE id = $1`, [f.version_id])).rows[0]!.document_version_id;
+  // Görev 5 (Görev 4 inceleme taşıması): alan kaydı dışındaki yollar (eski koşul uçları vb.) uzlaştırmayı atlayabilir; gönderimde "Onaylandı"
+  // kararının kaydedilen değere hâlâ eşit olduğu yeniden denetlenir, eşit değilse karar "Düzeltildi" olur (engel değil; karar değeri izler).
+  const { dv, saved } = await savedValues(tx, familyId);
+  await reconcileConfirmed(tx, ctx, familyId, dv, saved);
   await assertNoPendingCriticalSuggestions(tx, dv);
   const r = await plan(tx, ctx, f, body);
   if (!r.ok) throw conflict(r.error, r.message, { kind: r.kind, kindLabel: r.kindLabel });
@@ -490,6 +500,8 @@ export async function submitContract(tx: Tx, ctx: TenantContext, familyId: strin
   const task = await openStepTask(tx, ctx, f, chain.id, steps[0]!);
   await closeTasks(tx, `contract-resubmit:${familyId}`);
   await closeTasks(tx, `contract-rejected:${familyId}`);
+  // R10: güncel inceleme puanı eşiğin altındaysa denetim olayı; gönderim engellenmez.
+  await auditReviewAtSubmit(tx, ctx, familyId);
   await audit(tx, ctx, 'contract.submitted', 'contract_family', familyId,
     { chainId: chain.id, versionId: f.version_id, termsId: f.terms_id, steps: r.steps.map((s) => ({ order: s.order, kind: s.kind, userId: s.userId, viaDeputy: s.viaDeputy })) }, note ?? undefined);
   return { chainId: chain.id, firstTaskId: task.id, contract: await getContractV2(tx, ctx, familyId) };
@@ -590,5 +602,7 @@ export async function getContractV2(tx: Tx, ctx: TenantContext, familyId: string
     document: doc && { contractVersionId: doc.id, versionNo: doc.version_no, stage: doc.stage, documentVersionId: doc.document_version_id,
       filename: doc.filename, mimeType: doc.mime_type, sha256: doc.sha256, pageCount: doc.page_count, etag: `"cv-${doc.id}-${doc.row_version}"` },
     can: { edit: canEdit, submit: canEdit && st.missing.length === 0 && !openChain, decide },
+    // v2 Faz 4 Görev 5 (R10): yapay zekâ inceleme özeti (bilgi; onay vermez, engellemez). Okuma izni yoksa null.
+    review: f.version_id && can(ctx.roles, 'contract.review.read') ? await reviewSummary(tx, familyId) : null,
   };
 }
