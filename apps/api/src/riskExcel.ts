@@ -62,17 +62,21 @@ function zipCentralStats(buf: Buffer): { entries: number; total: number } | null
   return { entries, total };
 }
 
-/** exceljs'e vermeden önce: sıkıştırma bombası ve aşırı büyük dosya 422 `risk_import_too_large`. Bildirilen boyut yalan olabilir: açma da sınırlıdır. */
+/**
+ * exceljs'e vermeden önce: sıkıştırma bombası ve aşırı büyük dosya 422. Kapı kapalı başarısız olur: merkezi dizin beklenen yerde
+ * okunamazsa (ör. başa eklenmiş baytlar; jszip bunu hoş görür) ya da readZip herhangi bir hata verirse dosya exceljs'e GİTMEZ.
+ */
 function assertZipWithinLimits(buf: Buffer) {
   const tooLarge = () => unprocessable('risk_import_too_large', 'Dosya açıldığında çok büyük; en fazla 5.000 satırlık makul bir risk tablosu yükleyin.');
+  const unreadable = () => unprocessable('risk_import_format', 'Dosya okunamadı; Excel (.xlsx) dosyası yükleyin.');
   const st = zipCentralStats(buf);
-  if (!st) return; // zip değil: exceljs okunamadı hatasını verir
+  if (!st) throw unreadable();
   if (st.entries > MAX_ZIP_ENTRIES || st.total > MAX_UNCOMPRESSED_TOTAL) throw tooLarge();
   try {
     readZip(buf, { maxOutputLength: MAX_UNCOMPRESSED_ENTRY });
   } catch (e) {
-    if (e instanceof ZipEntryTooLargeError) throw tooLarge();
-    // bozuk zip: exceljs okunamadı hatasını verir
+    if (e instanceof ZipEntryTooLargeError || (e as NodeJS.ErrnoException).code === 'ERR_BUFFER_TOO_LARGE') throw tooLarge();
+    throw unreadable();
   }
 }
 

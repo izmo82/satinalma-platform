@@ -96,8 +96,17 @@ describe('parseRiskTable (yalnız ayrıştırma)', () => {
     for (let i = 0; i < 60; i++) await e.write(Buffer.alloc(1024 * 1024));
     await e.close();
     await zw.finish();
-    const bomb = await parseRiskTable(Buffer.concat(parts)).catch((x) => x);
+    const zipBuf = Buffer.concat(parts);
+    const bomb = await parseRiskTable(zipBuf).catch((x) => x);
     expect(bomb).toMatchObject({ status: 422, code: 'risk_import_too_large' });
+    // Kapı kapalı başarısız olur: başa baytlar eklenmiş bomba exceljs'e gitmeden 422 (risk_import_format).
+    const prefixed = await parseRiskTable(Buffer.concat([Buffer.alloc(10), zipBuf])).catch((x) => x);
+    expect(prefixed).toBeInstanceOf(ApiError);
+    expect(prefixed).toMatchObject({ status: 422, code: 'risk_import_format' });
+    // Merkezi dizinde yalan (küçük) açılmış boyut: gerçek açma sınırı yine 422.
+    const lying = Buffer.from(zipBuf);
+    lying.writeUInt32LE(100, lying.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02])) + 24);
+    expect(await parseRiskTable(lying).catch((x) => x)).toMatchObject({ status: 422, code: expect.stringMatching(/^risk_import_(too_large|format)$/) });
   });
 
   const realPath = process.env.RISK_XLSX_PATH;
