@@ -16,7 +16,7 @@ import { directoryJobContext, enqueueNightlySyncs, processDirectorySync } from '
 import { configureMailChannel, DISPATCH_JOB, mailSender, processEmailDispatch, type MailSender } from './mail/index.ts';
 import { EXPIRE_JOB, processApplicationExpiry, processApplicationSubmitted, SUBMITTED_JOB } from './modules/supplierApplications.ts';
 import { dailyRiskSchedules, processRiskJob, RISK_JOB_KINDS } from './modules/riskCycle.ts';
-import { DOC_REMINDER_JOB, processDocumentReminderJob } from './modules/supplierDocReminders.ts';
+import { dailyDocumentReminders, DOC_REMINDER_JOB, processDocumentReminderJob } from './modules/supplierDocReminders.ts';
 
 /** İsteğe bağlı işçi bağımlılıkları; eski çağrılar etkilenmez. */
 export interface WorkerOptions {
@@ -70,7 +70,7 @@ export async function processJobs(pool: pg.Pool, store: ObjectStore, detectorPro
       // v2 Faz 5 (R2): girişsiz başvurunun işleri sistem işidir (isteyen kullanıcı yok; kiracı başvurudan gelir).
       if (job.kind === SUBMITTED_JOB) { await processApplicationSubmitted(pool, job.tenant_id, job.id); continue; }
       if (job.kind === EXPIRE_JOB) { await processApplicationExpiry(pool, job.tenant_id, job.id); continue; }
-      // v2 Faz 5 (R12): belge hatırlatmaları sistem işidir (kiracı başına günlük; her çalışma ertesi günün işini kurar).
+      // v2 Faz 5 (R12): belge hatırlatmaları sistem işidir (kiracı başına günlük; işçi kapısı ve belge yüklemesi kurar).
       if (job.kind === DOC_REMINDER_JOB) {
         await processDocumentReminderJob(pool, job.tenant_id, job.id, { webOrigin: opts.webOrigin ?? process.env.WEB_ORIGIN ?? '' });
         continue;
@@ -118,6 +118,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   let lastNightly = 0;
   const reminderBackfill = dailyReminderBackfill();
   const riskSchedules = dailyRiskSchedules();
+  const docReminders = dailyDocumentReminders();
   const loop = async (lane: 'short' | 'export') => {
     while (!stopping) {
       // R8: gece eşitlemesi en fazla dakikada bir denetlenir (İstanbul 06:00 sonrası, kiracı başına günde bir iş).
@@ -130,6 +131,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         await reminderBackfill(pool, new Date()).catch((e) => console.error('reminder backfill enqueue failed', (e as Error).message));
         // v2 Faz 6: risk döngüsü işleri İstanbul gününde bir kez (kiracı başına tekil iş anahtarı).
         await riskSchedules(pool, new Date()).catch((e) => console.error('risk schedules enqueue failed', (e as Error).message));
+        // v2 Faz 5 (R12): belge hatırlatmaları İstanbul gününde bir kez (052b kiracı kapısı; kiracı başına tekil iş anahtarı).
+        await docReminders(pool, new Date()).catch((e) => console.error('document reminders enqueue failed', (e as Error).message));
       }
       const n = await processJobs(pool, store, config.signatureDetectorProvider, 10, config.erpAdapter ?? null, lane, { directoryProvider: directory, mailSender: mail, webOrigin: config.webOrigin });
       if (n === 0) await new Promise((r) => setTimeout(r, 2000));

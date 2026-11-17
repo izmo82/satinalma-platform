@@ -4,11 +4,11 @@ import type { TenantContext, Tx } from '../db.ts';
 import { audit } from '../audit.ts';
 import { ApiError, conflict, forbidden, notFound, unprocessable } from '../errors.ts';
 import { EMAIL_STATUS_LABEL, enqueueEmailDispatch, mailChannel, type OutboxStatus } from '../mail/index.ts';
-import { closeTasks, openTask } from '../tasks.ts';
+import { openTask } from '../tasks.ts';
 import { withTenantWideScope } from './contractChain.ts';
 import { portalRisk } from './riskAssessments.ts';
 import { DOC_SELECT, documentView, prepareInternalUpload, requiredMissing, SUPPLIER_DOC_MAX_BYTES, today, type DocRow, type InternalUpload } from './supplierCard.ts';
-import { ensureDocumentReminderJob } from './supplierDocReminders.ts';
+import { closeCoveredDocumentTasks, ensureDocumentReminderJob } from './supplierDocReminders.ts';
 
 /**
  * v2 Faz 5 (D110) Görev 6: tedarikçi portalı API'si (R8, R12, R14, R15) ve tur davet e-postası.
@@ -275,9 +275,7 @@ export async function addPortalDocument(tx: Tx, ctx: TenantContext, u: InternalU
       p.avScanStatus, validUntil, ctx.userId]);
   if (replacesId) await tx.query(`UPDATE supplier_documents SET superseded_by_id = $2 WHERE id = $1`, [replacesId, id]);
   // R12: yenileme gelince eski belgenin açık hatırlatma/"süresi doldu" görevleri kapanır (yenilenen ve yeni belgenin kapsadığı aynı türdekiler).
-  const covered = (await tx.query<{ id: string }>(`SELECT id FROM supplier_documents WHERE supplier_id = $1 AND type_code = $2 AND id <> $3
-      AND (id = $4 OR (valid_until IS NOT NULL AND ($5::date IS NULL OR valid_until < $5::date)))`, [sid, typeCode, id, replacesId, validUntil])).rows;
-  for (const c of covered) await closeTasks(tx, `doc:${c.id}:`);
+  await closeCoveredDocumentTasks(tx, { supplierId: sid, typeCode, newId: id, replacesId, validUntil });
   await openTask(tx, ctx, { companyId: null, departmentId: null, kind: 'supplier_document_renewed', entityType: 'supplier', entityId: sid,
     title: replacesId ? 'Tedarikçi belge yeniledi' : 'Tedarikçi belge yükledi',
     reason: `${s.legal_name}: ${t.name}${validUntil ? ` (geçerlilik: ${formatDateTr(validUntil)})` : ''} portaldan yüklendi.`,
@@ -321,25 +319,42 @@ export async function profile(tx: Tx, ctx: TenantContext) {
   };
 }
 
-/** Yalnız iletişim kişisi, telefon ve adres (`portal_update_contact`, SECURITY DEFINER). Unvan, VKN, e-posta ve durum değişmez. */
-export async function updateProfile(tx: Tx, ctx: TenantContext, b: { contactName: string; contactPhone?: string | null; address?: string | null }) {
+/**
+ * Yalnız iletişim kişisi, telefon ve adres (`portal_update_contact`, SECURITY DEFINER). Unvan, VKN, e-posta ve durum değişmez.
+ * Gövdede verilmeyen alan mevcut değerini korur (null/boş metin alanı temizler; iletişim kişisi temizlenemez). `ifMatch` (kartın
+ * `rowVersion`'ı, ör. `"7"`) verilirse ve kayıt değişmişse 409 `version_conflict`.
+ */
+export async function updateProfile(tx: Tx, ctx: TenantContext, b: { contactName?: string; contactPhone?: string | null; address?: string | null }, ifMatch?: string) {
   const sid = supplierOnly(ctx);
-  const name = (b.contactName ?? '').trim();
-  const phone = (b.contactPhone ?? '').trim() || null;
-  const address = (b.address ?? '').trim() || null;
-  if (name.length < 2 || name.length > 200) throw unprocessable('invalid_field', 'İletişim kişisi 2–200 karakter olmalı.', { field: 'contactName' });
-  if (phone && (phone.length > 40 || !/^[0-9+()\s.-]+$/.test(phone))) throw unprocessable('invalid_field', 'Telefon en çok 40 karakter; yalnız rakam, boşluk ve + ( ) - . içerebilir.', { field: 'contactPhone' });
-  if (address && address.length > 1000) throw unprocessable('invalid_field', 'Adres en çok 1000 karakter olabilir.', { field: 'address' });
-  const before = (await tx.query<{ contact_name: string | null; contact_phone: string | null; address: string | null }>(
-    `SELECT contact_name, contact_phone, address FROM suppliers WHERE id = $1`, [sid])).rows[0];
+  // Tedarikçi oturumu suppliers satırını kilitleyemez; aynı kartın eşzamanlı düzenlemeleri danışma kilidiyle sıralanır.
+  await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`supplier-contact:${sid}`]);
+  const before = (await tx.query<{ contact_name: string | null; contact_phone: string | null; address: string | null; row_version: number }>(
+    `SELECT contact_name, contact_phone, address, row_version FROM suppliers WHERE id = $1`, [sid])).rows[0];
   if (!before) throw notFound();
+  if (ifMatch !== undefined) {
+    const m = /^(?:W\/)?"?(\d+)"?$/.exec(ifMatch.trim());
+    if (!m || Number(m[1]) !== before.row_version) {
+      throw conflict('version_conflict', 'Firma bilgileri siz düzenlerken değişti. Güncel bilgileri gözden geçirin.', { currentRowVersion: before.row_version });
+    }
+  }
+  const name = b.contactName === undefined ? (before.contact_name ?? '') : (b.contactName ?? '').trim();
+  const phone = b.contactPhone === undefined ? before.contact_phone : (b.contactPhone ?? '').trim() || null;
+  const address = b.address === undefined ? before.address : (b.address ?? '').trim() || null;
+  if (name.length < 2 || name.length > 200) throw unprocessable('invalid_field', 'İletişim kişisi 2–200 karakter olmalı.', { field: 'contactName' });
+  if (b.contactPhone !== undefined && phone && (phone.length > 40 || !/^[0-9+()\s.-]+$/.test(phone))) {
+    throw unprocessable('invalid_field', 'Telefon en çok 40 karakter; yalnız rakam, boşluk ve + ( ) - . içerebilir.', { field: 'contactPhone' });
+  }
+  if (address && address.length > 1000) throw unprocessable('invalid_field', 'Adres en çok 1000 karakter olabilir.', { field: 'address' });
+  const prev = { contactName: before.contact_name, contactPhone: before.contact_phone, address: before.address };
+  if (prev.contactName === name && prev.contactPhone === phone && prev.address === address) {
+    return { contactName: name, contactPhone: phone, address, rowVersion: before.row_version, changed: [] as string[] };
+  }
   const r = (await tx.query<{ v: { contactName: string; contactPhone: string | null; address: string | null; rowVersion: number } }>(
     `SELECT portal_update_contact($1, $2, $3) AS v`, [name, phone, address])).rows[0]!.v;
-  const prev = { contactName: before.contact_name, contactPhone: before.contact_phone, address: before.address };
   const changed = (['contactName', 'contactPhone', 'address'] as const).filter((k) => prev[k] !== r[k]);
   await audit(tx, ctx, 'supplier.profile.portal_updated', 'supplier', sid, {
     before: Object.fromEntries(changed.map((k) => [k, prev[k]])), after: Object.fromEntries(changed.map((k) => [k, r[k]])) });
-  return { contactName: r.contactName, contactPhone: r.contactPhone, address: r.address, rowVersion: r.rowVersion, changed };
+  return { contactName: r.contactName, contactPhone: r.contactPhone, address: r.address, rowVersion: r.rowVersion, changed: changed as string[] };
 }
 
 /** Unvan, VKN ya da diğer bilgi değişikliği isteği → Satınalma görevi (veri değişmez). Açık istek sayısı sınırlı. */

@@ -10,10 +10,10 @@ import { inspectUpload } from '../files.ts';
 import { AV_STATUS_LABEL, scanStatus, type AvScanner, type AvScanStatus } from '../av/index.ts';
 import { queueEmail } from '../mail/index.ts';
 import type { ObjectStore } from '../storage.ts';
-import { closeTasks, openTask } from '../tasks.ts';
+import { openTask } from '../tasks.ts';
 import { listInfo } from './contractIntake.ts';
 import { currentRisk } from './riskAssessments.ts';
-import { ensureDocumentReminderJob } from './supplierDocReminders.ts';
+import { closeCoveredDocumentTasks, ensureDocumentReminderJob } from './supplierDocReminders.ts';
 import * as evals from './supplierEval.ts';
 
 /**
@@ -391,11 +391,9 @@ export async function addInternalDocument(tx: Tx, ctx: TenantContext, supplierId
     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'INTERNAL',$14) RETURNING id`,
     [ctx.tenantId, supplierId, typeCode, title, p.filename, p.mimeType, p.sizeBytes, p.sha256, p.storageKey, p.basicCheckStatus, p.basicCheckReason,
       p.avScanStatus, validUntil, ctx.userId])).rows[0]!.id;
-  if (replacesId) {
-    await tx.query(`UPDATE supplier_documents SET superseded_by_id = $2 WHERE id = $1`, [replacesId, id]);
-    // R12: yenileme gelince eski belgenin açık hatırlatma görevleri kapanır.
-    await closeTasks(tx, `doc:${replacesId}:`);
-  }
+  if (replacesId) await tx.query(`UPDATE supplier_documents SET superseded_by_id = $2 WHERE id = $1`, [replacesId, id]);
+  // R12: yenileme gelince eski belgenin ve yeni belgenin kapsadığı aynı türdeki belgelerin açık hatırlatma/"süresi doldu" görevleri kapanır.
+  await closeCoveredDocumentTasks(tx, { supplierId, typeCode, newId: id, replacesId, validUntil });
   if (p.avScanStatus === 'ERROR') {
     await openTask(tx, ctx, { companyId: null, departmentId: null, kind: 'supplier_document_av_error', entityType: 'supplier', entityId: supplierId,
       title: 'Tedarikçi belgesi virüs taramasından geçemedi', reason: `${t.name} belgesi taranamadı ve karantinada.`,

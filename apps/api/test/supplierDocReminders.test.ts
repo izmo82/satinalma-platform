@@ -1,11 +1,11 @@
 // v2 Faz 5 (D110) Görev 6: tedarikçi belgesi hatırlatmaları (R12) — 30/7/0 gün, portal kullanıcılarına e-posta, bitiş gününde Satınalma
-// görevi, tekil satır (işçi tekrarında çift yok), yenilenmiş belgeye hatırlatma yok, günlük işin zinciri. Gerçek PostgreSQL + RLS.
+// görevi, tekil satır (işçi tekrarında çift yok), yenilenmiş belgeye hatırlatma yok, 052b kiracı kapısı ve günlük işçi kapısı. Gerçek PostgreSQL + RLS.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { DevAuthProvider } from '../src/auth.ts';
 import { withTenant } from '../src/db.ts';
 import { systemContext } from '../src/modules/contractReminders.ts';
-import { DOC_REMINDER_JOB, dueOffset, processDocumentReminderJob, runDocumentReminders } from '../src/modules/supplierDocReminders.ts';
+import { dailyDocumentReminders, DOC_REMINDER_JOB, dueOffset, enqueueDocumentReminders, processDocumentReminderJob, reminderTenants, runDocumentReminders } from '../src/modules/supplierDocReminders.ts';
 import { makeHarness } from './harness.ts';
 
 type H = Awaited<ReturnType<typeof makeHarness>>;
@@ -41,6 +41,17 @@ const reminders = async (docId: string) => (await h.owner.query(`SELECT offset_d
   FROM supplier_document_reminders WHERE document_id = $1 ORDER BY offset_days DESC`, [docId])).rows;
 const mails = async (docId: string) => (await h.owner.query(`SELECT to_user_id, subject, body_text, status FROM email_outbox WHERE related_type = 'supplier_document' AND related_id = $1 ORDER BY created_at`, [docId])).rows;
 const tasks = async (docId: string) => (await h.owner.query(`SELECT title, assignee_role, status FROM tasks WHERE dedupe_key = $1`, [`doc:${docId}:expired`])).rows;
+
+async function internalUpload(supplierId: string, fields: Record<string, string>) {
+  const b = '----sprem' + randomUUID();
+  const parts = Object.entries(fields).map(([k, v]) => Buffer.from(`--${b}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`));
+  const body = Buffer.concat([...parts,
+    Buffer.from(`--${b}\r\nContent-Disposition: form-data; name="file"; filename="belge.pdf"\r\nContent-Type: application/pdf\r\n\r\n`),
+    Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.alloc(600, 0x20), Buffer.from(`\n% ${randomUUID()}\n%%EOF`)]), Buffer.from(`\r\n--${b}--\r\n`)]);
+  return h.app.inject({ method: 'POST', url: `/api/v1/suppliers/${supplierId}/documents`, payload: body,
+    headers: { authorization: `Bearer ${await new DevAuthProvider('test-secret-'.padEnd(40, 'x')).issue(`dev|${h.world.users.buyer.email}`)}`,
+      'x-tenant-id': h.world.tenantA, 'content-type': `multipart/form-data; boundary=${b}` } });
+}
 
 beforeAll(async () => {
   h = await makeHarness();
@@ -121,37 +132,57 @@ describe('R12 belge hatırlatmaları', () => {
     expect(r.withoutPortalUser).toBeGreaterThanOrEqual(1);
   });
 
-  it('job_marks_succeeded_and_schedules_next_day', async () => {
+  it('job_marks_succeeded', async () => {
     const day = '2026-12-20';
     const job = (await h.owner.query<{ id: string }>(`INSERT INTO jobs (tenant_id, kind, idempotency_key, payload, requested_by, status, attempts)
       VALUES ($1,$2,$3,$4,NULL,'RUNNING',1) RETURNING id`, [h.world.tenantA, DOC_REMINDER_JOB, `doc-reminders:test-${rand()}`, { day }])).rows[0]!.id;
-    const now = new Date(`${day}T09:00:00+03:00`);
-    const r = await processDocumentReminderJob(h.pool, h.world.tenantA, job, { webOrigin: 'http://localhost:5174', now });
+    const r = await processDocumentReminderJob(h.pool, h.world.tenantA, job, { webOrigin: 'http://localhost:5174', now: new Date(`${day}T09:00:00+03:00`) });
     expect(r.day).toBe(day);
-    expect((await h.owner.query(`SELECT status FROM jobs WHERE id = $1`, [job])).rows[0].status).toBe('SUCCEEDED');
-    const next = (await h.owner.query(`SELECT status, run_after FROM jobs WHERE tenant_id = $1 AND kind = $2 AND idempotency_key = $3`,
-      [h.world.tenantA, DOC_REMINDER_JOB, 'doc-reminders:2026-12-21'])).rows;
-    expect(next).toHaveLength(1);
-    expect(next[0].status).toBe('QUEUED');
-    expect(new Date(next[0].run_after).toISOString()).toBe(new Date('2026-12-21T00:05:00+03:00').toISOString());
-    // Aynı gün tekrar: ikinci iş kurulmaz.
-    await processDocumentReminderJob(h.pool, h.world.tenantA, job, { webOrigin: 'http://localhost:5174', now });
-    expect((await h.owner.query(`SELECT count(*)::int AS n FROM jobs WHERE tenant_id = $1 AND kind = $2 AND idempotency_key = $3`,
-      [h.world.tenantA, DOC_REMINDER_JOB, 'doc-reminders:2026-12-21'])).rows[0].n).toBe(1);
+    expect((await h.owner.query(`SELECT status, result->>'day' AS day FROM jobs WHERE id = $1`, [job])).rows[0]).toEqual({ status: 'SUCCEEDED', day });
   });
 
-  it('upload_bootstraps_daily_chain', async () => {
-    // Portal/iç yükleme geçerlilik tarihli belgede bugünün işini kurar (kiracı listesi işlevi yok; zincir böyle başlar).
+  it('tenant_gate_052b_lists_only_tenants_with_dated_documents_and_enqueues_once_per_day', async () => {
+    // Kapı yalnız kiracı kimliği döner; A'da tarihli belge var (önceki testler), B'de yok.
+    const tenants = await reminderTenants(h.pool);
+    expect(tenants).toContain(h.world.tenantA);
+    expect(tenants).not.toContain(h.world.tenantB);
+    const fn = (await h.owner.query(`SELECT prosecdef, proconfig FROM pg_proc WHERE proname = 'supplier_document_reminder_tenants'`)).rows[0];
+    expect(fn.prosecdef).toBe(true);
+    expect(fn.proconfig).toEqual(['search_path=public, pg_temp']);
+    const now = new Date('2031-01-15T08:00:00+03:00');
+    const onlyA = async () => [h.world.tenantA];
+    expect(await enqueueDocumentReminders(h.pool, now, onlyA)).toBe(1);
+    expect(await enqueueDocumentReminders(h.pool, now, onlyA)).toBe(0);
+    const row = (await h.owner.query(`SELECT status, payload->>'day' AS day FROM jobs WHERE tenant_id = $1 AND kind = $2 AND idempotency_key = 'doc-reminders:2031-01-15'`,
+      [h.world.tenantA, DOC_REMINDER_JOB])).rows;
+    expect(row).toEqual([{ status: 'QUEUED', day: '2031-01-15' }]);
+    // İşçi kapısı İstanbul gününde bir kez tarar.
+    let calls = 0;
+    const gate = dailyDocumentReminders(async () => { calls++; return 0; });
+    await gate(h.pool, now);
+    await gate(h.pool, new Date(now.getTime() + 3600_000));
+    expect(calls).toBe(1);
+    await gate(h.pool, new Date('2031-01-16T08:00:00+03:00'));
+    expect(calls).toBe(2);
+  });
+
+  it('internal_upload_closes_covered_expired_task', async () => {
+    const s = await newSupplier();
+    const old = await doc(s, 'FAALIYET_BELGESI', D);
+    await run(D);
+    expect(await tasks(old)).toEqual([expect.objectContaining({ status: 'OPEN' })]);
+    // Satınalma aynı türde daha geç geçerli belgeyi replacesId vermeden yükler: kapsanan belgenin görevi kapanır.
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' }).format(new Date());
+    const r = await internalUpload(s, { typeCode: 'FAALIYET_BELGESI', validUntil: addDays(today, 200) });
+    expect(r.statusCode).toBe(201);
+    expect(await tasks(old)).toEqual([expect.objectContaining({ status: 'DONE' })]);
+  });
+
+  it('upload_bootstraps_todays_job', async () => {
+    // Geçerlilik tarihli belge yüklemesi bugünün işini idempotent kurar (işçi kapısını beklemeden).
     const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' }).format(new Date());
     const s = await newSupplier();
-    const b = '----sprem' + randomUUID();
-    const body = Buffer.concat([
-      Buffer.from(`--${b}\r\nContent-Disposition: form-data; name="typeCode"\r\n\r\nVERGI_LEVHASI\r\n--${b}\r\nContent-Disposition: form-data; name="validUntil"\r\n\r\n${addDays(today, 90)}\r\n`),
-      Buffer.from(`--${b}\r\nContent-Disposition: form-data; name="file"; filename="belge.pdf"\r\nContent-Type: application/pdf\r\n\r\n`),
-      Buffer.concat([Buffer.from('%PDF-1.4\n'), Buffer.alloc(600, 0x20), Buffer.from(`\n% ${randomUUID()}\n%%EOF`)]), Buffer.from(`\r\n--${b}--\r\n`)]);
-    const r = await h.app.inject({ method: 'POST', url: `/api/v1/suppliers/${s}/documents`, payload: body,
-      headers: { authorization: `Bearer ${await new DevAuthProvider('test-secret-'.padEnd(40, 'x')).issue(`dev|${h.world.users.buyer.email}`)}`,
-        'x-tenant-id': h.world.tenantA, 'content-type': `multipart/form-data; boundary=${b}` } });
+    const r = await internalUpload(s, { typeCode: 'VERGI_LEVHASI', validUntil: addDays(today, 90) });
     expect(r.statusCode).toBe(201);
     expect((await h.owner.query(`SELECT count(*)::int AS n FROM jobs WHERE tenant_id = $1 AND kind = $2 AND idempotency_key = $3`,
       [h.world.tenantA, DOC_REMINDER_JOB, `doc-reminders:${today}`])).rows[0].n).toBe(1);

@@ -110,6 +110,16 @@ function loadDirectory(env: Config['env']): Config['directory'] {
   throw new Error('DIRECTORY_PROVIDER geçersiz: graph, test ya da none olmalı');
 }
 
+/**
+ * v2 Faz 5 Görev 6 (M5): Graph kanalı açıkken WEB_ORIGIN açıkça verilmeli; davet ve hatırlatma bağlantıları (`<WEB_ORIGIN>/portal/...`)
+ * varsayılan yerel adresle gerçek alıcıya gitmesin. Eksikse açılış hata verir (yalnız değişken adı yazılır).
+ */
+export function mailWithOrigin(vars: NodeJS.ProcessEnv = process.env): MailConfig {
+  const mail = loadMail(vars);
+  if (mail.kind === 'graph' && !(vars.WEB_ORIGIN ?? '').trim()) throw new Error('Missing required env WEB_ORIGIN (MAIL_PROVIDER=graph)');
+  return mail;
+}
+
 /** R6: eksik değişkende yalnız adı yazılır (Faz 2 `loadDirectory` deseni); geçersiz sağlayıcı değeri iletiye kopyalanmaz. */
 export function loadMail(vars: NodeJS.ProcessEnv = process.env): MailConfig {
   const kind = vars.MAIL_PROVIDER || 'none';
@@ -233,7 +243,7 @@ export function loadConfig(): Config {
     reportCacheSeconds: Number(process.env.REPORT_CACHE_SECONDS ?? 120),
     directory: loadDirectory(env),
     ai: loadAi(env),
-    mail: loadMail(),
+    mail: mailWithOrigin(process.env),
     av: loadAv(),
     publicRateLimit: loadPublicRateLimit(),
     erp: loadErp(env),

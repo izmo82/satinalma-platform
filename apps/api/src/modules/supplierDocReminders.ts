@@ -1,8 +1,8 @@
 import type pg from 'pg';
 import { documentExpiryEmail, formatDateTr } from '@sp/domain';
-import { withTenant, type TenantContext, type Tx } from '../db.ts';
+import { withoutTenant, withTenant, type TenantContext, type Tx } from '../db.ts';
 import { queueEmail } from '../mail/index.ts';
-import { openTask } from '../tasks.ts';
+import { closeTasks, openTask } from '../tasks.ts';
 import { istanbulDay, systemContext } from './contractReminders.ts';
 
 /**
@@ -11,8 +11,9 @@ import { istanbulDay, systemContext } from './contractReminders.ts';
  * (`documentExpiryEmail`); bitiş gününde Satınalma görevi "Tedarikçi belgesinin süresi doldu" (`doc:{id}:expired`). Belge + gün farkı
  * başına tek `supplier_document_reminders` satırı (UNIQUE): işçi tekrarında çift satır, e-posta ya da görev yok.
  *
- * Kiracı listesi: kiracıları sayan bir SECURITY DEFINER işlevi bu fazda yok (migration eklenmedi). Zincir kendini sürdürür: her çalışma
- * önce ertesi günün işini kurar; zinciri ilk kez belge yüklemesi (portal, iç yükleme, başvuru onayıyla karta geçen belge) başlatır.
+ * Kiracı listesi: 052b `supplier_document_reminder_tenants()` (yalnız kiracı kimlikleri). İşçi ana döngüsü İstanbul gününde bir kez bu
+ * kiracılara günün işini kurar (`dailyDocumentReminders`); belge yüklemesi de (portal, iç yükleme, başvuru onayıyla karta geçen belge)
+ * günün işini idempotent olarak kurar.
  */
 
 export const DOC_REMINDER_JOB = 'supplier.document_reminders';
@@ -23,14 +24,23 @@ const ACTIVE_STATUSES = ['CANDIDATE', 'ACTIVE', 'CONDITIONAL'];
 
 const DAY_MS = 86_400_000;
 const addDays = (day: string, n: number) => new Date(Date.parse(`${day}T00:00:00Z`) + n * DAY_MS).toISOString().slice(0, 10);
-/** İstanbul (UTC+3, yaz saati yok) gününün 00:05'i. */
-const istanbulStart = (day: string) => new Date(`${day}T00:05:00+03:00`);
 
 /** Kiracının o günkü hatırlatma işini kurar (idempotent). `runAfter` verilmezse hemen çalışabilir. */
 export async function ensureDocumentReminderJob(tx: Tx, tenantId: string, day = istanbulDay(new Date()), runAfter: Date | null = null): Promise<boolean> {
   const r = await tx.query(`INSERT INTO jobs (tenant_id, kind, idempotency_key, payload, requested_by, run_after) VALUES ($1,$2,$3,$4,NULL,coalesce($5, now()))
     ON CONFLICT (tenant_id, kind, idempotency_key) DO NOTHING`, [tenantId, DOC_REMINDER_JOB, `doc-reminders:${day}`, { day }, runAfter]);
   return (r.rowCount ?? 0) > 0;
+}
+
+/**
+ * R12: yeni belge gelince kapsadığı belgelerin (yenilenen `replacesId` ve aynı türde daha erken geçerli olanlar; yeni belge süresizse
+ * hepsi) açık hatırlatma/"süresi doldu" görevleri (`doc:{id}:`) kapanır. Portal ve iç yükleme aynı kuralı kullanır.
+ */
+export async function closeCoveredDocumentTasks(tx: Tx, d: { supplierId: string; typeCode: string; newId: string; replacesId: string | null; validUntil: string | null }) {
+  const covered = (await tx.query<{ id: string }>(`SELECT id FROM supplier_documents WHERE supplier_id = $1 AND type_code = $2 AND id <> $3
+      AND (id = $4 OR (valid_until IS NOT NULL AND ($5::date IS NULL OR valid_until < $5::date)))`, [d.supplierId, d.typeCode, d.newId, d.replacesId, d.validUntil])).rows;
+  for (const c of covered) await closeTasks(tx, `doc:${c.id}:`);
+  return covered.length;
 }
 
 interface DueDoc { id: string; supplier_id: string; legal_name: string; type_code: string; type_name: string | null; valid_until: string }
@@ -94,16 +104,44 @@ export async function runDocumentReminders(tx: Tx, ctx: TenantContext, day: stri
 }
 
 /**
- * İşçi: `supplier.document_reminders`. Önce ertesi günün işini kurar (zincir bu çalışma başarısız olsa da sürer), sonra bugünün (çalışma
- * anındaki İstanbul günü; iş gecikmişse kaçırılan gün CATCH_UP_DAYS içinde telafi edilir) hatırlatmalarını yazar.
+ * İşçi: `supplier.document_reminders`. Çalışma anındaki İstanbul gününün hatırlatmalarını yazar (iş gecikmişse kaçırılan gün CATCH_UP_DAYS
+ * içinde telafi edilir) ve işi SUCCEEDED işaretler.
  */
 export async function processDocumentReminderJob(pool: pg.Pool, tenantId: string, jobId: string, opts: { webOrigin: string; now?: Date }) {
   const day = istanbulDay(opts.now ?? new Date());
   const base = systemContext(tenantId, [], jobId);
-  await withTenant(pool, base, (tx) => ensureDocumentReminderJob(tx, tenantId, addDays(day, 1), istanbulStart(addDays(day, 1))));
   return withTenant(pool, base, async (tx) => {
     const result = { day, ...(await runDocumentReminders(tx, base, day, opts.webOrigin)) };
     await tx.query(`UPDATE jobs SET status = 'SUCCEEDED', result = $2, updated_at = now() WHERE id = $1`, [jobId, result]);
     return result;
   });
+}
+
+export type ReminderTenantLister = (pool: pg.Pool) => Promise<string[]>;
+export const reminderTenants: ReminderTenantLister = (pool) => withoutTenant(pool, async (c) =>
+  (await c.query<{ t: string }>(`SELECT t FROM supplier_document_reminder_tenants() t`)).rows.map((r) => r.t));
+
+/** Belgesi olan her kiracıya günün işini kurar (idempotent; kiracı başına `doc-reminders:<gün>`). */
+export async function enqueueDocumentReminders(pool: pg.Pool, now: Date, listTenants: ReminderTenantLister = reminderTenants): Promise<number> {
+  const day = istanbulDay(now);
+  let n = 0;
+  for (const tenantId of await listTenants(pool)) {
+    const ctx = systemContext(tenantId, [], `doc-reminders-${day}`);
+    if (await withTenant(pool, ctx, (tx) => ensureDocumentReminderJob(tx, tenantId, day))) n++;
+  }
+  return n;
+}
+
+/** İşçi kapısı (`dailyRiskSchedules` deseni): İstanbul gününde bir kez; hata verirse gün işaretlenmez, en erken bir dakika sonra yeniden denenir. */
+export function dailyDocumentReminders(enqueue: (pool: pg.Pool, now: Date) => Promise<number> = enqueueDocumentReminders) {
+  let lastDay = '';
+  let lastTry = Number.NEGATIVE_INFINITY;
+  return async (pool: pg.Pool, now: Date): Promise<number | null> => {
+    const day = istanbulDay(now);
+    if (day === lastDay || now.getTime() - lastTry < 60_000) return null;
+    lastTry = now.getTime();
+    const n = await enqueue(pool, now);
+    lastDay = day;
+    return n;
+  };
 }

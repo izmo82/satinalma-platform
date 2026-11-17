@@ -1,11 +1,13 @@
 // v2 Faz 5 (D110) Görev 6: tedarikçi portalı API'si — davet e-postası (R8), Tekliflerim, Belgelerim (R12), Skorum ve risk (R15),
-// Firma bilgileri (R14). Gerçek PostgreSQL + RLS ve yerel S3. Firmalar ve adresler sentetik (example.test). E-posta kanalı `none`.
+// Firma bilgileri (R14); inceleme turu 1: 052b görev kapsamı (I1), kısmi profil + If-Match (M2), yıllık risk (M6), WEB_ORIGIN (M5). Gerçek PostgreSQL + RLS ve yerel S3. Firmalar ve adresler sentetik (example.test). E-posta kanalı `none`.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { DevAuthProvider } from '../src/auth.ts';
 import { withTenant } from '../src/db.ts';
 import { systemContext } from '../src/modules/contractReminders.ts';
-import { queueRoundInvites } from '../src/modules/portal.ts';
+import { queueRoundInvites, updateProfile } from '../src/modules/portal.ts';
+import { mailWithOrigin } from '../src/config.ts';
+import type { TenantContext } from '../src/db.ts';
 import { runDocumentReminders } from '../src/modules/supplierDocReminders.ts';
 import { makeHarness } from './harness.ts';
 import { reviewedAssessment, securityTemplate } from './evalHelpers.ts';
@@ -274,5 +276,92 @@ describe('Firma bilgileri (R14)', () => {
     // Tedarikçi B, A'nın firma bilgisini görmez.
     const ub = await portalUser(await newSupplier());
     expect((await as(ub.token, 'GET', '/api/v1/portal/profile')).body.legalName).not.toBe(before.legal_name);
+  });
+});
+
+const supplierCtx = (userId: string, supplierId: string): TenantContext => ({ tenantId: h.world.tenantA, userId, roles: ['SUPPLIER'], companyIds: [],
+  departmentIds: [], allDepartments: false, supplierId, correlationId: 'portal-v2' });
+
+describe('İnceleme turu 1', () => {
+  it('I1_supplier_session_sees_only_own_supplier_facing_tasks', async () => {
+    const a = await newSupplier();
+    const ua = await portalUser(a);
+    const b = await newSupplier();
+    const ub = await portalUser(b);
+    expect((await as(ua.token, 'POST', '/api/v1/portal/profile/change-request', { field: 'OTHER', note: 'Adresimiz değişti; yeni adres ekte (sentetik).' })).status).toBe(201);
+    expect((await as(ub.token, 'POST', '/api/v1/portal/profile/change-request', { field: 'OTHER', note: 'B firmasının isteği (sentetik), yeterince uzun.' })).status).toBe(201);
+    // İç görevler: A için tedarikçi türü dışı görev ve kurum geneli görev.
+    const internal = (await h.owner.query<{ id: string }>(`INSERT INTO tasks (tenant_id, kind, entity_type, entity_id, title, reason, next_action, assignee_role, dedupe_key)
+      VALUES ($1,'supplier_no_portal_user','supplier',$2,'İç görev','İç','İç','PROCUREMENT',$3) RETURNING id`, [h.world.tenantA, a, `internal:${rand()}`])).rows[0]!.id;
+    const all = (await h.owner.query<{ n: number }>(`SELECT count(*)::int AS n FROM tasks WHERE tenant_id = $1`, [h.world.tenantA])).rows[0]!.n;
+    expect(all).toBeGreaterThan(3);
+    await withTenant(h.pool, supplierCtx(ua.id, a), async (tx) => {
+      const seen = (await tx.query<{ kind: string; entity_id: string }>(`SELECT kind, entity_id FROM tasks`)).rows;
+      expect(seen.length).toBe(1);
+      expect(seen[0]).toEqual({ kind: 'supplier_profile_change_request', entity_id: a });
+      expect((await tx.query(`UPDATE tasks SET status = 'DONE' WHERE id = $1`, [internal])).rowCount).toBe(0);
+      expect((await tx.query(`UPDATE tasks SET status = 'DONE' WHERE entity_id = $1`, [b])).rowCount).toBe(0);
+      // Başka türde ya da başka tedarikçiye görev yazamaz.
+      await expect(tx.query(`INSERT INTO tasks (tenant_id, kind, entity_type, entity_id, title, reason, next_action, assignee_role, dedupe_key)
+        VALUES ($1,'supplier_no_portal_user','supplier',$2,'x','x','x','PROCUREMENT',$3)`, [h.world.tenantA, a, `x:${rand()}`])).rejects.toMatchObject({ code: '42501' });
+    });
+    expect((await h.owner.query(`SELECT status FROM tasks WHERE id = $1`, [internal])).rows[0].status).toBe('OPEN');
+    // İç oturum değişmez: Satınalma görevleri görür.
+    const mine = await h.call('buyer', 'GET', '/api/v1/tasks');
+    expect(mine.status).toBe(200);
+  });
+
+  it('M2_partial_profile_keeps_omitted_fields_and_if_match_conflict', async () => {
+    const a = await newSupplier();
+    const ua = await portalUser(a);
+    expect((await as(ua.token, 'PUT', '/api/v1/portal/profile', { contactName: 'Ali Örnek', contactPhone: '0212 555 11 22', address: 'Eski adres 1' })).status).toBe(200);
+    const ctx = supplierCtx(ua.id, a);
+    const rv = (await as(ua.token, 'GET', '/api/v1/portal/profile')).body.rowVersion as number;
+    // Yalnız adres: ad ve telefon korunur.
+    const r = await withTenant(h.pool, ctx, (tx) => updateProfile(tx, ctx, { address: 'Yeni adres 2' }, `"${rv}"`));
+    expect(r).toMatchObject({ contactName: 'Ali Örnek', contactPhone: '0212 555 11 22', address: 'Yeni adres 2', changed: ['address'], rowVersion: rv + 1 });
+    // Eski sürümle ikinci düzenleme 409; veri değişmez.
+    await expect(withTenant(h.pool, ctx, (tx) => updateProfile(tx, ctx, { address: 'Üçüncü' }, `"${rv}"`))).rejects.toMatchObject({ status: 409, code: 'version_conflict' });
+    expect((await h.owner.query(`SELECT address, contact_phone FROM suppliers WHERE id = $1`, [a])).rows[0]).toEqual({ address: 'Yeni adres 2', contact_phone: '0212 555 11 22' });
+    // HTTP: telefon gönderilmezse korunur.
+    const put = await as(ua.token, 'PUT', '/api/v1/portal/profile', { contactName: 'Ali Örnek' });
+    expect(put.body).toMatchObject({ contactPhone: '0212 555 11 22', address: 'Yeni adres 2', changed: [] });
+  });
+
+  it('M6_annual_risk_standing_with_key_list', async () => {
+    const a = await newSupplier();
+    const ua = await portalUser(a);
+    const year = Number(istanbulToday().slice(0, 4));
+    const asmt = (await h.owner.query<{ id: string }>(`INSERT INTO risk_assessments (tenant_id, supplier_id, year, department_id, source, opened_by)
+      VALUES ($1,$2,$3,$4,'MANUAL',$5) RETURNING id`, [h.world.tenantA, a, year, h.world.departments.ik, h.world.users.buyer.id])).rows[0]!.id;
+    await h.owner.query(`INSERT INTO risk_assessment_revisions (tenant_id, assessment_id, revision_no, criteria, criticality, criticality_column,
+        score_source, risk_score, level, method_version, created_by)
+      VALUES ($1,$2,1,$3,'3.224968',3,'MANUAL_RESULT','15.00',2,'khc-it-2100-002-r009/v1',$4)`,
+      [h.world.tenantA, asmt, { businessImpact: 3, dataSensitivity: 5, continuity: 1, integration: 3, regulation: 5, serviceType: 5 }, h.world.users.buyer.id]);
+    for (const [title, visible] of [['Görünür aksiyon (sentetik)', true], ['GİZLİ iç aksiyon (sentetik)', false]] as const) {
+      await h.owner.query(`INSERT INTO risk_actions (tenant_id, assessment_id, kind, title, owner_user_id, due_on, supplier_visible, status, created_by)
+        VALUES ($1,$2,'MITIGATION',$3,$4,'2099-03-31',$5,'OPEN',$4)`, [h.world.tenantA, asmt, title, h.world.users.buyer.id, visible]);
+    }
+    await h.owner.query(`UPDATE risk_assessments SET status = 'COMPLETED', completed_at = now(), completed_by = $2 WHERE id = $1`, [asmt, h.world.users.buyer.id]);
+    const s = await as(ua.token, 'GET', '/api/v1/portal/standing');
+    expect(s.status).toBe(200);
+    expect(Object.keys(s.body).sort()).toEqual(['assessment', 'expectedActions', 'levelLabel', 'levelSource', 'levelSourceLabel', 'risk', 'score', 'scoreReason', 'year']);
+    expect(s.body.levelSource).toBe('ANNUAL_RISK');
+    expect(s.body.levelSourceLabel).toBe(`${year} yıllık risk değerlendirmesi`);
+    expect(Object.keys(s.body.risk).sort()).toEqual(['level', 'levelLabel', 'riskScore', 'year']);
+    expect(s.body.risk).toMatchObject({ year, level: 2, riskScore: '15.00' });
+    expect(s.body.levelLabel).toBe(s.body.risk.levelLabel);
+    expect(s.body.expectedActions.filter((x: any) => x.kind === 'RISK')).toEqual([{ kind: 'RISK', title: 'Görünür aksiyon (sentetik)', dueDate: '2099-03-31' }]);
+    const text = JSON.stringify(s.body);
+    for (const k of ['GİZLİ', 'criteria', 'criticality', 'businessImpact', 'owner', 'department', 'opinion']) expect(text).not.toContain(k);
+    expect((await as(ua.token, 'GET', '/api/v1/portal/summary')).body.standing.levelLabel).toBe(s.body.risk.levelLabel);
+  });
+
+  it('M5_graph_mail_requires_web_origin', () => {
+    const env = { MAIL_PROVIDER: 'graph', MAIL_SENDER: 'satinalma@example.test', ENTRA_TENANT_ID: 't', ENTRA_CLIENT_ID: 'c', ENTRA_CLIENT_SECRET: 's' };
+    expect(() => mailWithOrigin(env)).toThrow(/WEB_ORIGIN/);
+    expect(() => mailWithOrigin({ ...env, WEB_ORIGIN: '  ' })).toThrow(/WEB_ORIGIN/);
+    expect(mailWithOrigin({ ...env, WEB_ORIGIN: 'https://satinalma.example.test' }).kind).toBe('graph');
+    expect(mailWithOrigin({}).kind).toBe('none');
   });
 });
