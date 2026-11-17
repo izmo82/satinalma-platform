@@ -9,10 +9,16 @@ import { supplierStatus } from '../lib/labels.ts';
 import { hasRole, useSession } from '../lib/session.tsx';
 import { Banner, ErrorState, Field, Loading, Modal, Tag } from '../ui/kit.tsx';
 import { Icon } from '../ui/icons.tsx';
+import { stageTag } from '../lib/supplierV2.tsx';
+import { ActivationHints, ContractsProjectsTab, DocumentsTab, LifecycleBanner, OffboardingTab, PortalUsersTab, ProfilePanel, ReasonDialog, ScoreRiskPanel, type CardV2 } from './SupplierCardV2.tsx';
 
-const SUPPLIER_TABS = [['kayit', 'Kayıt ve onay'], ['degerlendirme', 'Değerlendirme ve risk'], ['olaylar', 'Olaylar'], ['karne', 'Performans karnesi']] as const;
+// v2 Faz 5 (D110, Figma 14): Belgeler ve geçerlilik, Sözleşmeler ve projeler, Portal kullanıcıları ve (liste varsa) Ayrılış sekmeleri eklendi;
+// eski dört sekme aynı adla ve aynı `?sekme=` adresiyle kalır, varsayılan sekme yine "Kayıt ve onay".
+const SUPPLIER_TABS = [['kayit', 'Kayıt ve onay'], ['belgeler', 'Belgeler ve geçerlilik'], ['sozlesmeler', 'Sözleşmeler ve projeler'], ['degerlendirme', 'Değerlendirme ve risk'],
+  ['olaylar', 'Olaylar'], ['karne', 'Performans karnesi'], ['portal', 'Portal kullanıcıları'], ['ayrilis', 'Ayrılış kontrol listesi']] as const;
+const V2_TABS = new Set(['belgeler', 'sozlesmeler', 'portal', 'ayrilis']);
 
-interface Supplier {
+interface Supplier extends CardV2 {
   id: string; status: string; country: string; taxIdType: string | null; taxId: string | null; legalName: string; identityReviewRequired: boolean;
   createdByName: string | null; isCreator: boolean; activatedAt: string | null; rowVersion: number; rejectionReason: string | null; mergedIntoId: string | null;
   documents: { documentVersionId: string; title: string; kind: string; extractedName: string | null; nameMismatch: boolean; linkedAt: string }[];
@@ -30,7 +36,8 @@ export function SupplierDetailPage() {
   const r = useResource<Supplier>(`/api/v1/suppliers/${id}`);
   const [params, setParams] = useSearchParams();
   const tab = params.get('sekme') ?? 'kayit';
-  const [dialog, setDialog] = useState<null | 'approve' | 'reject' | 'identity'>(null);
+  const [dialog, setDialog] = useState<null | 'approve' | 'reject' | 'identity' | 'deactivate' | 'reactivate'>(null);
+  const [warnings, setWarnings] = useState<{ code: string; message: string }[]>([]);
   const [actionError, setActionError] = useState<ApiError | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -49,6 +56,14 @@ export function SupplierDetailPage() {
     try { await fn(); setNotice(ok); setDialog(null); await r.reload(); }
     catch (e) { setActionError(e as ApiError); if ((e as ApiError).status === 409) await r.reload(); }
   }
+  /** v2 bölümleri: hata çağırana da döner (diyalog açık kalır, yazılan korunur). */
+  async function runV2(fn: () => Promise<unknown>, ok: string) {
+    setActionError(null); setNotice(null);
+    try { await fn(); setNotice(ok); await r.reload(); }
+    catch (e) { if ((e as ApiError).status === 409) await r.reload(); throw e; }
+  }
+  const tabs = SUPPLIER_TABS.filter(([k]) => k !== 'ayrilis' || s.offboarding);
+  const openTab = (k: string) => { const p = new URLSearchParams(params); k === 'kayit' ? p.delete('sekme') : p.set('sekme', k); setParams(p, { replace: true }); };
 
   return (
     <div className="page">
@@ -57,10 +72,17 @@ export function SupplierDetailPage() {
         <div className="grow">
           <h1 style={{ overflowWrap: 'anywhere' }}>{s.legalName}</h1>
           <div className="btn-row" style={{ marginTop: 8 }}>
-            <Tag label={supplierStatus[s.status]} />
+            {/* v2 Faz 5 (R1): aşama etiketi (türetilir); eski kayıt durumu ipucunda. */}
+            <Tag label={stageTag(s.stage, s.stageLabel) ?? supplierStatus[s.status]} title={supplierStatus[s.status] ? `Kayıt durumu: ${supplierStatus[s.status]!.text}` : undefined} />
             {s.taxId ? <span className="mono">{s.country} · {s.taxIdType} {s.taxId}</span> : <Tag label={{ text: 'Kimlik doğrulanmadı', tone: 'warn', icon: 'help' }} />}
           </div>
         </div>
+        {(s.can?.offboard || s.can?.reactivate) && (
+          <div className="btn-row">
+            {s.can?.offboard && <button className="btn btn-danger" onClick={() => setDialog('deactivate')}>Pasife al</button>}
+            {s.can?.reactivate && <button className="btn" onClick={() => setDialog('reactivate')}>Yeniden aç</button>}
+          </div>
+        )}
         {s.status === 'CANDIDATE' && isMasterData && (
           <div className="btn-row">
             {(!s.taxId || s.identityReviewRequired) && <button className="btn" onClick={() => setDialog('identity')}>Kimliği doğrula</button>}
@@ -79,6 +101,9 @@ export function SupplierDetailPage() {
         {actionError.details?.missing && `Eksik koşullar: ${actionError.details.missing.join(', ')}`}
         {actionError.status === 409 && 'Sayfa güncel bilgilerle yenilendi; kararınızı yeniden gözden geçirin.'}
       </Banner>}
+      <LifecycleBanner s={s} />
+      {s.status === 'SUSPENDED' && s.deactivation && !s.can?.reactivate && s.can && <p className="mb-4 -mt-2 text-sm text-ink-muted">Görev ayrılığı: tedarikçiyi pasife alan kişi yeniden açamaz; başka bir Satınalma kullanıcısı açar.</p>}
+      {warnings.length > 0 && <Banner tone="warn" title="Pasife alındı; kontrol edilmesi gerekenler">{warnings.map((w) => w.message).join(' · ')}</Banner>}
       {s.status === 'CANDIDATE' && (
         <Banner tone="warn" title="Aday kayıt: kayıt onayına kadar kesin seçim engelli">
           {blockers.length ? <>Aktivasyon için: {blockers.join(' · ')}.</> : 'Aktivasyon koşulları tamam.'}
@@ -87,13 +112,18 @@ export function SupplierDetailPage() {
       {s.status === 'MERGED' && s.mergedIntoId && <Banner tone="neutral" title="Bu kayıt başka bir tedarikçiyle birleştirildi"><Link to={`/tedarikciler/${s.mergedIntoId}`}>Güncel kayda git</Link></Banner>}
 
       <div role="tablist" aria-label="Tedarikçi" className="mb-4 flex gap-6 overflow-x-auto border-b border-border">
-        {SUPPLIER_TABS.map(([k, l]) => (
-          <button key={k} role="tab" aria-selected={tab === k} onClick={() => { const p = new URLSearchParams(params); k === 'kayit' ? p.delete('sekme') : p.set('sekme', k); setParams(p, { replace: true }); }}
+        {tabs.map(([k, l]) => (
+          <button key={k} role="tab" aria-selected={tab === k} onClick={() => openTab(k)}
             className={cn('-mb-px min-h-10 whitespace-nowrap border-b-2 font-semibold transition-colors duration-150', tab === k ? 'border-ink text-ink' : 'border-transparent text-ink-muted hover:text-ink')}>{l}</button>
         ))}
       </div>
-      {tab !== 'kayit' ? <SupplierEvaluation tab={tab} supplierId={s.id} /> : <>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 16 }}>
+      {tab === 'belgeler' ? <DocumentsTab s={s} run={runV2} />
+        : tab === 'sozlesmeler' ? <ContractsProjectsTab s={s} />
+        : tab === 'portal' ? <PortalUsersTab s={s} run={runV2} />
+        : tab === 'ayrilis' ? <OffboardingTab s={s} run={runV2} />
+        : tab !== 'kayit' && !V2_TABS.has(tab) ? <SupplierEvaluation tab={tab} supplierId={s.id} /> : <>
+      <ActivationHints s={s} />
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(340px, 100%), 1fr))', gap: 16 }}>
         <section className="panel" aria-labelledby="kimlik">
           <div className="panel-head"><h2 id="kimlik">Kimlik ve kayıt</h2></div>
           <div className="panel-body">
@@ -107,6 +137,9 @@ export function SupplierDetailPage() {
             <p className="subtle" style={{ marginTop: 12 }}>Biçim ve kontrol basamağı geçerliliği firmanın gerçekliğini veya mükellefiyetini kanıtlamaz.</p>
           </div>
         </section>
+
+        <ProfilePanel s={s} run={runV2} />
+        <ScoreRiskPanel s={s} onOpen={() => openTab('degerlendirme')} />
 
         <section className="panel" aria-labelledby="banka">
           <div className="panel-head"><h2 id="banka">Banka bilgisi</h2></div>
@@ -153,6 +186,12 @@ export function SupplierDetailPage() {
         <DecisionDialog kind={dialog} onClose={() => setDialog(null)} onSubmit={(rationale) => run(() => api(`/api/v1/suppliers/${s.id}/approvals`, {
           method: 'POST', json: { kind: 'MASTER_DATA', decision: dialog === 'approve' ? 'APPROVED' : 'REJECTED', rationale, expectedRowVersion: s.rowVersion } }),
           dialog === 'approve' ? 'Kayıt onayı kaydedildi.' : 'Aday reddedildi; belge ve gerekçe korunur.')} />
+      )}
+      {(dialog === 'deactivate' || dialog === 'reactivate') && (
+        <ReasonDialog kind={dialog} s={s} onClose={() => setDialog(null)} onSubmit={(reason) => run(async () => {
+          const res = await api<{ warnings?: { code: string; message: string }[] }>(`/api/v1/suppliers/${s.id}/${dialog}`, { method: 'POST', json: { reason, expectedRowVersion: s.rowVersion } });
+          setWarnings(dialog === 'deactivate' ? res.data.warnings ?? [] : []);
+        }, dialog === 'deactivate' ? 'Tedarikçi pasife alındı; ayrılış kontrol listesi açıldı.' : 'Tedarikçi yeniden açıldı.')} />
       )}
       {dialog === 'identity' && (
         <IdentityDialog onClose={() => setDialog(null)} onSubmit={(b) => run(() => api(`/api/v1/suppliers/${s.id}/identity`, {

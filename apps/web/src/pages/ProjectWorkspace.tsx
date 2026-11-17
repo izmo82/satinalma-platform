@@ -5,7 +5,8 @@ import { useResource } from '../lib/useApi.ts';
 import { hasPermission, hasRole, useSession } from '../lib/session.tsx';
 import { statusTag } from '../lib/contractsV2.ts';
 import { fmtDate, fmtDateTime, fmtMoney } from '../lib/format.ts';
-import { costKindLabel, lineState, PROJECT_STAGES, projectStatus, supplierPickHint, type SupplierOption } from '../lib/labels.ts';
+import { costKindLabel, lineState, PROJECT_STAGES, projectStatus, supplierPickHint, supplierStatus, type SupplierOption } from '../lib/labels.ts';
+import { emailTag } from '../lib/supplierV2.tsx';
 import { Banner, Empty, ErrorState, Field, Loading, Tag } from '../ui/kit.tsx';
 import { Icon } from '../ui/icons.tsx';
 import { DepartmentName } from '../ui/Departments.tsx';
@@ -20,7 +21,9 @@ interface Detail {
     costCenter: string | null; deliveryLocation: string | null; neededBy: string | null; status: string; etag: string; ownedByMe: boolean;
     departmentId: string | null; departmentName: string | null };
   lines: PLine[]; criteria: Crit[]; criteriaHistory: { revision: number; reason: string | null; createdAt: string }[];
-  round: null | { id: string; roundNo: number; closesAt: string; status: string; requestedByMe: boolean; closeReason: string | null; approval: Approval | null };
+  round: null | { id: string; roundNo: number; closesAt: string; status: string; requestedByMe: boolean; closeReason: string | null; approval: Approval | null;
+    /** v2 Faz 5 (R8): davetli başına davet e-postası durumu (birden çok alıcıda en az ilerlemiş durum). */
+    inviteEmails?: { supplierId: string; status: string; statusLabel: string; recipients: number }[] };
   invitations: { supplierId: string; supplierName: string; supplierStatus: string; bidVersion: number | null; submittedAt: string | null }[];
   questions: { id: string; question: string; askedAt: string; answer: string | null; answeredAt: string | null; supplierName: string }[];
   evaluations: { id: string; versionNo: number; createdAt: string; createdBy: string; current: boolean }[];
@@ -324,10 +327,16 @@ function RoundPanel({ d, reload }: { d: Detail; reload: () => Promise<void> }) {
               <legend>Davet edilecek tedarikçiler</legend>
               {suppliers.loading ? <Loading rows={2} /> : (
                 <div className="radio-list max-h-56 overflow-auto">
-                  {suppliers.data?.items.map((s) => (
-                    <label key={s.id}><input type="checkbox" aria-label={s.label ?? s.legalName} checked={picked.includes(s.id)} onChange={(e) => setPicked((x) => e.target.checked ? [...x, s.id] : x.filter((y) => y !== s.id))} />
-                      <span>{s.label ?? s.legalName}{s.status === 'CANDIDATE' && <span className="block text-sm text-warn">Teklif verebilir, aktivasyon olmadan kazanan olamaz</span>}</span></label>
-                  ))}
+                  {/* v2 Faz 5 (R9): yeni tura yalnız onaylı tedarikçi davet edilir; aday listede kalır ama seçilemez, nedeni yazılır. */}
+                  {suppliers.data?.items.map((s) => {
+                    const blocked = s.eligibleForInvite === false;
+                    return (
+                      <label key={s.id} className={blocked ? 'cursor-not-allowed opacity-70' : undefined}><input type="checkbox" aria-label={s.label ?? s.legalName} disabled={blocked}
+                        aria-describedby={blocked ? `inel-${s.id}` : undefined} checked={!blocked && picked.includes(s.id)} onChange={(e) => setPicked((x) => e.target.checked ? [...x, s.id] : x.filter((y) => y !== s.id))} />
+                        <span>{s.label ?? s.legalName}{blocked ? <span id={`inel-${s.id}`} className="block text-sm text-warn">{s.ineligibleReason ?? 'Aday tedarikçi önce onaylanmalı.'}</span>
+                          : s.status === 'CANDIDATE' && <span className="block text-sm text-warn">Teklif verebilir, aktivasyon olmadan kazanan olamaz</span>}</span></label>
+                    );
+                  })}
                 </div>
               )}
             </fieldset>
@@ -372,13 +381,16 @@ function Bids({ d, reload }: { d: Detail; reload: () => Promise<void> }) {
       {sealed && <Banner tone="info" icon="lock" title="Teklif içerikleri kapanışa kadar mühürlü">Alındı bilgisi görünür; fiyatlar {fmtDateTime(d.round?.closesAt)} kapanışından sonra açılır. Bu kural veritabanında da uygulanır.</Banner>}
       {!d.invitations.length ? <div className="rounded-md border border-border bg-surface"><Empty icon="users" title="Davet edilen tedarikçi yok" /></div> : (
         <Table>
-          <TableHeader><TableRow className="hover:bg-transparent"><TableHead>Tedarikçi</TableHead><TableHead>Durum</TableHead><TableHead>Teklif</TableHead><TableHead>Alındı (sunucu)</TableHead></TableRow></TableHeader>
+          <TableHeader><TableRow className="hover:bg-transparent"><TableHead>Tedarikçi</TableHead><TableHead>Durum</TableHead><TableHead>Teklif</TableHead><TableHead>Alındı (sunucu)</TableHead>
+            {!!d.round?.inviteEmails?.length && <TableHead>Davet e-postası</TableHead>}</TableRow></TableHeader>
           <TableBody>{d.invitations.map((i) => (
             <TableRow key={i.supplierId}>
               <TableCell className="font-semibold"><Link to={`/tedarikciler/${i.supplierId}`} className="text-ink no-underline hover:underline">{i.supplierName}</Link></TableCell>
-              <TableCell>{i.supplierStatus === 'ACTIVE' ? <span className="text-sm text-ink-subtle">Aktif</span> : <Tag label={{ text: i.supplierStatus === 'CANDIDATE' ? 'Aday firma' : i.supplierStatus, tone: 'warn', icon: 'clock' }} />}</TableCell>
+              <TableCell>{i.supplierStatus === 'ACTIVE' ? <span className="text-sm text-ink-subtle">Aktif</span> : <Tag label={{ text: i.supplierStatus === 'CANDIDATE' ? 'Aday firma' : supplierStatus[i.supplierStatus]?.text ?? 'Durum bilinmiyor', tone: 'warn', icon: 'clock' }} />}</TableCell>
               <TableCell>{i.bidVersion ? <span className="tabular">Sürüm {i.bidVersion}</span> : <span className="text-ink-subtle">Teklif yok</span>}</TableCell>
               <TableCell className="tabular whitespace-nowrap">{i.submittedAt ? fmtDateTime(i.submittedAt) : '—'}</TableCell>
+              {!!d.round?.inviteEmails?.length && <TableCell>{(() => { const m = d.round!.inviteEmails!.find((x) => x.supplierId === i.supplierId);
+                return m ? <Tag label={emailTag(m.status, m.statusLabel)} /> : <span className="text-ink-subtle">—</span>; })()}</TableCell>}
             </TableRow>
           ))}</TableBody>
         </Table>

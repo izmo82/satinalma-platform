@@ -13,8 +13,16 @@ import { cn } from '@/lib/utils';
 interface Task { id: string; kind: string; entityType: string; entityId: string; title: string; reason: string; nextAction: string;
   assigneeRole: string; severity: string; dueAt: string | null; createdAt: string; refNo: string | null }
 
+/** Tedarikçi görevinin açacağı kart sekmesi (v2 Faz 5: belge, ayrılış, portal kullanıcısı görevleri ilgili sekmeye). */
+function supplierTab(kind?: string) {
+  if (['assessment_blocker', 'risk_rereview', 'new_business_hold'].includes(kind ?? '')) return '?sekme=degerlendirme';
+  if (kind?.startsWith('supplier_document_')) return '?sekme=belgeler';
+  if (kind === 'supplier_offboarding') return '?sekme=ayrilis';
+  if (kind === 'supplier_no_portal_user') return '?sekme=portal';
+  return '';
+}
 export const entityHref = (t: { entityType: string; entityId: string; kind?: string }) =>
-  t.entityType === 'supplier' ? `/tedarikciler/${t.entityId}${['assessment_blocker', 'risk_rereview', 'new_business_hold'].includes(t.kind ?? '') ? '?sekme=degerlendirme' : ''}` : t.entityType === 'contract_version' ? `/sozlesmeler/${t.entityId}`
+  t.entityType === 'supplier' ? `/tedarikciler/${t.entityId}${supplierTab(t.kind)}` : t.entityType === 'supplier_application' ? `/tedarikciler/basvurular/${t.entityId}` : t.entityType === 'contract_version' ? `/sozlesmeler/${t.entityId}`
     : t.entityType === 'document_version' ? `/belgeler/${t.entityId}` : t.entityType === 'project' ? `/projeler/${t.entityId}`
     : t.entityType === 'invoice' ? `/faturalar/${t.entityId}`
     : t.entityType === 'incident' ? `/tedarikciler/olaylar/${t.entityId}` : t.entityType === 'tenant' ? '/yonetim/yapay-zeka'

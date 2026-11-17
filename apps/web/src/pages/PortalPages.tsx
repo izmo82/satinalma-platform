@@ -9,6 +9,7 @@ import { Icon } from '../ui/icons.tsx';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { cn } from '@/lib/utils';
+import { ExpiredDocumentsBand, PortalSummaryCards } from './PortalV2Pages.tsx';
 
 // UX04 Tedarikçi portalı: yalnız davetli turlar ve kendi teklifi. Kapanış ve alındı zamanı sunucudan.
 interface RoundRow { projectId: string; code: string; title: string; currency: string; buyerName: string; roundId: string; roundNo: number; closesAt: string; open: boolean;
@@ -19,6 +20,8 @@ export function PortalHome() {
   return (
     <div className="page">
       <PageHeader title="Teklif davetleri">Size gönderilen teklif turları. Başka firmaların teklifleri ve kurum içi notlar bu portalda görünmez.</PageHeader>
+      {/* v2 Faz 5 (D110, Figma P2): özet kartları; davet listesi aynen. */}
+      <PortalSummaryCards />
       {r.loading && !r.data ? <Loading /> : r.error ? <ErrorState error={r.error} onRetry={r.reload} /> : !r.data?.items.length ? (
         <div className="rounded-md border border-border bg-surface"><Empty icon="inbox" title="Açık davetiniz yok">Bir alıcı sizi teklif turuna davet ettiğinde burada görünür.</Empty></div>
       ) : (
@@ -168,6 +171,8 @@ export function PortalRound() {
     <div className="page max-w-[1200px]">
       <div className="mb-1 text-sm text-ink-subtle"><Link to="/portal" className="text-ink-subtle">Teklif davetleri</Link> / {d.project.code}</div>
       <PageHeader title={d.project.title}>{d.project.buyerName} · Tur {d.round.roundNo} · {d.project.category}</PageHeader>
+      {/* v2 Faz 5 (D110): teklif ekranına yalnız süresi dolmuş belge bandı eklendi. */}
+      <ExpiredDocumentsBand />
       <div className={cn('mb-5 flex flex-wrap items-center gap-x-6 gap-y-2 rounded-md border px-4 py-3', closed ? 'border-border bg-sunken' : 'border-[#cfd5e2] bg-info-soft')} role="status">
         <span className="font-semibold">Kapanış: <span className="tabular">{fmtDateTime(d.round.closesAt)}</span></span>
         <span className="tabular">{closed ? 'Tur kapandı; teklif kabul edilmez.' : `Kalan süre (sunucu saatine göre): ${fmtLeft(left ?? 0)}`}</span>

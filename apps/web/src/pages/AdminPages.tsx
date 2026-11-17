@@ -16,14 +16,18 @@ import { ConnectionCard, DirectoryUsersCard, EntraDepartmentList, useDirectorySy
 
 const ErpReconciliationPage = lazy(() => import('./GovernancePages.tsx').then((m) => ({ default: m.ErpReconciliationPage })));
 
-type TabKey = 'kullanicilar' | 'onaycilar' | 'sablonlar' | 'satinalma-kurallari' | 'entegrasyonlar' | 'yapay-zeka' | 'denetim-izi';
+type TabKey = 'kullanicilar' | 'onaycilar' | 'sablonlar' | 'satinalma-kurallari' | 'tedarikci-basvurusu' | 'entegrasyonlar' | 'e-posta-kutusu' | 'yapay-zeka' | 'denetim-izi';
 const TABS: { key: TabKey; label: string; roles: string[] }[] = [
   // v2 Faz 2 (D105): Denetçi dizini (directory.read) ve onaycıları (approver.read) salt okunur görür.
   { key: 'kullanicilar', label: 'Kullanıcılar ve Entra', roles: ['ADMIN', 'PROCUREMENT', 'AUDITOR'] },
   { key: 'onaycilar', label: 'Onaycılar', roles: ['ADMIN', 'PROCUREMENT', 'AUDITOR'] },
   { key: 'sablonlar', label: 'Şablonlar', roles: ['ADMIN', 'PROCUREMENT'] },
   { key: 'satinalma-kurallari', label: 'Satınalma kuralları', roles: ['ADMIN', 'PROCUREMENT'] },
+  // v2 Faz 5 (D110, R3): başvuru ayarları (okuma Yönetici + Satınalma, yazma Yönetici).
+  { key: 'tedarikci-basvurusu', label: 'Tedarikçi başvurusu', roles: ['ADMIN', 'PROCUREMENT'] },
   { key: 'entegrasyonlar', label: 'Entegrasyonlar', roles: ['ADMIN', 'PROCUREMENT', 'AUDITOR'] },
+  // v2 Faz 5 (D110, R7): e-posta kutusu yalnız Yönetici (email.outbox.read).
+  { key: 'e-posta-kutusu', label: 'E-posta kutusu', roles: ['ADMIN'] },
   { key: 'yapay-zeka', label: 'Yapay zekâ', roles: ['ADMIN', 'PROCUREMENT', 'AUDITOR'] },
   { key: 'denetim-izi', label: 'Denetim izi', roles: ['ADMIN', 'PROCUREMENT', 'AUDITOR'] },
 ];

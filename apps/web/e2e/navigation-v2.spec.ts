@@ -1,3 +1,4 @@
+// v2 Faz 5 (D110): Yönetim'e "Tedarikçi başvurusu" (Yönetici + Satınalma, R3) ve "E-posta kutusu" (yalnız Yönetici, R7) sekmeleri eklendi; beklenen sekme listeleri bu iki sekmeyle güncellendi, diğer denetimler aynen.
 // v2 Faz 3 (D108+): Yönetim > Şablonlar artık gerçek şablon kütüphanesi (Figma 12); "Faz 3'te gelir" boş durumu kalktı. Sonraki faz boş durumu denetimi Satınalma kuralları için sürer; Şablonlar sekmesinin tablosu ve yükleme alanı denetlenir.
 // v2 Faz 2 (D105): Denetçi Kullanıcılar ve Entra ile Onaycılar sekmelerini salt okunur görür (directory.read, approver.read); Onaycılar artık
 // gerçek ekran ("Faz 2'de gelir" boş durumu kalktı); sekme açıklaması Entra bağlantı durumunu söyler.
@@ -23,10 +24,10 @@ const fits = async (page: Page) => (await page.locator('main').waitFor(), page.e
 }));
 
 const MENU = ['İşlerim', 'Projeler', 'Sözleşmeler', 'Tedarikçiler', 'Faturalar', 'Raporlar', 'Yönetim'];
-const ALL_TABS = ['Kullanıcılar ve Entra', 'Onaycılar', 'Şablonlar', 'Satınalma kuralları', 'Entegrasyonlar', 'Yapay zekâ', 'Denetim izi'];
+const ALL_TABS = ['Kullanıcılar ve Entra', 'Onaycılar', 'Şablonlar', 'Satınalma kuralları', 'Tedarikçi başvurusu', 'Entegrasyonlar', 'E-posta kutusu', 'Yapay zekâ', 'Denetim izi'];
 const ROLES: [string, string, string[], string[] | null][] = [
   ['Yönetici', 'tamer.yonetici@example.test', MENU, ALL_TABS],
-  ['Satınalma', 'leyla.hukuk@example.test', MENU, ALL_TABS],
+  ['Satınalma', 'leyla.hukuk@example.test', MENU, ALL_TABS.filter((t) => t !== 'E-posta kutusu')],
   ['Denetçi', 'deniz.denetci@example.test', MENU, ['Kullanıcılar ve Entra', 'Onaycılar', 'Entegrasyonlar', 'Yapay zekâ', 'Denetim izi']],
   // Departman kullanıcısı rapor okumaz (report.read) ve Yönetim'i görmez: 5 giriş.
   ['Departman kullanıcısı', 'tolga.teknik@example.test', MENU.filter((m) => m !== 'Yönetim' && m !== 'Raporlar'), null],

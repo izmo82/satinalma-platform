@@ -22,6 +22,8 @@ import { ProjectsPage } from './pages/ProjectsPage.tsx';
 import { ProjectWizard } from './pages/ProjectWizard.tsx';
 import { ProjectWorkspace } from './pages/ProjectWorkspace.tsx';
 import { PortalAssessment, PortalAssessments, PortalHome, PortalRound } from './pages/PortalPages.tsx';
+import { PortalBids, PortalDocuments, PortalProfile, PortalStanding } from './pages/PortalV2Pages.tsx';
+import { PublicApplication } from './pages/PublicApplication.tsx';
 import { GlobalSearch, NotificationBell } from './ui/TopBar.tsx';
 
 // PDF görüntüleyici içeren ağır ekranlar ayrı paket olarak yüklenir.
@@ -42,6 +44,9 @@ const TemplatesPage = lazy(() => evaluation().then((m) => ({ default: m.Template
 const PerformanceWeightsPage = lazy(() => evaluation().then((m) => ({ default: m.PerformanceWeightsPage })));
 const ReportsPage = lazy(() => evaluation().then((m) => ({ default: m.ReportsPage })));
 const AiPage = lazy(() => evaluation().then((m) => ({ default: m.AiPage })));
+const SupplierApplicationReview = lazy(() => import('./pages/SupplierApplicationReview.tsx').then((m) => ({ default: m.SupplierApplicationReview })));
+const SupplierApplicationSettings = lazy(() => import('./pages/SupplierApplicationSettings.tsx').then((m) => ({ default: m.SupplierApplicationSettings })));
+const EmailOutboxPage = lazy(() => import('./pages/EmailOutboxPage.tsx').then((m) => ({ default: m.EmailOutboxPage })));
 const AuditPage = lazy(() => import('./pages/AuditPage.tsx').then((m) => ({ default: m.AuditPage })));
 
 /** Adresin ilk bölümü kendi listesi olmayan detaylar: kiracı değişince dönülecek liste. */
@@ -90,7 +95,10 @@ function SuppliersSection() {
 
 export function App() {
   const { me, loading } = useSession();
+  const { pathname } = useLocation();
   if (isCallback()) return <OidcCallback />;
+  // v2 Faz 5 (D110, R2–R4): girişsiz başvuru yolları oturumdan bağımsız açılır (oturum varken de aynı ekran).
+  if (pathname === '/basvuru' || pathname.startsWith('/basvuru/')) return <PublicApplication />;
   if (loading) return <Loading label="Oturum açılıyor" />;
   if (!me) return <LoginPage />;
   return <Shell />;
@@ -132,7 +140,12 @@ function Shell() {
   if (!me) return null;
   const nav: { to: string; label: string; icon: string; count?: number; later?: string }[] = me.supplierPortal ? [
     { to: '/portal', label: 'Teklif davetleri', icon: 'inbox' },
+    // v2 Faz 5 (D110, Figma P2): Tekliflerim, Skorum ve risk durumum, Belgelerim, Firma bilgileri eklendi; mevcut iki giriş aynı yerde.
+    { to: '/portal/tekliflerim', label: 'Tekliflerim', icon: 'receipt' },
     { to: '/portal/anketler', label: 'Anketler', icon: 'shield' },
+    { to: '/portal/skorum', label: 'Skorum ve risk durumum', icon: 'chart' },
+    { to: '/portal/belgeler', label: 'Belgelerim', icon: 'file' },
+    { to: '/portal/firma', label: 'Firma bilgileri', icon: 'users' },
   ] : [
     { to: '/islerim', label: 'İşlerim', icon: 'inbox', count: load(null) },
     // v2 (D93): yedi giriş, beş rol. Taşınan girişlerin sayaçları yeni üst girişe eklenir: Olaylar → Tedarikçiler,
@@ -140,7 +153,7 @@ function Shell() {
     ...(hasRole(me, 'ADMIN', 'PROCUREMENT', 'DEPARTMENT_USER', 'AUDITOR') ? [
       { to: '/projeler', label: 'Projeler', icon: 'folder', count: load(['project']) },
       { to: '/sozlesmeler', label: 'Sözleşmeler', icon: 'file', count: load(['contract_version', 'document_version', 'contract_family', 'contract_approval_step', 'contract_reminder', 'contract_rejection']) },
-      { to: '/tedarikciler', label: 'Tedarikçiler', icon: 'users', count: load(['supplier', 'incident']) },
+      { to: '/tedarikciler', label: 'Tedarikçiler', icon: 'users', count: load(['supplier', 'incident', 'supplier_application']) },
       { to: '/faturalar', label: 'Faturalar', icon: 'receipt', count: load(['invoice']) },
     ] : []),
     ...(hasRole(me, 'ADMIN', 'PROCUREMENT', 'AUDITOR') ? [{ to: '/raporlar', label: 'Raporlar', icon: 'chart' }] : []),
@@ -196,7 +209,11 @@ function Shell() {
             (iç sayfanın iskeleti tedarikçiye hiç çizilmez). */}
         {me.supplierPortal ? <Routes>
           <Route path="/portal" element={<PortalHome />} />
+          <Route path="/portal/tekliflerim" element={<PortalBids />} />
           <Route path="/portal/anketler" element={<PortalAssessments />} />
+          <Route path="/portal/skorum" element={<PortalStanding />} />
+          <Route path="/portal/belgeler" element={<PortalDocuments />} />
+          <Route path="/portal/firma" element={<PortalProfile />} />
           <Route path="/portal/anketler/:id" element={<PortalAssessment />} />
           <Route path="/portal/:id" element={<PortalRound />} />
           <Route path="*" element={<Navigate to="/portal" replace />} />
@@ -214,6 +231,7 @@ function Shell() {
             <Route path="performans-agirliklari" element={<PerformanceWeightsPage />} />
           </Route>
           <Route path="/tedarikciler/olaylar/:id" element={<IncidentPage />} />
+          <Route path="/tedarikciler/basvurular/:id" element={<SupplierApplicationReview />} />
           <Route path="/tedarikciler/:id" element={<SupplierDetailPage />} />
           <Route path="/belgeler/:id" element={<DocumentPage />} />
           <Route path="/sozlesmeler" element={<ContractsPage />} />
@@ -235,6 +253,8 @@ function Shell() {
             <Route path="onaycilar" element={<AdminTab tab="onaycilar"><ApproversTab /></AdminTab>} />
             <Route path="sablonlar" element={<AdminTab tab="sablonlar"><ContractTemplatesTab /></AdminTab>} />
             <Route path="satinalma-kurallari" element={<AdminTab tab="satinalma-kurallari"><RulesTab /></AdminTab>} />
+            <Route path="tedarikci-basvurusu" element={<AdminTab tab="tedarikci-basvurusu"><SupplierApplicationSettings /></AdminTab>} />
+            <Route path="e-posta-kutusu" element={<AdminTab tab="e-posta-kutusu"><EmailOutboxPage /></AdminTab>} />
             <Route path="entegrasyonlar" element={<AdminTab tab="entegrasyonlar"><IntegrationsTab /></AdminTab>} />
             <Route path="yapay-zeka" element={<AdminTab tab="yapay-zeka"><AiPage /></AdminTab>} />
             <Route path="denetim-izi" element={<AdminTab tab="denetim-izi"><AuditPage /></AdminTab>} />

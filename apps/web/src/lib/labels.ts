@@ -113,7 +113,9 @@ export const costKindLabel: Record<string, string> = { SHIPPING: 'Nakliye', INST
 export const ANSWER_RESPONSE = { YES: 'Evet', PARTIAL: 'Kısmen', NO: 'Hayır', NOT_APPLICABLE: 'Uygulanamaz', UNKNOWN: 'Bilinmiyor' } as const;
 
 /** /api/v1/supplier-options öğesi; `label` aynı adlı kayıtları ayırt eder (D82). */
-export interface SupplierOption { id: string; legalName: string; status: string; label?: string; taxIdTail?: string | null; identityVerified?: boolean }
+export interface SupplierOption { id: string; legalName: string; status: string; label?: string; taxIdTail?: string | null; identityVerified?: boolean;
+  /** v2 Faz 5 (R9): yeni teklif turuna davet edilebilir mi (aday hayır) ve nedeni. */
+  stageLabel?: string; eligibleForInvite?: boolean; ineligibleReason?: string | null }
 
 /** Seçilen tedarikçinin kimlik özeti: dar seçim kutusunda etiket kesildiğinde ayrım kaybolmasın (D82). */
 export function supplierPickHint(o: SupplierOption | undefined): string | undefined {

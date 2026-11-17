@@ -79,10 +79,18 @@ function EnterpriseLogin({ cfg }: { cfg: Extract<AuthConfig, { mode: 'oidc' }> }
       {/* Tedarikçi portalı girişi aynı oturum hizmetinden geçer; giriş sonrası portal açılır (D79: tedarikçi yalnız portal yollarını görür). */}
       <p className="border-t border-border pt-4 text-sm text-ink-muted">Tedarikçi misiniz?{' '}
         <a href="/portal" className="font-semibold text-ink underline underline-offset-2"
-          onClick={(e) => { e.preventDefault(); if (busy) return; setBusy(true); beginLogin('/portal'); }}>Tedarikçi portalına gidin</a>
+          onClick={(e) => { e.preventDefault(); if (busy) return; setBusy(true); beginLogin(portalReturn()); }}>Tedarikçi portalına gidin</a>
       </p>
     </div>
   );
+}
+
+/**
+ * v2 Faz 5 (D110, R8): davet e-postasındaki `/portal/<turId>` bağlantısı oturumsuz açılınca iki giriş düğmesi de aynı adrese döner;
+ * başka adreste "Tedarikçi portalına gidin" eskisi gibi portal ana sayfasını açar.
+ */
+function portalReturn() {
+  return location.pathname === '/portal' || location.pathname.startsWith('/portal/') ? loginReturnPath() : '/portal';
 }
 
 export function OidcCallback() {
