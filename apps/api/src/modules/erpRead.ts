@@ -16,7 +16,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type pg from 'pg';
 import {
-  ERP_FEATURE_CATALOG, applyFieldMap, can, dec, div, isDue, missingMappings, mul, normalizeRoles, normalizeTaxId, reconcileManual, redactSecrets, str,
+  ERP_FEATURE_CATALOG, applyFieldMap, erpFieldErrorTr, can, dec, div, isDue, missingMappings, mul, normalizeRoles, normalizeTaxId, reconcileManual, redactSecrets, str,
   type ErpFeature, type ErpInvoiceRecord, type ErpSchedule, type FieldMap,
 } from '@sp/domain';
 import type { Config } from '../config.ts';
@@ -229,8 +229,8 @@ export async function processErpRead(pool: pg.Pool, ctx: TenantContext, jobId: s
             const key = recordKey(feature, values);
             if (errors.length) {
               local.failed++;
-              const fields = errors.map((x) => `${x.field} (${x.code})`).join(', ');
-              await addError(tx, ctx, runId, key, errors[0]!.code, `Satır reddedildi; yuvarlanmadı/uydurulmadı: ${fields}.`, payloadSha, secrets);
+              const fields = errors.map((x) => erpFieldErrorTr(feature, x)).join('; ');
+              await addError(tx, ctx, runId, key, errors[0]!.code, `Satır reddedildi (yuvarlanmadı, uydurulmadı): ${fields}.`, payloadSha, secrets);
               localErrors++;
               continue;
             }

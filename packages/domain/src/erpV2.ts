@@ -136,6 +136,7 @@ export const ERP_FEATURE_CATALOG: Record<ErpFeature, ErpFeatureDef> = {
       invoiceNo: m('INVOICE_NUM', 'TRIM'), supplierTaxId: m('TAX_REGISTRATION_NUM', 'TRIM'), invoiceDate: m('INVOICE_DATE', 'DATE_YMD'),
       totalAmount: m('INVOICE_AMOUNT', 'DECIMAL'), currency: m('INVOICE_CURRENCY_CODE', 'UPPER'),
       taxAmount: m('TAX_AMOUNT', 'DECIMAL'), poNo: m('PO_NUMBER', 'TRIM'), erpInvoiceId: m('INVOICE_ID', 'TRIM'),
+      companyTaxId: m('BUYER_TAX_REGISTRATION_NUM', 'TRIM'),
     },
     manualFallback: 'Mevcut elle giriş ve e-Fatura yükleme (D98) aynen çalışır.',
   },
@@ -176,6 +177,19 @@ export type EndpointInput = {
   fieldMap: FieldMap;
 };
 export type ErpError = { field: string; code: string };
+
+const ERP_FIELD_ERROR_REASON_TR: Record<string, string> = {
+  invalid_decimal: 'ondalık biçimi geçersiz',
+  invalid_date: 'tarih biçimi geçersiz',
+  invalid_value: 'değer geçersiz',
+  required_missing: 'zorunlu alan boş',
+};
+
+/** Satır alanı hatasını Türkçe yazar (örn. "Toplam tutar: ondalık biçimi geçersiz"); makine kodu ayrı sütunda kalır. */
+export function erpFieldErrorTr(feature: ErpFeature, e: ErpError): string {
+  const label = ERP_FEATURE_CATALOG[feature].appFields.find((f) => f.key === e.field)?.label ?? 'Alan';
+  return `${label}: ${ERP_FIELD_ERROR_REASON_TR[e.code] ?? 'değer geçersiz'}`;
+}
 
 const FIELD_PATH_RE = /^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*$/;
 const SOURCE_SEGMENT_RE = /^[A-Za-z0-9_.~-]+$/;

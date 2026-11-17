@@ -191,7 +191,7 @@ describe('COST_CENTER ve PURCHASE_ORDER okuma (taklitle denendi)', () => {
     const r = await runRead('PURCHASE_ORDER');
     expect(r.run.status).toBe('PARTIAL');
     expect(r.run.counts).toMatchObject({ read: 2, created: 1, failed: 1 });
-    expect(r.errors).toEqual([expect.objectContaining({ code: 'invalid_decimal', record_key: 'TKL2026PO0002' })]);
+    expect(r.errors).toEqual([expect.objectContaining({ code: 'invalid_decimal', record_key: 'TKL2026PO0002', message: expect.stringContaining('Tutar: ondalık biçimi geçersiz') })]);
     expect(await rows(`SELECT po_no FROM erp_purchase_orders WHERE tenant_id = $1`, [h.world.tenantA])).toEqual([{ po_no: 'TKL2026PO0001' }]);
     await configure('PURCHASE_ORDER', { baseUrl: 'taklit://ok' });
     const ok = await runRead('PURCHASE_ORDER');
