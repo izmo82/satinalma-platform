@@ -33,6 +33,9 @@ struct ContractFieldsView: View {
     @State private var endDate: Date?
     @State private var indefinite = false
     @State private var amountText = ""
+    /// Para birimi: kayıtlı koşulun para birimi (ör. webde USD girilmiş sözleşme); koşul yoksa TRY. Yalnız kullanıcı değiştirirse
+    /// ya da henüz koşul yoksa gönderilir (final inceleme I2: TRY varsayılanı başka para birimini ezmez).
+    @State private var currency = "TRY"
     @State private var limitBasis = "NET"
     @State private var autoRenewal = false
     @State private var renewalMonths = 12
@@ -49,6 +52,11 @@ struct ContractFieldsView: View {
     init(familyId: String) { _familyId = State(initialValue: familyId) }
 
     private var amount: String? { ContractInput.decimal(amountText) }
+    /// Seçenekler: TRY, USD, EUR ve (başka ise) kayıtlı para birimi.
+    private var currencyOptions: [String] {
+        let base = ["TRY", "USD", "EUR"]
+        return base.contains(currency) ? base : [currency] + base
+    }
     private var needsNotice: Bool { indefinite || autoRenewal }
     private var canContinue: Bool {
         !projectId.isEmpty && compared && !busy && session.isOnline && (amountText.isEmpty || amount != nil)
@@ -123,11 +131,14 @@ struct ContractFieldsView: View {
             Section {
                 TextField("Tutar", text: $amountText, prompt: Text("ör. 2.400.000,00")).keyboardType(.decimalPad)
                 if !amountText.isEmpty {
-                    if let amount { Text(Fmt.money(amount, "TRY")).font(.footnote).foregroundStyle(.secondary) }
+                    if let amount { Text(Fmt.money(amount, currency)).font(.footnote).foregroundStyle(.secondary) }
                     else { Text("Tutar okunamadı; en fazla iki ondalık hane girin.").font(.footnote).foregroundStyle(.red) }
                 }
+                Picker("Para birimi", selection: $currency) {
+                    ForEach(currencyOptions, id: \.self) { Text($0).tag($0) }
+                }.adaptivePicker(typeSize)
                 Picker("KDV", selection: $limitBasis) { Text("KDV hariç").tag("NET"); Text("KDV dahil").tag("GROSS") }.adaptivePicker(typeSize)
-            } header: { Text("Tutar (TRY)") }
+            } header: { Text("Tutar (\(currency))") }
             Section {
                 Toggle("Tutar, tarih ve VKN'yi belgeyle karşılaştırdım.", isOn: $compared)
                 Button { Task { await saveAndContinue() } } label: {
@@ -198,6 +209,7 @@ struct ContractFieldsView: View {
         signedOn = ContractInput.date(f.signedOn); startDate = ContractInput.date(f.startDate); endDate = ContractInput.date(f.endDate)
         indefinite = f.indefinite
         amountText = f.amount.map(ContractInput.display) ?? ""
+        currency = f.currency ?? "TRY"
         limitBasis = f.limitBasis ?? "NET"
         autoRenewal = f.autoRenewal ?? false
         renewalMonths = f.renewalMonths ?? 12
@@ -219,7 +231,8 @@ struct ContractFieldsView: View {
         put("indefinite", .bool(indefinite), .bool(f?.indefinite ?? false))
         // Koşul anahtarları: tutar girilmeden ilk koşul revizyonu açılamaz; tutarsız taslakta yalnız aile alanları kaydedilir.
         if let amount {
-            put("currency", .str("TRY"), .opt(f?.currency))
+            // Yalnız koşul yoksa ya da kullanıcı para birimini değiştirdiyse gönderilir; kayıtlı para birimi asla TRY ile ezilmez.
+            if f?.currency == nil || currency != f?.currency { b["currency"] = .str(currency) }
             put("amount", .str(amount), .opt(f?.amount))
             put("limitBasis", .str(limitBasis), .opt(f?.limitBasis))
             put("startDate", .opt(startDate.map(ContractInput.iso)), .opt(f?.startDate))
