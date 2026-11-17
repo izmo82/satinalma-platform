@@ -7,7 +7,7 @@ import { can } from '../src/roles.ts';
 
 const full: ContractFields = {
   project: 'p1', supplier: 's1', contractType: 'SERVICE', owner: 'u1', signedOn: '2026-01-01', amount: '1000.00', currency: 'TRY',
-  limitBasis: 'VAT_EXCL', startDate: '2026-01-01', endDate: '2028-12-31', indefinite: false, autoRenewal: false, noticePeriod: null,
+  limitBasis: 'NET', startDate: '2026-01-01', endDate: '2028-12-31', indefinite: false, autoRenewal: false, noticePeriod: null,
 };
 
 describe('sabitler', () => {
@@ -80,6 +80,9 @@ describe('planChain', () => {
     const r = planChain({ ...input, useDeputyForHead: true });
     expect('steps' in r && r.steps[0]).toEqual({ order: 1, kind: 'DEPARTMENT_HEAD', userId: 'hd', viaDeputy: true });
   });
+  it('useDeputyForHead ama vekil yok -> hata', () => {
+    expect(planChain({ ...input, useDeputyForHead: true, approvers: { ...approvers, deputy: null } })).toEqual({ error: 'no_eligible_approver', kind: 'DEPARTMENT_HEAD' });
+  });
   it('ekleyen = sorumlu -> vekil', () => {
     const r = planChain({ ...input, creatorId: 'h' });
     expect('steps' in r && r.steps[0]).toEqual({ order: 1, kind: 'DEPARTMENT_HEAD', userId: 'hd', viaDeputy: true });
@@ -151,6 +154,20 @@ describe('reminderDates', () => {
     expect(r).toEqual([
       { offset: 30, date: '2026-11-17', kind: 'END', includeProcurement: true },
       { offset: 7, date: '2026-12-03', kind: 'END', includeProcurement: true },
+    ]);
+  });
+  it('bugüne taşınan ile bugünkü çakışırsa tek kalır', () => {
+    const r = reminderDates({ ...base, endDate: '2026-12-17', offsets: [31, 30], today: '2026-11-17' });
+    expect(r).toEqual([{ offset: 30, date: '2026-11-17', kind: 'END', includeProcurement: true }]);
+  });
+  it('END + NOTICE karışık, bazıları geçmiş', () => {
+    const r = reminderDates({ endDate: '2027-01-31', indefinite: false, autoRenewal: true, noticeDeadline: '2026-12-31', offsets: [90, 30, 7], today: '2026-11-17' });
+    // END: 90->2026-11-02 (geçmiş), 30->2027-01-01, 7->2027-01-24; NOTICE: 2026-12-01
+    expect(r).toEqual([
+      { offset: 90, date: '2026-11-17', kind: 'END', includeProcurement: false },
+      { offset: 30, date: '2026-12-01', kind: 'NOTICE', includeProcurement: true },
+      { offset: 30, date: '2027-01-01', kind: 'END', includeProcurement: true },
+      { offset: 7, date: '2027-01-24', kind: 'END', includeProcurement: true },
     ]);
   });
   it('bugünkü tarih geçmiş sayılmaz', () => {

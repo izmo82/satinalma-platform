@@ -13,7 +13,7 @@ export const CONTRACT_TYPE_TR: Record<ContractType, string> = {
 };
 
 // ---- R2: zorunlu alanlar ----
-export type LimitBasis = 'VAT_INCL' | 'VAT_EXCL';
+export type LimitBasis = 'NET' | 'GROSS';
 
 export interface ContractFields {
   project: string | null;
@@ -39,7 +39,7 @@ export const REQUIRED_FIELD_TR: Record<RequiredField, string> = {
   project: 'Proje',
   supplier: 'Tedarikçi',
   contractType: 'Sözleşme türü',
-  owner: 'Sözleşme sahibi',
+  owner: 'Sözleşme sorumlusu',
   signedOn: 'İmza tarihi',
   amount: 'Tutar',
   currency: 'Para birimi',
@@ -203,5 +203,8 @@ export function reminderDates(input: {
   if (past.length === 0) return out;
   // Geçmişte kalanlardan yalnız en yakın olan hemen (bugün) tetiklenir; diğerleri düşer.
   const last = past[past.length - 1]!;
-  return [{ ...last, date: today }, ...future];
+  const moved: Reminder = { ...last, date: today };
+  // Bugüne taşınan girdi, zaten bugün olan aynı türdeki girdiyle çakışırsa tek kalır.
+  const collides = future.some((r) => r.date === today && r.kind === moved.kind);
+  return collides ? future : [moved, ...future];
 }
