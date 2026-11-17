@@ -61,9 +61,9 @@ type EndpointRow = {
 };
 
 /** Çalışmayı kapatır (yalnız RUNNING ise). Hata kaydı varsa önce yazılır. */
-async function closeRun(tx: Tx, runId: string, status: 'SUCCESS' | 'PARTIAL' | 'FAILED', counts: Record<string, unknown>) {
-  await tx.query(`UPDATE integration_runs SET status = $2, finished_at = now(), counts = counts || $3::jsonb WHERE id = $1 AND status = 'RUNNING'`,
-    [runId, status, JSON.stringify(counts)]);
+async function closeRun(tx: Tx, runId: string, status: 'SUCCESS' | 'PARTIAL' | 'FAILED', counts: Record<string, unknown>): Promise<boolean> {
+  return ((await tx.query(`UPDATE integration_runs SET status = $2, finished_at = now(), counts = counts || $3::jsonb WHERE id = $1 AND status = 'RUNNING'`,
+    [runId, status, JSON.stringify(counts)])).rowCount ?? 0) > 0;
 }
 
 async function addError(tx: Tx, ctx: TenantContext, runId: string, recordKey: string | null, code: string, message: string, payloadSha: string | null, secrets: string[] = []) {
@@ -76,14 +76,15 @@ async function addError(tx: Tx, ctx: TenantContext, runId: string, recordKey: st
  * Çalışmayı istek atmadan FAILED kapatır (nedeni hata kaydında) ve işi bitirir. Elle istenen çalışma alınmadan özellik kapatıldıysa,
  * sağlayıcı kalktıysa, isteyenin üyeliği gittiyse ya da beklenmeyen hata olduysa çalışma RUNNING kalmaz.
  */
-export async function failRunForJob(tx: Tx, ctx: TenantContext, jobId: string, code: string, message: string, jobStatus: 'FAILED' | 'BLOCKED' = 'FAILED') {
+export async function failRunForJob(tx: Tx, ctx: TenantContext, jobId: string, code: string, message: string, jobStatus: 'FAILED' | 'BLOCKED' = 'FAILED',
+  requestSent = false) {
   const job = (await tx.query<{ payload: { runId?: unknown } }>(`SELECT payload FROM jobs WHERE id = $1`, [jobId])).rows[0];
   const runId = typeof job?.payload?.runId === 'string' ? job.payload.runId : null;
   if (runId) {
     const run = (await tx.query<{ status: string }>(`SELECT status FROM integration_runs WHERE id = $1 FOR UPDATE`, [runId])).rows[0];
     if (run?.status === 'RUNNING') {
       await addError(tx, ctx, runId, null, code, message, null);
-      await closeRun(tx, runId, 'FAILED', { requestSent: false, reason: code });
+      await closeRun(tx, runId, 'FAILED', { requestSent, reason: code });
     }
   }
   await tx.query(`UPDATE jobs SET status = $2, error_code = $3, result = $4, updated_at = now() WHERE id = $1`,
@@ -117,7 +118,9 @@ async function prepareRead(tx: Tx, ctx: TenantContext, jobId: string, deps: ErpR
     return { kind: 'done', result: { runId, status: 'SKIPPED' } };
   }
   if (run.status !== 'RUNNING') {
-    await tx.query(`UPDATE jobs SET status = 'SUCCEEDED', result = $2, updated_at = now() WHERE id = $1`, [jobId, JSON.stringify({ runId, skipped: 'run_closed', status: run.status })]);
+    // Temizleyicinin (stale_run) ya da başka yolun FAILED/BLOCKED yaptığı iş ezilmez.
+    await tx.query(`UPDATE jobs SET status = 'SUCCEEDED', result = $2, updated_at = now() WHERE id = $1 AND status NOT IN ('FAILED','BLOCKED','DEAD')`,
+      [jobId, JSON.stringify({ runId, skipped: 'run_closed', status: run.status })]);
     return { kind: 'done', result: { runId, status: run.status } };
   }
   const ep = (await tx.query<EndpointRow>(`SELECT id, enabled, provider_kind, base_url, resource_path, auth_type, username, client_id, token_url, field_map, timeout_ms
@@ -161,6 +164,23 @@ function pageFailure(e: unknown): Note {
     return { code, message: code === 'http_401' ? 'ERP kimlik doğrulamayı reddetti (HTTP 401); okuma durduruldu.' : `ERP okuması başarısız oldu (kod ${code}); okuma durduruldu.` };
   }
   return { code: 'read_failed', message: 'ERP okuması başarısız oldu; okuma durduruldu.' };
+}
+
+/**
+ * Beklenmeyen hatadan sonra çalışmayı kapatır; ileti ve `requestSent` kaydedilmiş duruma göre: hazırlık işlemi commit olmadıysa (nabız yok)
+ * değişiklik ve istek yoktur; sayfa(lar) commit olduysa onlar kalır (geri alınmaz), yalnız sonrası işlenmemiştir.
+ */
+export async function failRunAfterError(tx: Tx, ctx: TenantContext, jobId: string) {
+  const job = (await tx.query<{ payload: { runId?: unknown } }>(`SELECT payload FROM jobs WHERE id = $1`, [jobId])).rows[0];
+  const runId = typeof job?.payload?.runId === 'string' ? job.payload.runId : null;
+  const counts = runId ? (await tx.query<{ counts: Record<string, unknown> }>(`SELECT counts FROM integration_runs WHERE id = $1`, [runId])).rows[0]?.counts ?? {} : {};
+  const pages = typeof counts.page === 'number' ? counts.page : 0;
+  const started = typeof counts.heartbeatAt === 'string';
+  const message = pages > 0
+    ? `Çalışma beklenmeyen bir hatayla durdu; kaydedilmiş ${pages} sayfa (${Number(counts.read ?? 0)} kayıt) yerinde kaldı, sonraki sayfalar işlenmedi. Yeniden çalıştırın.`
+    : started ? 'Çalışma beklenmeyen bir hatayla durdu; ERP\'ye istek atıldı ama hiçbir sayfa kaydedilmedi. Yeniden çalıştırın.'
+      : 'Çalışma hazırlanırken beklenmeyen bir hatayla durdu; değişiklikler geri alındı, ERP\'ye istek atılmadı. Yeniden çalıştırın.';
+  await failRunForJob(tx, ctx, jobId, 'internal_error', message, 'FAILED', started);
 }
 
 /**
@@ -253,14 +273,19 @@ export async function processErpRead(pool: pg.Pool, ctx: TenantContext, jobId: s
   const okRecords = counts.created + counts.updated + counts.unchanged + counts.skipped;
   const status: 'SUCCESS' | 'PARTIAL' | 'FAILED' = (pageError && okRecords === 0) || (counts.read > 0 && okRecords === 0 && counts.failed > 0) ? 'FAILED'
     : errorRows > 0 || pageError ? 'PARTIAL' : 'SUCCESS';
-  await withTenant(pool, ctx, async (tx) => {
+  const closed = await withTenant(pool, ctx, async (tx) => {
+    // Çalışma bu arada başka yoldan (temizleyici) kapandıysa: iş SUCCEEDED yapılmaz, hata eklenmez, başarı denetimi yazılmaz.
+    if (!(await closeRun(tx, runId, status, { ...counts, requestSent: true }))) {
+      await tx.query(`UPDATE jobs SET status = 'FAILED', error_code = 'RUN_CLOSED', updated_at = now() WHERE id = $1 AND status IN ('QUEUED','RUNNING')`, [jobId]);
+      return false;
+    }
     if (pageError) await addError(tx, ctx, runId, null, pageError.code, pageError.message, null, secrets);
-    await closeRun(tx, runId, status, { ...counts, requestSent: true });
     await tx.query(`UPDATE jobs SET status = 'SUCCEEDED', result = $2, updated_at = now() WHERE id = $1`, [jobId, JSON.stringify({ runId, status, counts })]);
     await audit(tx, ctx, 'integration.endpoint.read_finished', 'integration_endpoint', ep.id,
       { feature, runId, status, counts, errorRows: errorRows + (pageError ? 1 : 0), mock: !provider.real, providerKind: provider.kind, trigger: p.trigger });
+    return true;
   });
-  return { runId, status, counts };
+  return { runId, status: closed ? status : 'FAILED', counts };
 }
 
 /** Bayat çalışma sınırları: nabız bu kadar eskiyse ya da çalışma bu kadar uzun sürdüyse kapatılır. YALNIZ TEST değiştirir. */
@@ -663,7 +688,7 @@ export async function runErpReadJob(pool: pg.Pool, job: { id: string; tenant_id:
   } catch (e) {
     // İleti yazılmaz (sır içerebilecek sağlayıcı ayrıntısı olmasın); yalnız kod.
     console.error('erp.read failed', job.id, (e as { code?: string })?.code ?? (e as Error)?.name ?? 'error');
-    await withTenant(pool, ctx, (tx) => failRunForJob(tx, ctx, job.id, 'internal_error', 'Çalışma beklenmeyen bir hatayla durdu; kayıtlar geri alındı. Yeniden çalıştırın.'))
+    await withTenant(pool, ctx, (tx) => failRunAfterError(tx, ctx, job.id))
       .catch(() => {});
   }
 }

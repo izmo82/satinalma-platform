@@ -9,7 +9,7 @@ import { ERP_FEATURE_CATALOG, syntheticVkn, type ErpFeature } from '@sp/domain';
 import type { ErpConfig } from '../src/config.ts';
 import { withoutTenant, withTenant, type TenantContext } from '../src/db.ts';
 import { erpProvider, ErpProviderError, type ErpProvider, type ErpProviderKind } from '../src/erp/providers.ts';
-import { enqueueTenantErpReads, ERP_READ_LIMITS, importErpInvoice, reapAllStaleErpRuns, runErpReadJob, PROTECTED_DEMO_INVOICES } from '../src/modules/erpRead.ts';
+import { enqueueTenantErpReads, ERP_READ_LIMITS, ERP_STALE, failRunAfterError, importErpInvoice, reapAllStaleErpRuns, reapStaleErpRuns, runErpReadJob, PROTECTED_DEMO_INVOICES } from '../src/modules/erpRead.ts';
 import { makeHarness } from './harness.ts';
 
 const KEY = Buffer.alloc(32, 7);
@@ -492,6 +492,74 @@ describe('düzeltme 1 (taklitle denendi)', () => {
     expect((await count()) - before).toBeLessThanOrEqual(1);
     expect(await count()).toBeGreaterThanOrEqual(1);
     await h.call('tenantAdmin', 'PUT', url('COST_CENTER'), { body: { schedule: { mode: 'MANUAL' } } });
+  });
+});
+
+describe('düzeltme 2 (taklitle denendi)', () => {
+  const sys = (): TenantContext => ({ tenantId: h.world.tenantA, userId: '00000000-0000-0000-0000-000000000000', roles: [], companyIds: [], departmentIds: [],
+    allDepartments: true, correlationId: 'test-erp-fix2' });
+  // Yalnız bu kiracıda, "şimdi + 2 dk" ile temizleyici (nabız eşiği 1 dk): az önce açılan çalışma da bayat sayılır.
+  const reapNow = async () => {
+    const prev = ERP_STALE.heartbeatMinutes;
+    ERP_STALE.heartbeatMinutes = 1;
+    try { return await withTenant(h.pool, sys(), (tx) => reapStaleErpRuns(tx, h.world.tenantA, new Date(Date.now() + 120_000))); }
+    finally { ERP_STALE.heartbeatMinutes = prev; }
+  };
+
+  it('temizleyici, satır kilidini tutan (sayfa işlemindeki) çalışmayı atlar; kilit kalkınca kapatır', async () => {
+    await configure('COST_CENTER');
+    const req = await h.call('tenantAdmin', 'POST', url('COST_CENTER', '/run'));
+    const c = await h.owner.connect();
+    try {
+      await c.query('BEGIN');
+      await c.query(`SELECT 1 FROM integration_runs WHERE id = $1 FOR UPDATE`, [req.body.runId]);
+      await reapNow();
+      expect((await runOf(req.body.runId)).status).toBe('RUNNING');
+    } finally { await c.query('ROLLBACK'); c.release(); }
+    expect(await reapNow()).toBeGreaterThanOrEqual(1);
+    expect((await runOf(req.body.runId)).status).toBe('FAILED');
+    // Alınmadan temizlenen işin FAILED STALE_RUN durumu işçi alınca ezilmez.
+    const job = await jobOf(req.body.runId);
+    expect([job.status, job.error_code]).toEqual(['FAILED', 'STALE_RUN']);
+    await runErpReadJob(h.pool, job, await memberOf(job.requested_by!), { config: h.config, provider: resolver });
+    expect(await jobOf(req.body.runId)).toMatchObject({ status: 'FAILED', error_code: 'STALE_RUN' });
+  });
+
+  it('çalışma okuma sırasında temizlenirse işçi durur: kayıt işlenmez, iş SUCCEEDED olmaz, başarı denetimi ve ek hata yazılmaz', async () => {
+    const req = await h.call('tenantAdmin', 'POST', url('COST_CENTER', '/run'));
+    const reaping = (kind: ErpProviderKind): ErpProvider | null => {
+      const p = erpProvider(kind, h.config)!;
+      return { ...p, read: async (ep, f, cursor) => { await reapNow(); return p.read(ep, f, cursor); } };
+    };
+    const job = await jobOf(req.body.runId);
+    await runErpReadJob(h.pool, job, await memberOf(job.requested_by!), { config: h.config, provider: reaping });
+    expect(await runOf(req.body.runId)).toMatchObject({ status: 'FAILED' });
+    expect((await runOf(req.body.runId)).counts.read).toBeUndefined();
+    expect((await errorsOf(req.body.runId)).map((e) => e.code)).toEqual(['stale_run']);
+    expect(await jobOf(req.body.runId)).toMatchObject({ status: 'FAILED', error_code: 'STALE_RUN' });
+    const audits = await rows(`SELECT data->>'status' AS status FROM audit_events WHERE tenant_id = $1 AND action = 'integration.endpoint.read_finished'
+      AND data->>'runId' = $2`, [h.world.tenantA, req.body.runId]);
+    expect(audits).toEqual([]);
+  });
+
+  it('beklenmeyen hata iletisi kaydedilmiş sayfalara göre: hazırlık commit olmadıysa "geri alındı", sayfa kaydedildiyse sayfalar kalır ve requestSent true', async () => {
+    const ep = (await one<{ id: string }>(`SELECT id FROM integration_endpoints WHERE tenant_id = $1 AND feature = 'COST_CENTER'`, [h.world.tenantA])).id;
+    const mk = async (counts: Record<string, unknown>) => {
+      const runId = (await one<{ id: string }>(`INSERT INTO integration_runs (tenant_id, endpoint_id, feature, trigger, provider_kind, mock, status, counts)
+        VALUES ($1,$2,'COST_CENTER','SCHEDULE','TAKLIT',true,'RUNNING',$3) RETURNING id`, [h.world.tenantA, ep, JSON.stringify(counts)])).id;
+      await h.owner.query(`INSERT INTO jobs (tenant_id, kind, idempotency_key, payload) VALUES ($1,'erp.read',$2,$3)`,
+        [h.world.tenantA, `test2:${runId}`, JSON.stringify({ feature: 'COST_CENTER', runId })]);
+      const job = await jobOf(runId);
+      await withTenant(h.pool, sys(), (tx) => failRunAfterError(tx, sys(), job.id));
+      return { run: await runOf(runId), errors: await errorsOf(runId) };
+    };
+    const none = await mk({ mode: 'READ' });
+    expect(none.run.counts).toMatchObject({ requestSent: false, reason: 'internal_error' });
+    expect(none.errors[0]!.message).toContain('geri alındı');
+    const paged = await mk({ mode: 'READ', heartbeatAt: new Date().toISOString(), page: 2, read: 4 });
+    expect(paged.run).toMatchObject({ status: 'FAILED', counts: { requestSent: true, page: 2, read: 4 } });
+    expect(paged.errors[0]!.message).toContain('2 sayfa (4 kayıt) yerinde kaldı');
+    expect(paged.errors[0]!.message).not.toContain('geri alındı');
   });
 });
 
