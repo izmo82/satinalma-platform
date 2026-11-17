@@ -1,5 +1,5 @@
 import { Fragment, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { api, apiBlob, ApiError } from '../lib/api.ts';
 import { useResource } from '../lib/useApi.ts';
 import { fmtDate, fmtDateTime, fmtMoney } from '../lib/format.ts';
@@ -15,6 +15,7 @@ import { cn } from '@/lib/utils';
 import { trDecimal } from './ContractReview.tsx';
 import { CATEGORY, DEFAULT_W, DIMS, FACTORS, INCIDENT_STATUS, IncidentTable, LEVEL, OUTCOME, weightText, type WeightPolicy } from './SupplierEvaluation.tsx';
 import { RiskReportCard } from './RiskPages.tsx';
+import { ComplianceAudits } from './ComplianceAudits.tsx';
 
 function useAct(reload: () => Promise<void>) {
   const [busy, setBusy] = useState(false);
@@ -431,7 +432,24 @@ export function ReportsPage() {
       </div>
     </div>
   );
-  return <ReportsContent />;
+  return <ReportsTabs />;
+}
+
+/** v2 Faz 7 (D112, R10): Raporlar içinde alt sekme "Uyum denetimleri" (`?sekme=uyum`); göstergeler ekranı aynen varsayılan. Menü 7 giriş kalır. */
+function ReportsTabs() {
+  const [params] = useSearchParams();
+  const uyum = params.get('sekme') === 'uyum';
+  const item = (active: boolean) => cn('-mb-px flex min-h-10 items-center whitespace-nowrap border-b-2 font-semibold no-underline transition-colors duration-150',
+    active ? 'border-ink text-ink' : 'border-transparent text-ink-muted hover:text-ink');
+  return <>
+    <nav aria-label="Rapor türleri" className="px-8 pt-3 max-[900px]:px-4">
+      <ul className="flex gap-6 overflow-x-auto border-b border-border">
+        <li className="shrink-0"><Link to="/raporlar" aria-current={!uyum ? 'page' : undefined} className={item(!uyum)}>Göstergeler</Link></li>
+        <li className="shrink-0"><Link to="/raporlar?sekme=uyum" aria-current={uyum ? 'page' : undefined} className={item(uyum)}>Uyum denetimleri</Link></li>
+      </ul>
+    </nav>
+    {uyum ? <div className="page"><PageHeader title="Uyum denetimleri" /><ComplianceAudits /></div> : <ReportsContent />}
+  </>;
 }
 
 function ReportsContent() {

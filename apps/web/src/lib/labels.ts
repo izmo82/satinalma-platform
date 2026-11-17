@@ -95,8 +95,10 @@ export const projectStatus: Record<string, Label> = {
   CONTRACTING: { text: 'Sözleşme aşamasında', tone: 'human', icon: 'stamp' },
   CANCELLED: { text: 'İptal', tone: 'neutral', icon: 'x' },
   NO_AWARD: { text: 'Sonuçsuz kapandı', tone: 'neutral', icon: 'minus' },
+  // v2 Faz 7 (D112, R5): yedinci aşama.
+  COMPLETED: { text: 'Tamamlandı', tone: 'ok', icon: 'check' },
 };
-export const PROJECT_STAGES = ['DRAFT', 'IN_APPROVAL', 'OPEN', 'EVALUATION', 'AWARD_APPROVAL', 'CONTRACTING'] as const;
+export const PROJECT_STAGES = ['DRAFT', 'IN_APPROVAL', 'OPEN', 'EVALUATION', 'AWARD_APPROVAL', 'CONTRACTING', 'COMPLETED'] as const;
 export const lineState: Record<string, Label> = {
   COMPARABLE: { text: 'Karşılaştırılabilir', tone: 'ok', icon: 'check' },
   MISSING: { text: 'Teklif edilmedi', tone: 'danger', icon: 'x' },

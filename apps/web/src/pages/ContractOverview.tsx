@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { contractFacts, Facts, PlannedList } from './ContractWizard.tsx';
 import { ReviewApprovalNote, ReviewDetail, TEST_PROVIDER_LABEL } from './ContractReview.tsx';
+import { matchStateTag, UsageBar, type MatchState, type UsageView } from './InvoiceMatching.tsx';
 
 /**
  * v2 Faz 3 (D108, Figma 10–11): sözleşme detayının yeni sekmeleri (Özet, Belge, İnceleme, Onaylar, Hatırlatıcılar, Geçmiş) ve üst bilgi.
@@ -131,29 +132,36 @@ function Summary({ d, savedDraft }: { d: ContractV2; savedDraft: boolean }) {
   );
 }
 
-interface FamilyInvoice { id: string; invoiceNo: string; date: string; amount: string; currency: string; status: 'APPROVED' | 'REJECTED' | 'PENDING'; statusLabel: string; supplier: { legalName: string } }
+interface FamilyInvoice { id: string; invoiceNo: string; date: string; amount: string; currency: string; status: 'APPROVED' | 'REJECTED' | 'PENDING'; statusLabel: string; supplier: { legalName: string };
+  /** v2 Faz 7 (R1): bağlı (MATCHED) ya da tahsisle türeyen eşleşme. */
+  matchState?: MatchState; matchStateLabel?: string; matchMethodLabel?: string | null }
 const INVOICE_TONE = { APPROVED: { tone: 'ok', icon: 'check' }, REJECTED: { tone: 'danger', icon: 'x' }, PENDING: { tone: 'warn', icon: 'clock' } } as const;
 
 function InvoiceRows({ familyId }: { familyId: string }) {
-  const r = useResource<{ items: FamilyInvoice[] }>(`/api/v1/contracts/${familyId}/invoices`);
+  const r = useResource<{ items: FamilyInvoice[]; usage?: UsageView | null }>(`/api/v1/contracts/${familyId}/invoices`);
   if (r.loading && !r.data) return <Loading rows={2} />;
   if (r.error || !r.data) return <p className="text-sm text-ink-muted">Faturalar alınamadı. <button type="button" className="underline" onClick={() => void r.reload()}>Yeniden dene</button></p>;
-  if (!r.data.items.length) return <p className="text-ink-muted">Bu sözleşmeye tahsis edilmiş fatura yok.</p>;
+  // v2 Faz 7 (R4): eşleşen + tahsisle türeyen faturalarla sözleşme kullanımı (sözleşme tutarına göre, aşım uyarısı bilgi amaçlı).
+  const usage = r.data.usage ? <div className="grid gap-1"><h3 className="text-base">Eşleşen faturalarla kullanım</h3><UsageBar u={r.data.usage} label="Eşleşen faturalarla sözleşme kullanımı" /></div> : null;
+  if (!r.data.items.length) return <>{usage}<p className="text-ink-muted">Bu sözleşmeye tahsis edilmiş fatura yok.</p></>;
   return (
+    <>{usage}
     <div className="overflow-x-auto rounded-md border border-border">
       <table className="w-full text-left text-sm">
         <caption className="sr-only">Bu sözleşmeye tahsis edilmiş faturalar</caption>
         <thead className="bg-sunken text-ink-muted"><tr><th scope="col" className="px-3 py-2 font-semibold">Fatura no</th><th scope="col" className="px-3 py-2 font-semibold">Tarih</th>
-          <th scope="col" className="px-3 py-2 text-right font-semibold">Tutar</th><th scope="col" className="px-3 py-2 font-semibold">Durum</th></tr></thead>
+          <th scope="col" className="px-3 py-2 text-right font-semibold">Tutar</th><th scope="col" className="px-3 py-2 font-semibold">Durum</th><th scope="col" className="px-3 py-2 font-semibold">Eşleşme</th></tr></thead>
         <tbody>{r.data.items.map((i) => (
           <tr key={i.id} className="border-t border-border">
             <td className="px-3 py-2"><Link to={`/faturalar/${i.id}`} className="tabular">{i.invoiceNo}</Link></td>
             <td className="tabular whitespace-nowrap px-3 py-2">{fmtDate(i.date)}</td>
             <td className="tabular whitespace-nowrap px-3 py-2 text-right">{fmtMoney(i.amount, i.currency)}</td>
             <td className="px-3 py-2"><Tag label={{ text: i.statusLabel, ...INVOICE_TONE[i.status] }} /></td>
+            <td className="px-3 py-2">{i.matchState ? <><Tag label={matchStateTag(i.matchState, i.matchStateLabel)} />{i.matchMethodLabel && <span className="block text-ink-subtle">{i.matchMethodLabel}</span>}</> : '—'}</td>
           </tr>))}</tbody>
       </table>
     </div>
+    </>
   );
 }
 

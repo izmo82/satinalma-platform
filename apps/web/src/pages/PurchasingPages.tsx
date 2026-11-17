@@ -14,6 +14,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { cn } from '@/lib/utils';
 import { allocationMatched, REMOVED_ISSUE_CODES } from '../../../../packages/domain/src/invoiceMatch.ts';
 import { DepartmentFilter, DepartmentName, useDepartmentParam, withDepartment } from '../ui/Departments.tsx';
+import { MatchCard, MatchDrawer, matchStateTag, type MatchState, type MatchView } from './InvoiceMatching.tsx';
 
 // UX10 Fatura. v2 (D93/D95): fatura onayı, istisna onayı, tolerans ve üçlü eşleştirme kaldırma listesinde; fatura girişi (elle ve
 // e-Fatura XML), UBL-TR denetimi, sözleşmeye tahsis (eşleştirme) ve sözleşme limiti kalır. Ödeme ERP'de yürür.
@@ -33,31 +34,56 @@ const PAST_DECISION: Record<string, string> = { APPROVAL: 'Onaylandı (v1 kaydı
  *  Liste alan adı paketinde tektir (API görevleri de aynı listeyle süzer). */
 const REMOVED_ISSUES = new Set(REMOVED_ISSUE_CODES);
 const ERP: Record<string, string> = { PENDING: 'ERP: aktarım bekliyor', UNKNOWN: 'ERP: belirsiz (zaman aşımı) — sorgulanacak', CONFIRMED: 'ERP: aktarıldı', FAILED: 'ERP: hata', NOT_CONFIGURED: 'ERP bağlantısı yapılandırılmadı' };
-const MATCH_FILTERS = [['', 'Tümü'], ['ESLESMEDI', 'Eşleşmedi'], ['ESLESTI', 'Eşleşti'], ['IPTAL', 'Hukuken iptal/ret']] as const;
+// v2 Faz 7 (D112, Figma 17): süzgeç değerleri (URL `durum`) aynı; "Eşleşmedi kuyruğu" ve "Eşleşti" sunucunun eşleşme durumuyla (R1) süzer ve
+// sunucu sayaçlarını gösterir. Hukuken iptal/ret ayrı süzgeç olarak kalır.
+const MATCH_FILTERS = [['', 'Tümü'], ['ESLESMEDI', 'Eşleşmedi kuyruğu'], ['ESLESTI', 'Eşleşti'], ['IPTAL', 'Hukuken iptal/ret']] as const;
+const SERVER_MATCH: Record<string, string> = { ESLESMEDI: 'UNMATCHED', ESLESTI: 'MATCHED' };
 
 interface InvoiceRow { id: string; kind: keyof typeof KIND; invoiceNo: string; issueDate: string; currency: string; supplierName: string; supplierStatus: string; supplierIdentityVerified: boolean;
-  netAmount: string; legalStatus: string; paymentStatus: string; decision: string | null; erpStatus: string | null; duplicateCount: number; matched: boolean; departmentId: string | null; departmentName: string | null }
+  netAmount: string; legalStatus: string; paymentStatus: string; decision: string | null; erpStatus: string | null; duplicateCount: number; matched: boolean; departmentId: string | null; departmentName: string | null;
+  // v2 Faz 7 (R1): eşleşme durumu, sözleşme ve proje. Faz 8: kaynak etiketi.
+  matchState?: MatchState; matchStateLabel?: string; matchMethod?: string | null; contract?: { id: string; code: string; title: string } | null; project?: { id: string; code: string; title: string } | null;
+  sourceLabel?: string | null }
+/** Eski tahsis kontrolü (bulgulardan): v2 durumunun yanında ikincil satır olarak görünür kalır. */
 const matchOf = (x: InvoiceRow) => (x.legalStatus !== 'RECEIVED' ? 'IPTAL' : x.matched ? 'ESLESTI' : 'ESLESMEDI');
+interface InvoiceList { items: InvoiceRow[]; counts?: { all: number; matched: number; unmatched: number }; can?: { match: boolean; retryQueue: boolean } }
 
 export function InvoicesPage() {
   const { me } = useSession();
   const navigate = useNavigate();
   const [dep, setDep] = useDepartmentParam();
-  const r = useResource<{ items: InvoiceRow[] }>(withDepartment('/api/v1/invoices', dep));
   const [creating, setCreating] = useState(false);
   // Süzgeç ve kolonlar URL'de (kayıtlı görünüm ve paylaşılabilir bağlantı); yetki ve kapsam sunucuda.
   const [params, setParams] = useSearchParams();
   // Eski (v1 onay durumu) kayıtlı görünüm değerleri tanınmaz; "Tümü" sayılır.
   const durum = MATCH_FILTERS.some(([k]) => k === params.get('durum')) ? params.get('durum')! : '';
+  const base = withDepartment('/api/v1/invoices', dep);
+  const r = useResource<InvoiceList>(SERVER_MATCH[durum] ? `${base}${base.includes('?') ? '&' : '?'}match=${SERVER_MATCH[durum]}` : base);
+  const [linking, setLinking] = useState<InvoiceRow | null>(null);
+  const [notice, setNotice] = useState<{ tone: 'info' | 'warn' | 'danger'; text: string } | null>(null);
+  const [retrying, setRetrying] = useState(false);
+  const retry = async () => {
+    setRetrying(true); setNotice(null);
+    try {
+      const x = (await api<{ checked: number; matched: number; unmatched: number; skipped: number }>('/api/v1/invoices/match-queue/retry', { method: 'POST' })).data;
+      setNotice({ tone: 'info', text: `Kuyruk yeniden denendi: ${x.checked} fatura denendi, ${x.matched} eşleşti, ${x.unmatched} eşleşmedi${x.skipped ? `, ${x.skipped} atlandı` : ''}.` });
+      await r.reload();
+    } catch (e) { setNotice({ tone: 'danger', text: (e as ApiError).message }); } finally { setRetrying(false); }
+  };
   const para = params.get('para') ?? '';
   const hidden = new Set((params.get('gizle') ?? '').split(',').filter(Boolean));
   const setParam = (k: string, v: string) => { const p = new URLSearchParams(params); v ? p.set(k, v) : p.delete(k); setParams(p, { replace: true }); };
   const toggleCol = (c: string) => { const n = new Set(hidden); n.has(c) ? n.delete(c) : n.add(c); setParam('gizle', [...n].sort().join(',')); };
   const all = r.data?.items ?? [];
-  const matches = (x: InvoiceRow, k: string) => !k || matchOf(x) === k;
+  // Eşleşme süzgeçleri sunucuda (R1 türetimi); hukuken iptal/ret istemcide.
+  const matches = (x: InvoiceRow, k: string) => k !== 'IPTAL' || matchOf(x) === 'IPTAL';
   const items = all.filter((x) => matches(x, durum) && (!para || x.currency === para));
+  const counts = r.data?.counts;
+  const chipCount = (k: string) => k === 'IPTAL' ? (durum === '' || durum === 'IPTAL' ? all.filter((x) => matchOf(x) === 'IPTAL').length : undefined)
+    : counts ? (k === '' ? counts.all : k === 'ESLESMEDI' ? counts.unmatched : counts.matched) : undefined;
+  const canMatch = !!r.data?.can?.match;
   const currencies = [...new Set(all.map((x) => x.currency))].sort();
-  const COLS = [['tedarikci', 'Tedarikçi'], ['erp', 'ERP / ödeme'], ['tarih', 'Tarih']] as const;
+  const COLS = [['tedarikci', 'Tedarikçi'], ['sozlesme', 'Sözleşme'], ['proje', 'Proje'], ['erp', 'ERP / ödeme'], ['tarih', 'Tarih']] as const;
   const show = (c: string) => !hidden.has(c);
   return (
     <div className="page">
@@ -65,16 +91,18 @@ export function InvoicesPage() {
         {hasRole(me, 'PROCUREMENT', 'AUDITOR') && <Button variant="outline" asChild><Link to="/yonetim/entegrasyonlar">ERP mutabakatı</Link></Button>}
         {/* D95 c: e-Fatura XML ve elle fatura girişi Satınalma'da; departman kullanıcısı faturayı yalnız okur. */}
         {hasRole(me, 'PROCUREMENT') && <Button variant="outline" asChild><Link to="/faturalar/yukle"><Icon name="upload" />Fatura yükle</Link></Button>}
-        {hasRole(me, 'PROCUREMENT') && <Button onClick={() => setCreating(true)}><Icon name="receipt" />Fatura gir</Button>}</div>}>
+        {hasRole(me, 'PROCUREMENT') && <Button onClick={() => setCreating(true)}><Icon name="receipt" />Fatura gir</Button>}
+        {r.data?.can?.retryQueue && <Button variant="outline" disabled={retrying} onClick={() => void retry()}><Icon name="refresh" />Kuyruğu yeniden dene</Button>}</div>}>
         Faturanın sözleşmeyle eşleştirilmesi ve sözleşme limiti. Hukuki e-belge durumu, ERP aktarımı ve ödeme ayrı durumlardır; ödeme bu sistemden yürütülmez.
       </PageHeader>
       {creating && <InvoiceForm onCancel={() => setCreating(false)} onCreated={(id) => navigate(`/faturalar/${id}`)} />}
       <SavedViews page="invoices" />
+      <div aria-live="polite">{notice && <Banner tone={notice.tone} title={notice.text} />}</div>
       <div className="mb-3"><DepartmentFilter value={dep} onChange={setDep} /></div>
       <div className="mb-3 flex flex-wrap items-end gap-3">
         <div className="flex flex-wrap gap-2" role="group" aria-label="Eşleşme süzgeci">
           {MATCH_FILTERS.map(([k, l]) =>
-            <FilterChip key={k} pressed={durum === k} count={all.filter((x) => matches(x, k)).length} onClick={() => setParam('durum', k)}>{l}</FilterChip>)}
+            <FilterChip key={k} pressed={durum === k} count={chipCount(k)} onClick={() => setParam('durum', k)}>{l}</FilterChip>)}
         </div>
         {currencies.length > 1 && <label className="flex items-center gap-2 text-sm">Para birimi
           <select className="input h-8 w-24" value={para} onChange={(e) => setParam('para', e.target.value)}><option value="">Tümü</option>{currencies.map((c) => <option key={c} value={c}>{c}</option>)}</select></label>}
@@ -83,25 +111,36 @@ export function InvoicesPage() {
         </fieldset>
       </div>
       {r.loading && !r.data ? <Loading /> : r.error ? <ErrorState error={r.error} onRetry={r.reload} /> : !items.length ? (
-        <div className="rounded-md border border-border bg-surface"><Empty icon="receipt" title={all.length || dep ? 'Süzgece uyan fatura yok' : 'Fatura yok'}>{all.length || dep ? 'Süzgeci değiştirin veya “Tümü”nü seçin.' : 'e-Fatura girişi veya elle giriş sonrası burada görünür.'}</Empty></div>
+        <div className="rounded-md border border-border bg-surface"><Empty icon="receipt" title={all.length || dep || durum ? 'Süzgece uyan fatura yok' : 'Fatura yok'}>{all.length || dep || durum ? 'Süzgeci değiştirin veya “Tümü”nü seçin.' : 'e-Fatura girişi veya elle giriş sonrası burada görünür.'}</Empty></div>
       ) : (
         <Table>
-          <TableHeader><TableRow className="hover:bg-transparent"><TableHead>Fatura no</TableHead>{show('tedarikci') && <TableHead>Tedarikçi</TableHead>}<TableHead>Departman</TableHead><TableHead className="text-right">Net</TableHead>
-            <TableHead>Eşleşme</TableHead>{show('erp') && <TableHead className="max-[900px]:hidden">ERP / ödeme</TableHead>}{show('tarih') && <TableHead>Tarih</TableHead>}</TableRow></TableHeader>
+          <TableHeader><TableRow className="hover:bg-transparent"><TableHead>Fatura no</TableHead>{show('tedarikci') && <TableHead>Tedarikçi</TableHead>}{show('tarih') && <TableHead>Tarih</TableHead>}<TableHead className="text-right">Net</TableHead>
+            {show('sozlesme') && <TableHead>Sözleşme</TableHead>}{show('proje') && <TableHead className="max-[1100px]:hidden">Proje</TableHead>}<TableHead>Departman</TableHead>
+            <TableHead>Eşleşme</TableHead>{show('erp') && <TableHead className="max-[900px]:hidden">ERP / ödeme</TableHead>}</TableRow></TableHeader>
           <TableBody>{items.map((x) => (
             <TableRow key={x.id}>
               <TableCell className="whitespace-nowrap"><Link className="font-semibold text-ink no-underline hover:underline" to={`/faturalar/${x.id}`}>{x.invoiceNo}</Link>
-                <span className="block text-sm text-ink-subtle">{KIND[x.kind]}{x.duplicateCount > 0 ? ` · ${x.duplicateCount} tekrar geliş` : ''}</span></TableCell>
+                <span className="block text-sm text-ink-subtle">{KIND[x.kind]}{x.sourceLabel ? ` · ${x.sourceLabel}` : ''}{x.duplicateCount > 0 ? ` · ${x.duplicateCount} tekrar geliş` : ''}</span></TableCell>
               {show('tedarikci') && <TableCell>{x.supplierName}{supplierRecordNote(x.supplierStatus, x.supplierIdentityVerified) && <span className="block text-sm text-warn">{supplierRecordNote(x.supplierStatus, x.supplierIdentityVerified)}</span>}</TableCell>}
-              <TableCell><DepartmentName name={x.departmentName} /></TableCell>
-              <TableCell className="whitespace-nowrap text-right">{fmtMoney(x.netAmount, x.currency)}</TableCell>
-              <TableCell><Tag label={MATCH[matchOf(x)]} />{x.decision && <span className="mt-1 block text-sm text-ink-subtle">{PAST_DECISION[x.decision]}</span>}</TableCell>
-              {show('erp') && <TableCell className="text-sm text-ink-muted max-[900px]:hidden">{x.erpStatus ? ERP[x.erpStatus] : '—'}{x.paymentStatus === 'PAID' ? ' · ödendi (ERP)' : ''}</TableCell>}
               {show('tarih') && <TableCell className="whitespace-nowrap text-sm text-ink-subtle">{fmtDate(x.issueDate)}</TableCell>}
+              <TableCell className="whitespace-nowrap text-right">{fmtMoney(x.netAmount, x.currency)}</TableCell>
+              {show('sozlesme') && <TableCell className="whitespace-nowrap">{x.contract ? <Link to={`/sozlesmeler/aile/${x.contract.id}?sekme=ozet`} title={x.contract.title}>{x.contract.code}</Link> : <span className="text-ink-subtle">—</span>}</TableCell>}
+              {show('proje') && <TableCell className="whitespace-nowrap max-[1100px]:hidden">{x.project ? <Link to={`/projeler/${x.project.id}?sekme=faturalar`} title={x.project.title}>{x.project.code}</Link> : <span className="text-ink-subtle">—</span>}</TableCell>}
+              <TableCell><DepartmentName name={x.departmentName} /></TableCell>
+              <TableCell>
+                {/* v2 Faz 7: birincil durum sunucunun eşleşme durumu; hukuki iptal/ret her zaman görünür; eski tahsis kontrolü ikincil satır. */}
+                {x.matchState ? <span className="flex flex-wrap gap-1"><Tag label={matchStateTag(x.matchState, x.matchStateLabel)} />{matchOf(x) === 'IPTAL' && <Tag label={MATCH.IPTAL} />}</span> : <Tag label={MATCH[matchOf(x)]} />}
+                {x.matchState && matchOf(x) !== 'IPTAL' && <span className="mt-1 block text-sm text-ink-subtle">Tahsis kontrolü: {MATCH[matchOf(x)].text}</span>}
+                {x.decision && <span className="mt-1 block text-sm text-ink-subtle">{PAST_DECISION[x.decision]}</span>}
+                {canMatch && x.matchState === 'UNMATCHED' && x.legalStatus === 'RECEIVED' && !x.decision &&
+                  <Button size="xs" variant="outline" className="mt-1" onClick={() => setLinking(x)} aria-label={`${x.invoiceNo} faturasını elle bağla`}>Elle bağla</Button>}</TableCell>
+              {show('erp') && <TableCell className="text-sm text-ink-muted max-[900px]:hidden">{x.erpStatus ? ERP[x.erpStatus] : '—'}{x.paymentStatus === 'PAID' ? ' · ödendi (ERP)' : ''}</TableCell>}
             </TableRow>
           ))}</TableBody>
         </Table>
       )}
+      {linking && <MatchDrawer invoiceId={linking.id} invoiceNo={linking.invoiceNo} onClose={() => setLinking(null)}
+        onDone={(msg) => { setLinking(null); setNotice({ tone: 'info', text: msg }); void r.reload(); }} />}
     </div>
   );
 }
@@ -176,8 +215,11 @@ interface InvDetail {
   check: { issues: { code: string; severity: string; message: string; ownerRole: string; lineNo?: number }[]; canApprove: boolean; needsException: boolean; netAmount: string; payable: string; taxTotal: string; otherTaxTotal: string; grossAmount: string };
   contracts: { contractVersionId: string; title: string; currency: string; ceiling: string | null; netConsumption: string; openCommitment: string }[];
   status: string; exceptionCurrent: boolean | null; checkFingerprint: string;
-  can: { manage: boolean; approve: boolean; approveException: boolean };
+  can: { manage: boolean; approve: boolean; approveException: boolean; match?: boolean };
   ublCheck: UblCheck | null;
+  /** v2 Faz 7 (R1–R4): eşleşme kartı. Faz 8 alanları (kaynak, ERP ödeme) bu görevde gösterilmez. */
+  match?: MatchView;
+  sourceLabel?: string | null;
 }
 const SEV = { BLOCK: { text: 'Engel', tone: 'danger', icon: 'x' }, EXCEPTION: { text: 'İstisna', tone: 'warn', icon: 'alert' }, REVIEW: { text: 'İnceleme', tone: 'info', icon: 'help' } } as const;
 
@@ -199,7 +241,9 @@ export function InvoicePage() {
       <p className="text-sm text-ink-subtle"><Link to="/faturalar" className="text-ink-subtle">Faturalar</Link> / {d.invoice.invoiceNo}</p>
       <div className="mb-4 mt-1 flex flex-wrap items-start gap-3">
         <h1 className="min-w-0 flex-1">{KIND[d.invoice.kind]} {d.invoice.invoiceNo} · {d.invoice.supplierName}</h1>
-        <Tag label={MATCH[match]} />
+        {/* v2 Faz 7: birincil durum eşleşme kartındaki sunucu durumu; eski tahsis kontrolü yanında ikincil etiket olarak kalır. */}
+        {d.match ? <span className="flex flex-wrap items-center gap-2"><Tag label={matchStateTag(d.match.state, d.match.stateLabel)} />
+          <span className="flex items-center gap-1.5 text-sm text-ink-subtle">Tahsis kontrolü: <Tag label={MATCH[match]} /></span></span> : <Tag label={MATCH[match]} />}
       </div>
       <div className="mb-5 flex flex-wrap gap-x-6 gap-y-1 text-sm text-ink-muted">
         {supplierNote && <span className="text-warn">Tedarikçi: {supplierNote}</span>}
@@ -234,10 +278,12 @@ export function InvoicePage() {
               ))}
               {issuesFor(undefined).map((x, i) => <Issue key={i} x={x} />)}
               {editing && <AllocationEditor d={d} onDone={() => { setEditing(false); void r.reload(); }} />}
+              {d.match?.state === 'MATCHED' && !d.allocations.length && <p className="text-sm text-ink-subtle">Fatura sözleşmeye bütün olarak bağlı (eşleşme kartı); satır tahsisi girilmedi. “Sözleşmeye tahsis edilmedi” bulgusu eski tahsis kontrolüdür.</p>}
             </div>
           </section>
         </div>
         <aside className="grid content-start gap-5">
+          {d.match && <MatchCard invoiceId={d.invoice.id} invoiceNo={d.invoice.invoiceNo} m={d.match} canMatch={!!d.can.match && d.invoice.legalStatus === 'RECEIVED'} onChanged={r.reload} />}
           <section className="panel">
             <div className="panel-head"><h2>Tutar</h2></div>
             <div className="panel-body"><dl className="facts">
@@ -320,7 +366,7 @@ function AllocationEditor({ d, onDone }: { d: InvDetail; onDone: () => void }) {
     <form className="grid gap-3 rounded-md border border-border bg-white p-3" onSubmit={(e) => { e.preventDefault(); setErr(null);
       void api(`/api/v1/invoices/${d.invoice.id}/allocations`, { method: 'PUT', json: { advanceOffset: offset || '0', advanceInvoiceId: advanceId || null,
         allocations: rows.filter((x) => x.target).map((x) => ({ lineNo: x.lineNo, poLineId: x.target.startsWith('po:') ? x.target.slice(3) : null, contractVersionId: x.target.startsWith('cv:') ? x.target.slice(3) : null, quantity: x.quantity, amount: x.amount })) } })
-        .then(onDone, (x: ApiError) => setErr(x.message)); }}>
+        .then(onDone, (x: ApiError) => setErr(x.code === 'invoice_matched' ? `${x.message} Eşleşme kartındaki “Bağı kaldır” ile gerekçeyle kaldırabilirsiniz.` : x.message)); }}>
       <p className="text-sm text-ink-muted">Satırı sözleşmeye bağlayın. Tek satır birden çok sözleşmeye bölünebilir; tahsis toplamı satır tutarını aşamaz.</p>
       {!cons.loading && !options.length && <span className="text-sm text-ink-subtle">Bu şirkette bu tedarikçiye uygun sözleşme yok.</span>}
       {cons.data?.truncated && <span className="text-sm text-ink-subtle">Sözleşme sayısı liste sınırını aştı; aradığınız sözleşme burada görünmeyebilir.</span>}

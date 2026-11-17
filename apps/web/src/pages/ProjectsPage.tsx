@@ -2,7 +2,7 @@ import { Link, useSearchParams } from 'react-router-dom';
 import { useResource } from '../lib/useApi.ts';
 import { fmtDateTime, fmtMoney, relative } from '../lib/format.ts';
 import { projectStatus } from '../lib/labels.ts';
-import { hasRole, useSession } from '../lib/session.tsx';
+import { hasPermission, hasRole, useSession } from '../lib/session.tsx';
 import { Empty, ErrorState, FilterChip, Loading, PageHeader, Tag } from '../ui/kit.tsx';
 import { SavedViews } from '../ui/SavedViews.tsx';
 import { DepartmentFilter, DepartmentName, useDepartmentParam, withDepartment } from '../ui/Departments.tsx';
@@ -14,7 +14,14 @@ interface Row { id: string; code: string; title: string; category: string; statu
   updatedAt: string; companyName: string; ownerName: string; closesAt: string | null; bidCount: number; departmentId: string | null; departmentName: string | null }
 
 const FILTERS = [['', 'Tümü'], ['DRAFT', 'Taslak'], ['IN_APPROVAL', 'Onayda'], ['OPEN', 'Teklife açık'], ['EVALUATION', 'Değerlendirmede'], ['AWARD_APPROVAL', 'Seçim onayında'],
-  ['CONTRACTING', 'Sözleşme aşamasında'], ['CANCELLED', 'İptal'], ['NO_AWARD', 'Sonuçsuz']] as const;
+  ['CONTRACTING', 'Sözleşme aşamasında'], ['COMPLETED', 'Tamamlandı'], ['CANCELLED', 'İptal'], ['NO_AWARD', 'Sonuçsuz']] as const;
+/** v2 Faz 7 (D112): proje başına son uyum denetimi koşusu (Denetçi listesiyle aynı uç; departman kapsamı sunucuda). */
+interface AuditRow { projectId: string; score: number | null; verdict: string | null; verdictLabel: string; providerLabel: string; aiProviderIsTest: boolean }
+function ComplianceCell({ a }: { a: AuditRow | undefined }) {
+  if (!a) return <span className="text-ink-subtle">—</span>;
+  return <span className="whitespace-nowrap"><span className="tabular font-semibold">{a.score ?? '—'}</span>{a.score !== null && <span className="text-ink-subtle"> / 100</span>}
+    <span className={a.verdict === 'NONCOMPLIANT' ? 'block text-sm text-danger' : 'block text-sm text-ink-muted'}>{a.verdictLabel}</span></span>;
+}
 
 export function ProjectsPage() {
   const { me } = useSession();
@@ -24,6 +31,10 @@ export function ProjectsPage() {
   const r = useResource<{ items: Row[] }>(withDepartment('/api/v1/projects', dep));
   const rows = (r.data?.items ?? []).filter((x) => !f || x.status === f);
   const canCreate = hasRole(me, 'REQUESTER', 'BUYER', 'PROCUREMENT_MANAGER');
+  const anyCompleted = !!r.data?.items.some((x) => x.status === 'COMPLETED');
+  const audits = useResource<{ items: AuditRow[] }>(anyCompleted && hasPermission(me, 'compliance.read') ? '/api/v1/compliance-audits' : null);
+  const auditOf = (id: string) => audits.data?.items.find((a) => a.projectId === id);
+  const showScore = hasPermission(me, 'compliance.read');
   return (
     <div className="page">
       {/* v2 (D93): onay politikası ekranı kaldırma listesinde; başlıktaki düğmesi kalktı. */}
@@ -48,6 +59,7 @@ export function ProjectsPage() {
                 <Link className="font-semibold text-ink no-underline hover:underline" to={`/projeler/${p.id}`}>{p.title}</Link>
                 <div className="text-sm text-ink-muted">{p.companyName} · {p.budget ? fmtMoney(p.budget, p.currency) : 'Bütçe yok'}</div>
                 <div className="text-sm">Departman: <DepartmentName name={p.departmentName} /></div>
+                {showScore && p.status === 'COMPLETED' && <div className="text-sm">Uyum puanı: <ComplianceCell a={auditOf(p.id)} /></div>}
               </li>
             ))}
           </ul>
@@ -55,6 +67,7 @@ export function ProjectsPage() {
             <TableHeader><TableRow className="hover:bg-transparent">
               <TableHead scope="col">Proje no</TableHead><TableHead scope="col">Proje</TableHead><TableHead scope="col">Departman</TableHead><TableHead scope="col">Aşama</TableHead>
               <TableHead scope="col" className="text-right">Bütçe</TableHead><TableHead scope="col">Kapanış</TableHead><TableHead scope="col" className="text-right">Teklif</TableHead>
+              {showScore && <TableHead scope="col">Uyum puanı</TableHead>}
               <TableHead scope="col" className="max-[1100px]:hidden">Sahip</TableHead><TableHead scope="col" className="max-[1100px]:hidden">Güncellendi</TableHead>
             </TableRow></TableHeader>
             <TableBody>
@@ -69,6 +82,7 @@ export function ProjectsPage() {
                     {p.budget && !p.budgetVerified && <div className="text-sm text-warn">Bütçe doğrulanmadı</div>}</TableCell>
                   <TableCell className="whitespace-nowrap">{p.closesAt ? fmtDateTime(p.closesAt) : <span className="text-ink-subtle">—</span>}</TableCell>
                   <TableCell className="text-right">{p.bidCount}</TableCell>
+                  {showScore && <TableCell>{p.status === 'COMPLETED' ? <ComplianceCell a={auditOf(p.id)} /> : <span className="text-ink-subtle">—</span>}</TableCell>}
                   <TableCell className="whitespace-nowrap max-[1100px]:hidden">{p.ownerName}</TableCell>
                   <TableCell className="whitespace-nowrap text-sm text-ink-subtle max-[1100px]:hidden">{relative(p.updatedAt)}</TableCell>
                 </TableRow>

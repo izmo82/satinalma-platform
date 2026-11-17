@@ -13,13 +13,20 @@ import { DepartmentName } from '../ui/Departments.tsx';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { cn } from '@/lib/utils';
+import { ProjectInvoicesTab } from './InvoiceMatching.tsx';
+import { CoiBand, CoiTab, CompletionBar, ComplianceTab, type Coi } from './ComplianceTab.tsx';
 
 interface PLine { id: string; lot: string; lineNo: number; description: string; unit: string; quantity: string; spec: string }
 interface Crit { code: string; name: string; kind: 'PRICE' | 'SCORE'; weight: string; revision: number }
 interface Detail {
   project: { id: string; code: string; title: string; category: string; need: string; currency: string; budget: string | null; budgetVerified: boolean;
     costCenter: string | null; deliveryLocation: string | null; neededBy: string | null; status: string; etag: string; ownedByMe: boolean;
-    departmentId: string | null; departmentName: string | null };
+    departmentId: string | null; departmentName: string | null;
+    /** v2 Faz 7 (R5): tamamlanma tarihi (İstanbul) ve tamamlayan. */
+    completedOn?: string | null; completedBy?: string | null };
+  /** v2 Faz 7 (R5, R9): tamamlanabilirlik ve çıkar çatışması beyanları. */
+  completion?: { ready: boolean; blockedReason: string | null };
+  coi?: Coi;
   lines: PLine[]; criteria: Crit[]; criteriaHistory: { revision: number; reason: string | null; createdAt: string }[];
   round: null | { id: string; roundNo: number; closesAt: string; status: string; requestedByMe: boolean; closeReason: string | null; approval: Approval | null;
     /** v2 Faz 5 (R8): davetli başına davet e-postası durumu (birden çok alıcıda en az ilerlemiş durum). */
@@ -36,7 +43,7 @@ interface Detail {
     proposedAt: string; decidedBy: string | null; decidedAt: string | null; decisionNote: string | null }[];
   publishPolicy: { minInvitees: number | null; minResponseDays: number | null; steps: { role: string; label: string }[]; explanation: string };
   serverTime: string;
-  can: { manage: boolean; approveBaseline: boolean; requestException: boolean; approvePublish: boolean; score: boolean; evaluate: boolean; propose: boolean; decide: boolean; answer: boolean };
+  can: { manage: boolean; approveBaseline: boolean; requestException: boolean; approvePublish: boolean; score: boolean; evaluate: boolean; propose: boolean; decide: boolean; answer: boolean; complete?: boolean };
 }
 
 /** Onay motoru durumu: hangi politika sürümü/kural, adımlar, verilen kararlar ve bu kullanıcının karar yetkisi (sunucu hesaplar). */
@@ -93,7 +100,7 @@ function SavingsPanel({ d, reload }: { d: Detail; reload: () => Promise<void> })
   const [rejecting, setRejecting] = useState<{ id: string; note: string } | null>(null);
   // Baz teklifler açılmadan önerilir, seçim kararı aşamasından önce onaylanır (sunucu da aynı kuralı uygular).
   const closed = !['DRAFT', 'IN_APPROVAL', 'OPEN'].includes(d.project.status);
-  const decidable = !['AWARD_APPROVAL', 'CONTRACTING', 'CANCELLED', 'NO_AWARD'].includes(d.project.status);
+  const decidable = !['AWARD_APPROVAL', 'CONTRACTING', 'CANCELLED', 'NO_AWARD', 'COMPLETED'].includes(d.project.status);
   const active = d.savingsBaselines.find((b) => b.status !== 'REJECTED');
   if (!d.savingsBaselines.length && !(d.can.manage && !closed)) return null;
   return (
@@ -149,7 +156,7 @@ function ExceptionsPanel({ d, reload }: { d: Detail; reload: () => Promise<void>
   return (
     <section className="panel self-start">
       <div className="panel-head"><h2>Kaynak bulma istisnaları</h2>
-        {d.can.requestException && !f && !['CONTRACTING', 'CANCELLED', 'NO_AWARD'].includes(d.project.status) && <Button size="sm" variant="outline" className="ml-auto" onClick={() => setF({ kind: 'SINGLE_SOURCE', reason: '', supplierId: '' })}>İstisna iste</Button>}</div>
+        {d.can.requestException && !f && !['CONTRACTING', 'CANCELLED', 'NO_AWARD', 'COMPLETED'].includes(d.project.status) && <Button size="sm" variant="outline" className="ml-auto" onClick={() => setF({ kind: 'SINGLE_SOURCE', reason: '', supplierId: '' })}>İstisna iste</Button>}</div>
       <div className="panel-body grid gap-3">
         {!d.exceptions.length && !f && <p className="text-sm text-ink-muted">Tek kaynak, acil alım, iptal veya sonuçsuz kapanış gerekçeyle istenir; talep edenden farklı bir Satınalma kullanıcısı onaylar.</p>}
         {f && (
@@ -179,8 +186,10 @@ function ExceptionsPanel({ d, reload }: { d: Detail; reload: () => Promise<void>
 }
 
 // v2 Faz 3 (R10, analiz §3.1): "Sözleşmeler" sekmesi eklendi (projeye bağlı sözleşmeler + "Bu projeye sözleşme ekle").
-const TABS = [['ozet', 'Özet'], ['kalemler', 'Kalemler'], ['teklifler', 'Teklifler'], ['karsilastirma', 'Karşılaştırma'], ['karar', 'Karar'], ['sozlesmeler', 'Sözleşmeler']] as const;
-const STAGE_TEXT: Record<string, string> = { DRAFT: 'Taslak', IN_APPROVAL: 'Onayda', OPEN: 'Teklife açık', EVALUATION: 'Değerlendirme', AWARD_APPROVAL: 'Seçim onayı', CONTRACTING: 'Sözleşme', CANCELLED: 'İptal edildi', NO_AWARD: 'Sonuçsuz kapandı' };
+// v2 Faz 7 (D112): "Faturalar" (sözleşme başına kullanım), "Beyanlar" (çıkar çatışması) ve "Uyum denetimi" sekmeleri eklendi; eski sekme adresleri aynı.
+const TABS = [['ozet', 'Özet'], ['kalemler', 'Kalemler'], ['teklifler', 'Teklifler'], ['karsilastirma', 'Karşılaştırma'], ['karar', 'Karar'], ['sozlesmeler', 'Sözleşmeler'],
+  ['faturalar', 'Faturalar'], ['beyanlar', 'Beyanlar'], ['uyum', 'Uyum denetimi']] as const;
+const STAGE_TEXT: Record<string, string> = { DRAFT: 'Taslak', IN_APPROVAL: 'Onayda', OPEN: 'Teklife açık', EVALUATION: 'Değerlendirme', AWARD_APPROVAL: 'Seçim onayı', CONTRACTING: 'Sözleşme', COMPLETED: 'Tamamlandı', CANCELLED: 'İptal edildi', NO_AWARD: 'Sonuçsuz kapandı' };
 
 function nextStep(d: Detail): string {
   const s = d.project.status;
@@ -189,13 +198,15 @@ function nextStep(d: Detail): string {
   if (s === 'OPEN') return `Teklifler ${fmtDateTime(d.round?.closesAt)} kapanışına kadar mühürlü. Soruları yanıtlayın.`;
   if (s === 'EVALUATION') return 'Kapsamı ve karşılaştırmayı inceleyin, kanıtlı puanları girin, değerlendirme sürümü oluşturup tahsis önerin.';
   if (s === 'AWARD_APPROVAL') return d.awards.find((a) => a.status === 'PROPOSED')?.approval?.canDecide ? 'Önerilen tahsisi inceleyip onaylayın veya geri gönderin.' : 'Seçim onayı bekleniyor.';
-  if (s === 'CONTRACTING') return 'Kazanan tahsisi onaylandı. Sözleşme aşamasına geçilebilir.';
+  if (s === 'CONTRACTING') return d.can.complete ? 'Kazanan tahsisi onaylandı ve onaylı sözleşme var. Proje tamamlanabilir.' : 'Kazanan tahsisi onaylandı. Sözleşme aşamasına geçilebilir.';
+  if (s === 'COMPLETED') return 'Proje tamamlandı. Uyum denetimi raporu “Uyum denetimi” sekmesinde.';
   if (s === 'CANCELLED') return 'Proje onaylı istisnayla iptal edildi; kayıtlar korunur.';
   if (s === 'NO_AWARD') return 'Proje kazanansız kapandı; yeni ihtiyaç için yeni proje açılır.';
   return '—';
 }
 
 export function ProjectWorkspace() {
+  const { me } = useSession();
   const { id } = useParams();
   const [params, setParams] = useSearchParams();
   const tab = params.get('sekme') ?? 'ozet';
@@ -204,6 +215,8 @@ export function ProjectWorkspace() {
   if (r.error) return <div className="page"><ErrorState error={r.error} onRetry={r.reload} /></div>;
   const d = r.data!;
   const stageIdx = PROJECT_STAGES.indexOf(d.project.status as (typeof PROJECT_STAGES)[number]);
+  // Sekmeler yetkiye göre: Faturalar (fatura ya da sözleşme okuma), Uyum denetimi (compliance.read). Diğerleri aynen.
+  const tabs = TABS.filter(([k]) => k === 'faturalar' ? hasPermission(me, 'invoice.read') || hasPermission(me, 'contract.read') : k === 'uyum' ? hasPermission(me, 'compliance.read') : true);
   return (
     <div className="page">
       <div className="mb-1 text-sm text-ink-subtle"><Link to="/projeler" className="text-ink-subtle">Projeler</Link> / <span className="tabular">{d.project.code}</span></div>
@@ -212,7 +225,7 @@ export function ProjectWorkspace() {
         <Tag label={projectStatus[d.project.status]} />
       </div>
       <p className="mb-4 text-sm text-ink-muted">Departman: <DepartmentName name={d.project.departmentName} /></p>
-      <ol aria-label="Proje aşaması" className="mb-3 grid grid-cols-6 overflow-hidden rounded-md border border-border bg-surface text-sm max-[900px]:grid-cols-3">
+      <ol aria-label="Proje aşaması" className="mb-3 grid grid-cols-7 overflow-hidden rounded-md border border-border bg-surface text-sm max-[1100px]:grid-cols-4 max-[640px]:grid-cols-2">
         {PROJECT_STAGES.map((s, i) => (
           <li key={s} aria-current={i === stageIdx ? 'step' : undefined}
             className={cn('flex items-center gap-1.5 border-r border-border px-3 py-2 last:border-r-0', i === stageIdx ? 'bg-ink font-semibold text-primary-foreground' : i < stageIdx ? 'text-ink' : 'text-ink-subtle')}>
@@ -221,8 +234,11 @@ export function ProjectWorkspace() {
         ))}
       </ol>
       <p className="mb-5 flex gap-2 text-md"><Icon name="arrow" size={18} className="mt-0.5 shrink-0 text-ink-subtle" /><span><span className="font-semibold">Sonraki adım: </span>{nextStep(d)}</span></p>
+      <CompletionBar projectId={d.project.id} onDone={r.reload} info={{ status: d.project.status, completedOn: d.project.completedOn, completedBy: d.project.completedBy,
+        ready: d.completion?.ready, blockedReason: d.completion?.blockedReason, canComplete: !!d.can.complete }} />
+      <CoiBand projectId={d.project.id} coi={d.coi} onDone={r.reload} />
       <div role="tablist" aria-label="Proje çalışma alanı" className="mb-5 flex gap-6 overflow-x-auto border-b border-border">
-        {TABS.map(([k, l]) => (
+        {tabs.map(([k, l]) => (
           <button key={k} role="tab" aria-selected={tab === k} onClick={() => { const p = new URLSearchParams(params); p.set('sekme', k); setParams(p, { replace: true }); }}
             className={cn('-mb-px min-h-10 whitespace-nowrap border-b-2 font-semibold transition-colors duration-150', tab === k ? 'border-ink text-ink' : 'border-transparent text-ink-muted hover:text-ink')}>{l}</button>
         ))}
@@ -234,6 +250,9 @@ export function ProjectWorkspace() {
         {tab === 'karsilastirma' && <ComparisonTab d={d} reload={r.reload} />}
         {tab === 'karar' && <Decision d={d} reload={r.reload} />}
         {tab === 'sozlesmeler' && <ProjectContracts projectId={d.project.id} />}
+        {tab === 'faturalar' && <ProjectInvoicesTab projectId={d.project.id} />}
+        {tab === 'beyanlar' && <CoiTab key={d.project.etag} projectId={d.project.id} />}
+        {tab === 'uyum' && <ComplianceTab projectId={d.project.id} projectCode={d.project.code} />}
       </div>
     </div>
   );
@@ -428,13 +447,13 @@ interface CompareRes {
 }
 
 function ComparisonTab({ d, reload }: { d: Detail; reload: () => Promise<void> }) {
-  const r = useResource<CompareRes>(['EVALUATION', 'AWARD_APPROVAL', 'CONTRACTING'].includes(d.project.status) ? `/api/v1/projects/${d.project.id}/comparison` : null);
+  const r = useResource<CompareRes>(['EVALUATION', 'AWARD_APPROVAL', 'CONTRACTING', 'COMPLETED'].includes(d.project.status) ? `/api/v1/projects/${d.project.id}/comparison` : null);
   const reloadAll = async () => { await reload(); await r.reload(); };
   const a = useAction(reloadAll);
   const [onlyGaps, setOnlyGaps] = useState(false);
   const [score, setScore] = useState<{ bidId: string; code: string; value: string; evidence: string } | null>(null);
   const [fx, setFx] = useState({ currency: '', rate: '', source: 'TCMB döviz satış', asOf: '' });
-  if (!['EVALUATION', 'AWARD_APPROVAL', 'CONTRACTING'].includes(d.project.status)) {
+  if (!['EVALUATION', 'AWARD_APPROVAL', 'CONTRACTING', 'COMPLETED'].includes(d.project.status)) {
     return <div className="rounded-md border border-border bg-surface"><Empty icon="lock" title="Karşılaştırma tur kapandıktan sonra açılır">Teklifler kapanışa kadar mühürlüdür; erken görüntüleme sunucuda engellenir.</Empty></div>;
   }
   if (r.loading && !r.data) return <Loading rows={6} />;

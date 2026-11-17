@@ -26,8 +26,16 @@ const riskHref = (t: { entityId: string; kind?: string; title?: string }) => {
   const p = t.kind === 'risk_quarterly_review' ? /\b(\d{4}-[1-4])\b/.exec(t.title ?? '')?.[1] : undefined;
   return `/tedarikciler/risk/${t.entityId}${p ? `?donem=${p}` : ''}`;
 };
+/** v2 Faz 7 (D112): eşleştirme, aşım, beyan ve uyum görevleri ilgili sekmeyi açar. */
+const FAZ7_HREF: Record<string, (id: string) => string> = {
+  coi_declaration: (id) => `/projeler/${id}?sekme=beyanlar`,
+  compliance_noncompliant: (id) => `/projeler/${id}?sekme=uyum`,
+  compliance_no_ruleset: () => '/yonetim/satinalma-kurallari',
+  contract_overrun: (id) => `/sozlesmeler/aile/${id}?sekme=ozet`,
+  invoice_unmatched: (id) => `/faturalar/${id}`,
+};
 export const entityHref = (t: { entityType: string; entityId: string; kind?: string; title?: string }) =>
-  t.entityType === 'risk_assessment' ? riskHref(t) : t.entityType === 'supplier' ? `/tedarikciler/${t.entityId}${supplierTab(t.kind)}` : t.entityType === 'supplier_application' ? `/tedarikciler/basvurular/${t.entityId}` : t.entityType === 'contract_version' ? `/sozlesmeler/${t.entityId}`
+  t.kind && FAZ7_HREF[t.kind] ? FAZ7_HREF[t.kind]!(t.entityId) : t.entityType === 'risk_assessment' ? riskHref(t) : t.entityType === 'supplier' ? `/tedarikciler/${t.entityId}${supplierTab(t.kind)}` : t.entityType === 'supplier_application' ? `/tedarikciler/basvurular/${t.entityId}` : t.entityType === 'contract_version' ? `/sozlesmeler/${t.entityId}`
     : t.entityType === 'document_version' ? `/belgeler/${t.entityId}` : t.entityType === 'project' ? `/projeler/${t.entityId}`
     : t.entityType === 'invoice' ? `/faturalar/${t.entityId}`
     : t.entityType === 'incident' ? `/tedarikciler/olaylar/${t.entityId}` : t.entityType === 'tenant' ? '/yonetim/yapay-zeka'

@@ -60,7 +60,8 @@ function StepIndicator({ current, readNote }: { current: number; readNote?: stri
 }
 
 /** İptal edilmiş ya da sonuçsuz kapanmış projeye yeni sözleşme bağlanmaz (listede sunulmaz). */
-const CLOSED = new Set(['CANCELLED', 'NO_AWARD']);
+// v2 Faz 7 (D112): tamamlanan proje de kapalıdır (yeni sözleşme seçeneği olarak sunulmaz; kayıtlı bağ görünür kalır).
+const CLOSED = new Set(['CANCELLED', 'NO_AWARD', 'COMPLETED']);
 interface ProjectRow { id: string; code: string; title: string; companyName: string; departmentId: string | null; departmentName: string | null; status: string }
 
 // --- 1. Yükle ---------------------------------------------------------------------------------------------------------------

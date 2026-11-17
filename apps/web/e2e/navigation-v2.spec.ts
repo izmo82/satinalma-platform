@@ -1,3 +1,5 @@
+// v2 Faz 7 (D112): Yönetim > Satınalma kuralları artık gerçek ekran (Figma 19; "Faz 7'de gelir" boş durumu kalktı) ve Denetçi bu sekmeyi salt okunur
+// görür (rule.read, R6); Denetçinin beklenen sekme listesine eklendi. Boş durum denetimi yerine kural ekranının başlığı ve açıklaması denetlenir.
 // v2 Faz 6 (D111): Tedarikçiler bölüm sekmelerine (eski dört sekme aynı sırada) sona "Risk matrisi" eklendi; beklenen sekme listesi buna göre.
 // v2 Faz 5 (D110): Yönetim'e "Tedarikçi başvurusu" (Yönetici + Satınalma, R3) ve "E-posta kutusu" (yalnız Yönetici, R7) sekmeleri eklendi; beklenen sekme listeleri bu iki sekmeyle güncellendi, diğer denetimler aynen.
 // v2 Faz 3 (D108+): Yönetim > Şablonlar artık gerçek şablon kütüphanesi (Figma 12); "Faz 3'te gelir" boş durumu kalktı. Sonraki faz boş durumu denetimi Satınalma kuralları için sürer; Şablonlar sekmesinin tablosu ve yükleme alanı denetlenir.
@@ -29,7 +31,7 @@ const ALL_TABS = ['Kullanıcılar ve Entra', 'Onaycılar', 'Şablonlar', 'Satın
 const ROLES: [string, string, string[], string[] | null][] = [
   ['Yönetici', 'tamer.yonetici@example.test', MENU, ALL_TABS],
   ['Satınalma', 'leyla.hukuk@example.test', MENU, ALL_TABS.filter((t) => t !== 'E-posta kutusu')],
-  ['Denetçi', 'deniz.denetci@example.test', MENU, ['Kullanıcılar ve Entra', 'Onaycılar', 'Entegrasyonlar', 'Yapay zekâ', 'Denetim izi']],
+  ['Denetçi', 'deniz.denetci@example.test', MENU, ['Kullanıcılar ve Entra', 'Onaycılar', 'Satınalma kuralları', 'Entegrasyonlar', 'Yapay zekâ', 'Denetim izi']],
   // Departman kullanıcısı rapor okumaz (report.read) ve Yönetim'i görmez: 5 giriş.
   ['Departman kullanıcısı', 'tolga.teknik@example.test', MENU.filter((m) => m !== 'Yönetim' && m !== 'Raporlar'), null],
 ];
@@ -78,13 +80,10 @@ test('Yönetim: departmanlar ve sonraki fazların boş durumları', async ({ pag
   await expect(page.getByRole('heading', { name: 'Şablonlar', level: 1 })).toBeVisible();
   await expect(page.getByText(/Faz 3'te gelir/)).toHaveCount(0);
   await expect(page.getByText('Yeni şablon ya da yeni sürüm için .docx dosyasını buraya bırakın')).toBeVisible();
-  for (const [tab, phase] of [['Satınalma kuralları', 'Faz 7']] as const) {
-    await tabs.getByRole('link', { name: tab }).click();
-    await expect(page.getByRole('heading', { name: tab, level: 1 })).toBeVisible();
-    await expect(page.getByText(new RegExp(phase)).first()).toBeVisible();
-    // Sahte denetim yok (üst çubuktaki bildirim zili sayfa içeriği değildir).
-    await expect(page.locator('main .page').getByRole('button')).toHaveCount(0);
-  }
+  await tabs.getByRole('link', { name: 'Satınalma kuralları' }).click();
+  await expect(page.getByRole('heading', { name: 'Satınalma kuralları', level: 1 })).toBeVisible();
+  await expect(page.getByText(/Faz 7'de gelir/)).toHaveCount(0);
+  await expect(page.getByText(/tamamlandığı gün yürürlükte olan kural setiyle denetlenir/)).toBeVisible();
   await tabs.getByRole('link', { name: 'Denetim izi' }).click();
   await expect(page.getByRole('heading', { name: 'Denetim izi', level: 1 })).toBeVisible();
   await expect(page.getByLabel('Kayıt kimliği')).toBeVisible();

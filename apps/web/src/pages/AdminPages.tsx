@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button';
 import { ApproversPage } from './ApproversPage.tsx';
 import { TemplatesPage } from './TemplatesPage.tsx';
 import { RiskQuestionsAdmin } from './RiskQuestionsAdmin.tsx';
+import { RulesPage } from './RulesPage.tsx';
 import { cn } from '@/lib/utils';
 import { ConnectionCard, DirectoryUsersCard, EntraDepartmentList, useDirectorySync, type AdminDepartment, type DirectoryConnection } from './DirectoryAdmin.tsx';
 
@@ -24,7 +25,8 @@ const TABS: { key: TabKey; label: string; roles: string[] }[] = [
   { key: 'kullanicilar', label: 'Kullanıcılar ve Entra', roles: ['ADMIN', 'PROCUREMENT', 'AUDITOR'] },
   { key: 'onaycilar', label: 'Onaycılar', roles: ['ADMIN', 'PROCUREMENT', 'AUDITOR'] },
   { key: 'sablonlar', label: 'Şablonlar', roles: ['ADMIN', 'PROCUREMENT'] },
-  { key: 'satinalma-kurallari', label: 'Satınalma kuralları', roles: ['ADMIN', 'PROCUREMENT'] },
+  // v2 Faz 7 (D112, R6): kural kataloğu; Yönetici düzenler, Satınalma ve Denetçi salt okur (rule.read).
+  { key: 'satinalma-kurallari', label: 'Satınalma kuralları', roles: ['ADMIN', 'PROCUREMENT', 'AUDITOR'] },
   // v2 Faz 5 (D110, R3): başvuru ayarları (okuma Yönetici + Satınalma, yazma Yönetici).
   { key: 'tedarikci-basvurusu', label: 'Tedarikçi başvurusu', roles: ['ADMIN', 'PROCUREMENT'] },
   { key: 'entegrasyonlar', label: 'Entegrasyonlar', roles: ['ADMIN', 'PROCUREMENT', 'AUDITOR'] },
@@ -101,11 +103,8 @@ export function TemplatesTab() {
   </>;
 }
 
-export const RulesTab = () => (
-  <Planned title="Satınalma kuralları" heading="Satınalma kuralları kataloğu Faz 7'de gelir">
-    Uyum denetiminde kullanılacak satınalma kuralları ve sürümleri bu sekmede yönetilecek. Şu an bu sekmede ayar yok.
-  </Planned>
-);
+/** v2 Faz 7 (D112, Figma 19): Faz 1'deki "Faz 7'de gelir" boş durumu yerine sürümlü satınalma kuralı seti. */
+export const RulesTab = () => <RulesPage />;
 
 /** Entegrasyonlar: ERP mutabakatı (Satınalma yürütür, Denetçi okur). Yönetici rolünün bu uca yetkisi yok; açıklama görür. */
 export function IntegrationsTab() {
