@@ -38,7 +38,7 @@ export type ErpWriteDeps = { config: ErpCfg; provider?: ProviderResolver };
 const SYSTEM_USER = '00000000-0000-0000-0000-000000000000';
 const RETRYABLE = ['PENDING', 'FAILED', 'UNKNOWN'];
 /** Kısa işlem sınırları (Ruling 9) ve bayat sınırları. YALNIZ TEST değiştirir. */
-export const ERP_WRITE_LIMITS = { lockTimeout: '5s', statementTimeout: '30s', staleJobMinutes: 15, staleRetryRunMinutes: 60, inFlightMinutes: 10 };
+export const ERP_WRITE_LIMITS = { lockTimeout: '5s', statementTimeout: '30s', staleJobMinutes: 15, staleRetryRunMinutes: 60, maxQueuedMinutes: 240, inFlightMinutes: 10 };
 const MOCK_NOTE = 'taklit sağlayıcıyla denendi — gerçek Oracle değil';
 
 const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n) : s);
@@ -50,16 +50,31 @@ const shortTx = async (tx: Tx) => {
 // ---------- Kuyruğa alma (olay noktaları) ----------
 
 /**
+ * Süreçteki ERP yapılandırması (`buildApp` açılışta verir). Olay noktaları (tedarikçi onayı, kazanan seçimi, zincir onayı) yapılandırma
+ * taşımaz; kuyruğa alma ve detay ekranı sağlayıcının bu dağıtımda yapılandırılıp yapılandırılmadığını buradan okur. Verilmemişse
+ * (yalnız doğrudan modül testleri) sağlayıcı denetimi atlanır; iş yine işlenirken sağlayıcı yeniden denetlenir.
+ */
+let erpRuntime: ErpCfg | null = null;
+export function configureErpRuntime(cfg: ErpCfg | null | undefined) { erpRuntime = cfg ?? null; }
+/** Uç noktanın sağlayıcısı bu dağıtımda yapılandırılmış mı (ERP_PROVIDER none ya da tür uyuşmuyorsa false). */
+export function erpProviderReady(kind: ErpProviderKind): boolean {
+  return erpRuntime ? erpProvider(kind, erpRuntime) !== null : true;
+}
+
+/**
  * Olay noktasında (kazanan seçildi / sözleşme zinciri APPROVED / tedarikçi onaylandı) çağrılır; çağıranın işleminde çalışır.
- * Özellik kapalı ya da ERP'ye yazma açık değilse (R3) hiçbir şey yazmaz ve null döner (elle yol açık kalır). Açıksa `erp_outbound_records`
+ * Özellik kapalı, ERP'ye yazma açık değil (R3) ya da sağlayıcı yapılandırılmamışsa hiçbir şey yazmaz ve null döner (elle yol açık kalır). Açıksa `erp_outbound_records`
  * PENDING + `jobs` `erp.write` (idempotency `erp:<feature>:<entityId>:v<rev>`; aynı olay ikinci kez kayıt açmaz).
  * SUPPLIER'da kartın ERP kodu zaten varsa (ERP'de kayıtlı) yazılmaz.
  */
 export async function enqueueErpOutbound(tx: Tx, ctx: TenantContext, feature: WriteFeature, entityType: string, entityId: string,
   opts: { rev?: number } = {}): Promise<{ outboundId: string; created: boolean } | null> {
   if (!isWriteFeature(feature) || ERP_ENTITY_TYPE[feature] !== entityType) throw new Error(`enqueueErpOutbound: ${feature}/${entityType} uyumsuz`);
-  const ep = (await tx.query<{ enabled: boolean; write_enabled: boolean }>(`SELECT enabled, write_enabled FROM integration_endpoints WHERE feature = $1`, [feature])).rows[0];
+  const ep = (await tx.query<{ enabled: boolean; write_enabled: boolean; provider_kind: ErpProviderKind }>(`SELECT enabled, write_enabled, provider_kind
+    FROM integration_endpoints WHERE feature = $1`, [feature])).rows[0];
   if (!ep || !ep.enabled || !ep.write_enabled) return null;
+  // Sağlayıcı yapılandırılmamışsa (ERP_PROVIDER=none ya da tür uyuşmuyor) kayıt da iş de açılmaz: elle yol açık kalır.
+  if (!erpProviderReady(ep.provider_kind)) return null;
   if (feature === 'SUPPLIER') {
     const s = (await tx.query<{ erp_supplier_code: string | null }>(`SELECT erp_supplier_code FROM suppliers WHERE id = $1`, [entityId])).rows[0];
     if (!s || s.erp_supplier_code) return null;
@@ -250,6 +265,8 @@ export async function accountRetryRun(tx: Tx, ctx: TenantContext, runId: string,
     AND ($3::uuid IS NULL OR id <> $3)`, [ERP_WRITE_JOB, runId, jobId])).rows[0]!.n;
   const patch: Record<string, unknown> = { ...next, requestSent: requestSent || c.requestSent === true, heartbeatAt: new Date().toISOString() };
   if (active > 0) {
+    // Temizleyicinin yalnız kapanış denetimi (sonuç yok) nabız yazmaz: yoksa kuyrukta bekleyen çalışma hiç "eski" sayılmazdı.
+    if (outcome === null && !err) return false;
     await tx.query(`UPDATE integration_runs SET counts = counts || $2::jsonb WHERE id = $1`, [runId, JSON.stringify(patch)]);
     return false;
   }
@@ -258,10 +275,15 @@ export async function accountRetryRun(tx: Tx, ctx: TenantContext, runId: string,
   const missing = Math.max(0, queued - done);
   const bad = next.failed + next.unknown + missing;
   const status = bad === 0 ? 'SUCCESS' : next.sent + next.skipped === 0 ? 'FAILED' : 'PARTIAL';
+  // Hepsi atlandıysa düz "Başarılı" denmez: hiçbir kayıt gönderilmedi (zaten gönderilmiş / elle iletilmiş / kartta ERP kodu var).
+  const allSkipped = status === 'SUCCESS' && next.sent === 0 && next.skipped > 0;
   await tx.query(`UPDATE integration_runs SET status = $2, finished_at = now(), counts = counts || $3::jsonb WHERE id = $1 AND status = 'RUNNING'`,
-    [runId, status, JSON.stringify({ ...patch, ...(missing ? { notProcessed: missing } : {}) })]);
+    [runId, status, JSON.stringify({ ...patch, ...(missing ? { notProcessed: missing } : {}), ...(allSkipped ? { allSkipped: true, note: ALL_SKIPPED_NOTE } : {}) })]);
   return true;
 }
+
+/** WRITE_RETRY çalışmasında her kayıt atlandığında çalışmaya yazılan not. */
+export const ALL_SKIPPED_NOTE = 'Hiçbir kayıt ERP\'ye gönderilmedi: hepsi atlandı (zaten gönderilmiş, elle iletilmiş ya da kartta ERP kodu var). Ayrıntı hata listesinde.';
 
 /** İşi bitirir: başarı/atlama SUCCEEDED; hata ya da belirsizlikte olay işi kuyruk politikasıyla yeniden kuyruğa (son denemede DEAD); yeniden deneme işi tek denemedir (FAILED). */
 async function finishJob(tx: Tx, jobId: string, job: JobRow, runId: string | null, outcome: Outcome, result: Record<string, unknown>, errorCode: string | null,
@@ -489,7 +511,8 @@ async function writeSupplierCode(tx: Tx, ctx: TenantContext, supplierId: string,
     return [{ code: s.erp_supplier_code_source === 'MANUAL' ? 'CONFLICT_MANUAL' : 'erp_code_differs',
       message: `${s.erp_supplier_code_source === 'MANUAL' ? 'Elle girilen değerle çelişiyor' : 'Kartta başka ERP kodu var'}: kartta ${s.erp_supplier_code} korundu; ERP'nin verdiği kod ${code}.` }];
   }
-  const other = (await tx.query(`SELECT 1 FROM suppliers WHERE erp_supplier_code = $1 AND id <> $2 LIMIT 1`, [code, supplierId])).rowCount;
+  // Birleştirilmiş (MERGED) kart sayılmaz: kod birleşmede yaşayan karta taşınabilir.
+  const other = (await tx.query(`SELECT 1 FROM suppliers WHERE erp_supplier_code = $1 AND id <> $2 AND status <> 'MERGED' LIMIT 1`, [code, supplierId])).rowCount;
   if (other) return [{ code: 'supplier_code_duplicate', message: `ERP tedarikçi kodu ${code} başka bir tedarikçi kartında kayıtlı; bu karta yazılmadı.` }];
   await tx.query(`UPDATE suppliers SET erp_supplier_code = $2, erp_supplier_code_source = 'ERP' WHERE id = $1`, [supplierId, code]);
   await audit(tx, ctx, 'supplier.erp_code_set', 'supplier', supplierId, { from: null, to: code, source: 'ERP', outboundId, mock });
@@ -600,14 +623,21 @@ export async function reapStaleErpWrites(tx: Tx, ctx: TenantContext, now: Date =
     await tx.query(`UPDATE integration_runs SET status = 'FAILED', finished_at = now(), counts = counts || '{"reason":"stale_run"}'::jsonb WHERE id = $1 AND status = 'RUNNING'`, [r.id]);
     n++;
   }
-  const retryRuns = (await tx.query<{ id: string; old: boolean }>(`SELECT id, started_at < $1::timestamptz - make_interval(mins => $3) AS old FROM integration_runs
-    WHERE status = 'RUNNING' AND counts->>'mode' = 'WRITE_RETRY' AND started_at < $1::timestamptz - make_interval(mins => $2) FOR UPDATE SKIP LOCKED`,
-    [at, ERP_WRITE_LIMITS.staleJobMinutes, ERP_WRITE_LIMITS.staleRetryRunMinutes])).rows;
+  // Yeniden deneme çalışmasının "eski" sayılması başlangıçtan değil son etkinlikten (nabız / işlerinin alınma ya da bitiş anı) ölçülür;
+  // kuyrukta bekleyen (QUEUED) işi olan çalışma — erp şeridi sıralı, önünde 30 dk'lık okumalar olabilir — yalnız uzun bekleme sınırını aşınca.
+  const retryRuns = (await tx.query<{ id: string; old: boolean }>(`SELECT r.id,
+      CASE WHEN EXISTS (SELECT 1 FROM jobs q WHERE q.kind = $5 AND q.payload->>'runId' = r.id::text AND q.status = 'QUEUED')
+        THEN l.last < $1::timestamptz - make_interval(mins => $4) ELSE l.last < $1::timestamptz - make_interval(mins => $3) END AS old
+    FROM integration_runs r
+    CROSS JOIN LATERAL (SELECT greatest((r.counts->>'heartbeatAt')::timestamptz, r.started_at,
+      (SELECT max(j.updated_at) FROM jobs j WHERE j.kind = $5 AND j.payload->>'runId' = r.id::text AND j.status <> 'QUEUED')) AS last) l
+    WHERE r.status = 'RUNNING' AND r.counts->>'mode' = 'WRITE_RETRY' AND r.started_at < $1::timestamptz - make_interval(mins => $2) FOR UPDATE OF r SKIP LOCKED`,
+    [at, ERP_WRITE_LIMITS.staleJobMinutes, ERP_WRITE_LIMITS.staleRetryRunMinutes, ERP_WRITE_LIMITS.maxQueuedMinutes, ERP_WRITE_JOB])).rows;
   for (const r of retryRuns) {
     if (r.old) {
       const left = (await tx.query(`UPDATE jobs SET status = 'FAILED', error_code = 'STALE_RUN', updated_at = now() WHERE kind = $1 AND payload->>'runId' = $2
         AND status IN ('QUEUED','RUNNING') RETURNING id`, [ERP_WRITE_JOB, r.id])).rowCount ?? 0;
-      if (left) await addRunError(tx, ctx, r.id, null, 'stale_run', `${left} yazma işi zamanında alınmadı; başarısız sayıldı. Yeniden çalıştırın.`);
+      if (left) await addRunError(tx, ctx, r.id, null, 'stale_run', `${left} yazma işi zamanında bitmedi ya da uzun süre alınmadı; başarısız sayıldı. Yeniden çalıştırın.`);
     }
     if (await accountRetryRun(tx, ctx, r.id, null, null)) n++;
   }

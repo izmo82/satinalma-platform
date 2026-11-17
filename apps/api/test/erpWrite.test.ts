@@ -10,7 +10,7 @@ import type { ErpConfig } from '../src/config.ts';
 import { withTenant, type TenantContext } from '../src/db.ts';
 import { erpProvider, type ErpProvider, type ErpProviderKind } from '../src/erp/providers.ts';
 import { resetTaklitStore } from '../src/erp/taklit.ts';
-import { ERP_WRITE_LIMITS, enqueueErpOutbound, enqueueErpOutboundSafe, reapAllStaleErpWrites, runErpWriteJob } from '../src/modules/erpWrite.ts';
+import { ALL_SKIPPED_NOTE, ERP_WRITE_LIMITS, accountRetryRun, configureErpRuntime, enqueueErpOutbound, enqueueErpOutboundSafe, reapAllStaleErpWrites, runErpWriteJob } from '../src/modules/erpWrite.ts';
 import { PROTECTED_DEMO_INVOICES } from '../src/modules/erpRead.ts';
 import { laneKinds } from '../src/worker.ts';
 import { makeHarness } from './harness.ts';
@@ -515,6 +515,94 @@ describe('işçi şeritleri', () => {
     // ERP yapılandırılmamış işçi ERP işi çekmez.
     expect(laneKinds('erp', {}).kinds).toEqual([]);
     expect(laneKinds('all', {}).kinds).not.toContain('erp.write');
+  });
+});
+
+describe('bütün faz incelemesi düzeltmeleri (taklitle denendi)', () => {
+  it('#1: kuyrukta bekleyen (QUEUED) işi olan WRITE_RETRY çalışması 60 dk sınırında öldürülmez; uzun bekleme sınırını aşan kapanır', async () => {
+    const ep = await one<{ id: string }>(`SELECT id FROM integration_endpoints WHERE tenant_id = $1 AND feature = 'REQUISITION'`, [h.world.tenantA]);
+    const mk = async (ago: string) => {
+      const runId = (await one<{ id: string }>(`INSERT INTO integration_runs (tenant_id, endpoint_id, feature, trigger, provider_kind, mock, status, counts, requested_by, started_at)
+        VALUES ($1,$2,'REQUISITION','MANUAL','TAKLIT',true,'RUNNING','{"mode":"WRITE_RETRY","queued":1}',$3, now() - $4::interval) RETURNING id`,
+        [h.world.tenantA, ep.id, h.world.users.tenantAdmin.id, ago])).id;
+      const jobId = (await one<{ id: string }>(`INSERT INTO jobs (tenant_id, kind, idempotency_key, payload, requested_by, created_at, updated_at)
+        VALUES ($1,'erp.write',$2,$3,$4, now() - $5::interval, now() - $5::interval) RETURNING id`,
+        [h.world.tenantA, `test-final:${runId}`, JSON.stringify({ feature: 'REQUISITION', outboundId: randomUUID(), runId }), h.world.users.tenantAdmin.id, ago])).id;
+      return { runId, jobId };
+    };
+    const waiting = await mk('90 minutes');
+    const forever = await mk(`${ERP_WRITE_LIMITS.maxQueuedMinutes + 10} minutes`);
+    await reapAllStaleErpWrites(h.pool);
+    await reapAllStaleErpWrites(h.pool); // ikinci tık: temizleyici kendi nabzıyla çalışmayı "taze" tutmaz
+    expect((await one<{ status: string }>(`SELECT status FROM integration_runs WHERE id = $1`, [waiting.runId])).status).toBe('RUNNING');
+    expect((await one<{ status: string }>(`SELECT status FROM jobs WHERE id = $1`, [waiting.jobId])).status).toBe('QUEUED');
+    expect((await one<{ c: any }>(`SELECT counts AS c FROM integration_runs WHERE id = $1`, [waiting.runId])).c.heartbeatAt).toBeUndefined();
+    expect((await one<{ status: string }>(`SELECT status FROM integration_runs WHERE id = $1`, [forever.runId])).status).toBe('FAILED');
+    expect(await one(`SELECT status, error_code FROM jobs WHERE id = $1`, [forever.jobId])).toEqual({ status: 'FAILED', error_code: 'STALE_RUN' });
+    expect((await rows(`SELECT code FROM integration_run_errors WHERE run_id = $1`, [forever.runId])).map((e: any) => e.code)).toEqual(['stale_run']);
+    // Temizlik.
+    await h.owner.query(`UPDATE jobs SET status = 'FAILED', error_code = 'TEST_CLEANUP' WHERE id = $1`, [waiting.jobId]);
+    await h.owner.query(`UPDATE integration_runs SET status = 'FAILED', finished_at = now() WHERE id = $1`, [waiting.runId]);
+  });
+
+  it('#4: ERP\'nin verdiği kod yalnız birleştirilmiş (MERGED) kartta varsa yaşayan karta yazılır (çift kod sayılmaz)', async () => {
+    await enableWrite('SUPPLIER');
+    const s = await candidate();
+    await approveSupplier(s.id);
+    const [rec] = await outboundFor(s.id);
+    const code = `MRG-W-${rand()}`;
+    await h.owner.query(`INSERT INTO suppliers (tenant_id, status, country, tax_id_type, tax_id, legal_name, created_by, merged_into_id, erp_supplier_code, erp_supplier_code_source)
+      VALUES ($1,'MERGED','TR','VKN',$2,'ERP Birleşen Eski Kart (SENTETİK)',$3,$4,$5,'ERP')`,
+      [h.world.tenantA, syntheticVkn(`96${String(Math.floor(Math.random() * 1e7)).padStart(7, '0')}`), h.world.users.buyer.id, s.id, code]);
+    const fixed = (kind: ErpProviderKind): ErpProvider | null => {
+      const p = erpProvider(kind, h.config);
+      return p ? { ...p, write: async () => ({ externalRef: code }) } : null;
+    };
+    const jobId = (await writeJobsFor(rec!.id))[0]!.id;
+    await h.owner.query(`UPDATE jobs SET status = 'RUNNING', attempts = attempts + 1, updated_at = now() WHERE id = $1`, [jobId]);
+    const job = await one<{ id: string; tenant_id: string; requested_by: string | null }>(`SELECT id, tenant_id, requested_by FROM jobs WHERE id = $1`, [jobId]);
+    const r = await runErpWriteJob(h.pool, job, job.requested_by ? await memberOf(job.requested_by) : undefined, { config: h.config, provider: fixed });
+    expect(r).toMatchObject({ outcome: 'sent', status: 'SENT' });
+    expect(await one(`SELECT erp_supplier_code, erp_supplier_code_source FROM suppliers WHERE id = $1`, [s.id])).toEqual({ erp_supplier_code: code, erp_supplier_code_source: 'ERP' });
+  });
+
+  it('#5: ERP_PROVIDER=none iken yazma açık özellikte olay hiçbir şey yazmaz; detay "otomatik yazılır" demez', async () => {
+    await enableWrite('REQUISITION');
+    const before = { jobs: await writeJobCount(), out: await outboundCount() };
+    configureErpRuntime({ env: 'test', erp: { provider: 'none', secretKey: null, allowedHosts: [] } });
+    try {
+      const p = await awardedProject('700.00');
+      expect(await enqueueReq(p)).toBeNull();
+      expect({ jobs: await writeJobCount(), out: await outboundCount() }).toEqual(before);
+      const g = await h.call('buyer', 'GET', `/api/v1/erp/outbound?entityType=PROJECT&entityId=${p}`);
+      expect(g.status).toBe(200);
+      expect(g.body.features[0]).toMatchObject({ feature: 'REQUISITION', enabled: true, writeEnabled: false,
+        modeLabel: 'ERP sağlayıcısı yapılandırılmadı; ERP\'ye yazılmaz, elle iletin' });
+      expect(g.body.features[0].modeLabel).not.toContain('otomatik');
+    } finally {
+      configureErpRuntime(h.config);
+    }
+    // Sağlayıcı yeniden yapılandırılınca olay yine kuyruğa alınır (gerileme yok).
+    const p2 = await awardedProject('710.00');
+    const q = await enqueueReq(p2);
+    expect(q).toMatchObject({ created: true });
+    await h.owner.query(`UPDATE jobs SET status = 'FAILED', error_code = 'TEST_SKIP' WHERE payload->>'outboundId' = $1`, [q!.outboundId]);
+    const g2 = await h.call('buyer', 'GET', `/api/v1/erp/outbound?entityType=PROJECT&entityId=${p2}`);
+    expect(g2.body.features[0]).toMatchObject({ writeEnabled: true, modeLabel: 'ERP\'ye otomatik yazılır' });
+  });
+
+  it('#9: WRITE_RETRY çalışmasında her kayıt atlandıysa düz "Başarılı" denmez (not ve etiket)', async () => {
+    const ep = await one<{ id: string }>(`SELECT id FROM integration_endpoints WHERE tenant_id = $1 AND feature = 'CONTRACT_HEADER'`, [h.world.tenantA]);
+    const runId = (await one<{ id: string }>(`INSERT INTO integration_runs (tenant_id, endpoint_id, feature, trigger, provider_kind, mock, status, counts, requested_by)
+      VALUES ($1,$2,'CONTRACT_HEADER','MANUAL','TAKLIT',true,'RUNNING','{"mode":"WRITE_RETRY","queued":2,"skipped":1}',$3) RETURNING id`,
+      [h.world.tenantA, ep.id, h.world.users.tenantAdmin.id])).id;
+    const ctx = ctxOf(h.world.users.tenantAdmin.id, ['TENANT_ADMIN']);
+    expect(await withTenant(h.pool, ctx, (tx) => accountRetryRun(tx, ctx, runId, null, 'skipped'))).toBe(true);
+    const r = await one<{ status: string; counts: any }>(`SELECT status, counts FROM integration_runs WHERE id = $1`, [runId]);
+    expect(r.status).toBe('SUCCESS');
+    expect(r.counts).toMatchObject({ sent: 0, skipped: 2, allSkipped: true, note: ALL_SKIPPED_NOTE });
+    const list = await h.call('tenantAdmin', 'GET', url('CONTRACT_HEADER', '/runs'));
+    expect(list.body.items.find((x: any) => x.id === runId).statusLabel).toBe(`Başarılı — hiçbir kayıt gönderilmedi (hepsi atlandı) (${MOCK_NOTE})`);
   });
 });
 

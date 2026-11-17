@@ -214,3 +214,32 @@ describe('fatura ERP ödeme durumu (elle bilgi, Satınalma)', () => {
     expect((await one<{ j: string }>(`SELECT row_to_json(i)::text AS j FROM invoices i WHERE id = $1`, [demoInvoice])).j).toBe(demoSnapshot);
   });
 });
+
+describe('bütün faz incelemesi düzeltmeleri (taklitle denendi)', () => {
+  it('#3: çift tıklama — aynı kayda eşzamanlı iki "elle iletildi" isteği tek MANUAL satırı açar, ikincisi 409', async () => {
+    const pid = (await one<{ id: string }>(`INSERT INTO projects (tenant_id, company_id, code, title, category, owner_user_id, created_by, department_id)
+      VALUES ($1,$2,$3,'ERP elle eşzamanlı proje (SENTETİK)','Genel',$4,$4,$5) RETURNING id`,
+      [h.world.tenantA, h.world.companyA1.id, `PRJ-EMC-${rand()}`, h.world.users.buyer.id, h.world.departments.bt])).id;
+    const body = { feature: 'REQUISITION', entityType: 'PROJECT', entityId: pid, externalRef: 'REQ-CIFT-001' };
+    const [a, b] = await Promise.all([1, 2].map(() => h.call('buyer', 'POST', '/api/v1/erp/outbound/manual', { body })));
+    expect([a!.status, b!.status].sort()).toEqual([201, 409]);
+    expect([a, b].find((x) => x!.status === 409)!.body.error.code).toBe('already_recorded');
+    expect(await rows(`SELECT status FROM erp_outbound_records WHERE tenant_id = $1 AND entity_id = $2`, [h.world.tenantA, pid])).toEqual([{ status: 'MANUAL' }]);
+    expect(await audits('erp.outbound.manual', pid)).toHaveLength(1);
+  });
+
+  it('#4: birleştirilmiş (MERGED) kartta kalan ERP kodu yaşayan karta elle yazılabilir; etkin başka kartta 409 sürer', async () => {
+    const vkn = () => syntheticVkn(`95${String(Math.floor(Math.random() * 1e7)).padStart(7, '0')}`);
+    const survivor = (await one<{ id: string }>(`INSERT INTO suppliers (tenant_id, status, country, tax_id_type, tax_id, legal_name, created_by, activated_by, activated_at)
+      VALUES ($1,'ACTIVE','TR','VKN',$2,'ERP Birleşme Yaşayan (SENTETİK)',$3,$4,now()) RETURNING id`, [h.world.tenantA, vkn(), h.world.users.buyer.id, h.world.users.masterData.id])).id;
+    const code = `MRG-ELLE-${rand()}`;
+    await h.owner.query(`INSERT INTO suppliers (tenant_id, status, country, tax_id_type, tax_id, legal_name, created_by, merged_into_id, erp_supplier_code, erp_supplier_code_source)
+      VALUES ($1,'MERGED','TR','VKN',$2,'ERP Birleşen Eski Kart (SENTETİK)',$3,$4,$5,'MANUAL')`, [h.world.tenantA, vkn(), h.world.users.buyer.id, survivor, code]);
+    const r = await h.call('buyer', 'PUT', `/api/v1/suppliers/${survivor}/erp-code`, { body: { code } });
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body).toMatchObject({ code, source: 'MANUAL' });
+    // Etkin başka kartta aynı kod hâlâ 409.
+    const dup = await h.call('buyer', 'PUT', `/api/v1/suppliers/${sup2}/erp-code`, { body: { code } });
+    expect([dup.status, dup.body.error.code]).toEqual([409, 'supplier_code_duplicate']);
+  });
+});

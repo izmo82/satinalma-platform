@@ -457,15 +457,23 @@ describe('düzeltme 1 (taklitle denendi)', () => {
     const run = async (startedAgo: string, counts: Record<string, unknown>) => (await one<{ id: string }>(`INSERT INTO integration_runs (tenant_id, endpoint_id, feature,
       trigger, provider_kind, mock, status, counts, started_at) VALUES ($1,$2,'COST_CENTER','SCHEDULE','TAKLIT',true,'RUNNING',$3, now() - $4::interval) RETURNING id`,
       [h.world.tenantA, ep, JSON.stringify(counts), startedAgo])).id;
-    const job = (runId: string) => h.owner.query(`INSERT INTO jobs (tenant_id, kind, idempotency_key, payload, requested_by) VALUES ($1,'erp.read',$2,$3,$4)`,
-      [h.world.tenantA, `test:${runId}`, JSON.stringify({ feature: 'COST_CENTER', runId }), h.world.users.tenantAdmin.id]);
+    const job = (runId: string, status = 'QUEUED', updatedAgo = '0 minutes') => h.owner.query(`INSERT INTO jobs (tenant_id, kind, idempotency_key, payload, requested_by,
+      status, updated_at) VALUES ($1,'erp.read',$2,$3,$4,$5, now() - $6::interval)`,
+      [h.world.tenantA, `test:${runId}`, JSON.stringify({ feature: 'COST_CENTER', runId }), h.world.users.tenantAdmin.id, status, updatedAgo]);
+    // Bütün faz incelemesi düzeltmesi (#1): nabızsız çalışma artık işi alınmışsa (RUNNING, 20 dk önce alındı, işçi çöktü) bayat sayılır;
+    // işi hâlâ kuyrukta (QUEUED) bekleyen çalışma uzun bekleme sınırına (maxQueuedMinutes) kadar dokunulmaz (önünde uzun okuma olabilir).
     const oldNoBeat = await run('20 minutes', { mode: 'READ' });
+    const queuedWaiting = await run('20 minutes', { mode: 'READ' });
+    const queuedForever = await run(`${ERP_STALE.maxQueuedMinutes + 10} minutes`, { mode: 'READ' });
     const beating = await run('20 minutes', { mode: 'READ', heartbeatAt: new Date().toISOString() });
     const tooLong = await run('90 minutes', { mode: 'READ', heartbeatAt: new Date().toISOString() });
     const write = await run('90 minutes', { mode: 'WRITE_RETRY' });
-    for (const id of [oldNoBeat, beating, tooLong]) await job(id);
-    expect(await reapAllStaleErpRuns(h.pool, new Date())).toBeGreaterThanOrEqual(2);
-    for (const id of [oldNoBeat, tooLong]) {
+    await job(oldNoBeat, 'RUNNING', '20 minutes');
+    for (const id of [queuedWaiting, queuedForever, beating, tooLong]) await job(id);
+    expect(await reapAllStaleErpRuns(h.pool, new Date())).toBeGreaterThanOrEqual(3);
+    expect((await runOf(queuedWaiting)).status).toBe('RUNNING');
+    expect((await jobOf(queuedWaiting)).status).toBe('QUEUED');
+    for (const id of [oldNoBeat, queuedForever, tooLong]) {
       expect((await runOf(id)).status, id).toBe('FAILED');
       expect((await errorsOf(id)).map((e) => e.code)).toEqual(['stale_run']);
       expect((await jobOf(id)).status).toBe('FAILED');
@@ -473,7 +481,8 @@ describe('düzeltme 1 (taklitle denendi)', () => {
     expect((await runOf(beating)).status).toBe('RUNNING');
     expect((await runOf(write)).status).toBe('RUNNING');
     // Temizlik: test satırları kapatılır (son denetim RUNNING kalmadığını arar).
-    await h.owner.query(`UPDATE integration_runs SET status = 'FAILED', finished_at = now() WHERE id = ANY($1)`, [[beating, write]]);
+    await h.owner.query(`UPDATE integration_runs SET status = 'FAILED', finished_at = now() WHERE id = ANY($1)`, [[beating, write, queuedWaiting]]);
+    await h.owner.query(`UPDATE jobs SET status = 'FAILED', error_code = 'TEST_CLEANUP' WHERE kind = 'erp.read' AND payload->>'runId' = $1`, [queuedWaiting]);
   });
 
   it('INTERVAL yuvalarında sağlayıcı yoksa NOT_CONFIGURED İstanbul gününde en fazla bir kez yazılır', async () => {
@@ -498,12 +507,14 @@ describe('düzeltme 1 (taklitle denendi)', () => {
 describe('düzeltme 2 (taklitle denendi)', () => {
   const sys = (): TenantContext => ({ tenantId: h.world.tenantA, userId: '00000000-0000-0000-0000-000000000000', roles: [], companyIds: [], departmentIds: [],
     allDepartments: true, correlationId: 'test-erp-fix2' });
-  // Yalnız bu kiracıda, "şimdi + 2 dk" ile temizleyici (nabız eşiği 1 dk): az önce açılan çalışma da bayat sayılır.
+  // Yalnız bu kiracıda, "şimdi + 2 dk" ile temizleyici (nabız ve kuyrukta bekleme eşiği 1 dk): az önce açılan çalışma da bayat sayılır.
+  // (Bütün faz incelemesi #1: kuyrukta bekleyen çalışma artık kendi eşiğiyle ölçülür; bu yardımcı o eşiği de 1 dk yapar.)
   const reapNow = async () => {
-    const prev = ERP_STALE.heartbeatMinutes;
+    const prev = { ...ERP_STALE };
     ERP_STALE.heartbeatMinutes = 1;
+    ERP_STALE.maxQueuedMinutes = 1;
     try { return await withTenant(h.pool, sys(), (tx) => reapStaleErpRuns(tx, h.world.tenantA, new Date(Date.now() + 120_000))); }
-    finally { ERP_STALE.heartbeatMinutes = prev; }
+    finally { Object.assign(ERP_STALE, prev); }
   };
 
   it('temizleyici, satır kilidini tutan (sayfa işlemindeki) çalışmayı atlar; kilit kalkınca kapatır', async () => {
@@ -560,6 +571,81 @@ describe('düzeltme 2 (taklitle denendi)', () => {
     expect(paged.run).toMatchObject({ status: 'FAILED', counts: { requestSent: true, page: 2, read: 4 } });
     expect(paged.errors[0]!.message).toContain('2 sayfa (4 kayıt) yerinde kaldı');
     expect(paged.errors[0]!.message).not.toContain('geri alındı');
+  });
+});
+
+describe('bütün faz incelemesi düzeltmeleri (taklitle denendi)', () => {
+  const sysCtx = (): TenantContext => ({ tenantId: h.world.tenantA, userId: '00000000-0000-0000-0000-000000000000', roles: [], companyIds: [], departmentIds: [],
+    allDepartments: true, correlationId: 'test-erp-final' });
+  const runJob = async (runId: string, res: (k: ErpProviderKind) => ErpProvider | null) => {
+    const job = await jobOf(runId);
+    await runErpReadJob(h.pool, job, await memberOf(job.requested_by!), { config: h.config, provider: res });
+  };
+
+  it('#1: kuyrukta bekleyen ikinci okuma, önündeki uzun okuma sürerken temizleyiciye takılmaz; sonra işlenir', async () => {
+    await configure('COST_CENTER');
+    await configure('SUPPLIER');
+    const a = await h.call('tenantAdmin', 'POST', url('COST_CENTER', '/run'));
+    const b = await h.call('tenantAdmin', 'POST', url('SUPPLIER', '/run'));
+    expect([a.status, b.status]).toEqual([202, 202]);
+    // B 20 dakikadır sırada (erp şeridi sıralı); işi QUEUED, nabzı yok.
+    await h.owner.query(`UPDATE integration_runs SET started_at = now() - interval '20 minutes' WHERE id = $1`, [b.body.runId]);
+    let reaped = -1;
+    const slow = (kind: ErpProviderKind): ErpProvider | null => {
+      const p = resolver(kind);
+      if (!p) return null;
+      // Uzun okuma sürerken dakikalık tık temizleyiciyi çalıştırır (varsayılan eşikler).
+      return { ...p, read: async (ep, f, cursor) => { if (reaped < 0) reaped = await reapAllStaleErpRuns(h.pool, new Date()); return p.read(ep, f, cursor); } };
+    };
+    await runJob(a.body.runId, slow);
+    expect(reaped).toBe(0);
+    expect((await runOf(a.body.runId)).status).toBe('SUCCESS');
+    expect((await runOf(b.body.runId)).status).toBe('RUNNING');
+    expect((await jobOf(b.body.runId)).status).toBe('QUEUED');
+    await runJob(b.body.runId, resolver);
+    expect(['SUCCESS', 'PARTIAL']).toContain((await runOf(b.body.runId)).status);
+    expect((await errorsOf(b.body.runId)).map((e) => e.code)).not.toContain('stale_run');
+  });
+
+  it('#2: zamanlanmış okuma, aynı özellikte süren yazma yeniden denemesi (WRITE_RETRY) yüzünden atlanmaz', async () => {
+    await configure('SUPPLIER', { schedule: { mode: 'INTERVAL', intervalMinutes: 15 } });
+    const ep = (await one<{ id: string }>(`SELECT id FROM integration_endpoints WHERE tenant_id = $1 AND feature = 'SUPPLIER'`, [h.world.tenantA])).id;
+    const write = (await one<{ id: string }>(`INSERT INTO integration_runs (tenant_id, endpoint_id, feature, trigger, provider_kind, mock, status, counts, requested_by)
+      VALUES ($1,$2,'SUPPLIER','MANUAL','TAKLIT',true,'RUNNING','{"mode":"WRITE_RETRY","queued":1}',$3) RETURNING id`, [h.world.tenantA, ep, h.world.users.tenantAdmin.id])).id;
+    const at = new Date(Date.now() + 3 * 86_400_000);
+    const n = await withTenant(h.pool, sysCtx(), (tx) => enqueueTenantErpReads(tx, h.world.tenantA, at, resolver));
+    expect(n).toBeGreaterThanOrEqual(1);
+    const sched = await rows<{ id: string }>(`SELECT id FROM integration_runs WHERE tenant_id = $1 AND feature = 'SUPPLIER' AND trigger = 'SCHEDULE' AND status = 'RUNNING'`,
+      [h.world.tenantA]);
+    expect(sched).toHaveLength(1);
+    // Temizlik: zamanlanmış çalışma işlenir, yazma çalışması kapatılır, zamanlama elle'ye döner.
+    await runJob(sched[0]!.id, resolver);
+    await h.owner.query(`UPDATE integration_runs SET status = 'FAILED', finished_at = now() WHERE id = $1`, [write]);
+    await h.call('tenantAdmin', 'PUT', url('SUPPLIER'), { body: { schedule: { mode: 'MANUAL' } } });
+  });
+
+  it('#7 + #4: ERP VKN "TR 941.…" biçiminde gelse de karta eşlenir; birleştirilmiş kartta kalan kod yaşayan karta yazılır', async () => {
+    const v = syntheticVkn(`94${String(Math.floor(Math.random() * 1e7)).padStart(7, '0')}`);
+    const other = syntheticVkn(`94${String(Math.floor(Math.random() * 1e7)).padStart(7, '0')}`);
+    const card = (await one<{ id: string }>(`INSERT INTO suppliers (tenant_id, status, country, tax_id_type, tax_id, legal_name, created_by, activated_by, activated_at)
+      VALUES ($1,'ACTIVE','TR','VKN',$2,'ERP VKN Biçim Tedarikçi (SENTETİK)',$3,$4,now()) RETURNING id`, [h.world.tenantA, v, h.world.users.buyer.id, h.world.users.masterData.id])).id;
+    const code = `MRG-ERP-${rand()}`;
+    await h.owner.query(`INSERT INTO suppliers (tenant_id, status, country, tax_id_type, tax_id, legal_name, created_by, merged_into_id, erp_supplier_code, erp_supplier_code_source)
+      VALUES ($1,'MERGED','TR','VKN',$2,'ERP Birleşen Eski Kart (SENTETİK)',$3,$4,$5,'ERP')`, [h.world.tenantA, other, h.world.users.buyer.id, card, code]);
+    const formatted = `TR ${v.slice(0, 3)}.${v.slice(3, 6)}.${v.slice(6)}`;
+    const custom = (kind: ErpProviderKind): ErpProvider | null => {
+      const p = erpProvider(kind, h.config);
+      if (!p) return null;
+      return { ...p, read: async () => ({ records: [{ SEGMENT1: code, TAX_REGISTRATION_NUM: formatted, VENDOR_NAME: 'ERP VKN Biçim Tedarikçi' }], nextCursor: null }) };
+    };
+    await configure('SUPPLIER');
+    const r = await h.call('tenantAdmin', 'POST', url('SUPPLIER', '/run'));
+    expect(r.status, JSON.stringify(r.body)).toBe(202);
+    await runJob(r.body.runId, custom);
+    const run = await runOf(r.body.runId);
+    expect(run.status).toBe('SUCCESS');
+    expect(run.counts).toMatchObject({ read: 1, updated: 1, failed: 0 });
+    expect(await one(`SELECT erp_supplier_code, erp_supplier_code_source FROM suppliers WHERE id = $1`, [card])).toEqual({ erp_supplier_code: code, erp_supplier_code_source: 'ERP' });
   });
 });
 

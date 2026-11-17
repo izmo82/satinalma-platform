@@ -7,7 +7,8 @@ import { ERP_FEATURE_CATALOG, can, type ErpFeature } from '@sp/domain';
 import type { TenantContext, Tx } from '../db.ts';
 import { audit } from '../audit.ts';
 import { conflict, notFound, unprocessable } from '../errors.ts';
-import { ALREADY_IN_ERP_PREFIX, CARD_CODE_UNVERIFIED_PREFIX, ERP_ENTITY_TYPE, supplierCodeProvenance, ERP_WRITE_FEATURES, ERP_WRITE_JOB, ERP_WRITE_LIMITS, isWriteFeature, type WriteFeature } from './erpWrite.ts';
+import { ALREADY_IN_ERP_PREFIX, CARD_CODE_UNVERIFIED_PREFIX, ERP_ENTITY_TYPE, supplierCodeProvenance, ERP_WRITE_FEATURES, ERP_WRITE_JOB, ERP_WRITE_LIMITS, erpProviderReady, isWriteFeature, type WriteFeature } from './erpWrite.ts';
+import type { ErpProviderKind } from '../erp/providers.ts';
 import { PROTECTED_DEMO_INVOICES } from './erpRead.ts';
 import { ERP_PAYMENT_STATUS_TR } from './invoices.ts';
 
@@ -50,7 +51,9 @@ export async function setSupplierErpCode(tx: Tx, ctx: TenantContext, supplierId:
   if (cur.status === 'MERGED') throw conflict('supplier_merged', 'Birleştirilmiş tedarikçi kartına ERP kodu yazılmaz; birleştiği kartı kullanın.');
   const code = body.code === null ? null : validCode(body.code, 'ERP tedarikçi kodu');
   if (code !== null) {
-    const other = (await tx.query<{ id: string; legal_name: string }>(`SELECT id, legal_name FROM suppliers WHERE erp_supplier_code = $1 AND id <> $2 LIMIT 1`, [code, supplierId])).rows[0];
+    // Birleştirilmiş (MERGED) kart sayılmaz: kod birleşmede yaşayan karta taşınabilir.
+    const other = (await tx.query<{ id: string; legal_name: string }>(`SELECT id, legal_name FROM suppliers WHERE erp_supplier_code = $1 AND id <> $2
+      AND status <> 'MERGED' LIMIT 1`, [code, supplierId])).rows[0];
     if (other) throw conflict('supplier_code_duplicate', `ERP tedarikçi kodu ${code} başka bir tedarikçi kartında kayıtlı (${other.legal_name}).`, { supplierId: other.id });
   }
   if (code === cur.erp_supplier_code && (code === null || cur.erp_supplier_code_source === 'MANUAL')) return supplierErpCode(tx, ctx, supplierId);
@@ -157,15 +160,20 @@ export async function listOutbound(tx: Tx, ctx: TenantContext, q: { entityType?:
   await assertEntityVisible(tx, q.entityType, entityId);
   const features = ERP_WRITE_FEATURES.filter((f) => ERP_ENTITY_TYPE[f] === q.entityType);
   const rows = (await tx.query<OutRow>(`${OUT_SQL} WHERE o.entity_type = $1 AND o.entity_id = $2 ORDER BY o.created_at DESC, o.id LIMIT 50`, [q.entityType, entityId])).rows;
-  const eps = new Map((await tx.query<{ feature: string; enabled: boolean; write_enabled: boolean }>(`SELECT feature, enabled, write_enabled FROM integration_endpoints
-    WHERE feature = ANY($1)`, [features])).rows.map((r) => [r.feature, r]));
+  const eps = new Map((await tx.query<{ feature: string; enabled: boolean; write_enabled: boolean; provider_kind: ErpProviderKind }>(`SELECT feature, enabled, write_enabled,
+    provider_kind FROM integration_endpoints WHERE feature = ANY($1)`, [features])).rows.map((r) => [r.feature, r]));
   return {
     items: rows.map(outView),
     features: features.map((f) => {
       const ep = eps.get(f);
       const latest = rows.find((r) => r.feature === f) ?? null;
-      return { feature: f, label: ERP_FEATURE_CATALOG[f].label, enabled: ep?.enabled ?? false, writeEnabled: !!(ep?.enabled && ep.write_enabled),
-        modeLabel: ep?.enabled && ep.write_enabled ? 'ERP\'ye otomatik yazılır' : 'ERP\'ye yazma kapalı; elle iletin', manualFallback: ERP_FEATURE_CATALOG[f].manualFallback,
+      // Yazma açık olsa da sağlayıcı bu dağıtımda yapılandırılmamışsa (ERP_PROVIDER=none) otomatik yazılmaz; kayıt açılmaz.
+      const switchedOn = !!(ep?.enabled && ep.write_enabled);
+      const providerReady = ep ? erpProviderReady(ep.provider_kind) : false;
+      const writeEnabled = switchedOn && providerReady;
+      return { feature: f, label: ERP_FEATURE_CATALOG[f].label, enabled: ep?.enabled ?? false, writeEnabled,
+        modeLabel: writeEnabled ? 'ERP\'ye otomatik yazılır' : switchedOn ? 'ERP sağlayıcısı yapılandırılmadı; ERP\'ye yazılmaz, elle iletin' : 'ERP\'ye yazma kapalı; elle iletin',
+        manualFallback: ERP_FEATURE_CATALOG[f].manualFallback,
         latest: latest ? outView(latest) : null };
     }),
     // Tedarikçi kaydında kartın ERP kodu ve kökeni (Elle / ERP / ERP (taklit) / ERP (kaynağı doğrulanamadı)).
@@ -189,6 +197,8 @@ export async function recordManualOutbound(tx: Tx, ctx: TenantContext, body: { f
   if (!externalRef || externalRef.length > 120 || /[\u0000-\u001f]/.test(externalRef)) throw unprocessable('invalid_reference', 'ERP referans no 1–120 karakter olmalı.');
   const note = norm(body.note ?? '') || null;
   if (note && note.length > 1000) throw unprocessable('invalid_note', 'Not en çok 1000 karakter olabilir.');
+  // Aynı kayıt için eşzamanlı iki istek (çift tıklama) iki değiştirilemez MANUAL satırı açmasın: son kayıt aranmadan önce kayıt başına kilit.
+  await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`erp-manual:${feature}${body.entityId}`]);
   const latest = (await tx.query<{ id: string; status: string }>(`SELECT id, status FROM erp_outbound_records WHERE feature = $1 AND entity_type = $2 AND entity_id = $3
     ORDER BY created_at DESC, id LIMIT 1 FOR UPDATE`, [feature, entityType, body.entityId])).rows[0];
   if (latest && ['SENT', 'CONFIRMED'].includes(latest.status)) {

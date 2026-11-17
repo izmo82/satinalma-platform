@@ -16,7 +16,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type pg from 'pg';
 import {
-  ERP_FEATURE_CATALOG, applyFieldMap, can, dec, div, isDue, missingMappings, mul, normalizeRoles, reconcileManual, redactSecrets, str,
+  ERP_FEATURE_CATALOG, applyFieldMap, can, dec, div, isDue, missingMappings, mul, normalizeRoles, normalizeTaxId, reconcileManual, redactSecrets, str,
   type ErpFeature, type ErpInvoiceRecord, type ErpSchedule, type FieldMap,
 } from '@sp/domain';
 import type { Config } from '../config.ts';
@@ -147,8 +147,9 @@ async function prepareRead(tx: Tx, ctx: TenantContext, jobId: string, deps: ErpR
     if (e instanceof SecretOpenFailed) return refuse('secret_unreadable', 'Kayıtlı sır açılamadı; sırrı yeniden girin. İstek atılmadı.');
     throw e;
   }
-  // Nabız: çalışma alındı (bayat çalışma temizleyicisi bunu izler).
-  await tx.query(`UPDATE integration_runs SET counts = counts || $2::jsonb WHERE id = $1`, [runId, JSON.stringify({ heartbeatAt: new Date().toISOString() })]);
+  // Nabız ve alınma anı: çalışma alındı (bayat çalışma temizleyicisi bunları izler; süre sınırı kuyrukta bekleme değil alınmadan ölçülür).
+  const claimedAt = new Date().toISOString();
+  await tx.query(`UPDATE integration_runs SET counts = counts || $2::jsonb WHERE id = $1`, [runId, JSON.stringify({ heartbeatAt: claimedAt, claimedAt })]);
   return {
     kind: 'go', runId, feature, trigger: run.trigger, provider, ep, secrets: secret ? [secret] : [],
     resolved: { id: ep.id, tenantId: ctx.tenantId, feature, baseUrl: ep.base_url, resourcePath: ep.resource_path, authType: ep.auth_type,
@@ -288,21 +289,32 @@ export async function processErpRead(pool: pg.Pool, ctx: TenantContext, jobId: s
   return { runId, status: closed ? status : 'FAILED', counts };
 }
 
-/** Bayat çalışma sınırları: nabız bu kadar eskiyse ya da çalışma bu kadar uzun sürdüyse kapatılır. YALNIZ TEST değiştirir. */
-export const ERP_STALE = { heartbeatMinutes: 15, maxRunMinutes: 60 };
+/**
+ * Bayat çalışma sınırları: nabız bu kadar eskiyse ya da çalışma (alındığı andan) bu kadar uzun sürdüyse kapatılır; işi hâlâ kuyrukta
+ * (QUEUED, hiç alınmamış) çalışma yalnız `maxQueuedMinutes`'ı aşınca kapatılır (erp şeridi sıralı, bir okuma 30 dk sürebilir). YALNIZ TEST değiştirir.
+ */
+export const ERP_STALE = { heartbeatMinutes: 15, maxRunMinutes: 60, maxQueuedMinutes: 240 };
 
 /**
- * Bayat okuma çalışmalarını (işçi çöktü, iş hiç alınmadı) FAILED `stale_run` kapatır ve işini FAILED yapar; kiracı bağlamında (RLS).
+ * Bayat okuma çalışmalarını (işçi çöktü, iş çok uzun süre alınmadı) FAILED `stale_run` kapatır ve işini FAILED yapar; kiracı bağlamında (RLS).
+ * Kuyrukta bekleyen (iş QUEUED, nabız yok) çalışmanın süresi başlangıçtan değil, uzun bekleme sınırıyla ölçülür: önündeki uzun okuma onu öldürmez.
+ * Alınmış çalışmada son etkinlik nabız / işin alınma anı / başlangıçtan en yenisidir; süre sınırı alınma anından ölçülür.
  * Yazma yeniden deneme çalışmaları (mode WRITE_RETRY) ve sınamalar dokunulmaz. Döner: kapatılan çalışma sayısı.
  */
 export async function reapStaleErpRuns(tx: Tx, tenantId: string, now: Date = new Date()): Promise<number> {
-  const stale = (await tx.query<{ id: string }>(`SELECT id FROM integration_runs WHERE status = 'RUNNING' AND trigger <> 'TEST' AND coalesce(counts->>'mode', 'READ') = 'READ'
-      AND (coalesce((counts->>'heartbeatAt')::timestamptz, started_at) < $1::timestamptz - make_interval(mins => $2)
-           OR started_at < $1::timestamptz - make_interval(mins => $3))
-    ORDER BY started_at FOR UPDATE SKIP LOCKED`, [now.toISOString(), ERP_STALE.heartbeatMinutes, ERP_STALE.maxRunMinutes])).rows;
+  const stale = (await tx.query<{ id: string }>(`SELECT r.id FROM integration_runs r
+    LEFT JOIN LATERAL (SELECT j.status, j.updated_at FROM jobs j WHERE j.kind = $5 AND j.payload->>'runId' = r.id::text ORDER BY j.created_at DESC LIMIT 1) j ON true
+    WHERE r.status = 'RUNNING' AND r.trigger <> 'TEST' AND coalesce(r.counts->>'mode', 'READ') = 'READ'
+      AND CASE WHEN j.status = 'QUEUED' AND r.counts->>'heartbeatAt' IS NULL
+        THEN r.started_at < $1::timestamptz - make_interval(mins => $4)
+        ELSE greatest((r.counts->>'heartbeatAt')::timestamptz, CASE WHEN j.status = 'RUNNING' THEN j.updated_at END, r.started_at) < $1::timestamptz - make_interval(mins => $2)
+          OR coalesce((r.counts->>'claimedAt')::timestamptz, CASE WHEN j.status = 'RUNNING' THEN j.updated_at END, r.started_at) < $1::timestamptz - make_interval(mins => $3)
+      END
+    ORDER BY r.started_at FOR UPDATE OF r SKIP LOCKED`,
+  [now.toISOString(), ERP_STALE.heartbeatMinutes, ERP_STALE.maxRunMinutes, ERP_STALE.maxQueuedMinutes, ERP_READ_JOB])).rows;
   for (const r of stale) {
     await tx.query(`INSERT INTO integration_run_errors (tenant_id, run_id, code, message) VALUES ($1,$2,'stale_run',$3)`,
-      [tenantId, r.id, 'Çalışma zamanında bitmedi (işçi durmuş ya da iş alınmamış); başarısız sayıldı. Yeniden çalıştırın.']);
+      [tenantId, r.id, 'Çalışma zamanında bitmedi (işçi durmuş ya da iş uzun süre alınmamış); başarısız sayıldı. Yeniden çalıştırın.']);
     await tx.query(`UPDATE integration_runs SET status = 'FAILED', finished_at = now(), counts = counts || '{"reason":"stale_run"}'::jsonb WHERE id = $1 AND status = 'RUNNING'`, [r.id]);
     await tx.query(`UPDATE jobs SET status = 'FAILED', error_code = 'STALE_RUN', updated_at = now() WHERE kind = $1 AND payload->>'runId' = $2 AND status IN ('QUEUED','RUNNING')`,
       [ERP_READ_JOB, r.id]);
@@ -320,6 +332,20 @@ function recordKey(feature: ReadFeature, v: Record<string, string | null>): stri
 type HandlerCtx = { providerKind: ErpProviderKind; mock: boolean; runId: string };
 type Handler = (tx: Tx, ctx: TenantContext, v: Record<string, string | null>, h: HandlerCtx) => Promise<HandlerResult>;
 
+/**
+ * ERP'den gelen VKN/TCKN eşleme anahtarı: baştaki "TR" öneki, boşluk, nokta ve tire atılır (uygulamadaki tax_id rakam olarak saklanır).
+ * Geçerli VKN/TCKN ise domain `normalizeTaxId` sonucu; kontrol basamağı tutmasa da rakamlar (eşleşme yine tam eşitlikle). Rakam değilse
+ * (yabancı kimlik) kırpılmış hali. Boşsa null.
+ */
+export function erpTaxKey(raw: string | null | undefined): string | null {
+  const t = (raw ?? '').trim();
+  if (!t) return null;
+  const digits = t.replace(/^TR(?=[\s.\-]*\d)/i, '').replace(/[\s.\-]/g, '');
+  if (!/^\d+$/.test(digits)) return t;
+  const n = digits.length === 11 ? normalizeTaxId('TR', 'TCKN', digits) : normalizeTaxId('TR', 'VKN', digits);
+  return n.ok ? n.normalized : digits;
+}
+
 type SupplierRow = { id: string; erp_supplier_code: string | null; erp_supplier_code_source: 'ERP' | 'MANUAL' | null };
 /** Tedarikçi: ERP kodu verilmişse önce kodla, yoksa (ya da bulunmazsa) VKN ile; birleştirilmiş kart hariç. Yeni kart açılmaz (R12). */
 async function resolveSupplier(tx: Tx, taxId: string | null, code: string | null, lock = false):
@@ -331,8 +357,9 @@ async function resolveSupplier(tx: Tx, taxId: string | null, code: string | null
     if (byCode.length === 1) return { kind: 'ok', row: byCode[0]! };
     if (byCode.length > 1) return { kind: 'ambiguous' };
   }
-  if (!taxId) return { kind: 'none' };
-  const byTax = await q('tax_id', taxId);
+  const key = erpTaxKey(taxId);
+  if (!key) return { kind: 'none' };
+  const byTax = await q('tax_id', key);
   return byTax.length === 1 ? { kind: 'ok', row: byTax[0]! } : byTax.length ? { kind: 'ambiguous' } : { kind: 'none' };
 }
 const NOT_MATCHED = 'VKN uygulamadaki hiçbir tedarikçiyle eşleşmedi; yeni tedarikçi açılmadı (onay akışı uygulamada kalır).';
@@ -351,7 +378,8 @@ const supplierHandler: Handler = async (tx, ctx, v, h) => {
     return { outcome: 'skipped', notes: [{ code: 'CONFLICT_MANUAL',
       message: `Elle girilen değerle çelişiyor: kartta elle girilmiş ERP tedarikçi kodu (${cur.erp_supplier_code}) korundu; ERP'deki kod ${code}.` }] };
   }
-  const other = (await tx.query(`SELECT 1 FROM suppliers WHERE erp_supplier_code = $1 AND id <> $2 LIMIT 1`, [code, cur.id])).rowCount;
+  // Birleştirilmiş (MERGED) kart sayılmaz: kod birleşmede yaşayan karta taşınabilir.
+  const other = (await tx.query(`SELECT 1 FROM suppliers WHERE erp_supplier_code = $1 AND id <> $2 AND status <> 'MERGED' LIMIT 1`, [code, cur.id])).rowCount;
   if (other) return failed('supplier_code_duplicate', `ERP tedarikçi kodu ${code} başka bir tedarikçi kartında kayıtlı; ikinci karta yazılmadı.`);
   await tx.query(`UPDATE suppliers SET erp_supplier_code = $2, erp_supplier_code_source = 'ERP' WHERE id = $1`, [cur.id, code]);
   await audit(tx, ctx, 'supplier.erp_code_set', 'supplier', cur.id, { from: cur.erp_supplier_code, to: code, source: 'ERP', runId: h.runId, mock: h.mock });
@@ -548,7 +576,7 @@ export async function importErpInvoice(tx: Tx, ctx: TenantContext, r: ErpInvoice
   // Yeni fatura: şirket tahmin edilmez (alıcı VKN eşlenmişse o; yoksa kiracıda tek şirket varsa o).
   let companyId: string;
   if (r.companyTaxId?.trim()) {
-    const c = (await tx.query<{ id: string }>(`SELECT id FROM legal_entities WHERE tax_id = $1 LIMIT 2`, [r.companyTaxId.trim()])).rows;
+    const c = (await tx.query<{ id: string }>(`SELECT id FROM legal_entities WHERE tax_id = $1 LIMIT 2`, [erpTaxKey(r.companyTaxId)])).rows;
     if (c.length !== 1) return reject('company_not_found', 'Alıcı şirket VKN\'si kiracıdaki bir şirketle eşleşmedi; fatura açılmadı.');
     companyId = c[0]!.id;
   } else {
@@ -598,9 +626,10 @@ export async function enqueueTenantErpReads(tx: Tx, tenantId: string, now: Date,
     const schedule: ErpSchedule = { mode: e.schedule_kind, intervalMinutes: e.schedule_interval_min ?? undefined, dailyTime: e.daily ?? undefined };
     const due = isDue(schedule, e.last_slot, now);
     if (!due.due) continue;
-    // Süren çalışma varsa bu dakika atlanır (yuva işaretlenmez; çalışma bitince aynı yuvada alınır).
+    // Süren okuma çalışması varsa bu dakika atlanır (yuva işaretlenmez; çalışma bitince aynı yuvada alınır). Yazma çalışmaları
+    // (WRITE olay / WRITE_RETRY) okumayı geciktirmez.
     const running = (await tx.query(`SELECT 1 FROM integration_runs WHERE feature = $1 AND status = 'RUNNING' AND trigger <> 'TEST'
-      AND started_at > now() - interval '30 minutes' LIMIT 1`, [e.feature])).rowCount;
+      AND coalesce(counts->>'mode', 'READ') = 'READ' AND started_at > now() - interval '30 minutes' LIMIT 1`, [e.feature])).rowCount;
     if (running) continue;
     const provider = resolve(e.provider_kind);
     if (!provider || !e.updated_by) {

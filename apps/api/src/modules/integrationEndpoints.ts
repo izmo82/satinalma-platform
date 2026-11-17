@@ -80,7 +80,11 @@ const RUN_SQL = `SELECT r.id, r.feature, r.trigger, r.provider_kind, r.mock, r.s
   FROM integration_runs r LEFT JOIN users u ON u.id = r.requested_by`;
 
 function runView(r: RunRow) {
-  const base = RUN_STATUS_LABEL[r.status] ?? r.status;
+  const c = (r.counts ?? {}) as Record<string, unknown>;
+  // Yazma yeniden denemesinde hiçbir kayıt gönderilmediyse düz "Başarılı" denmez.
+  const base = r.status === 'SUCCESS' && c.mode === 'WRITE_RETRY' && c.allSkipped === true ? 'Başarılı — hiçbir kayıt gönderilmedi (hepsi atlandı)'
+    : r.status === 'SUCCESS' && c.mode === 'WRITE_RETRY' && c.queued === 0 ? 'Başarılı — bekleyen yazma kaydı yoktu'
+      : RUN_STATUS_LABEL[r.status] ?? r.status;
   return {
     id: r.id, feature: r.feature, trigger: r.trigger, triggerLabel: RUN_TRIGGER_LABEL[r.trigger] ?? r.trigger,
     status: r.status, statusLabel: r.mock ? `${base} (${MOCK_NOTE})` : base,
@@ -448,9 +452,10 @@ export async function requestRun(tx: Tx, ctx: TenantContext, config: ErpCfg, fea
     return { runId, status: 'NOT_CONFIGURED', statusLabel: RUN_STATUS_LABEL.NOT_CONFIGURED, reason, queued: 0 };
   }
 
-  // Olay güdümlü tek kayıt yazma çalışmaları (trigger EVENT, Görev 6) "Şimdi çalıştır"ı engellemez.
+  // Olay güdümlü tek kayıt yazma çalışmaları (trigger EVENT, Görev 6) "Şimdi çalıştır"ı engellemez; yalnız aynı kipteki çalışma engeller
+  // (okuma yazma çalışmasını, yazma yeniden denemesi okumayı beklemez).
   const running = await tx.query<{ id: string }>(`SELECT id FROM integration_runs WHERE feature = $1 AND status = 'RUNNING' AND trigger NOT IN ('TEST','EVENT')
-    AND started_at > now() - interval '30 minutes' ORDER BY started_at DESC LIMIT 1`, [feature]);
+    AND coalesce(counts->>'mode', 'READ') = $2 AND started_at > now() - interval '30 minutes' ORDER BY started_at DESC LIMIT 1`, [feature, mode]);
   if (running.rows[0]) throw conflict('run_in_progress', 'Bu özellik için bir çalışma sürüyor; bitince yeniden deneyin.', { runId: running.rows[0].id });
 
   const mock = !provider!.real;

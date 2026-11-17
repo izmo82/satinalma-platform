@@ -48,6 +48,7 @@ import * as contractApprovals from './modules/contractApprovals.ts';
 import { directoryProvider, type DirectoryProvider } from './directory/provider.ts';
 import * as emailOutbox from './modules/emailOutbox.ts';
 import { configureMailChannel } from './mail/index.ts';
+import { configureErpRuntime } from './modules/erpWrite.ts';
 import { taskRoleSql, visibleTaskSql } from './tasks.ts';
 import { complianceReportPdf, decisionSummaryPdf, evaluationWorkbook } from './reports.ts';
 import { RateLimiter, rateLimited } from './rateLimit.ts';
@@ -110,6 +111,8 @@ export async function buildApp(deps: AppDeps) {
 
   // v2 Faz 5 (R6): e-posta kanalı (varsayılan none → NOT_CONFIGURED). R5: üretimde virüs taraması kapalıysa açılışta uyarı (reddedilmez).
   const mail = configureMailChannel(deps.config.mail);
+  // v2 Faz 8: olay noktalarındaki ERP kuyruğa alma ve detay ekranı sağlayıcının yapılandırılıp yapılandırılmadığını buradan okur.
+  configureErpRuntime(deps.config);
   if (deps.config.env === 'production' && (deps.config.av?.kind ?? 'none') === 'none') {
     app.log.warn('AV_SCANNER=none: virüs taraması yapılandırılmadı; yüklenen dosyalar "Virüs taraması yapılandırılmadı" olarak işaretlenir');
   }

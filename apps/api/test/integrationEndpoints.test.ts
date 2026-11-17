@@ -413,3 +413,22 @@ describe('sınama: sıklık sınırı ve eski ayar', () => {
     expect((await card('PAYMENT_STATUS')).lastTest).toMatchObject({ ok: true });
   });
 });
+
+describe('bütün faz incelemesi #2: yazma çalışması okumayı geciktirmez', () => {
+  it('SUPPLIER: RUNNING WRITE_RETRY varken "Şimdi çalıştır" (okuma) 202; aynı kipte (WRITE_RETRY) yine 409', async () => {
+    expect((await h.call('tenantAdmin', 'PUT', url('SUPPLIER'), { body: basic('SUPPLIER', { enabled: true }) })).status).toBe(200);
+    expect((await h.call('tenantAdmin', 'POST', url('SUPPLIER', '/test'))).body.ok).toBe(true);
+    expect((await h.call('tenantAdmin', 'POST', url('SUPPLIER', '/write-enable'), { body: { confirm: true } })).status).toBe(200);
+    const ep = (await h.owner.query<{ id: string }>(`SELECT id FROM integration_endpoints WHERE tenant_id = $1 AND feature = 'SUPPLIER'`, [h.world.tenantA])).rows[0]!.id;
+    const write = (await h.owner.query<{ id: string }>(`INSERT INTO integration_runs (tenant_id, endpoint_id, feature, trigger, provider_kind, mock, status, counts, requested_by)
+      VALUES ($1,$2,'SUPPLIER','MANUAL','TAKLIT',true,'RUNNING','{"mode":"WRITE_RETRY","queued":1}',$3) RETURNING id`, [h.world.tenantA, ep, h.world.users.tenantAdmin.id])).rows[0]!.id;
+    const read = await h.call('tenantAdmin', 'POST', url('SUPPLIER', '/run'), { body: { target: 'READ' } });
+    expect(read.status, JSON.stringify(read.body)).toBe(202);
+    expect(read.body).toMatchObject({ status: 'RUNNING', queued: 1 });
+    const retry = await h.call('tenantAdmin', 'POST', url('SUPPLIER', '/run'), { body: { target: 'WRITE_RETRY' } });
+    expect([retry.status, retry.body.error?.code, retry.body.error?.details?.runId]).toEqual([409, 'run_in_progress', write]);
+    // Okuma sürerken ikinci okuma yine 409.
+    expect((await h.call('tenantAdmin', 'POST', url('SUPPLIER', '/run'), { body: { target: 'READ' } })).body.error.code).toBe('run_in_progress');
+    await h.owner.query(`UPDATE integration_runs SET status = 'FAILED', finished_at = now() WHERE id = ANY($1)`, [[write, read.body.runId]]);
+  });
+});
