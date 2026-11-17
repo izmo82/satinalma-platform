@@ -16,10 +16,22 @@ struct InvoicesList: View {
                 ForEach(rows.sorted { (rank($0), $1.issueDate) < (rank($1), $0.issueDate) }) { x in
                     NavigationLink(value: x) {
                         VStack(alignment: .leading, spacing: 2) {
-                            AdaptiveStack { Text(x.invoiceNo).font(.body.weight(.semibold)); Text(x.matchText).font(.caption).foregroundStyle(x.matched == true ? Color.secondary : Color.orange) }
+                            AdaptiveStack {
+                                Text(x.invoiceNo).font(.body.weight(.semibold))
+                                // v2: durum sunucunun eşleşme durumundan; hukuken iptal/ret her zaman görünür. Sunucuda yoksa eski etiket.
+                                if x.legalStatus == "RECEIVED", let label = x.matchStateLabel {
+                                    Text(label).font(.caption).foregroundStyle(label == "Eşleşmedi" ? Color.orange : Color.secondary)
+                                } else {
+                                    Text(x.matchText).font(.caption).foregroundStyle(x.matched == true ? Color.secondary : Color.orange)
+                                }
+                            }
                             Text(x.supplierName).font(.subheadline)
                             if let name = x.contract?.displayName {
                                 Text("Sözleşme: \(name)").font(.caption).foregroundStyle(.secondary)
+                            }
+                            // Eski tahsis kontrolü bilgisi erişilebilir kalır (v2 durumu ayrı gösterilirken).
+                            if x.legalStatus == "RECEIVED", x.matchStateLabel != nil, x.matched != true {
+                                Text("Tahsis kontrolü: Eşleşmedi").font(.caption2).foregroundStyle(.secondary)
                             }
                             if let note = Labels.supplierNote(x.supplierStatus, verified: x.supplierIdentityVerified) { Text(note).font(.caption).foregroundStyle(.orange) }
                             Text("Departman: \(x.departmentName ?? "Departmansız")").font(.caption).foregroundStyle(.secondary)
@@ -66,7 +78,7 @@ struct InvoiceView: View {
                     if let note = Labels.supplierNote(d.invoice.supplierStatus, verified: d.invoice.supplierIdentityVerified) { LabeledContent("Tedarikçi durumu") { Text(note).foregroundStyle(.orange) } }
                     LabeledContent("Departman", value: d.invoice.departmentName ?? "Departmansız")
                     LabeledContent("Tarih", value: Fmt.date(d.invoice.issueDate))
-                    LabeledContent("Eşleşme", value: d.matchText)
+                    LabeledContent(d.match == nil ? "Eşleşme" : "Tahsis kontrolü", value: d.matchText)
                     LabeledContent("Net", value: Fmt.money(d.check.netAmount, d.invoice.currency))
                     LabeledContent("KDV", value: Fmt.money(d.check.taxTotal, d.invoice.currency))
                     LabeledContent("Vergi dahil", value: Fmt.money(d.check.grossAmount, d.invoice.currency))
@@ -135,7 +147,8 @@ struct InvoiceMatchSection: View {
                 let cur = u.currency ?? currency
                 VStack(alignment: .leading, spacing: 2) {
                     LabeledContent("Kullanım", value: u.amount == nil ? "\(Fmt.money(u.used, cur)) (sözleşme tutarı yok)" : "\(Fmt.money(u.used, cur)) / \(Fmt.money(u.amount, cur))")
-                    if let w = u.warning ?? (u.levelLabel == "Aşım" ? u.levelLabel : nil) { Text(w).font(.footnote.weight(.semibold)).foregroundStyle(.orange) }
+                    if let l = u.levelLabel { Text(l).font(.caption).foregroundStyle(.secondary) }
+                    if let w = u.warning { Text(w).font(.footnote.weight(.semibold)).foregroundStyle(.orange) }
                 }.accessibilityElement(children: .combine)
             }
         } header: { Text("Eşleşme") } footer: { Text("Elle bağlama web uygulamasında yapılır.") }

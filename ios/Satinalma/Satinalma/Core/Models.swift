@@ -140,7 +140,10 @@ struct InvoiceRow: Decodable, Identifiable, Sendable, Hashable {
     /// v2 Faz 7: bağlı sözleşme (kod ve ad); eski sunucuda ya da bozuk alanda nil.
     private let lossyContract: Lossy<MatchInfo.Ref>?
     var contract: MatchInfo.Ref? { lossyContract?.value }
-    enum CodingKeys: String, CodingKey { case id, kind, invoiceNo, issueDate, currency, supplierName, netAmount, legalStatus, supplierStatus, supplierIdentityVerified, matched, departmentName; case lossyContract = "contract" }
+    /// v2 Faz 7 eşleşme durumu etiketi (sunucudan); yoksa nil ve eski etiket kullanılır.
+    private let lossyState: Lossy<String>?
+    var matchStateLabel: String? { lossyState?.value }
+    enum CodingKeys: String, CodingKey { case id, kind, invoiceNo, issueDate, currency, supplierName, netAmount, legalStatus, supplierStatus, supplierIdentityVerified, matched, departmentName; case lossyContract = "contract"; case lossyState = "matchStateLabel" }
     var matchText: String { legalStatus != "RECEIVED" ? "Hukuken iptal/ret" : matched == true ? "Eşleşti" : "Eşleşmedi" }
 }
 struct InvoiceList: Decodable, Sendable { let items: [InvoiceRow] }

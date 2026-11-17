@@ -19,6 +19,7 @@ struct CoiDeclarationView: View {
     @State private var sending = false
     @State private var notice: Notice?
     @State private var done = false
+    private static let maxChars = 4000
 
     private var trimmed: String { statement.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var canSend: Bool { kind == "NONE" || (kind == "DECLARED" && trimmed.count >= 10) }
@@ -45,6 +46,8 @@ struct CoiDeclarationView: View {
             }
             if done {
                 Section { Label("Beyanınız kaydedildi.", systemImage: "checkmark.circle").foregroundStyle(.green) }
+            } else if info == nil && error != nil {
+                // Bilgi alınamadı: form gösterilmez, hata ve yeniden deneme.
             } else if info?.me?.canDeclare == false {
                 Section { Text("Bu proje için beyan verme yetkiniz yok; beyan web uygulamasında ilgili kişi tarafından verilir.").font(.footnote).foregroundStyle(.secondary) }
             } else {
@@ -54,6 +57,8 @@ struct CoiDeclarationView: View {
                     if kind == "DECLARED" {
                         TextField("Açıklama (en az 10 karakter)", text: $statement, axis: .vertical).lineLimit(3...8)
                             .accessibilityLabel("Çıkar çatışması açıklaması")
+                            .accessibilityHint("En az 10 karakter gerekli.")
+                            .onChange(of: statement) { _, v in if v.count > Self.maxChars { statement = String(v.prefix(Self.maxChars)) } }
                         if !trimmed.isEmpty && trimmed.count < 10 { Text("Açıklama en az 10 karakter olmalı.").font(.footnote).foregroundStyle(.orange) }
                     }
                 } header: { Text("Beyanınız") }
@@ -67,6 +72,12 @@ struct CoiDeclarationView: View {
         }
         .navigationTitle("Çıkar çatışması beyanı").navigationBarTitleDisplayMode(.inline)
         .task { await load() }
+        .task(id: done) {
+            // Başarı sonrası kısa gösterim; görünüm kapanırsa görev iptal olur.
+            guard done else { return }
+            try? await Task.sleep(for: .milliseconds(900))
+            if !Task.isCancelled { dismiss() }
+        }
     }
 
     private func choice(_ value: String, _ label: String) -> some View {
@@ -91,8 +102,6 @@ struct CoiDeclarationView: View {
             let _: Empty = try await session.post("/api/v1/projects/\(projectId)/coi", body: DeclBody(kind: kind, statement: kind == "DECLARED" ? trimmed : nil))
             done = true; notice = nil
             NotificationCenter.default.post(name: .tasksChanged, object: nil)
-            try? await Task.sleep(for: .milliseconds(900))
-            dismiss()
-        } catch { notice = Notice.from(error) }
+        } catch { notice = Notice.formResult(error) }
     }
 }
