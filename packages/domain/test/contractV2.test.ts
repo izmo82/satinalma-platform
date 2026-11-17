@@ -35,7 +35,7 @@ describe('missingRequired', () => {
 });
 
 describe('contractStatus', () => {
-  const base = { missing: [], chains: [], legacy: false, endDate: '2028-12-31', indefinite: false, today: '2026-11-17' } as const;
+  const base: Parameters<typeof contractStatus>[0] = { missing: [], chains: [], legacy: false, endDate: '2028-12-31', indefinite: false, today: '2026-11-17' };
   it('eksik alan', () => expect(contractStatus({ ...base, missing: ['project'] })).toEqual({ code: 'INCOMPLETE', label: 'Eksik alan' }));
   it('taslak', () => expect(contractStatus(base)).toEqual({ code: 'DRAFT', label: 'Taslak' }));
   it('onayda: sıradaki adım unvanı', () => {
@@ -132,7 +132,7 @@ describe('reminderDates', () => {
   });
   it('otomatik yenilemede ihbar-30 eklenir', () => {
     const r = reminderDates({ ...base, autoRenewal: true, noticeDeadline: '2028-09-30' });
-    expect(r.at(-1)).toEqual({ offset: 30, date: '2028-08-31', kind: 'NOTICE', includeProcurement: true });
+    expect(r[0]).toEqual({ offset: 30, date: '2028-08-31', kind: 'NOTICE', includeProcurement: true });
     expect(r).toHaveLength(5);
   });
   it('süresizde yalnız ihbar', () => {
