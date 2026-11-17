@@ -1,5 +1,6 @@
 // v2 Faz 1 (D93/D95): ikiz "Kritik engel" görevi (036) ve kod koruması testleri eklendi; mevcut testler değişmedi.
 // v2 Faz 1 düzeltme dalgası: departmansız eski kayıtlara departman atanır (C1, D96) ve görevler kaydın departmanını izler (I3, D100).
+// v2 (D102): Yönetici bütün şirketleri gördüğü için departmansız kaydı listeler ve atar (önceki 404 beklentisi kalktı).
 // Tüm veri sentetik; her koşu kendi kiracısını kurar (harness).
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
@@ -164,13 +165,14 @@ describe('C1 departmansız kayıtlara departman atama', () => {
     const missing = await assign('legal', 'project', [p, randomUUID()], bt);
     expect(missing.status).toBe(404);
     expect(await deptOf('projects', p)).toBeNull();
-    // Yönetici: atama yetkisi var; şirket kapsamı olmadığından şirket kayıtlarını görmez (kapsam kullanıcı kararı; değiştirilmedi).
-    expect((await assign('tenantAdmin', 'project', [p], bt)).status).toBe(404);
+    expect(await deptOf('projects', p)).toBeNull();
+    // v2 (D102): Yönetici bütün şirketleri görür; departmansız kaydı listeler ve atar.
     const adminList = await h.call('tenantAdmin', 'GET', '/api/v1/department-assignments/unassigned');
     expect(adminList.status).toBe(200);
-    expect(adminList.body.projects).toEqual([]);
-    expect(adminList.body.companyScopeEmpty).toBe(true);
-    expect(await deptOf('projects', p)).toBeNull();
+    expect((adminList.body.projects as { id: string }[]).some((x) => x.id === p)).toBe(true);
+    expect(adminList.body.companyScopeEmpty).toBe(false);
+    expect((await assign('tenantAdmin', 'project', [p], bt)).status).toBe(200);
+    expect(await deptOf('projects', p)).toBe(bt);
   });
 });
 

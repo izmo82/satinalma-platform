@@ -1,3 +1,4 @@
+// v2 (D102, kullanıcı kararı 17.11.2026): Yönetici bütün şirketleri gördüğünden AI çalıştırma kaydını da görür (önceki 'görmez' beklentisi kalktı).
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { syntheticVkn } from '@sp/domain';
@@ -85,8 +86,8 @@ describe('T22 kaynaksız alan ve belge içi talimat', () => {
     expect(by.payable_amount).toMatchObject({ value: null, confidence: 'MISSING' });
     expect(by.payable_amount.source.flags).toContain('SOURCE_NOT_FOUND');
     expect(by.approve_payment).toBeUndefined();
-    // Çalıştırma kayıtları şirket kapsamlıdır: kiracı yöneticisi (şirket erişimi yok) görmez, satınalma yöneticisi görür.
-    expect((await h.call('tenantAdmin', 'GET', '/api/v1/ai/overview')).body.runs.find((r: any) => r.entityId === up.body.documentVersionId)).toBeUndefined();
+    // Çalıştırma kayıtları şirket kapsamlıdır; v2 (D102) Yönetici kiracının bütün şirketlerini kapsadığı için görür.
+    expect((await h.call('tenantAdmin', 'GET', '/api/v1/ai/overview')).body.runs.find((r: any) => r.entityId === up.body.documentVersionId)).toBeDefined();
     const ov = (await h.call('legal2', 'GET', '/api/v1/ai/overview')).body;
     const run = ov.runs.find((r: any) => r.entityId === up.body.documentVersionId);
     expect(run).toMatchObject({ status: 'SUCCEEDED', estimatedCost: '0.700000', actualCost: '0.650000' });

@@ -1,5 +1,5 @@
 // v2 Faz 1 düzeltme dalgası (C1, D96): Yönetim > Kullanıcılar ve Entra > Departmansız kayıtlar. Satınalma departmansız eski kayda
-// departman atar; atanan departmanın kullanıcısı kaydı görür. Yönetici'nin şirket kapsamı yok (kullanıcı kararı): dürüst açıklama görür.
+// departman atar; atanan departmanın kullanıcısı kaydı görür. Yönetici bütün şirketleri görür (D102): departmansız projeleri listeler, kapsam uyarısı görmez.
 // Veri değiştiren adım yalnız 1440'ta; yeni sentetik proje oluşturur, mevcut kayda dokunmaz.
 import { expect, test, type Page } from '@playwright/test';
 
@@ -49,7 +49,7 @@ test('Satınalma departmansız projeyi BT\'ye atar; BT departman kullanıcısı 
   await expect(page.getByText('Departman: Bilgi Teknolojileri')).toBeVisible();
 });
 
-test('Departmansız kayıtlar: Satınalma listeyi görür; Yönetici şirket kapsamı açıklamasını görür; sayfa taşmaz', async ({ page }) => {
+test('Departmansız kayıtlar: Satınalma ve Yönetici listeyi görür; sayfa taşmaz', async ({ page }) => {
   await login(page, 'kerem.hukuk@example.test');
   await page.goto('/yonetim/kullanicilar');
   const section = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Departmansız kayıtlar' }) });
@@ -62,8 +62,9 @@ test('Departmansız kayıtlar: Satınalma listeyi görür; Yönetici şirket kap
 
   await login(page, 'tamer.yonetici@example.test');
   await page.goto('/yonetim/kullanicilar');
-  await expect(page.getByText('Yönetici rolünün şirket kapsamı yok')).toBeVisible();
-  await expect(page.getByRole('heading', { name: /^Tedarikçi değerlendirmeleri/ })).toBeVisible();
+  // v2 (D102, kullanıcı kararı 17.11.2026): Yönetici kiracının bütün şirketlerini görür; önceki "kapsam yok" uyarısı beklentisi kalktı.
+  await expect(page.getByText('Şirket kapsamınız yok')).toHaveCount(0);
+  for (const h of [/^Projeler/, /^Sözleşmeler/, /^Tedarikçi değerlendirmeleri/]) await expect(section.getByRole('heading', { name: h })).toBeVisible();
   expect(await fits(page)).toBe(true);
 });
 

@@ -1,4 +1,5 @@
 // v2 Faz 1 (D93/D95): TenantContext departmentIds/allDepartments ister; Yönetici belge okur (şirket kapsamı RLS'de); T07 ayrılığı iki ayrı Satınalma kullanıcısıyla
+// v2 (D102, kullanıcı kararı 17.11.2026): T02'de Yönetici artık kiracının bütün şirketlerini görür; kapsam rolden türetilir.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { syntheticVkn } from '@sp/domain';
@@ -47,24 +48,27 @@ describe('T01 kiracı izolasyonu', () => {
   });
 });
 
+// v2 (D102, kullanıcı kararı 17.11.2026): Yönetici kiracının bütün şirketlerini görür; v1 "kiracı yöneticisi otomatik görmez" kuralı kalktı.
 describe('T02 şirket kapsamı', () => {
-  it('aynı kiracıda yetkisiz şirket belgesi reddedilir; kiracı yöneticisi otomatik görmez', async () => {
+  it('aynı kiracıda yetkisiz şirket belgesi reddedilir; Yönetici rolü bütün şirketleri görür, rol kalkınca kapsam da kalkar', async () => {
     const up = await uploadInvoice('masterData', invoice({ sellerVkn: syntheticVkn('300000002') }), h.world.companyA2.id);
     expect(up.status).toBe(201);
     const url = `/api/v1/document-versions/${up.body.documentVersionId}`;
     expect((await h.call('buyer', 'GET', url)).status).toBe(404); // buyer yalnız A1
-    // v2 (D93): Yönetici belge okuma iznine sahip, ama şirket kapsamı boş: RLS kaydı göstermez (otomatik görmez).
-    expect((await h.call('tenantAdmin', 'GET', url)).status).toBe(404);
+    // Saklanan şirket listesi boş olsa da Yönetici rolü kiracının bütün şirketlerini kapsar (039).
+    expect((await h.call('tenantAdmin', 'GET', url)).status).toBe(200);
     expect((await h.call('multi', 'GET', url, { tenant: h.world.tenantA })).status).toBe(200); // A2 üyesi
-    // Yönetici yalnız üyeliğindeki şirketlerin belgesini görür: A1 kapsamı A2 belgesini açmaz, A2 kapsamı açar.
-    const adminScope = (companies: string[]) => h.owner.query(`UPDATE memberships SET company_ids = $3 WHERE tenant_id = $1 AND user_id = $2`, [h.world.tenantA, h.world.users.tenantAdmin.id, companies]);
+    const me = await h.call('tenantAdmin', 'GET', '/api/v1/me');
+    const ids = (me.body.companies as { id: string }[]).map((c) => c.id).sort();
+    expect(ids).toEqual([h.world.companyA1.id, h.world.companyA2.id].sort()); // başka kiracının şirketi yok
+    // Kapsam saklanmaz, rolden türetilir: Yönetici rolü kalkınca (Denetçi, saklanan liste boş) belge görünmez.
+    const setRoles = (roles: string[]) => h.owner.query(`UPDATE memberships SET roles = $3 WHERE tenant_id = $1 AND user_id = $2`, [h.world.tenantA, h.world.users.tenantAdmin.id, roles]);
+    const before = (await h.owner.query(`SELECT roles FROM memberships WHERE tenant_id = $1 AND user_id = $2`, [h.world.tenantA, h.world.users.tenantAdmin.id])).rows[0].roles;
     try {
-      await adminScope([h.world.companyA1.id]);
+      await setRoles(['AUDITOR']);
       expect((await h.call('tenantAdmin', 'GET', url)).status).toBe(404);
-      await adminScope([h.world.companyA2.id]);
-      expect((await h.call('tenantAdmin', 'GET', url)).status).toBe(200);
     } finally {
-      await adminScope([]);
+      await setRoles(before);
     }
     // Yetkisiz şirkete yükleme
     const bad = await uploadInvoice('buyer', invoice({ sellerVkn: syntheticVkn('300000003') }), h.world.companyA2.id);

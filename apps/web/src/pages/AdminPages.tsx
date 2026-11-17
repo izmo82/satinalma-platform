@@ -258,8 +258,8 @@ function UnassignedRecords({ deps }: { deps: Department[] }) {
   return (
     <div className="grid gap-4">
       {d.companyScopeEmpty && (
-        <Banner tone="info" title="Yönetici rolünün şirket kapsamı yok">
-          Bu yüzden departmansız proje ve sözleşmeler size listelenmez; onları Satınalma kullanıcıları görür ve departmana atar. Tedarikçi değerlendirmeleri şirkete bağlı olmadığından aşağıda görünür.
+        <Banner tone="info" title="Şirket kapsamınız yok">
+          Kurumda tanımlı şirket olmadığı için departmansız proje ve sözleşme listelenmez. Tedarikçi değerlendirmeleri şirkete bağlı olmadığından aşağıda görünür.
         </Banner>
       )}
       {empty && !d.companyScopeEmpty ? <p className="text-ink-muted">Departmanı atanmamış kayıt yok.</p> : <>
