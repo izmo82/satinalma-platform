@@ -48,6 +48,16 @@ describe('matchInvoice (R2)', () => {
     expect(matchInvoice({ invoice: inv({ erpContractRef: 'szl-im-7' }), contracts: [C({ code: 'SZL-IM-7' })], orders: [] })).toEqual({ method: 'ERP_REF', familyId: 'F1' });
     expect(matchInvoice({ invoice: inv({ erpOrderRef: 'po-im-9' }), contracts: [C()], orders: [{ code: 'PO-IM-9', familyId: 'F1' }] })).toEqual({ method: 'ERP_REF', familyId: 'F1' });
   });
+  it('referans yalnız yürürlükteki aileye bağlar (APPROVED, LEGACY, EXPIRED); taslak/onayda/ret → ref_contract_not_active', () => {
+    for (const status of ['APPROVED', 'LEGACY', 'EXPIRED']) {
+      expect(matchInvoice({ invoice: inv({ erpContractRef: 'SOZ-001' }), contracts: [C({ status })], orders: [] })).toEqual({ method: 'ERP_REF', familyId: 'F1' });
+    }
+    for (const status of ['DRAFT', 'IN_APPROVAL', 'REJECTED', 'INCOMPLETE']) {
+      expect(matchInvoice({ invoice: inv({ erpContractRef: 'SOZ-001' }), contracts: [C({ status })], orders: [] })).toEqual({ method: 'UNMATCHED', reason: 'ref_contract_not_active' });
+      expect(matchInvoice({ invoice: inv({ erpOrderRef: 'PO-9' }), contracts: [C({ status })], orders: [{ code: 'PO-9', familyId: 'F1' }] })).toEqual({ method: 'UNMATCHED', reason: 'ref_contract_not_active' });
+    }
+    expect(MATCH_REASON_TR.ref_contract_not_active).toBe('ERP referansındaki sözleşme yürürlükte değil (taslak, onayda ya da reddedilmiş)');
+  });
   it('çözülemeyen referans tarih eşleşmesine düşmez: ref_not_found', () => {
     expect(matchInvoice({ invoice: inv({ erpContractRef: 'YOK' }), contracts: [C()], orders: [] })).toEqual({ method: 'UNMATCHED', reason: 'ref_not_found' });
     expect(matchInvoice({ invoice: inv({ erpOrderRef: 'PO-X' }), contracts: [C()], orders: [] })).toEqual({ method: 'UNMATCHED', reason: 'ref_not_found' });

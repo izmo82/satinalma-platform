@@ -106,6 +106,15 @@ describe('otomatik eşleştirme (R2)', () => {
     expect(d.body).toHaveProperty('checkFingerprint');
   });
 
+  it('M6: referans onaydaki sözleşmeyi gösterirse bağlamaz → ref_contract_not_active', async () => {
+    const s = await supplier();
+    const open = await contract({ supplierId: s, chain: 'OPEN' });
+    await contract({ supplierId: s }); // tek aktif: tarih yolu eşleşirdi, referans konuşur
+    const a = await invoice(s, { contractRef: open.code });
+    expect(a.match).toMatchObject({ state: 'UNMATCHED', reason: 'ref_contract_not_active', reasonLabel: 'ERP referansındaki sözleşme yürürlükte değil (taslak, onayda ya da reddedilmiş)' });
+    expect((await inv(a.id)).contract_family_id).toBeNull();
+  });
+
   it('ERP sipariş referansı → siparişin sözleşme ailesi', async () => {
     const s = await supplier();
     const c = await contract({ supplierId: s });

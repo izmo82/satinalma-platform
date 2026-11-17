@@ -10,7 +10,7 @@ export interface LinkContract {
   projectId: string | null; departmentId: string | null;
 }
 /** `link_failed`: karar verildi ama bağ kaydedilemedi (API yedeği; `matchInvoice` döndürmez). */
-export type UnmatchedReason = 'ref_not_found' | 'ref_conflict' | 'ref_supplier_mismatch' | 'no_active_contract' | 'multiple_active_contracts' | 'link_failed';
+export type UnmatchedReason = 'ref_not_found' | 'ref_conflict' | 'ref_supplier_mismatch' | 'no_active_contract' | 'multiple_active_contracts' | 'ref_contract_not_active' | 'link_failed';
 export type MatchResult =
   | { method: 'ERP_REF' | 'SUPPLIER_DATE'; familyId: string }
   | { method: 'UNMATCHED'; reason: UnmatchedReason };
@@ -21,6 +21,7 @@ export const MATCH_REASON_TR: Record<UnmatchedReason, string> = {
   ref_supplier_mismatch: 'ERP referansı başka tedarikçinin sözleşmesini gösteriyor',
   no_active_contract: 'Tedarikçinin fatura tarihinde geçerli onaylı sözleşmesi yok',
   multiple_active_contracts: 'Tedarikçinin fatura tarihinde birden çok geçerli sözleşmesi var',
+  ref_contract_not_active: 'ERP referansındaki sözleşme yürürlükte değil (taslak, onayda ya da reddedilmiş)',
   link_failed: 'Sözleşme bulundu ama bağ kaydedilemedi; faturayı elle bağlayın',
 };
 export const MATCH_METHOD_TR = {
@@ -43,6 +44,8 @@ export type MatchState = keyof typeof MATCH_STATE_TR;
  */
 export const normalizeRef = (s: string | null | undefined): string => (s ?? '').trim().replace(/[a-z]/g, (c) => c.toUpperCase());
 const norm = normalizeRef;
+/** ERP referansıyla bağlanabilen Faz 3 durumları (tedarikçi + tarih yoluyla aynı küme; EXPIRED tarihçe için). */
+const REF_ACTIVE: string[] = ['APPROVED', 'LEGACY', 'EXPIRED'];
 
 /** Tarih (YYYY-MM-DD) sözleşme geçerlilik aralığında mı; süresiz sözleşmede yalnız başlangıç aranır. */
 function inRange(c: LinkContract, day: string): boolean {
@@ -77,8 +80,11 @@ export function matchInvoice(input: {
     const all = new Set(resolved.flatMap((x) => [...x]));
     if (all.size > 1) return { method: 'UNMATCHED', reason: 'ref_conflict' };
     const familyId = [...all][0]!;
-    const ok = contracts.filter((c) => c.familyId === familyId).every((c) => c.supplierRootId === invoice.supplierRootId);
-    return ok ? { method: 'ERP_REF', familyId } : { method: 'UNMATCHED', reason: 'ref_supplier_mismatch' };
+    const fam = contracts.filter((c) => c.familyId === familyId);
+    if (!fam.every((c) => c.supplierRootId === invoice.supplierRootId)) return { method: 'UNMATCHED', reason: 'ref_supplier_mismatch' };
+    // Referans da yalnız yürürlükte (onaylı, eski kayıt ya da süresi dolmuş) aileye bağlar; tarih aralığı referansta aranmaz.
+    if (!fam.every((c) => REF_ACTIVE.includes(c.status))) return { method: 'UNMATCHED', reason: 'ref_contract_not_active' };
+    return { method: 'ERP_REF', familyId };
   }
 
   // (2) Aynı tedarikçi + fatura tarihi + onaylı/eski kayıt tam bir aile.
