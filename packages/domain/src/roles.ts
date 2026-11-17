@@ -145,6 +145,12 @@ export const PERMISSIONS = {
   'department.manage': ['ADMIN'],
   // Düzeltme dalgası (D96): departmansız eski proje, sözleşme ailesi ve değerlendirmeye departman atama (tekli/toplu, denetimli).
   'department.assign': ['ADMIN', 'PROCUREMENT'],
+  // v2 Faz 2 (D105): Entra dizin kapsamı/eşitleme, rol atama ve onaycı ataması.
+  'directory.read': ['ADMIN', 'AUDITOR'],
+  'directory.manage': ['ADMIN'],
+  'role.assign': ['ADMIN'],
+  'approver.read': ['ADMIN', 'PROCUREMENT', 'AUDITOR'],
+  'approver.manage': ['ADMIN'],
 } as const satisfies Record<string, readonly Role[]>;
 
 export type Permission = keyof typeof PERMISSIONS;

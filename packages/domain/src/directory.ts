@@ -1,0 +1,38 @@
+// v2 Faz 2 (D105): Entra dizini alan kuralları. Saf işlevler; veritabanı ve ağ yok.
+
+export type ApproverKind = 'DEPARTMENT_HEAD' | 'PROCUREMENT_LEAD' | 'PROCUREMENT_DIRECTOR';
+
+/** Departman adı karşılaştırma anahtarı: kırp, iç boşlukları teke indir, tr-TR küçült. */
+export function normalizeDepartmentName(name: string): string {
+  return name.trim().replace(/\s+/g, ' ').toLocaleLowerCase('tr-TR');
+}
+
+/** OU_FILTER kapsamı: DN, ouSuffix ile virgül sınırında biter (büyük/küçük harf duyarsız). */
+export function inScope(user: { onPremisesDistinguishedName: string | null }, ouSuffix: string): boolean {
+  const dn = user.onPremisesDistinguishedName?.trim().toLowerCase();
+  const suffix = ouSuffix.trim().toLowerCase();
+  if (!dn || !suffix) return false;
+  if (dn === suffix) return true;
+  return dn.endsWith(',' + suffix);
+}
+
+/** R4: eski dizin departmanı çıkar, yenisi ekle; elle eklenenler ve sıra korunur, yineleme yok. */
+export function planMembershipDepartments(current: string[], oldDirectory: string | null, newDirectory: string | null): string[] {
+  const out: string[] = [];
+  for (const id of current) if ((id !== oldDirectory || id === newDirectory) && !out.includes(id)) out.push(id);
+  if (newDirectory && !out.includes(newDirectory)) out.push(newDirectory);
+  return out;
+}
+
+/** Onaycı ataması doğrulaması; hata iletisi (Türkçe) ya da null. */
+export function validateApprover(
+  a: { kind: ApproverKind; departmentId: string | null; primaryUserId: string | null; deputyUserId: string | null },
+  activeUserIds: Set<string>,
+): string | null {
+  if (a.kind === 'DEPARTMENT_HEAD' && !a.departmentId) return 'Bölüm sorumlusu için departman seçilmelidir.';
+  if (a.kind !== 'DEPARTMENT_HEAD' && a.departmentId) return 'Bu unvan departmana bağlı değildir.';
+  if (a.primaryUserId && a.primaryUserId === a.deputyUserId) return 'Asıl onaycı ile vekil aynı kişi olamaz.';
+  if (a.primaryUserId && !activeUserIds.has(a.primaryUserId)) return 'Asıl onaycı etkin bir kullanıcı olmalıdır.';
+  if (a.deputyUserId && !activeUserIds.has(a.deputyUserId)) return 'Vekil etkin bir kullanıcı olmalıdır.';
+  return null;
+}

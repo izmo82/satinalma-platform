@@ -14,3 +14,4 @@ export * from './approvalPolicy.ts';
 export * from './recovery.ts';
 export * from './ublTr.ts';
 export * from './supplierOption.ts';
+export * from './directory.ts';
