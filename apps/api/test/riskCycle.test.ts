@@ -138,6 +138,30 @@ describe('R5/R6: yılı açma (POST /risk/cycles/:year/open)', () => {
   });
 });
 
+describe('R5 inceleme: önceki yıl departmanı ve yıl sınırı', () => {
+  it('yalnız en yeni önceki yıl: departmanı boşsa sözleşme kuralı (eski yılın departmanına bakılmaz); birleşmiş departman → birleştiği; gelecek yıl +1 sınırı', async () => {
+    const w = h.world;
+    const Y = 2011;
+    // En yeni önceki yıl (Y-1) departmansız; daha eski yıl (Y-2) İK. Sözleşme tek departman (BT) → BT.
+    const a = await supplier(); await contract(w.departments.bt, a);
+    await rawAssessment({ supplier: a, year: Y - 2, department: w.departments.ik });
+    await rawAssessment({ supplier: a, year: Y - 1, department: null });
+    // En yeni önceki yılın departmanı birleşmiş → birleştiği departman (TC).
+    const merged = (await one<{ id: string }>(`INSERT INTO departments (tenant_id, name) VALUES ($1, $2) RETURNING id`, [w.tenantA, `Birleşen departman ${rand()} (SENTETİK)`])).id;
+    await h.owner.query(`UPDATE departments SET merged_into = $2 WHERE id = $1`, [merged, w.departments.tc]);
+    const b = await supplier(); await contract(w.departments.bt, b);
+    await rawAssessment({ supplier: b, year: Y - 1, department: merged });
+    const r = await h.call('buyer', 'POST', `/api/v1/risk/cycles/${Y}/open`);
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect((await assessmentOf(a, Y)).department_id).toBe(w.departments.bt);
+    expect((await assessmentOf(b, Y)).department_id).toBe(w.departments.tc);
+
+    const next = Number(today().slice(0, 4)) + 1;
+    const far = await h.call('buyer', 'POST', `/api/v1/risk/cycles/${next + 1}/open`);
+    expect([far.status, far.body.error?.code]).toEqual([422, 'invalid_year']);
+  });
+});
+
 describe('R7: gecikme yükseltmesi', () => {
   it('sorumluya kişi görevi + NOT_CONFIGURED e-posta; sorumlu yoksa vekil; ikisi yoksa Satınalma kuyruğu; tekrar kurulmaz; yeni son tarih yeni döngü', async () => {
     const w = h.world;
@@ -319,13 +343,13 @@ describe('işçi zamanlayıcısı', () => {
     const keys = ['risk-escalate:2093-07-01', 'risk-quarterly:2093-3'];
     const jobsOfA = () => rows<{ idempotency_key: string }>(`SELECT idempotency_key FROM jobs WHERE tenant_id = $1 AND idempotency_key = ANY($2) ORDER BY idempotency_key`,
       [h.world.tenantA, keys]);
-    expect(await enqueueRiskSchedules(h.pool, day)).toBeGreaterThanOrEqual(2);
-    // Kapı paylaşılan test veritabanındaki bütün kiracıları listeler: kurulan işler (her kiracıda) hemen kapatılır ki başka test
-    // dosyalarının işçisi 2093 tarihli yükseltmeyi çalıştırmasın.
-    await h.owner.query(`UPDATE jobs SET status = 'SUCCEEDED' WHERE idempotency_key = ANY($1) AND status = 'QUEUED'`, [keys]);
+    // Kapı paylaşılan test veritabanındaki bütün kiracıları listeler; iş yalnız bu testin kiracısına kurulur (varsayılan kapının sonucu süzülür).
+    const ownOnly = async (p: typeof h.pool) => (await riskCycleTenants(p))?.filter((t) => t === h.world.tenantA) ?? null;
+    expect(await enqueueRiskSchedules(h.pool, day, ownOnly)).toBe(2);
+    // Başka test dosyalarının işçisi 2093 tarihli yükseltmeyi çalıştırmasın: hemen kapatılır.
+    await h.owner.query(`UPDATE jobs SET status = 'SUCCEEDED' WHERE tenant_id = $1 AND idempotency_key = ANY($2) AND status = 'QUEUED'`, [h.world.tenantA, keys]);
     expect((await jobsOfA()).map((j) => j.idempotency_key)).toEqual(keys);
-    await enqueueRiskSchedules(h.pool, day);
-    await h.owner.query(`UPDATE jobs SET status = 'SUCCEEDED' WHERE idempotency_key = ANY($1) AND status = 'QUEUED'`, [keys]);
+    expect(await enqueueRiskSchedules(h.pool, day, ownOnly)).toBe(0);
     expect(await jobsOfA()).toHaveLength(2);
   });
 });

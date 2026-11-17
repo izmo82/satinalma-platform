@@ -73,6 +73,8 @@ export interface OpenYearResult { year: number; opened: number; skippedExisting:
  */
 export async function openRiskYear(tx: Tx, ctx: TenantContext, year: number, today: string): Promise<OpenYearResult> {
   if (!Number.isInteger(year) || year < 2000 || year > 2100) throw unprocessable('invalid_year', 'Yıl 2000–2100 arasında olmalı.');
+  // Gelecek yıl en erken bir yıl önceden açılır (yanlış yazılan yılın kiracı geneli kayıt açmasını önler).
+  if (year > Number(today.slice(0, 4)) + 1) throw unprocessable('invalid_year', 'En çok gelecek yıl açılabilir.');
   const dueDays = (await getRiskSettings(tx)).dueDays;
   const dueOn = await addDays(tx, today, dueDays);
   const candidates = (await tx.query<{ id: string; legal_name: string; status: string; departments: string[] }>(
@@ -85,9 +87,13 @@ export async function openRiskYear(tx: Tx, ctx: TenantContext, year: number, tod
   for (const s of candidates) {
     if (INACTIVE_SUPPLIER.includes(s.status)) { res.skippedInactive++; continue; }
     if ((await tx.query(`SELECT 1 FROM risk_assessments WHERE supplier_id = $1 AND year = $2`, [s.id, year])).rowCount) { res.skippedExisting++; continue; }
-    const priorDept = (await tx.query<{ department_id: string | null }>(
-      `SELECT coalesce(d.merged_into, d.id) AS department_id FROM risk_assessments a JOIN departments d ON d.id = a.department_id
-       WHERE a.supplier_id = $1 AND a.year < $2 AND a.status <> 'CANCELLED' ORDER BY a.year DESC LIMIT 1`, [s.id, year])).rows[0]?.department_id ?? null;
+    // R5: yalnız en yeni önceki yıl değerlendirmesinin departmanı. Boşsa sözleşme kuralına düşülür; birleşmişse birleştiği departman
+    // (o da birleşmişse sözleşme kuralı); daha eski yılların departmanına bakılmaz.
+    const pd = (await tx.query<{ department_id: string | null; merged_into: string | null; target_merged: string | null }>(
+      `SELECT a.department_id, d.merged_into, m.merged_into AS target_merged
+       FROM risk_assessments a LEFT JOIN departments d ON d.id = a.department_id LEFT JOIN departments m ON m.id = d.merged_into
+       WHERE a.supplier_id = $1 AND a.year < $2 AND a.status <> 'CANCELLED' ORDER BY a.year DESC LIMIT 1`, [s.id, year])).rows[0];
+    const priorDept = !pd?.department_id ? null : !pd.merged_into ? pd.department_id : !pd.target_merged ? pd.merged_into : null;
     const departmentId = priorDept ?? (s.departments.length === 1 ? s.departments[0]! : null);
     const prior = await priorRevision(tx, s.id, year);
     const draft = prior ? await draftFromPrior(tx, prior) : {};
