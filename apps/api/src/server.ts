@@ -30,6 +30,7 @@ import * as recovery from './modules/recovery.ts';
 import * as departments from './modules/departments.ts';
 import * as directory from './modules/directory.ts';
 import * as approvers from './modules/approvers.ts';
+import * as templates from './modules/templates.ts';
 import { directoryProvider, type DirectoryProvider } from './directory/provider.ts';
 import { taskRoleSql, visibleTaskSql } from './tasks.ts';
 import { decisionSummaryPdf, evaluationWorkbook } from './reports.ts';
@@ -345,6 +346,41 @@ export async function buildApp(deps: AppDeps) {
        FROM tasks t WHERE t.status = 'OPEN' AND ${taskRoleSql('$1')} AND ${visibleTaskSql()}`, [ctx.roles, ctx.userId])).rows[0];
     return { items: r.rows, counts: c };
   }));
+
+  // --- Sözleşme şablon kütüphanesi (v2 Faz 3, R8) ---------------------------------
+  /** Çok parçalı gövde: alanlar dosyadan önce ya da sonra gelebilir. */
+  const readTemplateForm = async (req: FastifyRequest) => {
+    const fields: Record<string, string> = {};
+    let file: templates.TemplateUpload | null = null;
+    for await (const part of req.parts()) {
+      if (part.type === 'file') { const body = await part.toBuffer(); if (!file) file = { filename: part.filename, body }; }
+      else if (typeof part.value === 'string') fields[part.fieldname] = part.value;
+    }
+    return { fields, file };
+  };
+  app.get('/api/v1/contract-templates', { schema: { tags: ['templates'] } }, async (req) =>
+    scoped(req, 'template.read', (tx) => templates.listTemplates(tx)));
+  app.post('/api/v1/contract-templates', { schema: { tags: ['templates'], consumes: ['multipart/form-data'] } }, async (req, reply) => {
+    const { fields, file } = await readTemplateForm(req);
+    const r = await scoped(req, 'template.manage', (tx, ctx) => templates.createTemplate(tx, ctx, deps.store, { ...fields, file }));
+    return reply.status(201).send(r);
+  });
+  app.post('/api/v1/contract-templates/:id/versions', { schema: { tags: ['templates'], params: idParams, consumes: ['multipart/form-data'] } }, async (req, reply) => {
+    const { fields, file } = await readTemplateForm(req);
+    const r = await scoped(req, 'template.manage', (tx, ctx) => templates.addTemplateVersion(tx, ctx, deps.store, (req.params as { id: string }).id, { validFrom: fields.validFrom, file }));
+    return reply.status(201).send(r);
+  });
+  app.get('/api/v1/contract-template-versions/:id/download', { schema: { tags: ['templates'], params: idParams } }, async (req, reply) => {
+    const meta = await scoped(req, 'template.read', (tx, ctx) => templates.templateDownload(tx, ctx, (req.params as { id: string }).id));
+    const bytes = await deps.store.get(meta.key);
+    const ascii = meta.filename.replace(/[^\x20-\x7e]|["\\]/g, '_');
+    return reply
+      .header('Content-Type', meta.mimeType)
+      .header('Cache-Control', 'private, no-store')
+      .header('X-Content-Type-Options', 'nosniff')
+      .header('Content-Disposition', `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(meta.filename)}`)
+      .send(bytes);
+  });
 
   // --- Belgeler -----------------------------------------------------------------
   app.post('/api/v1/documents', { schema: { tags: ['documents'], consumes: ['multipart/form-data'] } }, async (req, reply) => {
