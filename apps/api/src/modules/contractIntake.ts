@@ -13,7 +13,7 @@ import { currentApprovers } from './approvers.ts';
 import { resolveDepartment } from './departments.ts';
 import { noticeBasis } from './contractReminders.ts';
 import { cancelOpenChain, CONTENT_CHANGED_REASON, membershipCoversSql, roleOf } from './contractChain.ts';
-import { applyAiDecisions, assertNoPendingCriticalSuggestions, requestExtractionForVersion, type AiDecisionInput } from './contractAi.ts';
+import { applyAiDecisions, assertNoPendingCriticalSuggestions, reconcileConfirmed, requestExtractionForVersion, type AiDecisionInput } from './contractAi.ts';
 
 /**
  * v2 Faz 3 (D108+, R1–R5, R9, R10) Görev 4: sözleşme ekleme akışı. Taslak (aile + MAIN sürüm, proje zorunlu), zorunlu alanlar
@@ -358,17 +358,20 @@ export async function updateFields(tx: Tx, ctx: TenantContext, familyId: string,
     await audit(tx, ctx, 'contract.fields.updated', 'contract_family', familyId, { fields: cols, terms: termsSaved, cancelledChainId: cancelled });
   }
   // v2 Faz 4 (R6): kararlar kaydedilen (güncel) değerlerle karşılaştırılır; uyuşmazlıkta 422 ve bütün işlem (alanlar dahil) geri alınır.
-  if (body.aiDecisions?.length) {
+  // Görev 4 inceleme I1: değer değişince eski "Onaylandı" kararı "Düzeltildi" olur.
+  if (body.aiDecisions?.length || changed) {
     const g = await loadFamily(tx, familyId);
     const sup = g.supplier_id ? (await tx.query<{ legal_name: string; tax_id: string | null }>(`SELECT legal_name, tax_id FROM suppliers WHERE id = $1`, [g.supplier_id])).rows[0] : undefined;
     const dv = (await tx.query<{ document_version_id: string }>(`SELECT document_version_id FROM contract_versions WHERE id = $1`, [g.version_id])).rows[0]!.document_version_id;
-    await applyAiDecisions(tx, ctx, familyId, dv, {
+    const saved = {
       title: g.title, contractType: g.contract_type, supplierName: sup?.legal_name ?? null, supplierVkn: sup?.tax_id ?? null, signedOn: g.signed_on,
       startDate: g.start_date, endDate: g.end_date, indefinite: g.indefinite,
       noticeAmount: g.indefinite ? g.termination_notice_amount : g.notice_amount, noticeUnit: g.indefinite ? g.termination_notice_unit : g.notice_unit,
       amount: g.amount, currency: g.currency, limitBasis: g.terms_id ? g.limit_basis : null, autoRenewal: g.terms_id ? g.auto_renewal : null,
       contractNo: g.contract_no, paymentDays: g.payment_days, governingCourt: g.governing_court, priceEscalation: g.price_escalation,
-    }, body.aiDecisions);
+    };
+    if (changed) await reconcileConfirmed(tx, ctx, familyId, dv, saved, (body.aiDecisions ?? []).map((d) => d.extractionId));
+    if (body.aiDecisions?.length) await applyAiDecisions(tx, ctx, familyId, dv, saved, body.aiDecisions);
   }
   return { ...(await getContractV2(tx, ctx, familyId)), changed, cancelledChainId: cancelled };
 }

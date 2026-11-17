@@ -1,9 +1,10 @@
-import { AI_TASKS, checkAiOutput, routeTask, type AiModel, type AiPolicy, type AiTask, type AiWorkload } from '@sp/domain';
+import { AI_TASKS, can, checkAiOutput, routeTask, type AiModel, type AiPolicy, type AiTask, type AiWorkload } from '@sp/domain';
 import type pg from 'pg';
 import { withTenant, type TenantContext, type Tx } from '../db.ts';
 import { audit } from '../audit.ts';
 import { openTask } from '../tasks.ts';
-import { notFound, unprocessable } from '../errors.ts';
+import { ApiError, forbidden, notFound, unprocessable } from '../errors.ts';
+import { familyWritable } from './contractChain.ts';
 import type { ObjectStore } from '../storage.ts';
 import { aiProvider, costFromPrice, type AiInput, type AiResult } from '../ai/provider.ts';
 import { pageTexts } from '../ai/text.ts';
@@ -97,6 +98,14 @@ export async function retryRun(tx: Tx, ctx: TenantContext, runId: string, opts: 
   if (!WAITING.includes(r.status)) throw unprocessable('not_waiting', 'Yalnız bekleyen (kota, sağlayıcı veya izin) iş yeniden denenir.');
   const pages = r.page_count ?? 1;
   const contract = isContractAiTask(r.task);
+  // Görev 4 inceleme M5: sözleşme görevini yeniden yönlendirmek sözleşmede okuma istemektir: contract.ai.request + ailenin yazma kapsamı.
+  if (contract) {
+    if (!can(ctx.roles, 'contract.ai.request')) throw forbidden('contract.ai.request');
+    const fam = (await tx.query<{ department_id: string | null }>(`SELECT f.department_id FROM contract_versions cv JOIN contract_families f ON f.id = cv.family_id
+      WHERE cv.id = $1`, [r.entity_id])).rows[0];
+    if (!fam) throw notFound();
+    if (!familyWritable(ctx, fam.department_id)) throw new ApiError(403, 'department_forbidden', 'Bu sözleşmeyi görebilirsiniz ama okuma isteyemezsiniz.');
+  }
   return requestAi(tx, ctx, { task: r.task, entityType: r.entity_type, entityId: r.entity_id, documentVersionId: r.document_version_id, companyId: r.company_id,
     workload: contract ? contractWorkload(pages) : { pages, inputTokens: 1500 * pages, outputTokens: 500 },
     ...(contract ? { modelId: opts.modelId ?? DEFAULT_AI_MODEL_ID, promptVersion: r.prompt_version ?? undefined } : {}) });
@@ -141,14 +150,18 @@ export async function processAiRun(pool: pg.Pool, ctx: TenantContext, store: Obj
     if (!run || run.status !== 'QUEUED') { await finishJob(tx, 'SUCCEEDED', { skipped: true }); return null; }
     const dv = run.document_version_id ? (await tx.query<{ storage_key: string; mime_type: string }>(`SELECT storage_key, mime_type FROM document_versions dv WHERE id = $1 AND basic_check_status = 'PASSED'
       AND NOT EXISTS (SELECT 1 FROM document_disposals x WHERE x.document_id = dv.document_id)`, [run.document_version_id])).rows[0] : null;
+    const contract = isContractAiTask(run.task);
+    // Görev 4 inceleme I2: sözleşme görevinde çağrıdan önceki başarısızlık bütçe tüketmez (gerçekleşen ücret 0; tahmin sayılmaz). v1 (AI02) aynen.
     const fail = async (reason: string, code: string) => {
-      await tx.query(`UPDATE ai_runs SET status = $2, reason = $3, finished_at = now() WHERE id = $1`, [run.id, code === 'NO_PROVIDER' ? 'NO_PROVIDER' : 'FAILED', reason]);
+      await tx.query(`UPDATE ai_runs SET status = $2, reason = $3, finished_at = now(), actual_cost = CASE WHEN $4 THEN 0 ELSE actual_cost END WHERE id = $1`,
+        [run.id, code === 'NO_PROVIDER' ? 'NO_PROVIDER' : 'FAILED', reason, contract && code !== 'NO_PROVIDER']);
       await finishJob(tx, code === 'NO_PROVIDER' ? 'BLOCKED' : 'FAILED', { reason: code }); return null;
     };
     if (!aiProvider(run.provider)) return fail('Bağdaştırıcı çalışma anında yok.', 'NO_PROVIDER');
     if (!dv) return fail('Belge yok, güvenlik kontrolünden geçmedi veya imha edildi.', 'NO_DOCUMENT');
+    // R12: sözleşme görevlerinde yalnız PDF okunur; başka tür çağrı yapılmadan başarısız olur.
+    if (contract && dv.mime_type !== 'application/pdf') return fail('Desteklenmeyen belge türü: yalnız PDF okunur. Alanları elle girin.', 'UNSUPPORTED_DOCUMENT');
     // Sözleşme görevinin yazıcısı yoksa ücretli çağrı yapılmaz (çıktı kaydedilemezdi).
-    const contract = isContractAiTask(run.task);
     const handler = RESULT_WRITERS[run.task] ? await RESULT_WRITERS[run.task]!() : null;
     if (contract && !handler) return fail('Bu görevin sonuç kaydı henüz desteklenmiyor; çağrı yapılmadı.', 'NO_WRITER');
     const extra = handler?.prepare ? await handler.prepare(tx, ctx, run, store) : {};
@@ -159,7 +172,7 @@ export async function processAiRun(pool: pg.Pool, ctx: TenantContext, store: Obj
   if (!prep) return;
   const { run, dv, handler, extra, contract } = prep;
   const allowed = ALLOWED_FIELDS[run.task] ?? [];
-  let res: AiResult; let pages: string[];
+  let res: AiResult; let pages: string[]; let called = false;
   try {
     const bytes = await store.get(dv.storage_key);
     pages = await pageTexts(bytes, dv.mime_type);
@@ -167,10 +180,15 @@ export async function processAiRun(pool: pg.Pool, ctx: TenantContext, store: Obj
       ? { task: run.task, pages, mimeType: dv.mime_type, allowedFields: allowed, document: { bytes, mimeType: dv.mime_type, pageCount: run.page_count ?? pages.length },
           ...(run.prompt_version ? { promptVersion: run.prompt_version } : {}), ...extra }
       : { task: run.task, pages, mimeType: dv.mime_type, allowedFields: allowed };
+    called = true;
     res = await aiProvider(run.provider)!.run(run.model_id, input);
   } catch (e) {
     await withTenant(pool, ctx, async (tx) => {
-      await tx.query(`UPDATE ai_runs SET status = 'FAILED', reason = $2, finished_at = now() WHERE id = $1`, [run.id, failureReason(e)]);
+      // I2: ücretli çağrı gerçekleşmediyse (çağrı öncesi hata ya da sağlayıcının reddettiği istek) gerçekleşen ücret 0; ücretli başarısızlıkta
+      // (ret, token sınırı, geçersiz çıktı, bağlantı belirsizliği) tahmin bütçede kalır. v1 (AI02) aynen: ücret alanına dokunulmaz.
+      const free = contract && (!called || FREE_FAILURES.includes(providerCode(e) ?? ''));
+      await tx.query(`UPDATE ai_runs SET status = 'FAILED', reason = $2, finished_at = now(), actual_cost = CASE WHEN $3 THEN 0 ELSE actual_cost END WHERE id = $1`,
+        [run.id, failureReason(e), free]);
       await finishJob(tx, 'FAILED', { reason: 'PROVIDER_ERROR', ...(providerCode(e) ? { code: providerCode(e) } : {}) });
     });
     return;
@@ -214,6 +232,8 @@ export async function processAiRun(pool: pg.Pool, ctx: TenantContext, store: Obj
 }
 
 /** Sağlayıcı hatasının Türkçe, belge metni içermeyen sebebi (bağdaştırıcı hata kodu + iletisi); diğer hatalarda yalnız hata adı (v1). */
+/** Sağlayıcıya ulaşmadan ya da sağlayıcının ücretlendirmeden reddettiği hatalar (bağdaştırıcı ön denetimleri + 4xx). */
+const FREE_FAILURES = ['DOCUMENT_LIMIT', 'UNSUPPORTED_DOCUMENT', 'UNSUPPORTED_TASK', 'MODEL_MISMATCH', 'RATE_LIMITED', 'AUTH', 'BAD_REQUEST'];
 function providerCode(e: unknown): string | null {
   const code = e instanceof Error && e.name === 'AiProviderError' ? (e as unknown as { code?: unknown }).code : undefined;
   return typeof code === 'string' ? code : null;

@@ -45,8 +45,27 @@ export async function requestContractExtraction(tx: Tx, ctx: TenantContext, fami
   return requestVersionExtraction(tx, ctx, v, opts);
 }
 
-/** Yeni sürüm (addContractVersion) ve taslak (createDraft) için: sürüm kimliği bilinen istek. Yetki çağıranda denetlenmiştir. */
+/**
+ * Yeni sürüm (addContractVersion) ve taslak (createDraft) için: sürüm kimliği bilinen istek. Yetki çağıranda denetlenmiştir.
+ * Görev 4 inceleme M3: istek kayıt noktası (SAVEPOINT) içinde yapılır; okuma istenemezse yalnız o kısım geri alınır, taslak/sürüm yine oluşur
+ * ve elle akış sürer.
+ */
 export async function requestExtractionForVersion(tx: Tx, ctx: TenantContext, contractVersionId: string, opts: { modelId?: string } = {}) {
+  await tx.query('SAVEPOINT contract_ai_extraction');
+  try {
+    const r = await requestExtractionForVersionUnsafe(tx, ctx, contractVersionId, opts);
+    await tx.query('RELEASE SAVEPOINT contract_ai_extraction');
+    return r;
+  } catch (e) {
+    await tx.query('ROLLBACK TO SAVEPOINT contract_ai_extraction');
+    // Günlüğe yalnız hata adı/kodu (belge metni yok).
+    console.error('contract extraction request failed', contractVersionId, (e as { code?: string }).code ?? (e as Error).name);
+    return { runId: null, status: 'FAILED', reason: EXTRACTION_REQUEST_FAILED };
+  }
+}
+export const EXTRACTION_REQUEST_FAILED = 'Okuma istenemedi; alanları elle girin.';
+
+async function requestExtractionForVersionUnsafe(tx: Tx, ctx: TenantContext, contractVersionId: string, opts: { modelId?: string }) {
   const v = (await tx.query<CurrentVersion>(`SELECT f.id AS family_id, f.department_id, f.company_id, cv.id AS contract_version_id, cv.document_version_id, dv.page_count
     FROM contract_versions cv JOIN contract_families f ON f.id = cv.family_id LEFT JOIN document_versions dv ON dv.id = cv.document_version_id
     WHERE cv.id = $1`, [contractVersionId])).rows[0];
@@ -175,12 +194,34 @@ export async function applyAiDecisions(tx: Tx, ctx: TenantContext, familyId: str
     throw unprocessable('decision_mismatch', `Kaydedilen değer öneriyle aynı değil: ${mismatched.map((m) => m.label).join(', ')}. Öneriyi kullanın ya da kararı "Düzeltildi" yapın.`,
       { fields: mismatched });
   }
-  for (const d of decisions) {
+  // Görev 4 inceleme M4: "Düzeltildi" denen değer öneriye eşitse karar "Onaylandı" saklanır (karar kaydedilen değere uyar).
+  const final = (d: AiDecisionInput): AiDecision =>
+    d.decision === 'CORRECTED' && savedEquals(byId.get(d.extractionId)!.field, byId.get(d.extractionId)!.value, saved) === true ? 'CONFIRMED' : d.decision;
+  const out = decisions.map((d) => ({ extractionId: d.extractionId, field: byId.get(d.extractionId)!.field, decision: final(d) }));
+  for (const d of out) {
     await tx.query(`UPDATE contract_extractions SET decision = $2, decided_by = $3, decided_at = now() WHERE id = $1`, [d.extractionId, d.decision, ctx.userId]);
   }
-  const out = decisions.map((d) => ({ extractionId: d.extractionId, field: byId.get(d.extractionId)!.field, decision: d.decision }));
   // Denetim kaydında değer yok (belge içeriği deftere/denetime kopyalanmaz); alan ve karar yeter.
   await audit(tx, ctx, 'contract.extraction.decided', 'contract_family', familyId, { runId: run!.id, documentVersionId, decisions: out });
+  return out;
+}
+
+/**
+ * Görev 4 inceleme I1: alan kaydından sonra, güncel okumanın "Onaylandı" önerilerinden kaydedilen değeri artık öneriye eşit olmayanlar
+ * "Düzeltildi" olur (karar değeri izler; eski onay yanıltmasın). Bu istekte açıkça karar verilen öneriler hariç (onlar applyAiDecisions'ta).
+ */
+export async function reconcileConfirmed(tx: Tx, ctx: TenantContext, familyId: string, documentVersionId: string, saved: SavedContractValues, exclude: string[] = []) {
+  const run = await latestRun(tx, documentVersionId);
+  if (!run) return [];
+  const rows = (await tx.query<{ id: string; field: ContractAiField; value: string | null }>(
+    `SELECT id, field, value FROM contract_extractions WHERE ai_run_id = $1 AND family_id = $2 AND decision = 'CONFIRMED' AND NOT (id = ANY($3::uuid[]))`,
+    [run.id, familyId, exclude])).rows;
+  const stale = rows.filter((r) => savedEquals(r.field, r.value, saved) === false);
+  if (!stale.length) return [];
+  for (const r of stale) await tx.query(`UPDATE contract_extractions SET decision = 'CORRECTED', decided_by = $2, decided_at = now() WHERE id = $1`, [r.id, ctx.userId]);
+  const out = stale.map((r) => ({ extractionId: r.id, field: r.field, decision: 'CORRECTED' as const }));
+  await audit(tx, ctx, 'contract.extraction.decided', 'contract_family', familyId,
+    { runId: run.id, documentVersionId, decisions: out, system: true, reason: 'Kaydedilen değer onaylanan öneriden farklı; karar "Düzeltildi" oldu.' });
   return out;
 }
 
