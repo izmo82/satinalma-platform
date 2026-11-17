@@ -189,6 +189,18 @@ describe('Onay (R2, R10, R11, R14)', () => {
     expect((await h.owner.query(`SELECT status FROM suppliers WHERE id = $1`, [passive])).rows[0].status).toBe('SUSPENDED');
   });
 
+  it('approved_application_with_later_suspended_card_is_informational_not_blocking', async () => {
+    const a = await submitted();
+    const r = await decide(a.id, { action: 'APPROVE' });
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    await h.owner.query(`UPDATE suppliers SET status = 'SUSPENDED' WHERE id = $1`, [r.body.supplier.id]);
+    const d = await detail(a.id);
+    expect(d.body.status).toBe('APPROVED');
+    expect(d.body.existingSupplier).toMatchObject({ blocksApproval: false, blockReason: null, stageLabel: 'Pasif' });
+    expect(d.body).toMatchObject({ supplierStage: 'PASSIVE', supplierStageLabel: 'Pasif' });
+    expect(d.body.supplierStateMessage).toMatch(/karara bağlandı.*pasif/);
+  });
+
   it('portal_user_email_in_other_tenant_does_not_block_approval', async () => {
     const a = await submitted();
     // Başvuru e-postası başka kiracıdaki kullanıcınınkiyle aynı (046: NULL döner, hiçbir şey açılmaz).

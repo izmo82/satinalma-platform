@@ -15,7 +15,7 @@ import { enqueueEmailDispatch, queueEmail, type MailChannel } from '../mail/inde
 import { audit } from '../audit.ts';
 import { clientAddressKey, DEFAULT_PUBLIC_RATE_LIMIT } from '../publicRateLimit.ts';
 import { closeTasks, openTask } from '../tasks.ts';
-import { DOC_SELECT, documentView, ensurePortalUser, PORTAL_ACCESS_NOTE, type PortalInviteOutcome, PORTAL_INVITE_ERRORS, requiredMissing, today as cardToday, type DocRow } from './supplierCard.ts';
+import { DOC_SELECT, documentView, ensurePortalUser, supersedeDuplicateCurrent, PORTAL_ACCESS_NOTE, type PortalInviteOutcome, PORTAL_INVITE_ERRORS, requiredMissing, today as cardToday, type DocRow } from './supplierCard.ts';
 
 /**
  * v2 Faz 5 (D110) Görev 4: girişsiz tedarikçi başvurusu (R2–R5) ve başvuru ayarları (R3).
@@ -373,13 +373,13 @@ export async function processApplicationSubmitted(pool: pg.Pool, tenantId: strin
     let result: Record<string, unknown> = { skipped: 'not_found' };
     if (a && a.status === 'SUBMITTED') {
       const task = await openTask(tx, ctx, { companyId: null, departmentId: null, kind: 'supplier_application_review', entityType: 'supplier_application', entityId: a.id,
-        title: 'Tedarikçi başvurusu inceleme bekliyor', reason: `${a.legal_name} başvurusu inceleme bekliyor.`,
+        title: `Tedarikçi başvurusu inceleme bekliyor: ${a.legal_name}`.slice(0, 300), reason: `${a.legal_name} başvurusu inceleme bekliyor.`,
         nextAction: 'Başvuruyu inceleyin: onaylayın, eksik belge isteyin ya da reddedin.', assigneeRole: 'PROCUREMENT', dedupeKey: `application:${a.id}:review` });
       // R5: tarama hatası olan (karantinadaki) başvuru belgesi için ayrı görev.
       const avErrors = (await tx.query<{ n: number }>(`SELECT count(*)::int AS n FROM supplier_documents WHERE application_id = $1 AND av_scan_status = 'ERROR'`, [a.id])).rows[0]!.n;
       if (avErrors > 0) {
         await openTask(tx, ctx, { companyId: null, departmentId: null, kind: 'supplier_document_av_error', entityType: 'supplier_application', entityId: a.id,
-          title: 'Başvuru belgesi virüs taramasından geçemedi', reason: `${a.legal_name} başvurusunda ${avErrors} belge taranamadı ve karantinada.`,
+          title: `Başvuru belgesi virüs taramasından geçemedi: ${a.legal_name}`.slice(0, 300), reason: `${a.legal_name} başvurusunda ${avErrors} belge taranamadı ve karantinada.`,
           nextAction: 'Belgeyi tedarikçiden yeniden isteyin ya da taramayı yeniden yaptırın.', assigneeRole: 'PROCUREMENT', severity: 'HIGH', dedupeKey: `application:${a.id}:av_error` });
       }
       result = { taskId: task.id, created: task.created };
@@ -576,7 +576,11 @@ export async function getApplication(tx: Tx, ctx: TenantContext, id: string) {
   const existing = await sameIdentitySupplier(tx, a);
   const existingExtra = existing ? (await tx.query<{ contact_email: string | null; n: number }>(
     `SELECT s.contact_email, (SELECT count(*)::int FROM memberships m WHERE m.supplier_id = s.id) AS n FROM suppliers s WHERE s.id = $1`, [existing.id])).rows[0] : undefined;
-  const docRows = (await tx.query<DocRow>(`${DOC_SELECT} WHERE d.application_id = $1 ORDER BY d.type_code, d.created_at`, [id])).rows;
+  const rawDocRows = (await tx.query<DocRow>(`${DOC_SELECT} WHERE d.application_id = $1 ORDER BY d.type_code, d.created_at`, [id])).rows;
+  // D3: karta geçmeden önce de aynı türdeki en yeni belge güncel, öncekiler "yenilendi" görünür (karta geçişte kalıcı yazılır).
+  const newestOfType = new Map<string, string>();
+  for (const r of rawDocRows) if (!r.superseded_by_id) newestOfType.set(r.type_code, r.id);
+  const docRows = rawDocRows.map((r) => (!r.superseded_by_id && newestOfType.get(r.type_code) !== r.id ? { ...r, superseded_by_id: newestOfType.get(r.type_code)! } : r));
   const missing = await requiredMissing(tx, a.categories, docRows.map((r) => ({ typeCode: r.type_code, validUntil: r.valid_until, supersededById: r.superseded_by_id })), day);
   const events = (await tx.query<{ action: string; at: Date; actor: string | null; reason: string | null; data: Record<string, unknown> }>(
     `SELECT e.action, e.at, u.display_name AS actor, e.reason, e.data FROM audit_events e LEFT JOIN users u ON u.id = e.actor_user_id
@@ -588,6 +592,7 @@ export async function getApplication(tx: Tx, ctx: TenantContext, id: string) {
   ].sort((x, y) => +new Date(x.at) - +new Date(y.at));
   const stage = existing ? supplierStage(existing.status) : null;
   const decidable = a.status === 'SUBMITTED' || a.status === 'NEEDS_DOCUMENTS';
+  const cardInactive = !!existing && INACTIVE_FOR_LINK.has(existing.status);
   const completionTokenExpiresAt = a.status === 'NEEDS_DOCUMENTS' && a.token_purpose === 'COMPLETE' ? a.token_expires_at : null;
   return {
     id: a.id, status: a.status, statusLabel: APPLICATION_STATUS_TR[a.status], rowVersion: a.row_version,
@@ -602,10 +607,13 @@ export async function getApplication(tx: Tx, ctx: TenantContext, id: string) {
     decidedAt: a.decided_at, decisionReason: a.decision_reason, supplierId: a.supplier_id,
     existingSupplier: existing ? { id: existing.id, legalName: existing.legal_name, status: existing.status, stage: stage!.code, stageLabel: stage!.label,
       contactEmail: existingExtra?.contact_email ?? null, portalUserCount: existingExtra?.n ?? 0,
-      blocksApproval: INACTIVE_FOR_LINK.has(existing.status), blockReason: INACTIVE_FOR_LINK.has(existing.status) ? SUPPLIER_INACTIVE_MSG : null } : null,
+      blocksApproval: decidable && cardInactive, blockReason: decidable && cardInactive ? SUPPLIER_INACTIVE_MSG : null } : null,
+    // D1: karara bağlanmış başvuruda kartın sonradan pasife alınması bir engel değil, bilgidir (web "bağlanamaz" uyarısını göstermez).
+    supplierStage: stage ? stage.code : null, supplierStageLabel: stage ? stage.label : null,
+    supplierStateMessage: !decidable && cardInactive ? `Başvuru karara bağlandı; bağlı tedarikçi kartı şu anda ${stage!.label.toLocaleLowerCase('tr-TR')} durumda.` : null,
     documents: docRows.map((r) => documentView(r, day)), missingRequired: missing, history,
     can: { decide: can(ctx.roles, 'supplier.application.review') && decidable,
-      approve: can(ctx.roles, 'supplier.application.review') && a.status === 'SUBMITTED' && !(existing && INACTIVE_FOR_LINK.has(existing.status)),
+      approve: can(ctx.roles, 'supplier.application.review') && a.status === 'SUBMITTED' && !cardInactive,
       requestDocuments: can(ctx.roles, 'supplier.application.review') && a.status === 'SUBMITTED',
       resendLink: can(ctx.roles, 'supplier.application.review') && a.status === 'NEEDS_DOCUMENTS' },
   };
@@ -666,6 +674,7 @@ async function approve(tx: Tx, ctx: TenantContext, a: AppRow, note: string | nul
     [supplierId, a.contact_name.slice(0, 200), a.contact_email, a.contact_phone, a.address, a.categories, a.services, a.id]);
   const moved = (await tx.query(`UPDATE supplier_documents SET supplier_id = $1 WHERE application_id = $2 AND supplier_id IS NULL`, [supplierId, a.id])).rowCount ?? 0;
   // v2 Faz 5 Görev 6 (R12): karta geçen geçerlilik tarihli belge hatırlatma zincirini başlatır (idempotent).
+  if (moved) await supersedeDuplicateCurrent(tx, supplierId);
   if (moved) await ensureDocumentReminderJob(tx, ctx.tenantId);
   await tx.query(`UPDATE supplier_applications SET status = 'APPROVED', decided_by = $2, decided_at = now(), decision_reason = $3, supplier_id = $4,
       token_hash = NULL, token_purpose = NULL, token_expires_at = NULL, row_version = row_version + 1 WHERE id = $1`, [a.id, ctx.userId, note, supplierId]);
@@ -687,7 +696,7 @@ async function approve(tx: Tx, ctx: TenantContext, a: AppRow, note: string | nul
 
   const s = (await tx.query<{ status: SupplierStatus }>(`SELECT status FROM suppliers WHERE id = $1`, [supplierId])).rows[0]!;
   if (s.status === 'CANDIDATE') {
-    await openTask(tx, ctx, { companyId: null, kind: 'SUPPLIER_CANDIDATE_APPROVAL', entityType: 'supplier', entityId: supplierId, title: 'Aday tedarikçi onay bekliyor',
+    await openTask(tx, ctx, { companyId: null, kind: 'SUPPLIER_CANDIDATE_APPROVAL', entityType: 'supplier', entityId: supplierId, title: `Aday tedarikçi onay bekliyor: ${a.legal_name}`.slice(0, 300),
       reason: `${a.legal_name} başvurusu onaylandı; aday kart açıldı. Onaylı yapmak başvuruyu onaylayan kişiden başka bir Satınalma kullanıcısı ister.`,
       nextAction: 'Kimlik ve belgeleri inceleyip kayıt onayı verin ve kartı Onaylı yapın.', assigneeRole: 'PROCUREMENT', dedupeKey: `supplier:${supplierId}:activation` });
   }

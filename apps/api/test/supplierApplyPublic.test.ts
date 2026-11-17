@@ -271,7 +271,7 @@ describe('POST /api/v1/public/applications/:slug', () => {
     await runJobs(h);
     const tasks = await h.call('masterData', 'GET', '/api/v1/tasks?view=mine');
     const t = tasks.body.items.find((i: any) => i.entityId === a.id);
-    expect(t).toMatchObject({ title: 'Tedarikçi başvurusu inceleme bekliyor', assigneeRole: 'PROCUREMENT', entityType: 'supplier_application', kind: 'supplier_application_review' });
+    expect(t).toMatchObject({ title: expect.stringMatching(/^Tedarikçi başvurusu inceleme bekliyor: .+/), assigneeRole: 'PROCUREMENT', entityType: 'supplier_application', kind: 'supplier_application_review' });
     expect((await h.owner.query(`SELECT dedupe_key FROM tasks WHERE entity_id = $1`, [a.id])).rows.map((r) => r.dedupe_key)).toEqual([`application:${a.id}:review`]);
     // B kiracısının Satınalma'sı görmez.
     expect((await h.call('buyerB', 'GET', '/api/v1/tasks?view=mine', { tenant: h.world.tenantB })).body.items.some((i: any) => i.entityId === a.id)).toBe(false);

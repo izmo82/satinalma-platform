@@ -90,7 +90,7 @@ export async function runDocumentReminders(tx: Tx, ctx: TenantContext, day: stri
     let taskId: string | null = null;
     if (offset === 0) {
       taskId = (await openTask(tx, ctx, { companyId: null, departmentId: null, kind: 'supplier_document_expired', entityType: 'supplier', entityId: d.supplier_id,
-        title: 'Tedarikçi belgesinin süresi doldu', reason: `${d.legal_name}: ${documentName} belgesinin geçerliliği ${formatDateTr(d.valid_until)} tarihinde sona eriyor.`,
+        title: `Belge süresi doldu: ${documentName} — ${d.legal_name}`.slice(0, 300), reason: `${d.legal_name}: ${documentName} belgesinin geçerliliği ${formatDateTr(d.valid_until)} tarihinde sona eriyor.`,
         nextAction: users.length ? 'Tedarikçiden güncel belgeyi isteyin ya da karttan yükleyin.' : 'Tedarikçinin portal kullanıcısı yok; güncel belgeyi isteyin ya da karttan yükleyin.',
         assigneeRole: 'PROCUREMENT', dedupeKey: `doc:${d.id}:expired` })).id;
       result.tasks++;

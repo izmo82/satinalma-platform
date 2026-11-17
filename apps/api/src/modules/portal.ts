@@ -7,7 +7,7 @@ import { EMAIL_STATUS_LABEL, enqueueEmailDispatch, mailChannel, type OutboxStatu
 import { openTask } from '../tasks.ts';
 import { withTenantWideScope } from './contractChain.ts';
 import { portalRisk } from './riskAssessments.ts';
-import { DOC_SELECT, documentView, prepareInternalUpload, requiredMissing, SUPPLIER_DOC_MAX_BYTES, today, type DocRow, type InternalUpload } from './supplierCard.ts';
+import { DOC_SELECT, documentView, prepareInternalUpload, supersedeOlderSameType, requiredMissing, SUPPLIER_DOC_MAX_BYTES, today, type DocRow, type InternalUpload } from './supplierCard.ts';
 import { closeCoveredDocumentTasks, ensureDocumentReminderJob } from './supplierDocReminders.ts';
 
 /**
@@ -64,7 +64,7 @@ export async function queueRoundInvites(tx: Tx, ctx: TenantContext, roundId: str
       if (!users.length) {
         missingUsers.push(s.supplier_id);
         await openTask(tx, ctx, { companyId: null, departmentId: null, kind: 'supplier_no_portal_user', entityType: 'supplier', entityId: s.supplier_id,
-          title: 'Tedarikçinin portal kullanıcısı yok',
+          title: `Tedarikçinin portal kullanıcısı yok: ${s.legal_name}`.slice(0, 300),
           reason: `${s.legal_name}, "${r.title}" teklif turuna davet edildi; portal kullanıcısı olmadığı için davet e-postası yazılmadı.`,
           nextAction: 'Tedarikçi kartından portal kullanıcısı ekleyin ve tedarikçiye daveti ayrıca bildirin.', assigneeRole: 'PROCUREMENT',
           dedupeKey: `round:${roundId}:no_portal_user:${s.supplier_id}` });
@@ -288,15 +288,16 @@ export async function addPortalDocument(tx: Tx, ctx: TenantContext, u: InternalU
     [id, ctx.tenantId, sid, typeCode, title, p.filename, p.mimeType, p.sizeBytes, p.sha256, p.storageKey, p.basicCheckStatus, p.basicCheckReason,
       p.avScanStatus, validUntil, ctx.userId]);
   if (replacesId) await tx.query(`UPDATE supplier_documents SET superseded_by_id = $2 WHERE id = $1`, [replacesId, id]);
+  await supersedeOlderSameType(tx, sid, typeCode, id);
   // R12: yenileme gelince eski belgenin açık hatırlatma/"süresi doldu" görevleri kapanır (yenilenen ve yeni belgenin kapsadığı aynı türdekiler).
   await closeCoveredDocumentTasks(tx, { supplierId: sid, typeCode, newId: id, replacesId, validUntil });
   await openTask(tx, ctx, { companyId: null, departmentId: null, kind: 'supplier_document_renewed', entityType: 'supplier', entityId: sid,
-    title: replacesId ? 'Tedarikçi belge yeniledi' : 'Tedarikçi belge yükledi',
+    title: `${replacesId ? 'Tedarikçi belge yeniledi' : 'Tedarikçi belge yükledi'}: ${t.name} — ${s.legal_name}`.slice(0, 300),
     reason: `${s.legal_name}: ${t.name}${validUntil ? ` (geçerlilik: ${formatDateTr(validUntil)})` : ''} portaldan yüklendi.`,
     nextAction: 'Belgeyi tedarikçi kartında inceleyin.', assigneeRole: 'PROCUREMENT', dedupeKey: `supplier-document:${id}:portal` });
   if (p.avScanStatus === 'ERROR') {
     await openTask(tx, ctx, { companyId: null, departmentId: null, kind: 'supplier_document_av_error', entityType: 'supplier', entityId: sid,
-      title: 'Tedarikçi belgesi virüs taramasından geçemedi', reason: `${t.name} belgesi taranamadı ve karantinada.`,
+      title: `Tedarikçi belgesi virüs taramasından geçemedi: ${s.legal_name}`.slice(0, 300), reason: `${t.name} belgesi taranamadı ve karantinada.`,
       nextAction: 'Taramayı yeniden yaptırın ya da tedarikçiden belgeyi yeniden isteyin.', assigneeRole: 'PROCUREMENT', severity: 'HIGH', dedupeKey: `supplier-document:${id}:av_error` });
   }
   if (validUntil) await ensureDocumentReminderJob(tx, ctx.tenantId, day);
@@ -386,7 +387,7 @@ export async function requestChange(tx: Tx, ctx: TenantContext, b: { field: Chan
   }
   const label = CHANGE_FIELDS[b.field];
   const task = await openTask(tx, ctx, { companyId: null, departmentId: null, kind: 'supplier_profile_change_request', entityType: 'supplier', entityId: sid,
-    title: `Tedarikçi bilgi değişikliği isteği: ${label}`, reason: `${s.legal_name} portaldan şu değişikliği istedi: ${note}`,
+    title: `Tedarikçi bilgi değişikliği isteği: ${label} — ${s.legal_name}`.slice(0, 300), reason: `${s.legal_name} portaldan şu değişikliği istedi: ${note}`,
     nextAction: b.field === 'TAX_ID' ? 'Dayanak belgeyle doğrulayın; VKN değişikliği kimlik doğrulaması ve gerekirse kart birleştirme gerektirir.'
       : 'Dayanak belgeyle doğrulayıp tedarikçi kartında güncelleyin.',
     assigneeRole: 'PROCUREMENT', dedupeKey: `supplier:${sid}:change_request:${b.field}:${randomUUID()}` });

@@ -102,7 +102,7 @@ describe('R12 belge hatırlatmaları', () => {
     expect(m30[0].body_text).toContain('30 gün sonra');
     expect(m30[0].body_text).toContain('http://localhost:5174/portal/belgeler');
     expect((await mails(d0))[0].subject).toBe('Belge süresi doluyor: ISO 27001');
-    expect(await tasks(d0)).toEqual([{ title: 'Tedarikçi belgesinin süresi doldu', assignee_role: 'PROCUREMENT', status: 'OPEN' }]);
+    expect(await tasks(d0)).toEqual([{ title: expect.stringMatching(/^Belge süresi doldu: .+ — .+/), assignee_role: 'PROCUREMENT', status: 'OPEN' }]);
     expect(await tasks(d7)).toEqual([]);
 
     // İşçi tekrarı: çift satır, e-posta ya da görev yok.

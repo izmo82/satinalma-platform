@@ -130,7 +130,7 @@ describe('R8 davet e-postası', () => {
     expect(rows.some((r: any) => r.to_user_id === suspended.id)).toBe(false);
 
     const task = (await h.owner.query(`SELECT assignee_role, title, status FROM tasks WHERE tenant_id = $1 AND dedupe_key = $2`, [h.world.tenantA, `round:${roundId}:no_portal_user:${b}`])).rows;
-    expect(task).toEqual([{ assignee_role: 'PROCUREMENT', title: 'Tedarikçinin portal kullanıcısı yok', status: 'OPEN' }]);
+    expect(task).toEqual([{ assignee_role: 'PROCUREMENT', title: expect.stringMatching(/^Tedarikçinin portal kullanıcısı yok: .+/), status: 'OPEN' }]);
 
     // İkinci onay denemesi ve işçi/çağrı tekrarı çift satır ya da görev yazmaz.
     expect((await h.call('legal2', 'POST', `/api/v1/rfq-rounds/${roundId}/decision`, { body: { approve: true } })).status).toBe(409);
@@ -220,7 +220,7 @@ describe('Belgelerim (R12)', () => {
     expect(old.superseded_by_id).toBe(renewed.body.id);
     expect((await h.owner.query(`SELECT status FROM tasks WHERE dedupe_key = $1`, [expiredKey])).rows).toEqual([{ status: 'DONE' }]);
     const info = (await h.owner.query(`SELECT title, assignee_role, status FROM tasks WHERE dedupe_key = $1`, [`supplier-document:${renewed.body.id}:portal`])).rows;
-    expect(info).toEqual([{ title: 'Tedarikçi belge yeniledi', assignee_role: 'PROCUREMENT', status: 'OPEN' }]);
+    expect(info).toEqual([{ title: expect.stringMatching(/^Tedarikçi belge yeniledi: .+ — .+/), assignee_role: 'PROCUREMENT', status: 'OPEN' }]);
     // Aynı belge ikinci kez yenilenemez.
     expect((await portalUpload(ua.token, { typeCode: 'VERGI_LEVHASI', validUntil: isoDay(300), replacesId: first.body.id })).body.error.code).toBe('already_superseded');
 
@@ -304,7 +304,7 @@ describe('Firma bilgileri (R14)', () => {
     expect(cr.body).toMatchObject({ requested: true, field: 'LEGAL_NAME', fieldLabel: 'Unvan' });
     const t = (await h.owner.query(`SELECT title, assignee_role, status, reason FROM tasks WHERE kind = 'supplier_profile_change_request' AND entity_id = $1`, [a])).rows;
     expect(t).toHaveLength(1);
-    expect(t[0]).toMatchObject({ title: 'Tedarikçi bilgi değişikliği isteği: Unvan', assignee_role: 'PROCUREMENT', status: 'OPEN' });
+    expect(t[0]).toMatchObject({ title: expect.stringMatching(/^Tedarikçi bilgi değişikliği isteği: Unvan — .+/), assignee_role: 'PROCUREMENT', status: 'OPEN' });
     expect(t[0].reason).toContain('sicil gazetesi');
     expect((await h.owner.query(`SELECT legal_name FROM suppliers WHERE id = $1`, [a])).rows[0].legal_name).toBe(before.legal_name);
     expect((await as(ua.token, 'GET', '/api/v1/portal/profile')).body.pendingChangeRequests).toEqual([expect.objectContaining({ field: 'LEGAL_NAME', fieldLabel: 'Unvan' })]);

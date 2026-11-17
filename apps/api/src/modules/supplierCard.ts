@@ -10,7 +10,7 @@ import { inspectUpload } from '../files.ts';
 import { AV_STATUS_LABEL, scanStatus, type AvScanner, type AvScanStatus } from '../av/index.ts';
 import { queueEmail } from '../mail/index.ts';
 import type { ObjectStore } from '../storage.ts';
-import { openTask } from '../tasks.ts';
+import { closeTasks, openTask } from '../tasks.ts';
 import { listInfo } from './contractIntake.ts';
 import { currentRisk } from './riskAssessments.ts';
 import { closeCoveredDocumentTasks, ensureDocumentReminderJob } from './supplierDocReminders.ts';
@@ -34,15 +34,16 @@ export type ListStage = (typeof LIST_STAGES)[number];
 /** Liste satırına eklenecek v2 alanları (eski alanlar route'ta aynen). `documentAlert`: tür başına en yeni geçerlilik tarihine göre. */
 export async function listExtras(tx: Tx, ids: string[]) {
   const day = today();
-  const rows = (await tx.query<{ id: string; status: SupplierStatus; dept_id: string | null; dept_name: string | null; min_until: string | null }>(
+  const rows = (await tx.query<{ id: string; status: SupplierStatus; dept_id: string | null; dept_name: string | null; min_until: string | null; doc_count: number }>(
     `SELECT s.id, s.status, d.id AS dept_id, d.name AS dept_name,
             (SELECT min(x.vu)::text FROM (SELECT max(sd.valid_until) AS vu FROM supplier_documents sd
-               WHERE sd.supplier_id = s.id AND sd.superseded_by_id IS NULL AND sd.valid_until IS NOT NULL GROUP BY sd.type_code) x) AS min_until
+               WHERE sd.supplier_id = s.id AND sd.superseded_by_id IS NULL AND sd.valid_until IS NOT NULL GROUP BY sd.type_code) x) AS min_until,
+            (SELECT count(*)::int FROM supplier_documents cd WHERE cd.supplier_id = s.id AND cd.superseded_by_id IS NULL) AS doc_count
        FROM suppliers s LEFT JOIN departments d ON d.id = s.responsible_department_id WHERE s.id = ANY($1::uuid[])`, [ids])).rows;
   return new Map(rows.map((r) => {
     const st = supplierStage(r.status);
     const v = r.min_until ? documentValidity(r.min_until, day).code : null;
-    return [r.id, { stage: st.code, stageLabel: st.label, documentAlert: v === 'EXPIRED' || v === 'EXPIRING' ? v : null,
+    return [r.id, { stage: st.code, stageLabel: st.label, supplierDocumentCount: r.doc_count, documentAlert: v === 'EXPIRED' || v === 'EXPIRING' ? v : null,
       responsibleDepartment: r.dept_id ? { id: r.dept_id, name: r.dept_name } : null }];
   }));
 }
@@ -62,6 +63,29 @@ export async function listCounts(tx: Tx, q: string | null) {
 export const stageFilterStatuses = (stage: ListStage | undefined): string[] | null => (stage ? stageStatuses(stage) : null);
 
 // ---------- Belgeler (R12) ----------
+
+/**
+ * D3: aynı tedarikçide aynı türden yeni belge eklenince (iç yükleme, portal, başvuru belgelerinin karta geçişi) önceki güncel belgeler
+ * "yenilendi" olur (`superseded_by_id`); geçmiş silinmez. Açık `replacesId` yoksa en son güncel olan çıkarılır. Dönen kimliklerin
+ * hatırlatma/"süresi doldu" görevleri kapatılır (güncel olmayan belge için hatırlatma anlamsızdır).
+ */
+export async function supersedeOlderSameType(tx: Tx, supplierId: string, typeCode: string, newId: string) {
+  const old = (await tx.query<{ id: string }>(`SELECT id FROM supplier_documents WHERE supplier_id = $1 AND type_code = $2 AND id <> $3 AND superseded_by_id IS NULL FOR UPDATE`,
+    [supplierId, typeCode, newId])).rows;
+  for (const o of old) {
+    await tx.query(`UPDATE supplier_documents SET superseded_by_id = $2 WHERE id = $1`, [o.id, newId]);
+    await closeTasks(tx, `doc:${o.id}:`);
+  }
+  return old.length;
+}
+
+/** Karta geçen başvuru belgeleri: aynı türde birden çok güncel belge varsa en yenisi güncel kalır, öncekiler "yenilendi" olur. */
+export async function supersedeDuplicateCurrent(tx: Tx, supplierId: string) {
+  const dup = (await tx.query<{ type_code: string; newest: string }>(
+    `SELECT type_code, (array_agg(id ORDER BY created_at DESC, id DESC))[1] AS newest FROM supplier_documents
+      WHERE supplier_id = $1 AND superseded_by_id IS NULL GROUP BY type_code HAVING count(*) > 1`, [supplierId])).rows;
+  for (const d of dup) await supersedeOlderSameType(tx, supplierId, d.type_code, d.newest);
+}
 
 export interface DocRow {
   id: string; supplier_id: string | null; application_id: string | null; type_code: string; type_name: string | null; title: string; original_filename: string;
@@ -368,7 +392,7 @@ export async function prepareInternalUpload(u: InternalUpload, tenantId: string,
 }
 
 export async function addInternalDocument(tx: Tx, ctx: TenantContext, supplierId: string, u: InternalUpload, p: Awaited<ReturnType<typeof prepareInternalUpload>>) {
-  const s = (await tx.query<{ status: string }>(`SELECT status FROM suppliers WHERE id = $1 FOR UPDATE`, [supplierId])).rows[0];
+  const s = (await tx.query<{ status: string; legal_name: string }>(`SELECT status, legal_name FROM suppliers WHERE id = $1 FOR UPDATE`, [supplierId])).rows[0];
   if (!s) throw notFound();
   if (s.status === 'MERGED') throw conflict('invalid_state', 'Birleştirilmiş karta belge yüklenemez.');
   const typeCode = (u.fields.typeCode ?? '').trim();
@@ -392,11 +416,12 @@ export async function addInternalDocument(tx: Tx, ctx: TenantContext, supplierId
     [ctx.tenantId, supplierId, typeCode, title, p.filename, p.mimeType, p.sizeBytes, p.sha256, p.storageKey, p.basicCheckStatus, p.basicCheckReason,
       p.avScanStatus, validUntil, ctx.userId])).rows[0]!.id;
   if (replacesId) await tx.query(`UPDATE supplier_documents SET superseded_by_id = $2 WHERE id = $1`, [replacesId, id]);
+  await supersedeOlderSameType(tx, supplierId, typeCode, id);
   // R12: yenileme gelince eski belgenin ve yeni belgenin kapsadığı aynı türdeki belgelerin açık hatırlatma/"süresi doldu" görevleri kapanır.
   await closeCoveredDocumentTasks(tx, { supplierId, typeCode, newId: id, replacesId, validUntil });
   if (p.avScanStatus === 'ERROR') {
     await openTask(tx, ctx, { companyId: null, departmentId: null, kind: 'supplier_document_av_error', entityType: 'supplier', entityId: supplierId,
-      title: 'Tedarikçi belgesi virüs taramasından geçemedi', reason: `${t.name} belgesi taranamadı ve karantinada.`,
+      title: `Tedarikçi belgesi virüs taramasından geçemedi: ${s.legal_name}`.slice(0, 300), reason: `${t.name} belgesi taranamadı ve karantinada.`,
       nextAction: 'Taramayı yeniden yaptırın ya da belgeyi yeniden yükleyin.', assigneeRole: 'PROCUREMENT', severity: 'HIGH', dedupeKey: `supplier-document:${id}:av_error` });
   }
   // v2 Faz 5 Görev 6 (R12): hatırlatma zincirini başlatır (kiracı başına günlük iş; idempotent).

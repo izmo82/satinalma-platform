@@ -163,6 +163,20 @@ describe('Kart (R10–R14)', () => {
     expect((await upload(s2, { typeCode: 'FAALIYET_BELGESI', validUntil: isoDay(-3) })).body.validity).toBe('EXPIRED');
     expect((await h.call('buyer', 'GET', '/api/v1/suppliers')).body.items.find((i: any) => i.id === s2).documentAlert).toBe('EXPIRED');
   });
+
+  it('same_type_upload_without_replacesId_supersedes_older_current_and_list_counts_supplier_documents', async () => {
+    const sid = await newSupplier('ACTIVE');
+    const a = await upload(sid, { typeCode: 'FAALIYET_BELGESI', validUntil: isoDay(200) });
+    const b = await upload(sid, { typeCode: 'FAALIYET_BELGESI', validUntil: isoDay(9) });
+    expect(a.status).toBe(201); expect(b.status).toBe(201);
+    const c = await card(sid);
+    expect(c.supplierDocuments.find((d: any) => d.id === a.body.id)).toMatchObject({ current: false, supersededById: b.body.id, supersededLabel: 'Yerine yenisi yüklendi' });
+    expect(c.supplierDocuments.find((d: any) => d.id === b.body.id)).toMatchObject({ current: true });
+    const row = (await h.call('buyer', 'GET', '/api/v1/suppliers')).body.items.find((i: any) => i.id === sid);
+    expect(row.supplierDocumentCount).toBe(1); // yalnız güncel
+    expect(row.documentCount).toBe(0); // eski alan: bağlı fatura/sözleşme belgesi, aynen
+    expect(row.documentAlert).toBe('EXPIRING'); // yalnız güncel belge sayılır
+  });
 });
 
 describe('Pasife alma ve ayrılış (R13)', () => {

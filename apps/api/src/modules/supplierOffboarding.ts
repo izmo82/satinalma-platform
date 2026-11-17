@@ -68,7 +68,7 @@ export async function deactivateSupplier(tx: Tx, ctx: TenantContext, id: string,
     await tx.query(`INSERT INTO supplier_offboarding_items (tenant_id, offboarding_id, code, label) VALUES ($1,$2,$3,$4)`, [ctx.tenantId, ob, item.code, item.label]);
   }
   const task = await openTask(tx, ctx, { companyId: null, departmentId: null, kind: 'supplier_offboarding', entityType: 'supplier', entityId: id,
-    title: 'Tedarikçi ayrılış kontrol listesi', reason: `${s.legal_name} pasife alındı: ${reason}`,
+    title: `Tedarikçi ayrılış kontrol listesi: ${s.legal_name}`.slice(0, 300), reason: `${s.legal_name} pasife alındı: ${reason}`,
     nextAction: 'Kontrol listesindeki maddeleri "Yapıldı" ya da "Uygulanmaz" olarak kapatın.', assigneeRole: 'PROCUREMENT', dedupeKey: taskKey(ob) });
   // Aday onay görevi pasif kartta anlamsızdır (veri değişmez; görev kapanır).
   if (s.status === 'CANDIDATE') await closeTasks(tx, `supplier:${id}:activation`);
@@ -123,7 +123,7 @@ export async function reactivateSupplier(tx: Tx, ctx: TenantContext, id: string,
   const restored = restore.length ? (await tx.query<{ user_id: string }>(`UPDATE memberships SET status = 'ACTIVE' WHERE tenant_id = $1 AND supplier_id = $2
       AND status = 'SUSPENDED' AND user_id = ANY($3::uuid[]) RETURNING user_id`, [ctx.tenantId, id, restore])).rows.map((r) => r.user_id) : [];
   if (target === 'CANDIDATE') {
-    await openTask(tx, ctx, { companyId: null, kind: 'SUPPLIER_CANDIDATE_APPROVAL', entityType: 'supplier', entityId: id, title: 'Aday tedarikçi onay bekliyor',
+    await openTask(tx, ctx, { companyId: null, kind: 'SUPPLIER_CANDIDATE_APPROVAL', entityType: 'supplier', entityId: id, title: `Aday tedarikçi onay bekliyor: ${s.legal_name}`.slice(0, 300),
       reason: 'Pasif aday kart yeniden açıldı; kayıt onayı gerekiyor.', nextAction: 'Kimlik ve kanıtı inceleyip kayıt onayı verin.', assigneeRole: 'PROCUREMENT',
       dedupeKey: `supplier:${id}:activation` });
   }
