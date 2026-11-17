@@ -10,6 +10,8 @@ import { closeTasks, openTask, rederiveTaskDepartments, v2Role } from '../tasks.
 import { ApiError, conflict, forbidden, notFound, unprocessable } from '../errors.ts';
 import { ErpTimeout, erpAdapter } from '../erp/adapter.ts';
 import { criticalBlocks } from './supplierEval.ts';
+import { ALLOC_FAMILIES_SQL, autoMatchInvoice, MATCH_STATE_SQL, matchInfo, releaseLinkForAllocation, type AutoMatchResult } from './invoiceMatching.ts';
+import { MATCH_STATE_TR, type MatchState } from '@sp/domain';
 
 /**
  * Faz 4: sipariş, kabul, fatura tahsisi, kontrol, istisna, finans onayı, ERP aktarımı ve gelen durum olayları.
@@ -348,10 +350,14 @@ export interface InvoiceInput {
   declaredTaxTotal?: string | null; declaredWithholding?: string | null; declaredPayable?: string | null; declaredOtherTaxTotal?: string | null;
   /** Yalnız sunucu içi (e-Fatura yükleyen tek departmanlı Departman kullanıcısı, D98); istek gövdesinden alınmaz. */
   departmentId?: string | null;
+  /** v2 Faz 7 (R2): ERP sözleşme/sipariş referansı (≤60, isteğe bağlı); otomatik eşleştirmenin ilk adımı. */
+  erpContractRef?: string | null; erpOrderRef?: string | null;
+  /** Yalnız sunucu içi: referans kaynağı (058a). İstekten/e-Faturadan gelen MANUAL, Faz 8 ERP girişi ERP yazar. */
+  erpRefSource?: 'ERP' | 'MANUAL';
 }
 
 /** Fatura girişi: aynı tedarikçi için aynı ETTN veya fatura no ikinci mali kayıt açmaz; tekrar izi tutulur (T17). */
-export async function createInvoice(tx: Tx, ctx: TenantContext, b: InvoiceInput, source = 'manual') {
+export async function createInvoice(tx: Tx, ctx: TenantContext, b: InvoiceInput, source = 'manual'): Promise<{ id: string; duplicate: boolean; match?: AutoMatchResult }> {
   if (!ctx.companyIds.includes(b.companyId)) throw forbidden('company');
   await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`invoice:${b.supplierId}:${b.invoiceNo}`]);
   const dup = (await tx.query<{ id: string; company_id: string }>(`SELECT id, company_id FROM invoices WHERE supplier_id = $1 AND (invoice_no = $2 OR ($3::uuid IS NOT NULL AND ettn = $3))`,
@@ -372,11 +378,15 @@ export async function createInvoice(tx: Tx, ctx: TenantContext, b: InvoiceInput,
     if (source !== 'einvoice' && cmp(absDec(mul(dec(l.quantity), dec(l.unitPrice)) - dec(l.netAmount)), dec('0.01')) > 0) throw unprocessable('line_total_mismatch', `"${l.description}": miktar × birim fiyat satır tutarına eşit değil.`);
   }
   for (const v of [b.declaredTaxTotal, b.declaredWithholding, b.declaredPayable, b.declaredOtherTaxTotal]) if (v != null && (!isDecimal(v) || dec(v) < 0n)) throw unprocessable('invalid_number', 'Belge toplamları sıfır veya pozitif ondalık olmalı.');
+  const contractRef = b.erpContractRef?.trim() || null;
+  const orderRef = b.erpOrderRef?.trim() || null;
+  if ((contractRef?.length ?? 0) > 60 || (orderRef?.length ?? 0) > 60) throw unprocessable('invalid_reference', 'ERP sözleşme ve sipariş referansı en fazla 60 karakter olabilir.');
+  const refSource = b.erpRefSource ?? 'MANUAL';
   const inv = (await tx.query<{ id: string }>(`INSERT INTO invoices (tenant_id, company_id, supplier_id, kind, invoice_no, ettn, issue_date, currency, document_version_id, original_invoice_id, created_by,
-      declared_tax_total, declared_withholding, declared_payable, declared_other_tax_total, department_id)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`, [ctx.tenantId, b.companyId, b.supplierId, b.kind, b.invoiceNo.trim(), b.ettn ?? null, b.issueDate,
+      declared_tax_total, declared_withholding, declared_payable, declared_other_tax_total, department_id, erp_contract_ref, erp_order_ref, erp_contract_ref_source, erp_order_ref_source)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING id`, [ctx.tenantId, b.companyId, b.supplierId, b.kind, b.invoiceNo.trim(), b.ettn ?? null, b.issueDate,
     b.currency, b.documentVersionId ?? null, b.originalInvoiceId ?? null, ctx.userId, b.declaredTaxTotal ?? null, b.declaredWithholding ?? null, b.declaredPayable ?? null, b.declaredOtherTaxTotal ?? null,
-    b.departmentId ?? null])).rows[0]!;
+    b.departmentId ?? null, contractRef, orderRef, contractRef ? refSource : null, orderRef ? refSource : null])).rows[0]!;
   let n = 0;
   for (const l of b.lines) {
     // Vergi kalemleri verildiyse satırın KDV dışı toplamı onlardan (beyan edilen toplam ayrıca verildiyse kontrol karşılaştırır).
@@ -386,8 +396,11 @@ export async function createInvoice(tx: Tx, ctx: TenantContext, b: InvoiceInput,
       [ctx.tenantId, b.companyId, inv.id, ++n, l.description.trim(), l.quantity, l.unit.trim(), l.unitPrice, l.netAmount, l.taxRate ?? '20', l.taxAmount || null, otherSum, parts ? JSON.stringify(parts) : null]);
   }
   await tx.query(`INSERT INTO invoice_intake_events (tenant_id, company_id, invoice_id, source, duplicate, received_by) VALUES ($1,$2,$3,$4,false,$5)`, [ctx.tenantId, b.companyId, inv.id, source, ctx.userId]);
-  await audit(tx, ctx, 'invoice.received', 'invoice', inv.id, { kind: b.kind, invoiceNo: b.invoiceNo, lines: b.lines.length });
-  return { id: inv.id, duplicate: false };
+  await audit(tx, ctx, 'invoice.received', 'invoice', inv.id, { kind: b.kind, invoiceNo: b.invoiceNo, lines: b.lines.length,
+    ...(contractRef || orderRef ? { erpContractRef: contractRef, erpOrderRef: orderRef } : {}) });
+  // v2 Faz 7 (R2): yeni fatura (auto_match varsayılan true) kayıtla aynı işlemde otomatik eşleştirilir.
+  const match = await autoMatchInvoice(tx, ctx, inv.id);
+  return { id: inv.id, duplicate: false, match };
 }
 
 async function finalDecision(tx: Tx, invoiceId: string) {
@@ -399,6 +412,10 @@ export async function setAllocations(tx: Tx, ctx: TenantContext, invoiceId: stri
   if (!inv) throw notFound();
   if (await finalDecision(tx, invoiceId)) throw conflict('invoice_decided', 'Karar verilmiş faturanın tahsisi değişmez; iade/alacak belgesi kullanın.');
   for (const a of b.allocations) if (!isDecimal(a.quantity) || !isDecimal(a.amount) || Number(a.amount) <= 0) throw unprocessable('invalid_number', 'Tahsis miktarı ve tutarı pozitif olmalı.');
+  // v2 Faz 7: sözleşmeye bağlı faturada tahsis — elle bağ 409 invoice_matched; otomatik bağ aynı işlemde gerekçeli kaldırılır.
+  const unlinkedFamily = await releaseLinkForAllocation(tx, ctx, invoiceId, b.allocations.length > 0);
+  // Tahsisli fatura eşleştirme kuyruğunun dışındadır (R2/R3: otomatik eşleştirme ve elle bağlama tahsisliye yapılmaz); kuyruk görevi kapanır.
+  if (b.allocations.length > 0) await closeTasks(tx, `invoice-unmatched:${invoiceId}`);
   // v2 Faz 1 (D93): siparişler kalktı; yeni sipariş bağı kurulamaz. Faturanın mevcut eski (v1) sipariş bağı korunabilir veya kaldırılabilir.
   const linked = new Set((await tx.query<{ id: string }>(`SELECT DISTINCT po_line_id AS id FROM invoice_allocations WHERE invoice_id = $1 AND po_line_id IS NOT NULL`, [invoiceId])).rows.map((r) => r.id));
   if (b.allocations.some((a) => a.poLineId && !linked.has(a.poLineId))) {
@@ -422,7 +439,7 @@ export async function setAllocations(tx: Tx, ctx: TenantContext, invoiceId: stri
   if (result.check.issues.some((x) => x.code === 'COMPANY_MISMATCH')) throw unprocessable('allocation_company_mismatch', 'Seçilen sipariş veya sözleşme bu faturanın şirketine ait değil ya da erişiminiz dışında.');
   if (result.check.issues.some((x) => x.code === 'SUPPLIER_MISMATCH')) throw unprocessable('allocation_supplier_mismatch', 'Seçilen sipariş veya sözleşme bu faturanın tedarikçisine ait değil; aynı ünvanlı başka bir kayıt olabilir.');
   await audit(tx, ctx, 'invoice.allocated', 'invoice', invoiceId, { allocations: b.allocations.length, advanceOffset: b.advanceOffset ?? '0',
-    ...(departmentId !== undefined ? { departmentId } : {}) });
+    ...(departmentId !== undefined ? { departmentId } : {}), ...(unlinkedFamily ? { unlinkedFamilyId: unlinkedFamily } : {}) });
   return result;
 }
 
@@ -652,6 +669,8 @@ export async function getInvoice(tx: Tx, ctx: TenantContext, id: string) {
   const shown = { ...check, issues, canApprove: false, needsException: false };
   return {
     invoice: inv, lines, allocations, decisions, intake, erp, check: shown, contracts, poLines, ublCheck,
+    /** v2 Faz 7 (R1, R11): eşleşme durumu, sözleşme, proje, yöntem, referanslar ve kullanım. */
+    match: await matchInfo(tx, id),
     status: final ? final.kind : issues.some((x) => x.severity === 'BLOCK') ? 'BLOCKED' : 'OPEN',
     exceptionCurrent: exception ? exception.checkHash === fingerprint : null,
     /** Onay isteği If-Match ile bu değeri gönderir (görülen kontrol sonucu). */
@@ -659,23 +678,41 @@ export async function getInvoice(tx: Tx, ctx: TenantContext, id: string) {
   };
 }
 
-export async function listInvoices(tx: Tx, f: { departmentId?: string } = {}) {
-  const rows = (await tx.query<{ id: string; decision: string | null; hasLines: boolean }>(`SELECT i.id, i.kind, i.invoice_no AS "invoiceNo", i.issue_date::text AS "issueDate", i.currency, s.legal_name AS "supplierName",
+export type MatchFilter = 'ALL' | 'MATCHED' | 'UNMATCHED';
+export async function listInvoices(tx: Tx, f: { departmentId?: string; match?: MatchFilter } = {}) {
+  const rows = (await tx.query<{ id: string; decision: string | null; hasLines: boolean; matchState: MatchState; familyId: string | null; familyCode: string | null;
+    familyTitle: string | null; projectId: string | null; projectCode: string | null; projectTitle: string | null; allocFamilies: string[] }>(`SELECT i.id, i.kind, i.invoice_no AS "invoiceNo", i.issue_date::text AS "issueDate", i.currency, s.legal_name AS "supplierName",
       s.status AS "supplierStatus", ${SUPPLIER_VERIFIED_SQL} AS "supplierIdentityVerified",
       (SELECT sum(net_amount)::text FROM invoice_lines WHERE invoice_id = i.id) AS "netAmount", i.legal_status AS "legalStatus", i.payment_status AS "paymentStatus",
       (SELECT kind FROM invoice_decisions d WHERE d.invoice_id = i.id AND d.kind IN ('APPROVAL','REJECTION')) AS decision,
       (SELECT status FROM erp_exports e WHERE e.invoice_id = i.id) AS "erpStatus",
       (SELECT count(*)::int FROM invoice_intake_events e WHERE e.invoice_id = i.id AND e.duplicate) AS "duplicateCount",
       i.department_id AS "departmentId", (SELECT d.name FROM departments d WHERE d.id = i.department_id) AS "departmentName",
-      EXISTS (SELECT 1 FROM invoice_lines l WHERE l.invoice_id = i.id) AS "hasLines"
-    FROM invoices i JOIN suppliers s ON s.id = i.supplier_id WHERE ($1::uuid IS NULL OR i.department_id = $1) ORDER BY i.created_at DESC LIMIT 300`, [f.departmentId ?? null])).rows;
+      EXISTS (SELECT 1 FROM invoice_lines l WHERE l.invoice_id = i.id) AS "hasLines",
+      ${MATCH_STATE_SQL('i')} AS "matchState", i.match_method AS "matchMethod", i.contract_family_id AS "familyId", cf.code AS "familyCode", cf.title AS "familyTitle",
+      i.project_id AS "projectId", pr.code AS "projectCode", pr.title AS "projectTitle", ${ALLOC_FAMILIES_SQL('i')} AS "allocFamilies"
+    FROM invoices i JOIN suppliers s ON s.id = i.supplier_id LEFT JOIN contract_families cf ON cf.id = i.contract_family_id LEFT JOIN projects pr ON pr.id = i.project_id
+    WHERE ($1::uuid IS NULL OR i.department_id = $1)
+      AND ($2::text = 'ALL' OR ($2 = 'UNMATCHED') = (${MATCH_STATE_SQL('i')} = 'UNMATCHED'))
+    ORDER BY i.created_at DESC LIMIT 300`, [f.departmentId ?? null, f.match ?? 'ALL'])).rows;
+  // v2 Faz 7 (R1): tahsisle türeyen tek aile (ALLOCATED) için sözleşme bilgisi; bağlı faturada saklı aile.
+  const allocOnly = [...new Set(rows.filter((r) => r.matchState === 'ALLOCATED').map((r) => r.allocFamilies[0]!))];
+  const allocFam = new Map((await tx.query<{ id: string; code: string; title: string; project_id: string | null; pcode: string | null; ptitle: string | null }>(
+    `SELECT f.id, f.code, f.title, f.project_id, p.code AS pcode, p.title AS ptitle FROM contract_families f LEFT JOIN projects p ON p.id = f.project_id WHERE f.id = ANY($1::uuid[])`,
+    [allocOnly])).rows.map((x) => [x.id, x]));
   // Karar bekleyenlerde listede de engel görünsün (D90). Maliyet: fatura başına değil, bağlı sözleşme başına sorgu.
   // v2 eşleşme (I5): "Eşleşti" tahsis kontrolünden türer (eksik/fazla/yanlış tedarikçi ya da şirket tahsisi eşleşme sayılmaz). Tahsis
   // bulguları onaylı faturada da aynı hesaplanır (toplu kontrolün onaylı fatura farkı limit ve avans hesabındadır), bu yüzden hepsi için.
   const checks = await unapprovedInvoiceChecks(tx, rows.map((r) => r.id));
-  return rows.map(({ hasLines, ...r }) => ({ ...r, matched: allocationMatched(hasLines, checks.get(r.id)?.issues ?? []),
+  return rows.map(({ hasLines, familyId, familyCode, familyTitle, projectId, projectCode, projectTitle, allocFamilies, ...r }) => {
+    const af = r.matchState === 'ALLOCATED' ? allocFam.get(allocFamilies[0]!) : undefined;
+    return { ...r, matchStateLabel: MATCH_STATE_TR[r.matchState],
+    contract: familyId ? { id: familyId, code: familyCode, title: familyTitle } : af ? { id: af.id, code: af.code, title: af.title } : null,
+    project: projectId ? { id: projectId, code: projectCode, title: projectTitle } : af?.project_id ? { id: af.project_id, code: af.pcode, title: af.ptitle } : null,
+    matched: allocationMatched(hasLines, checks.get(r.id)?.issues ?? []),
     // v2 Faz 1 (D93): detayla aynı; kaldırılan bulgu kodları (REMOVED_ISSUE_CODES) engel sayılmaz.
-    blocked: !r.decision && !!checks.get(r.id)?.issues.some((x) => x.severity === 'BLOCK' && !REMOVED_ISSUE_CODES.includes(x.code)) }));
+    blocked: !r.decision && !!checks.get(r.id)?.issues.some((x) => x.severity === 'BLOCK' && !REMOVED_ISSUE_CODES.includes(x.code)) };
+  });
 }
 
 export async function listTolerance(tx: Tx) {
@@ -818,6 +855,8 @@ export interface EInvoiceIntake { created: boolean; invoiceId: string | null; du
  */
 export async function invoiceFromEInvoice(tx: Tx, ctx: TenantContext, o: {
   companyId: string; documentVersionId: string; supplierId: string;
+  /** v2 Faz 7 (R2): yükleme formunda girilen ERP referansları (isteğe bağlı). */
+  erpContractRef?: string | null; erpOrderRef?: string | null;
   ubl: { invoiceNumber: string | null; ettn: string | null; issueDate: string | null; currency: string | null; typeCode: string | null; billingReference: string | null;
     buyer: { taxId: string | null }; lines: { description: string; quantity: string | null; unitCode: string | null; unitPrice: string | null; netAmount: string | null; taxRate: string | null; taxAmount: string | null; otherTax: string | null;
       otherTaxes?: { code: string; name: string | null; rate: string | null; amount: string }[] }[];
@@ -872,7 +911,8 @@ export async function invoiceFromEInvoice(tx: Tx, ctx: TenantContext, o: {
   try {
     r = await createInvoice(tx, ctx, { companyId: o.companyId, supplierId: o.supplierId, kind, invoiceNo: u.invoiceNumber, ettn: u.ettn, issueDate: u.issueDate,
     currency: u.currency, documentVersionId: o.documentVersionId, originalInvoiceId, lines,
-    declaredTaxTotal: dec2(u.totals.taxTotal), declaredWithholding: dec2(u.totals.withholding), declaredPayable: dec2(u.totals.payable), declaredOtherTaxTotal: dec2(u.totals.otherTaxTotal), departmentId }, 'einvoice');
+    declaredTaxTotal: dec2(u.totals.taxTotal), declaredWithholding: dec2(u.totals.withholding), declaredPayable: dec2(u.totals.payable), declaredOtherTaxTotal: dec2(u.totals.otherTaxTotal), departmentId,
+    erpContractRef: o.erpContractRef ?? null, erpOrderRef: o.erpOrderRef ?? null }, 'einvoice');
     await tx.query('RELEASE SAVEPOINT einvoice_intake');
   } catch (e) {
     await tx.query('ROLLBACK TO SAVEPOINT einvoice_intake');

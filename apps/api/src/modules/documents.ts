@@ -20,6 +20,9 @@ export interface UploadInput {
   filename: string;
   mimeType: string;
   body: Buffer;
+  /** v2 Faz 7 (R2): e-Fatura yüklemesinde isteğe bağlı ERP sözleşme/sipariş referansı (otomatik eşleştirme). */
+  erpContractRef?: string | null;
+  erpOrderRef?: string | null;
 }
 
 export interface UploadResult {
@@ -137,7 +140,8 @@ export async function uploadDocument(tx: Tx, ctx: TenantContext, store: ObjectSt
       });
       // Satıcı kesin kimlikle bulunduysa (aday dahil) fatura kaydı açılır; aday satıcıya onay kontrolde engellenir (BR02).
       const invoice = supplier.supplierId && !['IDENTITY_REVIEW_REQUIRED', 'SELLER_IS_OWN_COMPANY'].includes(supplier.outcome)
-        ? await invoiceFromEInvoice(tx, ctx, { companyId: input.companyId, documentVersionId: dvId, supplierId: supplier.supplierId, ubl })
+        ? await invoiceFromEInvoice(tx, ctx, { companyId: input.companyId, documentVersionId: dvId, supplierId: supplier.supplierId, ubl,
+            erpContractRef: input.erpContractRef ?? null, erpOrderRef: input.erpOrderRef ?? null })
         : null;
       return { ...base, processing: { stage: 'STRUCTURED_PARSED', message: 'e-Fatura XML okundu; alanlar kural ile çıkarıldı.' }, supplier, invoice, ublCheck };
     }

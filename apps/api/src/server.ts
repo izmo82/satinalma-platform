@@ -18,6 +18,7 @@ import * as contracts from './modules/contracts.ts';
 import * as sourcing from './modules/sourcing.ts';
 import * as lifecycle from './modules/contractTerms.ts';
 import * as invoices from './modules/invoices.ts';
+import * as invoiceMatching from './modules/invoiceMatching.ts';
 import * as evals from './modules/supplierEval.ts';
 import * as ai from './modules/ai.ts';
 import * as kpi from './modules/kpi.ts';
@@ -136,6 +137,9 @@ export async function buildApp(deps: AppDeps) {
         return reply.status(sp.status).send({ error: { code: sp.code, message: sp.message } });
       }
     }
+    // v2 Faz 7 (056a): fatura eşleşme koruması kendi koduyla döner (immutable_record değil).
+    const matchErr = invoiceMatching.matchGuardError(err);
+    if (matchErr) return reply.status(matchErr.status).send({ error: { code: matchErr.code, message: matchErr.message, details: matchErr.details } });
     if (err.code === 'P0001') return reply.status(409).send({ error: { code: 'immutable_record', message: 'Tamamlanmış kayıt değiştirilemez; ters işlem kullanın.' } });
     if (err.code === '42501') return reply.status(404).send({ error: { code: 'not_found', message: 'Kayıt bulunamadı veya erişim yetkiniz yok.' } });
     if (err.code === '22P02') return reply.status(400).send({ error: { code: 'validation_failed', message: 'Geçersiz kimlik biçimi.' } });
@@ -461,9 +465,14 @@ export async function buildApp(deps: AppDeps) {
       throw new ApiError(400, 'validation_failed', 'companyId ve kind gerekli.');
     }
     const documentId = f.documentId?.value && /^[0-9a-f-]{36}$/.test(f.documentId.value) ? f.documentId.value : null;
+    // v2 Faz 7 (R2): e-Fatura girişinde isteğe bağlı ERP referansları (≤60).
+    const erpContractRef = f.erpContractRef?.value?.trim() || null;
+    const erpOrderRef = f.erpOrderRef?.value?.trim() || null;
+    if ((erpContractRef?.length ?? 0) > 60 || (erpOrderRef?.length ?? 0) > 60) throw new ApiError(400, 'validation_failed', 'ERP sözleşme ve sipariş referansı en fazla 60 karakter olabilir.');
     const body = await file.toBuffer();
     const result = await scoped(req, 'document.upload', (tx, ctx) => uploadDocument(tx, ctx, deps.store, {
       companyId, kind, documentId, title: (f.title?.value || file.filename).slice(0, 200), filename: file.filename, mimeType: file.mimetype, body,
+      ...(erpContractRef ? { erpContractRef } : {}), ...(erpOrderRef ? { erpOrderRef } : {}),
     }));
     return reply.status(result.duplicate ? 200 : 201).send(result);
   });
@@ -785,8 +794,9 @@ export async function buildApp(deps: AppDeps) {
   app.get('/api/v1/contracts/:id/reminders', { schema: { tags: ['contracts'], params: idParams } }, async (req) =>
     scoped(req, 'contract.read', (tx, ctx) => reminders.getReminders(tx, ctx, (req.params as { id: string }).id)));
   // Görev 7 inceleme (I4): ailenin sürümlerine (doğrudan ya da sözleşmeye bağlı sipariş üzerinden) tahsis edilmiş faturalar; limit ucuyla aynı veri.
+  // v2 Faz 7 (Ruling 3): Faz 3 ucu genişletildi — tahsisli kalemler aynen + bağlı faturalar, eşleşme durumu ve kullanım (R4).
   app.get('/api/v1/contracts/:id/invoices', { schema: { tags: ['contracts'], params: idParams } }, async (req) =>
-    scoped(req, 'contract.read', (tx) => invoices.familyInvoices(tx, (req.params as { id: string }).id)));
+    scoped(req, 'contract.read', (tx) => invoiceMatching.contractInvoices(tx, (req.params as { id: string }).id)));
   // v2 Faz 5 (R7): Yönetim > E-posta kutusu (yalnız Yönetici, yalnız okuma). Üretimde belirteçli bağlantı maskelenir.
   app.get('/api/v1/admin/email-outbox', { schema: { tags: ['admin'], querystring: { type: 'object', additionalProperties: false, properties: {
     status: { type: 'string', enum: ['QUEUED', 'NOT_CONFIGURED', 'SENT', 'FAILED'] }, relatedType: { type: 'string', minLength: 1, maxLength: 100 },
@@ -1010,14 +1020,30 @@ export async function buildApp(deps: AppDeps) {
       if (!can(ctx.roles, 'contract.read') && !can(ctx.roles, 'invoice.read')) throw forbidden('contract.read');
       return invoices.contractLimit(tx, (req.params as any).id);
     }));
-  app.get('/api/v1/invoices', { schema: { tags: ['invoices'], querystring: departmentFilter } }, async (req) => scoped(req, 'invoice.read', async (tx) =>
-    ({ items: await invoices.listInvoices(tx, req.query as { departmentId?: string }) })));
+  app.get('/api/v1/invoices', { schema: { tags: ['invoices'], querystring: { type: 'object', properties: { departmentId: uuid, match: { type: 'string', enum: ['ALL', 'MATCHED', 'UNMATCHED'] } } } } },
+    async (req) => scoped(req, 'invoice.read', async (tx, ctx) => {
+      const q = req.query as { departmentId?: string; match?: invoices.MatchFilter };
+      return { items: await invoices.listInvoices(tx, q), counts: await invoiceMatching.matchCounts(tx, q),
+        can: { match: can(ctx.roles, 'invoice.match'), retryQueue: can(ctx.roles, 'invoice.manage') } };
+    }));
+  // v2 Faz 7 (R2, R3): eşleştirme kuyruğu, adaylar, elle bağlama ve bağ kaldırma.
+  app.post('/api/v1/invoices/match-queue/retry', { schema: { tags: ['invoices'] } }, async (req) =>
+    scoped(req, 'invoice.manage', (tx, ctx) => invoiceMatching.retryMatchQueue(tx, ctx)));
+  app.get('/api/v1/invoices/:id/match-candidates', { schema: { tags: ['invoices'], params: idParams } }, async (req) =>
+    scoped(req, 'invoice.match', (tx, ctx) => invoiceMatching.matchCandidates(tx, ctx, (req.params as { id: string }).id)));
+  app.post('/api/v1/invoices/:id/match', { schema: { tags: ['invoices'], params: idParams, body: { type: 'object', required: ['familyId'], additionalProperties: false,
+    properties: { familyId: uuid, acknowledgeOutOfRange: { type: 'boolean' }, note: { anyOf: [{ type: 'string', maxLength: 2000 }, { type: 'null' }] } } } } }, async (req) =>
+    scoped(req, 'invoice.match', (tx, ctx) => invoiceMatching.linkInvoice(tx, ctx, (req.params as { id: string }).id, req.body as any)));
+  app.delete('/api/v1/invoices/:id/match', { schema: { tags: ['invoices'], params: idParams, body: { type: 'object', required: ['reason'], additionalProperties: false,
+    properties: { reason: { type: 'string', maxLength: 2000 } } } } }, async (req) =>
+    scoped(req, 'invoice.match', (tx, ctx) => invoiceMatching.unlinkInvoice(tx, ctx, (req.params as { id: string }).id, req.body as any)));
   app.get('/api/v1/invoices/:id', { schema: { tags: ['invoices'], params: idParams } }, async (req) => scoped(req, 'invoice.read', async (tx, ctx) =>
     ({ ...(await invoices.getInvoice(tx, ctx, (req.params as any).id)), can: { manage: can(ctx.roles, 'invoice.manage'), approve: can(ctx.roles, 'invoice.approve'),
-      approveException: can(ctx.roles, 'invoice.exception.approve') } })));
+      approveException: can(ctx.roles, 'invoice.exception.approve'), match: can(ctx.roles, 'invoice.match') } })));
   app.post('/api/v1/invoices', { schema: { tags: ['invoices'], body: { type: 'object', required: ['companyId', 'supplierId', 'kind', 'invoiceNo', 'issueDate', 'currency', 'lines'], additionalProperties: false,
     properties: { companyId: uuid, supplierId: uuid, kind: { type: 'string', enum: ['INVOICE', 'CREDIT_NOTE', 'ADVANCE'] }, invoiceNo: { type: 'string', minLength: 1, maxLength: 40 },
       ettn: { anyOf: [uuid, { type: 'null' }] }, issueDate: { type: 'string', format: 'date' }, currency: { type: 'string', pattern: '^[A-Z]{3}$' }, documentVersionId: { anyOf: [uuid, { type: 'null' }] },
+      erpContractRef: { anyOf: [{ type: 'string', maxLength: 60 }, { type: 'null' }] }, erpOrderRef: { anyOf: [{ type: 'string', maxLength: 60 }, { type: 'null' }] },
       originalInvoiceId: { anyOf: [uuid, { type: 'null' }] }, lines: { type: 'array', minItems: 1, maxItems: 500, items: { type: 'object', required: ['description', 'quantity', 'unit', 'unitPrice', 'netAmount'], additionalProperties: false,
         properties: { description: { type: 'string', minLength: 1, maxLength: 300 }, quantity: money2, unit: { type: 'string', minLength: 1, maxLength: 30 }, unitPrice: money2, netAmount: money2, taxRate: money2, taxAmount: { anyOf: [money2, { type: 'null' }] }, otherTax: { anyOf: [money2, { type: 'null' }] },
           // Dizi dalı önce: tür zorlaması (coerceTypes) null dalında diziyi null'a çevirmesin.
@@ -1181,6 +1207,12 @@ export async function buildApp(deps: AppDeps) {
     scoped(req, 'project.publish.approve', (tx, ctx) => sourcing.closeRoundEarly(tx, ctx, (req.params as any).id, (req.body as any).reason)));
   app.post('/api/v1/rfq-questions/:id/answer', { schema: { tags: ['rfq'], params: idParams, body: { type: 'object', required: ['answer'], properties: { answer: { type: 'string', maxLength: 4000 } } } } }, async (req) =>
     scoped(req, 'rfq.answer', (tx, ctx) => sourcing.answerQuestion(tx, ctx, (req.params as any).id, (req.body as any).answer)));
+  // v2 Faz 7 (R4): projenin sözleşmelerine bağlı/tahsisli faturalar ve sözleşme başına kullanım.
+  app.get('/api/v1/projects/:id/invoices', { schema: { tags: ['projects'], params: idParams } }, async (req) =>
+    scoped(req, 'project.read', async (tx, ctx) => {
+      if (!can(ctx.roles, 'invoice.read') && !can(ctx.roles, 'contract.read')) throw forbidden('invoice.read');
+      return invoiceMatching.projectInvoices(tx, (req.params as { id: string }).id);
+    }));
   app.get('/api/v1/projects/:id/comparison', { schema: { tags: ['evaluation'], params: idParams } }, async (req) =>
     scoped(req, 'project.read', (tx) => sourcing.getComparison(tx, (req.params as any).id)));
   app.post('/api/v1/projects/:id/fx-rates', { schema: { tags: ['evaluation'], params: idParams, body: { type: 'object', required: ['currency', 'rate', 'source', 'asOf'],
