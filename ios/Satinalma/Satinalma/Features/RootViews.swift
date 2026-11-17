@@ -74,11 +74,11 @@ struct LoginView: View {
                 case "oidc":
                     Section {
                         Button { Task { await session.login() } } label: {
-                            Label(session.isLoading ? "Giriş yapılıyor…" : "Kurumsal hesapla giriş yap", systemImage: "person.badge.key")
+                            Label(session.isLoading ? "Giriş yapılıyor…" : "Microsoft Entra ile giriş yap", systemImage: "person.badge.key")
                         }
                         .disabled(session.isLoading)
                     } footer: {
-                        Text("Giriş kurumunuzun kimlik sağlayıcısında yapılır; parolanız bu uygulamaya girilmez. Oturum belirteci yalnız bu cihazın anahtar zincirinde tutulur.")
+                        Text("Kurum hesabınızla oturum açarsınız. Kullanıcı ve departman bilginiz Entra'dan gelir; ayrı parola tutulmaz. Giriş kurumunuzun kimlik sağlayıcısında yapılır; parolanız bu uygulamaya girilmez. Oturum belirteci yalnız bu cihazın anahtar zincirinde tutulur.")
                     }
                 case "dev":
                     #if DEBUG
@@ -119,7 +119,7 @@ struct ProfileView: View {
     var body: some View {
         List {
             if let me = session.me {
-                Section("Oturum") {
+                Section(header: Text("Oturum"), footer: Text("Kullanıcı ve departman bilginiz Entra'dan gelir.")) {
                     LabeledContent("Kullanıcı", value: me.user.displayName)
                     LabeledContent("Roller", value: Labels.roleNames(me.roles))
                     LabeledContent("Departmanlar", value: me.allDepartments == true ? "Tüm departmanlar" : (me.departments ?? []).map(\.name).joined(separator: ", ").ifEmpty("Departman atanmadı"))
