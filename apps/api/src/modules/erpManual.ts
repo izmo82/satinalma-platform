@@ -7,7 +7,7 @@ import { ERP_FEATURE_CATALOG, can, type ErpFeature } from '@sp/domain';
 import type { TenantContext, Tx } from '../db.ts';
 import { audit } from '../audit.ts';
 import { conflict, notFound, unprocessable } from '../errors.ts';
-import { ALREADY_IN_ERP_PREFIX, ERP_ENTITY_TYPE, ERP_WRITE_FEATURES, ERP_WRITE_JOB, ERP_WRITE_LIMITS, isWriteFeature, type WriteFeature } from './erpWrite.ts';
+import { ALREADY_IN_ERP_PREFIX, CARD_CODE_UNVERIFIED_PREFIX, ERP_ENTITY_TYPE, supplierCodeProvenance, ERP_WRITE_FEATURES, ERP_WRITE_JOB, ERP_WRITE_LIMITS, isWriteFeature, type WriteFeature } from './erpWrite.ts';
 import { PROTECTED_DEMO_INVOICES } from './erpRead.ts';
 import { ERP_PAYMENT_STATUS_TR } from './invoices.ts';
 
@@ -33,20 +33,13 @@ function validCode(raw: unknown, field: string): string {
 // ---------- Tedarikçi ERP kodu ----------
 
 export async function supplierErpCode(tx: Tx, ctx: TenantContext, supplierId: string) {
-  const s = (await tx.query<{ erp_supplier_code: string | null; erp_supplier_code_source: string | null }>(
-    `SELECT erp_supplier_code, erp_supplier_code_source FROM suppliers WHERE id = $1`, [supplierId])).rows[0];
-  if (!s) throw notFound();
-  // ERP kaynaklı kodun sağlayıcısı: kodu yazan son ERP okuması/yazması denetim kaydında (mock bayrağı) — taklit sonucu gerçek gibi gösterilmez.
-  let mock = false;
-  if (s.erp_supplier_code_source === 'ERP') {
-    const a = (await tx.query<{ mock: string | null }>(`SELECT data->>'mock' AS mock FROM audit_events WHERE entity_type = 'supplier' AND entity_id = $1
-      AND action = 'supplier.erp_code_set' AND data->>'source' = 'ERP' AND data->>'to' = $2 ORDER BY id DESC LIMIT 1`, [supplierId, s.erp_supplier_code])).rows[0];
-    mock = a?.mock === 'true';
-  }
-  const src = s.erp_supplier_code_source;
-  return { supplierId, code: s.erp_supplier_code, source: src, sourceLabel: src ? (src === 'ERP' && mock ? 'ERP (taklit)' : SOURCE_TR[src]) : null,
-    provider: src === 'ERP' ? (mock ? { kind: 'TAKLIT', label: PROVIDER_TR.TAKLIT, real: false } : { kind: 'ORACLE_EBS', label: PROVIDER_TR.ORACLE_EBS, real: true }) : null,
-    mock, canEdit: can(ctx.roles, 'erp.manual.record') };
+  const pv = await supplierCodeProvenance(tx, supplierId);
+  if (!pv) throw notFound();
+  // ERP kaynaklı kodun sağlayıcısı denetim kaydından; kayıt yoksa (eski/tohum veri) provider ve mock null: "kaynağı doğrulanamadı".
+  const provider = pv.source !== 'ERP' || pv.mock === null ? null
+    : pv.mock ? { kind: 'TAKLIT', label: PROVIDER_TR.TAKLIT, real: false } : { kind: 'ORACLE_EBS', label: PROVIDER_TR.ORACLE_EBS, real: true };
+  return { supplierId, code: pv.code, source: pv.source, sourceLabel: pv.sourceLabel, provider, mock: pv.source === 'ERP' ? pv.mock : false,
+    verified: pv.verified, canEdit: can(ctx.roles, 'erp.manual.record') };
 }
 
 /** `PUT /suppliers/:id/erp-code { code }` — elle kod (kaynak MANUAL); `code: null` kodu temizler. Aynı kod başka kartta olamaz. */
@@ -142,10 +135,14 @@ function outView(r: OutRow) {
   const mock = r.provider_kind === 'TAKLIT';
   // Kayıt ERP'de zaten vardı (ör. tedarikçi kodu okumayla geldi): istek atılmadı; "gönderildi" denmez.
   const alreadyInErp = r.status === 'SENT' && (r.last_error ?? '').startsWith(ALREADY_IN_ERP_PREFIX);
-  const base = alreadyInErp ? 'ERP\'de zaten kayıtlı (yeni kayıt yazılmadı)' : OUTBOUND_STATUS_TR[r.status] ?? r.status;
+  // Kartta doğrulanmamış (elle/taklit/kökeni bilinmeyen) kod: kayıt açık, istek atılmadı; elle iletilebilir.
+  const cardCodeUnverified = ['PENDING', 'FAILED', 'UNKNOWN'].includes(r.status) && (r.last_error ?? '').startsWith(CARD_CODE_UNVERIFIED_PREFIX);
+  const how = /; (elle girilmiş|taklit sağlayıcıdan \(gerçek değil\)|kaynağı doğrulanamadı);/.exec(r.last_error ?? '')?.[1];
+  const base = alreadyInErp ? 'ERP\'de zaten kayıtlı (yeni kayıt yazılmadı)'
+    : cardCodeUnverified ? `Kartta ERP kodu var (${how ?? 'kaynağı doğrulanamadı'}; ERP'de doğrulanmadı)` : OUTBOUND_STATUS_TR[r.status] ?? r.status;
   return {
     id: r.id, feature: r.feature, featureLabel: ERP_FEATURE_CATALOG[r.feature].label, entityType: r.entity_type, entityId: r.entity_id,
-    status: r.status, statusLabel: mock && r.status !== 'MANUAL' && !alreadyInErp ? `${base} (${MOCK_NOTE})` : base, alreadyInErp,
+    status: r.status, statusLabel: mock && r.status !== 'MANUAL' && !alreadyInErp ? `${base} (${MOCK_NOTE})` : base, alreadyInErp, cardCodeUnverified,
     provider: r.provider_kind ? { kind: r.provider_kind, label: PROVIDER_TR[r.provider_kind], real: r.provider_kind === 'ORACLE_EBS' } : null,
     mock, externalRef: r.external_ref, attempts: r.attempts, lastError: r.last_error,
     manual: r.status === 'MANUAL' ? { by: r.manual_by ? { id: r.manual_by, name: r.manual_by_name } : null, at: r.manual_at?.toISOString() ?? null, note: r.manual_note } : null,
@@ -171,6 +168,8 @@ export async function listOutbound(tx: Tx, ctx: TenantContext, q: { entityType?:
         modeLabel: ep?.enabled && ep.write_enabled ? 'ERP\'ye otomatik yazılır' : 'ERP\'ye yazma kapalı; elle iletin', manualFallback: ERP_FEATURE_CATALOG[f].manualFallback,
         latest: latest ? outView(latest) : null };
     }),
+    // Tedarikçi kaydında kartın ERP kodu ve kökeni (Elle / ERP / ERP (taklit) / ERP (kaynağı doğrulanamadı)).
+    supplierCode: q.entityType === 'SUPPLIER' ? await supplierErpCode(tx, ctx, entityId) : null,
     can: { recordManual: can(ctx.roles, 'erp.manual.record') },
   };
 }
@@ -200,7 +199,10 @@ export async function recordManualOutbound(tx: Tx, ctx: TenantContext, body: { f
   if (latest) {
     const busy = (await tx.query<{ id: string }>(`SELECT id FROM jobs WHERE kind = $1 AND status = 'RUNNING' AND payload->>'outboundId' = $2
       AND updated_at > now() - make_interval(mins => $3) LIMIT 1`, [ERP_WRITE_JOB, latest.id, ERP_WRITE_LIMITS.inFlightMinutes])).rows[0];
-    if (busy) throw conflict('write_in_progress', 'Bu kayıt şu an ERP\'ye gönderiliyor; sonuç gelince yeniden bakın.', { outboundId: latest.id, jobId: busy.id });
+    if (busy) {
+      throw conflict('write_in_progress', `Bu kayıt şu an ERP'ye gönderiliyor; sonuç gelince yeniden bakın (bu durum en geç ${ERP_WRITE_LIMITS.inFlightMinutes} dakika içinde kalkar).`,
+        { outboundId: latest.id, jobId: busy.id, retryAfterMinutes: ERP_WRITE_LIMITS.inFlightMinutes });
+    }
   }
   let id: string;
   let closedPending = false;

@@ -82,6 +82,11 @@ describe('tedarikçi ERP kodu (elle, Satınalma)', () => {
     expect(clear.body).toMatchObject({ code: null, source: null });
     expect((await h.call('buyer', 'PUT', u, { body: { code: 'ELLE-1002' } })).status).toBe(200);
     expect((await audits('supplier.erp_code_set', sup2)).map((a) => a.data.to)).toEqual(['ELLE-1001', null, 'ELLE-1002']);
+    // M6: denetim kaydı olmayan (eski/tohum) ERP kaynaklı kod gerçek Oracle diye gösterilmez.
+    await h.owner.query(`UPDATE suppliers SET erp_supplier_code = 'ESKI-ERP-1', erp_supplier_code_source = 'ERP' WHERE id = $1`, [sup1]);
+    const legacy = await h.call('buyer', 'GET', `/api/v1/suppliers/${sup1}/erp-code`);
+    expect(legacy.body).toMatchObject({ code: 'ESKI-ERP-1', source: 'ERP', sourceLabel: 'ERP (kaynağı doğrulanamadı)', provider: null, mock: null, verified: false });
+    await h.owner.query(`UPDATE suppliers SET erp_supplier_code = NULL, erp_supplier_code_source = NULL WHERE id = $1`, [sup1]);
   });
 });
 
@@ -167,6 +172,7 @@ describe('I1: işçi gönderirken elle kapatma', () => {
     const r = await h.call('buyer', 'POST', '/api/v1/erp/outbound/manual', { body: { feature: 'REQUISITION', entityType: 'PROJECT', entityId: p2, externalRef: 'REQ-X' } });
     expect(r.status).toBe(409);
     expect(r.body.error.code).toBe('write_in_progress');
+    expect(r.body.error.message).toMatch(/en geç 10 dakika içinde kalkar/);
     expect(await one(`SELECT status, external_ref FROM erp_outbound_records WHERE id = $1`, [outId])).toEqual({ status: 'PENDING', external_ref: null });
     await h.owner.query(`UPDATE jobs SET status = 'FAILED' WHERE idempotency_key = $1 AND tenant_id = $2`, [key, h.world.tenantA]);
   });

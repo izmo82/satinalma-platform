@@ -83,6 +83,29 @@ export async function enqueueErpOutbound(tx: Tx, ctx: TenantContext, feature: Wr
 
 /** "ERP'de zaten kayıtlı" notunun öneki (detay etiketi bunu tanır). */
 export const ALREADY_IN_ERP_PREFIX = 'ERP\'de zaten kayıtlı';
+/** "Kartta ERP kodu var ama ERP'de doğrulanmadı" notunun öneki (kayıt açık kalır; elle iletilebilir). */
+export const CARD_CODE_UNVERIFIED_PREFIX = 'Kartta ERP kodu var';
+
+export type CodeProvenance = { code: string | null; source: 'ERP' | 'MANUAL' | null; mock: boolean | null; verified: boolean; sourceLabel: string | null };
+/**
+ * Tedarikçi ERP kodunun kökeni. ERP kaynaklı kodun sağlayıcısı, kodu yazan son ERP okuması/yazmasının `supplier.erp_code_set`
+ * denetim kaydındaki `mock` bayrağından okunur; kayıt yoksa (eski/tohum veri) köken doğrulanamaz (mock null). Yalnız ERP kaynaklı ve
+ * gerçek sağlayıcıdan gelen kod "doğrulanmış" sayılır.
+ */
+export async function supplierCodeProvenance(tx: Tx, supplierId: string): Promise<CodeProvenance | null> {
+  const s = (await tx.query<{ erp_supplier_code: string | null; erp_supplier_code_source: 'ERP' | 'MANUAL' | null }>(
+    `SELECT erp_supplier_code, erp_supplier_code_source FROM suppliers WHERE id = $1`, [supplierId])).rows[0];
+  if (!s) return null;
+  const src = s.erp_supplier_code ? s.erp_supplier_code_source : null;
+  let mock: boolean | null = null;
+  if (src === 'ERP') {
+    const a = (await tx.query<{ mock: string | null }>(`SELECT data->>'mock' AS mock FROM audit_events WHERE entity_type = 'supplier' AND entity_id = $1
+      AND action = 'supplier.erp_code_set' AND data->>'source' = 'ERP' AND data->>'to' = $2 ORDER BY id DESC LIMIT 1`, [supplierId, s.erp_supplier_code])).rows[0];
+    mock = a?.mock === 'true' ? true : a?.mock === 'false' ? false : null;
+  }
+  const sourceLabel = !src ? null : src === 'MANUAL' ? 'Elle' : mock === true ? 'ERP (taklit)' : mock === false ? 'ERP' : 'ERP (kaynağı doğrulanamadı)';
+  return { code: s.erp_supplier_code, source: src, mock, verified: src === 'ERP' && mock === false, sourceLabel };
+}
 
 /**
  * Olay noktası için güvenli sarmalayıcı: kuyruğa alma SAVEPOINT içinde çalışır; veritabanı hatasında yalnız bu kısım geri alınır ve
@@ -126,8 +149,15 @@ export async function buildPayload(tx: Tx, feature: WriteFeature, entityId: stri
       `SELECT legal_name, tax_id, address, contact_name, contact_email, contact_phone, erp_supplier_code, status FROM suppliers WHERE id = $1`, [entityId])).rows[0];
     if (!s) return { ok: false, code: 'entity_not_found', message: 'Tedarikçi bulunamadı; ERP\'ye istek atılmadı.' };
     if (s.erp_supplier_code) {
-      return { ok: false, skip: true, existingRef: s.erp_supplier_code, code: 'supplier_already_in_erp',
-        message: `${ALREADY_IN_ERP_PREFIX} (ERP kodu ${s.erp_supplier_code}); yeni tedarikçi yazılmadı.` };
+      const pv = (await supplierCodeProvenance(tx, entityId))!;
+      // Yalnız gerçek ERP'den gelmiş kod "ERP'de zaten kayıtlı" sayılır (SENT); elle, taklit ya da kökeni doğrulanamayan kodda kayıt açık kalır.
+      if (pv.verified) {
+        return { ok: false, skip: true, existingRef: s.erp_supplier_code, code: 'supplier_already_in_erp',
+          message: `${ALREADY_IN_ERP_PREFIX} (ERP kodu ${s.erp_supplier_code}); yeni tedarikçi yazılmadı.` };
+      }
+      const how = pv.source === 'MANUAL' ? 'elle girilmiş' : pv.mock ? 'taklit sağlayıcıdan (gerçek değil)' : 'kaynağı doğrulanamadı';
+      return { ok: false, skip: true, code: 'supplier_code_unverified',
+        message: `${CARD_CODE_UNVERIFIED_PREFIX} (${s.erp_supplier_code}; ${how}; ERP'de doğrulanmadı); ERP'ye yeni tedarikçi yazılmadı. Gerekirse "ERP'ye elle iletildi" kaydedin.` };
     }
     return { ok: true, recordKey: s.tax_id ?? entityId, values: { taxId: s.tax_id, legalName: s.legal_name, address: s.address, contactName: s.contact_name,
       contactEmail: s.contact_email, contactPhone: s.contact_phone, erpSupplierCode: null } };
@@ -289,7 +319,8 @@ async function prepareWrite(tx: Tx, ctx: TenantContext, jobId: string, deps: Erp
       await tx.query(`UPDATE erp_outbound_records SET status = 'SENT', provider_kind = $3, external_ref = coalesce(external_ref, $4), last_error = $2, updated_at = now()
         WHERE id = $1`, [outboundId, clip(message, 500), opts.providerKind, clip(opts.existingRef, 120)]);
     } else {
-      await tx.query(`UPDATE erp_outbound_records SET ${opts.skip ? `status = 'FAILED', ` : ''}last_error = $2, updated_at = now() WHERE id = $1`, [outboundId, clip(message, 500)]);
+      // Atlanan (doğrulanmamış kod) kayıt durumunu korur: açık kalır, elle iletilebilir; istek atılmaz.
+      await tx.query(`UPDATE erp_outbound_records SET last_error = $2, updated_at = now() WHERE id = $1`, [outboundId, clip(message, 500)]);
     }
     if (opts.skip) await finishJob(tx, jobId, job, runId, 'skipped', { outboundId, refused: code, requestSent: false }, null);
     else await tx.query(`UPDATE jobs SET status = 'FAILED', error_code = $2, result = $3, updated_at = now() WHERE id = $1`,
@@ -297,7 +328,7 @@ async function prepareWrite(tx: Tx, ctx: TenantContext, jobId: string, deps: Erp
     if (runId) await accountRetryRun(tx, ctx, runId, jobId, opts.skip ? 'skipped' : 'failed', { code, message, recordKey: rec.entity_id });
     await audit(tx, ctx, opts.skip ? 'erp.outbound.skipped' : 'erp.outbound.refused', entityTypeAudit(rec.entity_type), rec.entity_id,
       { feature, outboundId, reason: code, requestSent: false, ...(opts.existingRef ? { externalRef: opts.existingRef } : {}) });
-    return { kind: 'done', result: { outboundId, status: opts.skip ? (opts.existingRef ? 'SENT' : 'FAILED') : rec.status, outcome: opts.skip ? 'skipped' : 'refused', requestSent: false } };
+    return { kind: 'done', result: { outboundId, status: opts.skip && opts.existingRef ? 'SENT' : rec.status, outcome: opts.skip ? 'skipped' : 'refused', requestSent: false } };
   };
   if (!ep || !ep.enabled) return refuse('feature_disabled', 'Özellik kapalı; ERP\'ye istek atılmadı. Elle iletebilirsiniz.');
   if (!ep.write_enabled) return refuse('write_not_enabled', 'ERP\'ye yazma kapalı (R3); istek atılmadı. Elle iletebilirsiniz.');

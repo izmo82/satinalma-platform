@@ -240,26 +240,69 @@ describe('R3 sağlanınca taklitle yazma (gerçek Oracle değil)', () => {
     expect(await audits('test.after_enqueue', marker)).toHaveLength(1);
   });
 
-  it('M3: tedarikçinin ERP kodu bu arada geldiyse istek atılmaz; kayıt SENT + mevcut kod, "ERP\'de zaten kayıtlı", yeniden denenmez', async () => {
-    resetSpy();
+  /** Olay → PENDING; işlenmeden önce kartta kod belirir (kaynak ve köken verilir). */
+  async function pendingWithCardCode(code: string, source: 'ERP' | 'MANUAL', auditMock: boolean | null) {
     const s = await candidate();
     await approveSupplier(s.id);
     const [rec] = await outboundFor(s.id);
-    await h.owner.query(`UPDATE suppliers SET erp_supplier_code = 'ELLE-77', erp_supplier_code_source = 'MANUAL' WHERE id = $1`, [s.id]);
-    const r = await runJob((await writeJobsFor(rec!.id))[0]!.id);
+    await h.owner.query(`UPDATE suppliers SET erp_supplier_code = $2, erp_supplier_code_source = $3 WHERE id = $1`, [s.id, code, source]);
+    if (auditMock !== null) {
+      await h.owner.query(`INSERT INTO audit_events (tenant_id, actor_user_id, action, entity_type, entity_id, data) VALUES ($1,$2,'supplier.erp_code_set','supplier',$3,$4)`,
+        [h.world.tenantA, h.world.users.tenantAdmin.id, s.id, JSON.stringify({ from: null, to: code, source: 'ERP', mock: auditMock })]);
+    }
+    return { s, rec: rec! };
+  }
+
+  it('M3: kartta ELLE girilmiş kod: SENT denmez, kayıt açık kalır ("Kartta ERP kodu var (elle girilmiş; ERP\'de doğrulanmadı)"), elle iletilebilir', async () => {
+    resetSpy();
+    const { s, rec } = await pendingWithCardCode('ELLE-77', 'MANUAL', null);
+    const r = await runJob((await writeJobsFor(rec.id))[0]!.id);
+    expect(r).toMatchObject({ outcome: 'skipped', status: 'PENDING', requestSent: false });
+    expect(spy).toMatchObject({ find: 0, write: 0 });
+    const after = (await outboundFor(s.id))[0]!;
+    expect(after).toMatchObject({ status: 'PENDING', external_ref: null, provider_kind: null });
+    expect(after.last_error).toMatch(/^Kartta ERP kodu var \(ELLE-77; elle girilmiş; ERP'de doğrulanmadı\)/);
+    expect((await writeJobsFor(rec.id))[0]!.status).toBe('SUCCEEDED');
+    const g = await h.call('buyer', 'GET', `/api/v1/erp/outbound?entityType=SUPPLIER&entityId=${s.id}`);
+    expect(g.body.items[0]).toMatchObject({ status: 'PENDING', alreadyInErp: false, cardCodeUnverified: true,
+      statusLabel: 'Kartta ERP kodu var (elle girilmiş; ERP\'de doğrulanmadı)' });
+    expect(g.body.supplierCode).toMatchObject({ code: 'ELLE-77', source: 'MANUAL', sourceLabel: 'Elle', verified: false });
+    expect((await audits('erp.outbound.skipped', s.id))[0]!.data).toMatchObject({ reason: 'supplier_code_unverified' });
+    // Elle iletildi kaydı açılabilir (already_sent 409 yok).
+    const m = await h.call('buyer', 'POST', '/api/v1/erp/outbound/manual', { body: { feature: 'SUPPLIER', entityType: 'SUPPLIER', entityId: s.id, externalRef: 'ELLE-77' } });
+    expect(m.status, JSON.stringify(m.body)).toBe(201);
+    expect(m.body).toMatchObject({ id: rec.id, status: 'MANUAL' });
+  });
+
+  it('M3: taklitten okunmuş kod da doğrulanmış sayılmaz (taklit notu korunur)', async () => {
+    resetSpy();
+    const { s, rec } = await pendingWithCardCode('TKL-SUP-7777', 'ERP', true);
+    await runJob((await writeJobsFor(rec.id))[0]!.id);
+    expect(spy).toMatchObject({ find: 0, write: 0 });
+    expect((await outboundFor(s.id))[0]).toMatchObject({ status: 'PENDING', external_ref: null });
+    const g = await h.call('buyer', 'GET', `/api/v1/erp/outbound?entityType=SUPPLIER&entityId=${s.id}`);
+    expect(g.body.items[0].statusLabel).toBe('Kartta ERP kodu var (taklit sağlayıcıdan (gerçek değil); ERP\'de doğrulanmadı)');
+    expect(g.body.supplierCode).toMatchObject({ source: 'ERP', sourceLabel: 'ERP (taklit)', mock: true, verified: false });
+    expect((await h.call('buyer', 'POST', '/api/v1/erp/outbound/manual', { body: { feature: 'SUPPLIER', entityType: 'SUPPLIER', entityId: s.id,
+      externalRef: 'TKL-SUP-7777' } })).status).toBe(201);
+  });
+
+  it('M3: gerçek ERP\'den gelmiş kod: istek yok, SENT + mevcut kod, "ERP\'de zaten kayıtlı", WRITE_RETRY yeniden denemez', async () => {
+    resetSpy();
+    const { s, rec } = await pendingWithCardCode('EBS-SUP-500', 'ERP', false);
+    const r = await runJob((await writeJobsFor(rec.id))[0]!.id);
     expect(r).toMatchObject({ outcome: 'skipped', status: 'SENT', requestSent: false });
     expect(spy).toMatchObject({ find: 0, write: 0 });
     const after = (await outboundFor(s.id))[0]!;
-    expect(after).toMatchObject({ status: 'SENT', external_ref: 'ELLE-77', provider_kind: 'TAKLIT' });
+    expect(after).toMatchObject({ status: 'SENT', external_ref: 'EBS-SUP-500', provider_kind: 'TAKLIT' });
     expect(after.last_error).toMatch(/^ERP'de zaten kayıtlı/);
-    expect((await writeJobsFor(rec!.id))[0]!.status).toBe('SUCCEEDED');
     const g = await h.call('buyer', 'GET', `/api/v1/erp/outbound?entityType=SUPPLIER&entityId=${s.id}`);
     expect(g.body.items[0]).toMatchObject({ status: 'SENT', alreadyInErp: true, statusLabel: 'ERP\'de zaten kayıtlı (yeni kayıt yazılmadı)' });
-    // WRITE_RETRY bu kaydı yeniden denemez.
+    expect(g.body.supplierCode).toMatchObject({ source: 'ERP', sourceLabel: 'ERP', mock: false, verified: true });
     const retry = await h.call('tenantAdmin', 'POST', url('SUPPLIER', '/run'), { body: { target: 'WRITE_RETRY' } });
     expect(retry.status).toBe(202);
-    expect((await rows(`SELECT 1 FROM jobs WHERE payload->>'runId' = $1 AND payload->>'outboundId' = $2`, [retry.body.runId, rec!.id]))).toHaveLength(0);
-    expect((await audits('erp.outbound.skipped', s.id))[0]!.data).toMatchObject({ reason: 'supplier_already_in_erp', externalRef: 'ELLE-77' });
+    expect((await rows(`SELECT 1 FROM jobs WHERE payload->>'runId' = $1 AND payload->>'outboundId' = $2`, [retry.body.runId, rec.id]))).toHaveLength(0);
+    expect((await audits('erp.outbound.skipped', s.id))[0]!.data).toMatchObject({ reason: 'supplier_already_in_erp', externalRef: 'EBS-SUP-500' });
   });
 
   it('CONTRACT_HEADER: zincir APPROVED → SENT; yük sözleşme kodu, tedarikçi ERP kodu, proje, tarih, tutar (decimal string), para birimi', async () => {
