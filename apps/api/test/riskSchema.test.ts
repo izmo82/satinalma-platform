@@ -1,11 +1,14 @@
 // v2 Faz 6 (D111) Görev 2: 053/054 risk şeması — her tabloda kiracı RLS'i, tedarikçi kapsamı, yayımlanmış soru setinin değişmezliği,
 // revizyonun değişmezliği (GRANT + tetikleyici), tedarikçi + yıl tekilliği, departman görünürlüğü ve katkıcı departman (yürürlükteki
 // sözleşme), departmansız kayıt, görev departmanı, seviye 4–5 tamamlanma güvencesi, içe aktarım partisinin bir kez uygulanması.
+// 054a: tedarikçi ham tablolara kapalı + app_portal_risk(), tamamlanmış kayda revizyon/aksiyon yolu, app_contract_in_force (contractStatus
+// eşliği), aksiyon sahibinin görünürlüğü, küçük bütünlük kuralları.
 // Tüm veri sentetik ("Test sorusu 1" gibi açıkça sentetik metinler; kurum şablonu değildir).
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import type pg from 'pg';
 import { withTenant, type TenantContext } from '../src/db.ts';
+import { listInfo } from '../src/modules/contractIntake.ts';
 import { makeHarness } from './harness.ts';
 
 let h: Awaited<ReturnType<typeof makeHarness>>;
@@ -51,34 +54,39 @@ async function revision(assessmentId: string, o: { score?: string; column?: numb
     [tenant, assessmentId, o.no ?? 1, { businessImpact: 3, dataSensitivity: 5, continuity: 1, integration: 3, regulation: 5, serviceType: 5 },
      o.column ?? 3, o.score ?? '15.00', o.level ?? 2, tenant === h.world.tenantA ? h.world.users.buyer.id : h.world.users.buyerB.id])).id;
 }
-async function action(assessmentId: string, o: { kind?: 'MITIGATION' | 'CONTROL'; visible?: boolean; status?: string; tenant?: string } = {}) {
+async function action(assessmentId: string, o: { kind?: 'MITIGATION' | 'CONTROL'; visible?: boolean; status?: string; tenant?: string; owner?: string; dueOn?: string } = {}) {
   const tenant = o.tenant ?? h.world.tenantA;
   const kind = o.kind ?? 'MITIGATION';
   const closed = o.status === 'DONE' || o.status === 'VERIFIED';
   return (await one<{ id: string }>(`INSERT INTO risk_actions (tenant_id, assessment_id, kind, control_method, title, owner_user_id, due_on,
       supplier_visible, status, completed_at, completed_by, created_by)
-    VALUES ($1, $2, $3, $4, $5, $6, '2099-01-31', $7, $8, $9, $10, $6) RETURNING id`,
+    VALUES ($1, $2, $3, $4, $5, $6, $11, $7, $8, $9, $10, $12) RETURNING id`,
     [tenant, assessmentId, kind, kind === 'CONTROL' ? 'DESK' : null, `Sentetik ${kind} ${rand()}`,
-     tenant === h.world.tenantA ? h.world.users.buyer.id : h.world.users.buyerB.id, o.visible ?? false, o.status ?? 'OPEN',
-     closed ? new Date() : null, closed ? h.world.users.buyer.id : null])).id;
+     o.owner ?? (tenant === h.world.tenantA ? h.world.users.buyer.id : h.world.users.buyerB.id), o.visible ?? false, o.status ?? 'OPEN',
+     closed ? new Date() : null, closed ? h.world.users.buyer.id : null, o.dueOn ?? '2099-01-31',
+     tenant === h.world.tenantA ? h.world.users.buyer.id : h.world.users.buyerB.id])).id;
 }
 
 /**
  * Sahip bağlantısıyla sözleşme ailesi (tek sürüm + koşul revizyonu). approved: son zincir APPROVED ve güncel içeriği kapsar;
- * legacy: Faz 3 öncesi (intake_flow=false), zincir yok.
+ * legacy: Faz 3 öncesi (intake_flow=false), zincir yok. complete (varsayılan): domain missingRequired alanlarının hepsi dolu.
  */
-async function contract(o: { department: string; supplier?: string; endDate?: string | null; approved?: boolean; legacy?: boolean }) {
+async function contract(o: { department: string; supplier?: string; endDate?: string | null; approved?: boolean; legacy?: boolean; complete?: boolean }) {
   const w = h.world;
+  const complete = o.complete !== false;
+  const projectId = complete ? (await one<{ id: string }>(`INSERT INTO projects (tenant_id, company_id, code, title, category, owner_user_id, created_by)
+    VALUES ($1, $2, $3, 'Risk projesi (SENTETİK)', 'Genel', $4, $4) RETURNING id`, [w.tenantA, w.companyA1.id, `PRJ-RSK-${rand()}`, w.users.buyer.id])).id : null;
   const doc = (await one<{ id: string }>(`INSERT INTO documents (tenant_id, company_id, kind, title, created_by, code) VALUES ($1, $2, 'CONTRACT', $3, $4, $5) RETURNING id`,
     [w.tenantA, w.companyA1.id, `Risk sözleşmesi ${rand()} (SENTETİK)`, w.users.buyer.id, `BLG-RSK-${rand()}`])).id;
   const dv = (await one<{ id: string }>(`INSERT INTO document_versions (tenant_id, company_id, document_id, version_no, sha256, mime_type, size_bytes, storage_key,
       original_filename, basic_check_status, created_by)
     VALUES ($1, $2, $3, 1, $4, 'application/pdf', 100, $5, 'sozlesme.pdf', 'PASSED', $6) RETURNING id`,
     [w.tenantA, w.companyA1.id, doc, 'b'.repeat(64), `tenant/${randomUUID()}`, w.users.buyer.id])).id;
-  const familyId = (await one<{ id: string }>(`INSERT INTO contract_families (tenant_id, company_id, title, supplier_id, created_by, code, department_id, intake_flow)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+  const familyId = (await one<{ id: string }>(`INSERT INTO contract_families (tenant_id, company_id, title, supplier_id, created_by, code, department_id, intake_flow,
+      project_id, contract_type, owner_user_id, signed_on)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id`,
     [w.tenantA, w.companyA1.id, `Risk sözleşmesi ${rand()} (SENTETİK)`, o.supplier ?? w.suppliers.s1, w.users.buyer.id, `SZL-RSK-${rand()}`,
-     o.department, !o.legacy])).id;
+     o.department, !o.legacy, projectId, complete ? 'SERVICE' : null, complete ? w.users.buyer.id : null, complete ? '2020-01-01' : null])).id;
   const cvId = (await one<{ id: string }>(`INSERT INTO contract_versions (tenant_id, company_id, family_id, version_no, document_version_id, created_by)
     VALUES ($1, $2, $3, 1, $4, $5) RETURNING id`, [w.tenantA, w.companyA1.id, familyId, dv, w.users.buyer.id])).id;
   const termsId = (await one<{ id: string }>(`INSERT INTO contract_terms (tenant_id, company_id, contract_version_id, revision, currency, value_type, amount,
@@ -136,28 +144,43 @@ describe('053 kiracı ve tedarikçi kapsamı', () => {
       [w.tenantA, a, w.users.buyerB.id]), '42501'));
   });
 
-  it('supplier_session_sees_only_own_rows_and_nothing_else', async () => {
+  it('supplier_session_reads_no_raw_rows_only_portal_risk', async () => {
     const w = h.world;
-    const mine = await assessment({ supplier: w.suppliers.s1 });
-    await revision(mine);
-    const visible = await action(mine, { visible: true });
-    await action(mine, { visible: false });
+    // s2 için hiç tamamlanmış değerlendirme yokken portal boş şekil döner (supplier2 kullanıcısı s2'nin portal kullanıcısıdır).
+    const empty = await withTenant(h.pool, supplierCtx('supplier2', w.suppliers.s2), async (tx) => (await tx.query(`SELECT app_portal_risk() AS r`)).rows[0].r);
+    expect(empty).toEqual({ year: null, level: null, riskScore: null, actions: [] });
+    // Excel satır 54 değerleri: seviye 4, plan tamam → tamamlanır. Görünür aksiyonlar: biri açık, biri iptal (iptal görünmez); biri gizli.
+    const year = nextYear();
+    const mine = await assessment({ supplier: w.suppliers.s1, year });
+    await revision(mine, { score: '48.00', column: 5, level: 4 });
+    await action(mine, { kind: 'MITIGATION', visible: true, dueOn: '2099-03-31' });
+    await action(mine, { kind: 'CONTROL', visible: false });
+    const cancelled = await action(mine, { kind: 'MITIGATION', visible: true });
+    await h.owner.query(`UPDATE risk_actions SET status = 'CANCELLED' WHERE id = $1`, [cancelled]);
+    await h.owner.query(`UPDATE risk_assessments SET status = 'COMPLETED', completed_at = now(), completed_by = $2 WHERE id = $1`, [mine, w.users.buyer.id]);
     await h.owner.query(`INSERT INTO risk_opinions (tenant_id, assessment_id, author_id, body) VALUES ($1, $2, $3, 'İç görüş (sentetik)')`, [w.tenantA, mine, w.users.buyer.id]);
     await h.owner.query(`INSERT INTO risk_reviews (tenant_id, assessment_id, period, outcome, decided_by) VALUES ($1, $2, '2030-3', 'NO_CHANGE', $3)`, [w.tenantA, mine, w.users.buyer.id]);
+    // Sonraki yıl açık (tamamlanmamış) değerlendirme portalda görünmez; başka tedarikçinin tamamlanmışı da görünmez.
+    const next = await assessment({ supplier: w.suppliers.s1, year: nextYear() });
+    await revision(next, { score: '90.00', column: 5, level: 5 });
     const other = await assessment({ supplier: w.suppliers.s2 });
     await revision(other);
     await action(other, { visible: true });
-    const ids = [mine, other];
+    await h.owner.query(`UPDATE risk_assessments SET status = 'COMPLETED', completed_at = now(), completed_by = $2 WHERE id = $1`, [other, w.users.buyer.id]);
     await withTenant(h.pool, supplierCtx('supplier1', w.suppliers.s1), async (tx) => {
-      expect((await tx.query(`SELECT id FROM risk_assessments WHERE id = ANY($1::uuid[])`, [ids])).rows.map((r) => r.id)).toEqual([mine]);
-      expect(await count(tx, `risk_assessments WHERE supplier_id <> $1`, [w.suppliers.s1])).toBe(0);
-      expect(await count(tx, `risk_assessment_revisions WHERE assessment_id = ANY($1::uuid[])`, [ids])).toBe(1);
-      expect((await tx.query(`SELECT id FROM risk_actions WHERE assessment_id = ANY($1::uuid[])`, [ids])).rows.map((r) => r.id)).toEqual([visible]);
-      expect(await count(tx, `risk_actions WHERE NOT supplier_visible`)).toBe(0);
-      for (const t of ['risk_opinions', 'risk_import_rows', 'risk_import_batches', 'risk_reviews', 'risk_question_sets', 'risk_questions', 'risk_settings']) {
+      for (const t of ['risk_assessments', 'risk_assessment_revisions', 'risk_actions', 'risk_opinions', 'risk_import_rows', 'risk_import_batches',
+        'risk_reviews', 'risk_question_sets', 'risk_questions', 'risk_settings']) {
         expect(await count(tx, t), t).toBe(0);
       }
+      const r = (await tx.query(`SELECT app_portal_risk() AS r`)).rows[0].r;
+      expect(r).toEqual({ year, level: 4, riskScore: '48.00', actions: [{ title: expect.stringMatching(/^Sentetik MITIGATION /), dueOn: '2099-03-31', status: 'OPEN' }] });
+      expect(Object.keys(r).sort()).toEqual(['actions', 'level', 'riskScore', 'year']);
+      expect(Object.keys(r.actions[0]).sort()).toEqual(['dueOn', 'status', 'title']);
     });
+    // Tedarikçi bağlamı olmadan işlev çalışmaz.
+    await withTenant(h.pool, all(), (tx) => rejects(tx.query(`SELECT app_portal_risk()`), '42501', /portal_context_required/));
+    await withTenant(h.pool, tenantB(), (tx) => rejects(tx.query(`SELECT app_portal_risk()`), '42501'));
+    const visible = (await one<{ id: string }>(`SELECT id FROM risk_actions WHERE assessment_id = $1 AND supplier_visible AND status = 'OPEN'`, [mine])).id;
     // Tedarikçi bağlamı hiçbir risk tablosuna yazamaz.
     const s = () => supplierCtx('supplier1', w.suppliers.s1);
     await withTenant(h.pool, s(), (tx) => rejects(tx.query(`INSERT INTO risk_opinions (tenant_id, assessment_id, author_id, body) VALUES ($1, $2, $3, 'Tedarikçi görüşü')`,
@@ -365,6 +388,43 @@ describe('053 seviye 4–5 tamamlanma güvencesi', () => {
     }
   });
 
+  it('completed_assessment_rechecked_on_new_revision_and_action_cancel', async () => {
+    const w = h.world;
+    // Seviye 2 tamamlanmış kayda plansız seviye 5 revizyonu eklenemez (çeyreklik güncelleme yolu dahil).
+    const a = await assessment();
+    await revision(a, { score: '15.00', column: 3, level: 2 });
+    await complete(a);
+    await rejects(withTenant(h.pool, all(), (tx) => tx.query(`INSERT INTO risk_assessment_revisions (tenant_id, assessment_id, revision_no, criteria, criticality,
+        criticality_column, score_source, risk_score, level, method_version, created_by) VALUES ($1, $2, 2, '{}', '5', 5, 'MANUAL_RESULT', '90.00', 5, 'v1', $3)`,
+      [w.tenantA, a, w.users.buyer.id])), 'P0001', /action_plan_required/);
+    expect((await one(`SELECT count(*)::int AS n FROM risk_assessment_revisions WHERE assessment_id = $1`, [a])).n).toBe(1);
+    // Planla birlikte aynı işlemde eklenirse kabul edilir.
+    await withTenant(h.pool, all(), async (tx) => {
+      await tx.query(`INSERT INTO risk_actions (tenant_id, assessment_id, kind, title, owner_user_id, due_on, created_by) VALUES ($1, $2, 'MITIGATION', 'Azaltım (sentetik)', $3, '2099-01-01', $3)`,
+        [w.tenantA, a, w.users.buyer.id]);
+      await tx.query(`INSERT INTO risk_actions (tenant_id, assessment_id, kind, control_method, title, owner_user_id, due_on, created_by) VALUES ($1, $2, 'CONTROL', 'ONLINE', 'Kontrol (sentetik)', $3, '2099-01-01', $3)`,
+        [w.tenantA, a, w.users.buyer.id]);
+      await tx.query(`INSERT INTO risk_assessment_revisions (tenant_id, assessment_id, revision_no, criteria, criticality,
+        criticality_column, score_source, risk_score, level, method_version, created_by) VALUES ($1, $2, 2, '{}', '5', 5, 'MANUAL_RESULT', '90.00', 5, 'v1', $3)`,
+        [w.tenantA, a, w.users.buyer.id]);
+    });
+    // Tamamlanmış seviye 5 kaydın tek MITIGATION ya da tek CONTROL satırı iptal edilemez.
+    const ids = (await h.owner.query(`SELECT id, kind FROM risk_actions WHERE assessment_id = $1`, [a])).rows as { id: string; kind: string }[];
+    for (const x of ids) {
+      await rejects(withTenant(h.pool, all(), (tx) => tx.query(`UPDATE risk_actions SET status = 'CANCELLED' WHERE id = $1`, [x.id])), 'P0001', /action_plan_required/);
+    }
+    // İkinci MITIGATION varken biri iptal edilebilir; kapanış (DONE) serbesttir.
+    const extra = await action(a, { kind: 'MITIGATION' });
+    await withTenant(h.pool, all(), (tx) => tx.query(`UPDATE risk_actions SET status = 'CANCELLED' WHERE id = $1`, [extra]));
+    const ctl = ids.find((x) => x.kind === 'CONTROL')!.id;
+    await withTenant(h.pool, all(), (tx) => tx.query(`UPDATE risk_actions SET status = 'DONE', completed_at = now(), completed_by = $2 WHERE id = $1`, [ctl, w.users.buyer.id]));
+    // Açık (OPEN) kayıtta iptal serbesttir.
+    const open = await assessment();
+    await revision(open, { score: '90.00', column: 5, level: 5 });
+    const only = await action(open, { kind: 'MITIGATION' });
+    await withTenant(h.pool, all(), (tx) => tx.query(`UPDATE risk_actions SET status = 'CANCELLED' WHERE id = $1`, [only]));
+  });
+
   it('level_1_to_3_completes_without_actions', async () => {
     const a = await assessment();
     await revision(a, { score: '15.00', column: 3, level: 2 });
@@ -456,10 +516,13 @@ describe('054 departman görünürlüğü ve katkıcı departman', () => {
     expect(await isContributor([w.departments.bt], a)).toBe(false);
   });
 
-  it('legacy_contract_counts_as_in_force', async () => {
+  it('legacy_contract_counts_as_in_force_only_when_complete', async () => {
     const w = h.world;
     const a = await assessment({ supplier: w.suppliers.s1, department: w.departments.ik });
-    await contract({ department: w.departments.tc, supplier: w.suppliers.s1, legacy: true, endDate: null });
+    // Eksik alanlı eski kayıt (domain: "Eksik alan") yürürlükte sayılmaz.
+    await contract({ department: w.departments.tc, supplier: w.suppliers.s1, legacy: true, complete: false });
+    expect(await isContributor([w.departments.tc], a)).toBe(false);
+    await contract({ department: w.departments.tc, supplier: w.suppliers.s1, legacy: true });
     expect(await isContributor([w.departments.tc], a)).toBe(true);
     // Tedarikçi bağlamında ve kiracı B'de katkıcı yolu kapalı.
     await withTenant(h.pool, supplierCtx('supplier1', w.suppliers.s1), async (tx) =>
@@ -512,5 +575,83 @@ describe('054 departman görünürlüğü ve katkıcı departman', () => {
     });
     await withTenant(h.pool, dept([w.departments.bt]), async (tx) => expect(await count(tx, `tasks WHERE id = ANY($1::uuid[])`, [[t1, t2]])).toBe(0));
     await withTenant(h.pool, all(), async (tx) => expect(await count(tx, `tasks WHERE id = ANY($1::uuid[])`, [[t1, t2]])).toBe(2));
+  });
+});
+
+describe('054a yürürlük yardımcısı, aksiyon sahibi, bütünlük', () => {
+  it('contract_in_force_matches_domain_contract_status', async () => {
+    const w = h.world;
+    const d = w.departments.tc;
+    const fixtures: Record<string, string> = {
+      legacyIncomplete: (await contract({ department: d, legacy: true, complete: false })).familyId,
+      legacyComplete: (await contract({ department: d, legacy: true })).familyId,
+      approved: (await contract({ department: d })).familyId,
+      expired: (await contract({ department: d, endDate: '2020-12-31' })).familyId,
+      draft: (await contract({ department: d, approved: false })).familyId,
+      approvedIncomplete: (await contract({ department: d, complete: false })).familyId,
+    };
+    const later = await contract({ department: d });
+    await h.owner.query(`INSERT INTO contract_terms (tenant_id, company_id, contract_version_id, revision, currency, value_type, amount, start_date, end_date, source_ref, entered_by)
+      VALUES ($1, $2, $3, 2, 'TRY', 'FIXED', '2000.00', '2020-01-01', '2099-12-31', 'Madde 1 rev 2 (sentetik)', $4)`, [w.tenantA, w.companyA1.id, later.cvId, w.users.buyer.id]);
+    fixtures.approvedThenNewTerms = later.familyId;
+    // Süresiz + ihbar süresi dolu (zorunlu ihbar alanı) ve süresiz + ihbar boş (eksik alan).
+    const indefinite = await contract({ department: d, endDate: null });
+    const indefiniteMissing = await contract({ department: d, endDate: null });
+    await h.owner.query(`UPDATE contract_families SET indefinite = true, termination_notice_amount = 3, termination_notice_unit = 'MONTH' WHERE id = $1`, [indefinite.familyId]);
+    await h.owner.query(`UPDATE contract_families SET indefinite = true WHERE id = $1`, [indefiniteMissing.familyId]);
+    fixtures.indefinite = indefinite.familyId;
+    fixtures.indefiniteNoNotice = indefiniteMissing.familyId;
+    const expected: Record<string, boolean> = { legacyIncomplete: false, legacyComplete: true, approved: true, expired: false, draft: false,
+      approvedIncomplete: false, approvedThenNewTerms: false, indefinite: true, indefiniteNoNotice: false };
+    await withTenant(h.pool, all(), async (tx) => {
+      const info = await listInfo(tx as any, Object.values(fixtures));
+      for (const [name, id] of Object.entries(fixtures)) {
+        const sql = (await tx.query<{ ok: boolean }>(`SELECT app_contract_in_force($1) AS ok`, [id])).rows[0]!.ok;
+        const ts = ['APPROVED', 'LEGACY'].includes(info.get(id)!.status);
+        expect({ name, sql, ts }).toEqual({ name, sql: expected[name], ts: expected[name] });
+      }
+    });
+    // Başka kiracıdan çağrı false; tedarikçi oturumu da çağırabilir ama yalnız bool alır.
+    await withTenant(h.pool, tenantB(), async (tx) => expect((await tx.query(`SELECT app_contract_in_force($1) AS ok`, [fixtures.approved])).rows[0].ok).toBe(false));
+  });
+
+  it('action_owner_in_other_department_sees_and_updates_own_action', async () => {
+    const w = h.world;
+    // s3: BT'nin bu tedarikçiyle sözleşmesi yok (katkıcı değil).
+    const a = await assessment({ supplier: w.suppliers.s3, department: w.departments.ik });
+    const mine = await action(a, { owner: w.users.techEval.id });
+    const notMine = await action(a);
+    await withTenant(h.pool, dept([w.departments.bt]), async (tx) => {
+      expect(await count(tx, `risk_assessments WHERE id = $1`, [a])).toBe(0);
+      expect((await tx.query(`SELECT id FROM risk_actions WHERE assessment_id = $1`, [a])).rows.map((r) => r.id)).toEqual([mine]);
+      expect((await tx.query(`UPDATE risk_actions SET status = 'DONE', completed_at = now(), completed_by = $2, completion_note = 'Tamamlandı (sentetik)' WHERE id = $1`,
+        [mine, w.users.techEval.id])).rowCount).toBe(1);
+      expect((await tx.query(`UPDATE risk_actions SET title = 'değişti' WHERE id = $1`, [notMine])).rowCount).toBe(0);
+    });
+    // Sahip yeni aksiyon ekleyemez ve sahipliği başkasına devredemez.
+    await withTenant(h.pool, dept([w.departments.bt]), (tx) => rejects(tx.query(`INSERT INTO risk_actions (tenant_id, assessment_id, kind, title, owner_user_id, created_by)
+      VALUES ($1, $2, 'MITIGATION', 'Sahip ekledi', $3, $3)`, [w.tenantA, a, w.users.techEval.id]), '42501'));
+    const open = await action(a, { owner: w.users.techEval.id });
+    await withTenant(h.pool, dept([w.departments.bt]), (tx) => rejects(tx.query(`UPDATE risk_actions SET owner_user_id = $2 WHERE id = $1`, [open, w.users.legal.id]), '42501'));
+  });
+
+  it('review_revision_prior_and_import_row_integrity', async () => {
+    const w = h.world;
+    const a = await assessment();
+    const b = await assessment();
+    const rb = await revision(b);
+    await rejects(h.owner.query(`INSERT INTO risk_reviews (tenant_id, assessment_id, period, outcome, revision_id, decided_by) VALUES ($1, $2, '2033-2', 'UPDATED', $3, $4)`,
+      [w.tenantA, a, rb, w.users.buyer.id]), '23503');
+    // Önceki yıl kaydı aynı tedarikçinin olmalı.
+    const s2 = await assessment({ supplier: w.suppliers.s2 });
+    await rejects(h.owner.query(`INSERT INTO risk_assessments (tenant_id, supplier_id, year, source, prior_assessment_id) VALUES ($1, $2, $3, 'CYCLE', $4)`,
+      [w.tenantA, w.suppliers.s1, nextYear(), s2]), '23503');
+    await h.owner.query(`INSERT INTO risk_assessments (tenant_id, supplier_id, year, source, prior_assessment_id) VALUES ($1, $2, $3, 'CYCLE', $4)`,
+      [w.tenantA, w.suppliers.s1, nextYear(), a]);
+    // Uygulanmış partiye satır eklenmez.
+    const batch = (await one<{ id: string }>(`INSERT INTO risk_import_batches (tenant_id, file_sha256, file_name, year, fraction_scale, uploaded_by, status, applied_by, applied_at)
+      VALUES ($1, $2, 'risk.xlsx', 2026, true, $3, 'APPLIED', $3, now()) RETURNING id`, [w.tenantA, randomUUID().replace(/-/g, '').repeat(2), w.users.buyer.id])).id;
+    await withTenant(h.pool, all(), (tx) => rejects(tx.query(`INSERT INTO risk_import_rows (tenant_id, batch_id, row_no, raw) VALUES ($1, $2, 7, '{}')`, [w.tenantA, batch]),
+      'P0001', /immutable_record/));
   });
 });
