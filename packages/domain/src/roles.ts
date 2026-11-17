@@ -189,6 +189,12 @@ export const PERMISSIONS = {
   'compliance.run': ['ADMIN', 'PROCUREMENT'],
   'compliance.mark': ['PROCUREMENT'],
   'coi.declare': ['PROCUREMENT', 'DEPARTMENT_USER'],
+  // v2 Faz 8 (D113): Oracle ERP bağlantıları. Okuma Satınalma/Denetçi'ye salt okunur; yönetim ve çalıştırma yalnız Yönetici; elle ERP kodu/iletildi/ödeme durumu Satınalma; masraf merkezi kodu Yönetici.
+  'integration.endpoint.read': ['ADMIN', 'PROCUREMENT', 'AUDITOR'],
+  'integration.endpoint.manage': ['ADMIN'],
+  'integration.endpoint.run': ['ADMIN'],
+  'erp.manual.record': ['PROCUREMENT'],
+  'department.cost_center': ['ADMIN'],
 } as const satisfies Record<string, readonly Role[]>;
 
 export type Permission = keyof typeof PERMISSIONS;

@@ -21,3 +21,4 @@ export * from './supplierPortal.ts';
 export * from './riskV2.ts';
 export * from './invoiceLinking.ts';
 export * from './compliance.ts';
+export * from './erpV2.ts';
