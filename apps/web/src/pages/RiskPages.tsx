@@ -637,7 +637,7 @@ function ReviewsPanel({ d, replace, defaultPeriod, setNotice }: { d: RiskDetail;
       // 422 period_before_assessment: dönem ilk revizyondan önce; sunucunun ilettiği ilk dönemle açık Türkçe ileti.
       if (err.status === 422 && err.code === 'period_before_assessment') {
         const fp = (err.details as { firstReviewablePeriod?: string } | undefined)?.firstReviewablePeriod;
-        err.message = `${period} dönemi gözden geçirilemez: değerlendirme ilk kez ${fp ? `${fp.replace('-', '-Ç')} döneminde` : 'daha sonraki bir dönemde'} tamamlandı. Daha sonraki bir dönem seçin.`;
+        err.message = `${period} dönemi gözden geçirilemez: değerlendirme ilk kez ${fp ? `${fp} döneminde` : 'daha sonraki bir dönemde'} tamamlandı. Daha sonraki bir dönem seçin.`;
       }
       setError(err);
     }

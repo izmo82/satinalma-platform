@@ -6,7 +6,7 @@ import { useResource } from '../lib/useApi.ts';
 import { hasPermission, hasRole, useSession } from '../lib/session.tsx';
 import { statusTag } from '../lib/contractsV2.ts';
 import { fmtDate, fmtDateTime, fmtMoney } from '../lib/format.ts';
-import { costKindLabel, lineState, PROJECT_STAGES, projectStatus, supplierPickHint, type SupplierOption } from '../lib/labels.ts';
+import { costKindLabel, lineState, PROJECT_STAGES, projectStatus, supplierPickHint, supplierStatus, type SupplierOption } from '../lib/labels.ts';
 import { emailTag, StageWithStatus, stageOfStatus } from '../lib/supplierV2.tsx';
 import { Banner, Empty, ErrorState, Field, Loading, Tag } from '../ui/kit.tsx';
 import { Icon } from '../ui/icons.tsx';
@@ -411,7 +411,7 @@ function Bids({ d, reload }: { d: Detail; reload: () => Promise<void> }) {
             <TableRow key={i.supplierId}>
               <TableCell className="font-semibold"><Link to={`/tedarikciler/${i.supplierId}`} className="text-ink no-underline hover:underline">{i.supplierName}</Link></TableCell>
               {/* v2 Faz 5 izleme: kartla aynı aşama sözcüğü (Onaylı/Aday/Pasif…); eski durum ikincil metin olarak. */}
-              <TableCell><StageWithStatus {...stageOfStatus(i.supplierStatus)} status={i.supplierStatus} /></TableCell>
+              <TableCell>{i.supplierStatus in supplierStatus || stageOfStatus(i.supplierStatus).stage ? <StageWithStatus {...stageOfStatus(i.supplierStatus)} status={i.supplierStatus} /> : <span className="text-ink-subtle">Durum bilinmiyor</span>}</TableCell>
               <TableCell>{i.bidVersion ? <span className="tabular">Sürüm {i.bidVersion}</span> : <span className="text-ink-subtle">Teklif yok</span>}</TableCell>
               <TableCell className="tabular whitespace-nowrap">{i.submittedAt ? fmtDateTime(i.submittedAt) : '—'}</TableCell>
               {!!d.round?.inviteEmails?.length && <TableCell>{(() => { const m = d.round!.inviteEmails!.find((x) => x.supplierId === i.supplierId);

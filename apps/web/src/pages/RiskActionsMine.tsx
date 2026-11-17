@@ -34,12 +34,12 @@ export function RiskActionsMinePage() {
   const focusRef = useRef<HTMLLIElement | null>(null);
   const items = r.data?.items ?? [];
   const focused = focusId ? items.find((x) => x.id === focusId) : undefined;
-  useEffect(() => { if (focused) focusRef.current?.scrollIntoView({ block: 'center' }); }, [focused]);
+  useEffect(() => { if (focused) { focusRef.current?.scrollIntoView({ block: 'center' }); focusRef.current?.focus({ preventScroll: true }); } }, [focused]);
   const open = items.filter((x) => x.status === 'OPEN').length;
 
   return (
     <div className="page" style={{ maxWidth: 960 }}>
-      <p className="subtle"><Link to="/islerim">İşlerim</Link> / Risk aksiyonlarım</p>
+      <p className="text-sm text-ink-subtle"><Link to="/islerim" className="text-ink-subtle">İşlerim</Link> / Risk aksiyonlarım</p>
       <PageHeader title="Risk aksiyonlarım">
         Yıllık risk değerlendirmelerinde sorumlusu olduğunuz aksiyonlar. Tamamladığınızda ne yaptığınızı kısaca yazın; kapanış değerlendirmeyi yapan ekibe görünür.
       </PageHeader>
@@ -52,7 +52,7 @@ export function RiskActionsMinePage() {
           <p className="mb-2 text-sm text-ink-muted"><span className="tabular">{open}</span> açık · <span className="tabular">{items.length}</span> toplam</p>
           <ul className="grid gap-3" aria-label="Risk aksiyonlarım">
             {items.map((a) => (
-              <li key={a.id} ref={a.id === focusId ? focusRef : undefined} aria-current={a.id === focusId ? 'true' : undefined}
+              <li key={a.id} ref={a.id === focusId ? focusRef : undefined} aria-current={a.id === focusId ? 'true' : undefined} tabIndex={a.id === focusId ? -1 : undefined}
                 className={cn('panel', a.id === focusId && 'outline-2 outline-offset-2 outline-focus')}>
                 <div className="panel-body grid gap-2">
                   <div className="flex flex-wrap items-start gap-x-3 gap-y-1">

@@ -90,7 +90,7 @@ export function InvoicesPage() {
   const counts = r.data?.counts;
   const clientSide = !SERVER_MATCH[durum];
   // v2 Faz 7 izleme (F1): liste 300'de kesilir; kesildiyse istemci çip sayıları (eksik veriyle) gösterilmez ve not düşülür.
-  const truncated = !!r.data && (all.length >= LIST_LIMIT || (counts !== undefined && clientSide && all.length < counts.all));
+  const truncated = !!r.data && (counts !== undefined ? all.length < counts.all : all.length >= LIST_LIMIT);
   const chipCount = (k: string) => CLIENT_MATCH.has(k) ? (clientSide && !truncated ? all.filter((x) => matchOf(x) === k).length : undefined)
     : counts ? (k === '' ? counts.all : k === 'KUYRUK' ? counts.unmatched : counts.matched) : undefined;
   const canMatch = !!r.data?.can?.match;
