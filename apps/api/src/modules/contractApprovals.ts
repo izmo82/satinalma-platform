@@ -1,11 +1,11 @@
-import { canDecide, normalizeRoles, STEP_KIND_TR, type StepKind } from '@sp/domain';
+import { canDecide, STEP_KIND_TR, type StepKind } from '@sp/domain';
 import type { TenantContext, Tx } from '../db.ts';
 import { audit } from '../audit.ts';
 import { closeTasks, openTask } from '../tasks.ts';
 import { ApiError, conflict, notFound, unprocessable } from '../errors.ts';
 import { currentApprovers } from './approvers.ts';
 import { getContractV2, listInfo, openStepTask } from './contractIntake.ts';
-import { APPROVER_SUSPENDED_REASON, cancelOpenChain, eligibleStepDeputy, lockFamily, roleOf, withTenantWideScope } from './contractChain.ts';
+import { APPROVER_SUSPENDED_REASON, cancelOpenChain, eligibleStepAssignee, eligibleStepDeputy, lockFamily, roleOf, withTenantWideScope } from './contractChain.ts';
 import { scheduleContractReminders } from './contractReminders.ts';
 
 /**
@@ -19,8 +19,6 @@ import { scheduleContractReminders } from './contractReminders.ts';
  */
 
 const ZERO = '00000000-0000-0000-0000-000000000000';
-/** D107 onaycı rolleri (eski kodlar normalizeRoles ile v2'ye çevrilir). Aynı liste: contractChain.ts APPROVER_ROLE_CODES_SQL notu. */
-const APPROVER_ROLES = ['PROCUREMENT', 'DEPARTMENT_USER'];
 
 interface StepRow {
   id: string; chain_id: string; step_order: number; kind: StepKind; department_id: string | null; assigned_user_id: string; via_deputy: boolean;
@@ -41,14 +39,6 @@ async function activeDeputyId(tx: Tx, step: { kind: StepKind; department_id: str
   if (!a) { a = await currentApprovers(tx, key); cache?.set(key, a); }
   const dep = step.kind === 'DEPARTMENT_HEAD' ? a.deputy : step.kind === 'PROCUREMENT_LEAD' ? a.leadDeputy : a.directorDeputy;
   return dep?.userId ?? null;
-}
-
-/** Kiracının etkin, D107 rollü iç üyesi mi (sıradaki adımın görevi askıdaki kişiye açılmasın). */
-async function activeApprover(tx: Tx, ctx: TenantContext, userId: string): Promise<boolean> {
-  const r = (await tx.query<{ roles: string[] }>(`SELECT roles FROM memberships WHERE tenant_id = $1 AND user_id = $2 AND status = 'ACTIVE' AND supplier_id IS NULL`,
-    [ctx.tenantId, userId])).rows[0];
-  const roles = normalizeRoles(r?.roles ?? []);
-  return !!r && !roles.includes('SUPPLIER') && roles.some((x) => APPROVER_ROLES.includes(x));
 }
 
 const exactClose = (tx: Tx, key: string) => tx.query(`UPDATE tasks SET status = 'DONE', closed_at = now() WHERE status = 'OPEN' AND dedupe_key = $1`, [key]);
@@ -113,14 +103,14 @@ export async function decideStep(tx: Tx, ctx: TenantContext, stepId: string, bod
     const n = steps.find((x) => !x.decision && x.id !== s.id);
     if (n) {
       // Sıradaki adımdaki kişi bu arada askıya alındıysa (Faz 2 R5) görev o unvanın etkin vekiline açılır (görev ayrılığı korunur).
-      let assignee: string | null = n.assigned_user_id;
-      if (!(await activeApprover(tx, ctx, assignee))) assignee = await eligibleStepDeputy(tx, n.id, n.assigned_user_id);
+      const assignee = (await eligibleStepAssignee(tx, n.id, null)) ?? (await eligibleStepDeputy(tx, n.id, n.assigned_user_id));
       if (assignee) {
         const t = await openStepTask(tx, ctx, f, s.chain_id, { id: n.id, order: n.step_order, kind: n.kind, userId: assignee });
         next = { stepId: n.id, order: n.step_order, kind: n.kind, kindLabel: STEP_KIND_TR[n.kind], taskId: t.id, assigneeUserId: assignee };
       } else {
         // Görev 5 inceleme I2: sıradaki adımda karar verebilecek kimse yok (kişi askıda, uygun vekil yok / ek onaycı): zincir sahipsiz
         // kalmasın, iptal edilir ve gönderene yeniden gönderim görevi açılır. Karar veren başka departmandan olabilir: kiracı geneli kapsam.
+        // no data from this block may be returned to the caller
         await withTenantWideScope(tx, () => cancelOpenChain(tx, ctx, s.family_id, APPROVER_SUSPENDED_REASON));
         chainStatus = 'CANCELLED';
       }

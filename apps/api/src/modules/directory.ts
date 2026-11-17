@@ -3,7 +3,7 @@ import type pg from 'pg';
 import { normalizeDepartmentName, normalizeRoles, planMembershipDepartments } from '@sp/domain';
 import { withoutTenant, withTenant, type TenantContext, type Tx } from '../db.ts';
 import { audit } from '../audit.ts';
-import { APPROVER_SUSPENDED_REASON, cancelOpenChain, eligibleStepDeputy, lockFamily, withTenantWideScope } from './contractChain.ts';
+import { APPROVER_SUSPENDED_REASON, cancelOpenChain, eligibleStepAssignee, eligibleStepDeputy, lockFamily, withTenantWideScope } from './contractChain.ts';
 import { ApiError, conflict } from '../errors.ts';
 import { DirectoryError, type DirectoryProvider, type DirectoryScope, type DirectoryUser } from '../directory/provider.ts';
 
@@ -344,11 +344,13 @@ export async function handOffOpenTasks(tx: Tx, ctx: TenantContext, userId: strin
       // ekleyen ve gönderen değil; ek onaycının vekili yok). Kimse yoksa görev sahipsiz kalıp zinciri kilitlemesin: zincir iptal edilir,
       // gönderene "Yeniden onaya gönderin" görevi açılır. Adım, aile ve zincir başlatanın kapsamında görünmeyebilir (Yönetici rol
       // ekranı şirketsiz olabilir): bu bölüm dizin eşitlemesiyle aynı kiracı geneli kapsamda çalışır (withTenantWideScope).
+      // no data from this block may be returned to the caller
       const handled = await withTenantWideScope(tx, async () => {
         const st = (await tx.query<{ family_id: string }>(`SELECT c.family_id FROM contract_approval_steps s JOIN contract_approval_chains c ON c.id = s.chain_id
           WHERE s.id = $1 AND c.closed_at IS NULL AND s.decision IS NULL`, [t.entity_id])).rows[0];
         if (!st) return false;
-        const to = await eligibleStepDeputy(tx, t.entity_id, userId);
+        // N2: adımın kendi kişisi (askıya alınan değilse, ör. görev vekile açılmışken asıl kişi) uygunsa ona; değilse unvanın uygun vekiline.
+        const to = (await eligibleStepAssignee(tx, t.entity_id, userId)) ?? (await eligibleStepDeputy(tx, t.entity_id, userId));
         if (to) {
           await tx.query(`UPDATE tasks SET assignee_user_id = $2 WHERE id = $1`, [t.id, to]);
           await audit(tx, ctx, 'task.reassigned', 'task', t.id, { from: userId, to, reason, ...extra });

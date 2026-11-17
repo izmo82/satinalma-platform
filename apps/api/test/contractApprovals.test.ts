@@ -477,4 +477,41 @@ describe('inceleme düzeltmeleri: sahipsiz adım yok (I2), şirket erişimi (I3)
     expect(r.body.error.details).toMatchObject({ userId: w.users.multi.id, kind: 'PROCUREMENT_DIRECTOR' });
     expect((await h.owner.query(`SELECT count(*)::int AS n FROM contract_approval_chains WHERE family_id = $1`, [c.familyId])).rows[0].n).toBe(0);
   });
+
+  it('N1: şirkete erişemeyen vekil uygun sayılmaz (zincir iptal); ADMIN+PROCUREMENT kısmi company_ids ile gönderim 409 almaz', async () => {
+    const w = await fresh();
+    // Satınalma sorumlusu vekili multi yalnız A2'de; sözleşme A1.
+    await approvers(w, [], { leadDeputyUserId: w.users.multi.id });
+    const c = await contract(w);
+    const [s1] = await steps(w, c.familyId);
+    expect((await decide(w, 'security', s1!.id, 'APPROVED')).status).toBe(200);
+    await suspend(w, w.users.legal.id);
+    expect((await h.owner.query(`SELECT outcome FROM contract_approval_chains WHERE id = $1`, [c.chainId])).rows[0].outcome).toBe('CANCELLED');
+
+    // Yönetici + Satınalma, saklı company_ids yalnız A2: 039 kuralıyla tüm şirketleri görür → direktör olabilir, gönderim 200.
+    const w2 = await fresh();
+    const email = `adm-${randomUUID().slice(0, 8)}@sentetik.example`;
+    const id = (await h.owner.query<{ id: string }>(`INSERT INTO users (auth_subject, email, display_name) VALUES ($1,$2,'Yönetici Direktör (SENTETİK)') RETURNING id`,
+      [`dev|${email}`, email])).rows[0]!.id;
+    await h.owner.query(`INSERT INTO memberships (tenant_id, user_id, roles, company_ids) VALUES ($1,$2,ARRAY['ADMIN','PROCUREMENT'],$3)`, [w2.tenantA, id, [w2.companyA2.id]]);
+    await approvers(w2, [], { directorUserId: id });
+    const c2 = await contract(w2, 'techEval', null);
+    const r = await call(w2, 'techEval', 'POST', `/api/v1/contracts/${c2.familyId}/submit`, {});
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+  });
+
+  it('N2: görevi tutan vekil askıya alınırsa ve adımın kendi kişisi yeniden etkinse görev ona döner (iptal yok)', async () => {
+    const w = await fresh();
+    await approvers(w);
+    const c = await contract(w);
+    const [s1, s2] = await steps(w, c.familyId);
+    expect((await decide(w, 'security', s1!.id, 'APPROVED')).status).toBe(200);
+    await suspend(w, w.users.legal.id);
+    expect(await taskRow(`contract-approval:${c.chainId}:2`)).toMatchObject({ status: 'OPEN', assignee_user_id: w.users.legal2.id });
+    await h.owner.query(`UPDATE memberships SET status = 'ACTIVE', suspended_by_directory = false WHERE tenant_id = $1 AND user_id = $2`, [w.tenantA, w.users.legal.id]);
+    await suspend(w, w.users.legal2.id);
+    expect(await taskRow(`contract-approval:${c.chainId}:2`)).toMatchObject({ status: 'OPEN', assignee_user_id: w.users.legal.id });
+    expect((await h.owner.query(`SELECT outcome FROM contract_approval_chains WHERE id = $1`, [c.chainId])).rows[0].outcome).toBeNull();
+    expect((await decide(w, 'legal', s2!.id, 'APPROVED')).status).toBe(200);
+  });
 });

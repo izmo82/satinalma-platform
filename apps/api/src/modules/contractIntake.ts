@@ -12,7 +12,7 @@ import { saveTerms } from './contractTerms.ts';
 import { currentApprovers } from './approvers.ts';
 import { resolveDepartment } from './departments.ts';
 import { noticeBasis } from './contractReminders.ts';
-import { cancelOpenChain, CONTENT_CHANGED_REASON, roleOf } from './contractChain.ts';
+import { cancelOpenChain, CONTENT_CHANGED_REASON, membershipCoversSql, roleOf } from './contractChain.ts';
 
 /**
  * v2 Faz 3 (D108+, R1–R5, R9, R10) Görev 4: sözleşme ekleme akışı. Taslak (aile + MAIN sürüm, proje zorunlu), zorunlu alanlar
@@ -430,8 +430,9 @@ export async function submitContract(tx: Tx, ctx: TenantContext, familyId: strin
   // Görev 5 inceleme I3: adıma atanan her kişi (vekil kullanıldıysa vekil) sözleşmenin şirketini görmeli; yoksa sözleşmeyi açamaz,
   // karar veremez ve zincir kilitlenir. Şirket kapsamı üyelikteki company_ids'tir (tüm şirketler = hepsi listede).
   const ids = [...new Set(r.steps.map((s) => s.userId))];
-  const covered = new Set((await tx.query<{ user_id: string }>(`SELECT user_id FROM memberships WHERE tenant_id = $1 AND user_id = ANY($2::uuid[])
-    AND supplier_id IS NULL AND $3::uuid = ANY (company_ids)`, [ctx.tenantId, ids, f.company_id])).rows.map((x) => x.user_id));
+  // Kural eligibleStepDeputy ile aynı (membershipCoversSql: 039 Yönetici kuralı ve geçerlilik aralığı).
+  const covered = new Set((await tx.query<{ user_id: string }>(`SELECT m.user_id FROM memberships m WHERE m.tenant_id = $1 AND m.user_id = ANY($2::uuid[])
+    AND m.supplier_id IS NULL AND ${membershipCoversSql('m', '$3::uuid')}`, [ctx.tenantId, ids, f.company_id])).rows.map((x) => x.user_id));
   const blocked = r.steps.find((s) => !covered.has(s.userId));
   if (blocked) {
     throw conflict('approver_no_company_access',

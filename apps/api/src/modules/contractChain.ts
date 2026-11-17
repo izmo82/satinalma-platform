@@ -72,10 +72,20 @@ export async function withTenantWideScope<T>(tx: Tx, fn: () => Promise<T>): Prom
 
 /**
  * D107 onaycı rolleri. Aynı liste (eski kodlarıyla) şuralarda da var; birini değiştiren hepsini değiştirmeli:
- * approvers.ts APPROVER_ROLES, contractIntake.ts APPROVER_ROLES, contractApprovals.ts APPROVER_ROLES, directory.ts stepDecider SQL'i,
- * migrations/050 app_is_contract_approver (eski kodlar dahil SQL dizisi).
+ * approvers.ts APPROVER_ROLES, contractIntake.ts APPROVER_ROLES, migrations/050 app_is_contract_approver (eski kodlar dahil SQL dizisi);
+ * bu dosyada eligibleStepDeputy/eligibleStepAssignee bu sabiti kullanır.
  */
 export const APPROVER_ROLE_CODES_SQL = `ARRAY['PROCUREMENT','DEPARTMENT_USER','BUYER','PROCUREMENT_MANAGER','MASTER_DATA','LEGAL','FINANCE','REQUESTER','TECH_EVALUATOR','SECURITY']`;
+
+/**
+ * Üyelik bu an geçerli ve şirketi kapsıyor mu (migrations/039 auth_memberships kuralıyla aynı): etkin, valid_from/valid_to aralığında;
+ * Yönetici rollü iç üyelik kiracının tüm şirketlerini görür, diğerleri yalnız company_ids'tekileri. `m` üyelik takma adı, `company` SQL ifadesi.
+ */
+export const membershipCoversSql = (m: string, company: string) => `(${m}.status = 'ACTIVE' AND ${m}.valid_from <= now() AND (${m}.valid_to IS NULL OR ${m}.valid_to > now())
+  AND (${company} = ANY (${m}.company_ids) OR (${m}.supplier_id IS NULL AND ${m}.roles && ARRAY['ADMIN','TENANT_ADMIN','PLATFORM_OPS'])))`;
+/** Onaycı olabilecek üyelik: iç, tedarikçi değil, D107 rollü ve şirketi kapsıyor. */
+const approverMembershipSql = (m: string, company: string) =>
+  `(${m}.supplier_id IS NULL AND NOT ('SUPPLIER' = ANY (${m}.roles)) AND ${m}.roles && ${APPROVER_ROLE_CODES_SQL} AND ${membershipCoversSql(m, company)})`;
 
 /**
  * Bir onay adımında karar verebilecek uygun kişi (Görev 5 inceleme I2): adımın unvanının (tür + departman) şu anki vekili; etkin iç
@@ -87,11 +97,24 @@ export async function eligibleStepDeputy(tx: Tx, stepId: string, excludeUserId: 
     `SELECT a.deputy_user_id FROM contract_approval_steps s
        JOIN contract_approval_chains c ON c.id = s.chain_id JOIN contract_families f ON f.id = c.family_id
        JOIN approver_assignments a ON a.tenant_id = s.tenant_id AND a.kind = s.kind AND a.department_id IS NOT DISTINCT FROM s.department_id
-       JOIN memberships m ON m.tenant_id = a.tenant_id AND m.user_id = a.deputy_user_id AND m.status = 'ACTIVE' AND m.supplier_id IS NULL
-      WHERE s.id = $1 AND s.kind <> 'EXTRA' AND a.deputy_user_id IS NOT NULL
-        AND NOT ('SUPPLIER' = ANY (m.roles)) AND m.roles && ${APPROVER_ROLE_CODES_SQL}
+       JOIN memberships m ON m.tenant_id = a.tenant_id AND m.user_id = a.deputy_user_id
+      WHERE s.id = $1 AND s.kind <> 'EXTRA' AND a.deputy_user_id IS NOT NULL AND ${approverMembershipSql('m', 'f.company_id')}
         AND a.deputy_user_id <> f.created_by AND a.deputy_user_id <> c.submitted_by AND a.deputy_user_id IS DISTINCT FROM $2::uuid`,
     [stepId, excludeUserId])).rows[0]?.deputy_user_id ?? null;
+}
+
+/**
+ * Adımın kendi atanmış kişisi hâlâ karar verebilir mi (Görev 5 inceleme N2): etkin onaycı üyeliği (şirket kapsamı dahil), ekleyen ve
+ * gönderen değil, `excludeUserId` değil. Uygunsa kişinin kimliği, değilse null.
+ */
+export async function eligibleStepAssignee(tx: Tx, stepId: string, excludeUserId: string | null): Promise<string | null> {
+  return (await tx.query<{ id: string }>(
+    `SELECT s.assigned_user_id AS id FROM contract_approval_steps s
+       JOIN contract_approval_chains c ON c.id = s.chain_id JOIN contract_families f ON f.id = c.family_id
+       JOIN memberships m ON m.tenant_id = s.tenant_id AND m.user_id = s.assigned_user_id
+      WHERE s.id = $1 AND ${approverMembershipSql('m', 'f.company_id')}
+        AND s.assigned_user_id <> f.created_by AND s.assigned_user_id <> c.submitted_by AND s.assigned_user_id IS DISTINCT FROM $2::uuid`,
+    [stepId, excludeUserId])).rows[0]?.id ?? null;
 }
 
 export const APPROVER_SUSPENDED_REASON = 'Onaycı askıya alındı; uygun vekil yok. Yeniden onaya gönderin.';
