@@ -11,6 +11,8 @@ import { pageTexts } from '../src/ai/text.ts';
 import { TEST_PROVIDER_LABEL, testFixtureProvider } from '../src/ai/testProvider.ts';
 import { processJobs } from '../src/worker.ts';
 import { loadAuditProject, runDataCheck } from '../src/modules/complianceChecks.ts';
+import { runComplianceAudit } from '../src/modules/compliance.ts';
+import { withTenant, type TenantContext } from '../src/db.ts';
 import { makeHarness } from './harness.ts';
 
 let h: Awaited<ReturnType<typeof makeHarness>>;
@@ -27,8 +29,9 @@ let setV1: string;
 let setV2: string;
 
 /** Yayımlı set (sahip bağlantısıyla; geçmiş yürürlük tarihi yalnız testte). Kiracıda tek açık taslak: taslak → kurallar → yayım. */
-async function publishedSet(versionNo: number, effectiveFrom: string, rules: [code: string, key: string | null, type: string, params: object, weight: number, mandatory: boolean][]) {
-  const w = h.world;
+async function publishedSet(versionNo: number, effectiveFrom: string, rules: [code: string, key: string | null, type: string, params: object, weight: number, mandatory: boolean][],
+  tenant?: string) {
+  const w = { ...h.world, tenantA: tenant ?? h.world.tenantA };
   const s = (await one<{ id: string }>(`INSERT INTO procurement_rule_sets (tenant_id, version_no, created_by) VALUES ($1,$2,$3) RETURNING id`,
     [w.tenantA, versionNo, w.users.tenantAdmin.id])).id;
   let i = 0;
@@ -60,7 +63,15 @@ afterAll(async () => { await h.close(); });
  * Sentetik tam proje (BT): tek kalem, son kapanan turda `bidCount` teklif (s1 en düşük ve kazanan), onaylı kazanan kararı (gerekçeli),
  * projeye bağlı onaylı zincirli sözleşme (tutar = kazanan toplamı, imza karardan sonra), katılımcıların hepsi "Çıkar çatışmam yok".
  */
-async function fullProject(o: { bidCount?: number; declarations?: boolean } = {}) {
+interface ProjectOpts {
+  bidCount?: number; declarations?: boolean;
+  /** Sözleşme: onaylı zincir (varsayılan) ya da Faz 3 öncesi zincirsiz kayıt (koşulları D95a doğrulanmış ya da değil). */
+  contract?: 'APPROVED' | 'LEGACY_VERIFIED' | 'LEGACY';
+  currency?: string; limitBasis?: 'NET' | 'GROSS'; signedOn?: string;
+  /** s2 daha düşük TCO'lu ama engelli (blocker) teklif. */
+  lowerBlocked?: boolean;
+}
+async function fullProject(o: ProjectOpts = {}) {
   const w = h.world;
   const company = w.companyA1.id;
   const buyer = w.users.buyer.id;
@@ -72,7 +83,7 @@ async function fullProject(o: { bidCount?: number; declarations?: boolean } = {}
   const round = (await one<{ id: string }>(`INSERT INTO rfq_rounds (tenant_id, company_id, project_id, round_no, closes_at, status, requested_by)
     VALUES ($1,$2,$3,1, now() + interval '1 day', 'OPEN', $4) RETURNING id`, [w.tenantA, company, p.id, buyer])).id;
   const sups = [w.suppliers.s1, w.suppliers.s2, w.suppliers.s3].slice(0, o.bidCount ?? 3);
-  const tcos = ['100000.00', '120000.00', '130000.00'];
+  const tcos = ['100000.00', o.lowerBlocked ? '90000.00' : '120000.00', '130000.00'];
   const bids: string[] = [];
   for (const s of sups) {
     await h.owner.query(`INSERT INTO rfq_invitations (tenant_id, company_id, project_id, round_id, supplier_id, invited_by) VALUES ($1,$2,$3,$4,$5,$6)`,
@@ -81,7 +92,8 @@ async function fullProject(o: { bidCount?: number; declarations?: boolean } = {}
       VALUES ($1,$2,$3,$4,$5,1,'TRY','SUBMITTED',$6,$7) RETURNING id`, [w.tenantA, company, p.id, round, s, `bid-${randomUUID()}`, buyer])).id);
   }
   await h.owner.query(`UPDATE rfq_rounds SET status = 'CLOSED', closed_at = now() WHERE id = $1`, [round]);
-  const snapshot = { engine: 'sp-domain/compareBids@1', comparison: { bids: bids.map((b, i) => ({ bidId: b, tco: tcos[i], supplierName: `Tedarikçi ${i + 1} (SENTETİK)` })) } };
+  const snapshot = { engine: 'sp-domain/compareBids@1', comparison: { bids: bids.map((b, i) => ({ bidId: b, tco: tcos[i], supplierName: `Tedarikçi ${i + 1} (SENTETİK)`,
+    blocker: o.lowerBlocked && i === 1 ? 'Teminat mektubu yok (sentetik)' : null })) } };
   const ev = (await one<{ id: string }>(`INSERT INTO evaluations (tenant_id, company_id, project_id, version_no, basis_hash, snapshot, created_by)
     VALUES ($1,$2,$3,1,$4,$5,$6) RETURNING id`, [w.tenantA, company, p.id, 'a'.repeat(64), snapshot, buyer])).id;
   const award = (await one<{ id: string }>(`INSERT INTO awards (tenant_id, company_id, project_id, evaluation_id, version_no, rationale, total, status, proposed_by, decided_by, decided_at)
@@ -96,22 +108,27 @@ async function fullProject(o: { bidCount?: number; declarations?: boolean } = {}
       original_filename, basic_check_status, created_by) VALUES ($1,$2,$3,1,$4,'application/pdf',100,$5,'sozlesme.pdf','PASSED',$6) RETURNING id`,
     [w.tenantA, company, doc, 'f'.repeat(64), `tenant/${randomUUID()}`, buyer])).id;
   const familyId = (await one<{ id: string }>(`INSERT INTO contract_families (tenant_id, company_id, title, supplier_id, created_by, code, department_id, intake_flow,
-      project_id, contract_type, owner_user_id, signed_on) VALUES ($1,$2,$3,$4,$5,$6,$7,true,$8,'SERVICE',$5,'2026-02-01') RETURNING id`,
-    [w.tenantA, company, `Sözleşme ${rand()} (SENTETİK)`, w.suppliers.s1, buyer, `SZL-UY-${rand()}`, w.departments.bt, p.id])).id;
+      project_id, contract_type, owner_user_id, signed_on) VALUES ($1,$2,$3,$4,$5,$6,$7,$9,$8,'SERVICE',$5,$10) RETURNING id`,
+    [w.tenantA, company, `Sözleşme ${rand()} (SENTETİK)`, w.suppliers.s1, buyer, `SZL-UY-${rand()}`, w.departments.bt, p.id, (o.contract ?? 'APPROVED') === 'APPROVED',
+      o.signedOn ?? '2026-02-01'])).id;
   const cv = (await one<{ id: string }>(`INSERT INTO contract_versions (tenant_id, company_id, family_id, version_no, document_version_id, created_by)
     VALUES ($1,$2,$3,1,$4,$5) RETURNING id`, [w.tenantA, company, familyId, dv, buyer])).id;
   const terms = (await one<{ id: string }>(`INSERT INTO contract_terms (tenant_id, company_id, contract_version_id, revision, currency, value_type, amount,
-      start_date, end_date, source_ref, entered_by, limit_basis) VALUES ($1,$2,$3,1,'TRY','FIXED','100000.00','2026-02-01','2027-12-31','Madde 1 (sentetik)',$4,'NET') RETURNING id`,
-    [w.tenantA, company, cv, buyer])).id;
-  const chain = (await one<{ id: string }>(`INSERT INTO contract_approval_chains (tenant_id, family_id, version_id, terms_id, submitted_by) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
-    [w.tenantA, familyId, cv, terms, buyer])).id;
-  await h.owner.query(`UPDATE contract_approval_chains SET closed_at = now(), outcome = 'APPROVED' WHERE id = $1`, [chain]);
+      start_date, end_date, source_ref, entered_by, limit_basis) VALUES ($1,$2,$3,1,$5,'FIXED','100000.00','2026-02-01','2027-12-31','Madde 1 (sentetik)',$4,$6) RETURNING id`,
+    [w.tenantA, company, cv, buyer, o.currency ?? 'TRY', o.limitBasis ?? 'NET'])).id;
+  if ((o.contract ?? 'APPROVED') === 'APPROVED') {
+    const chain = (await one<{ id: string }>(`INSERT INTO contract_approval_chains (tenant_id, family_id, version_id, terms_id, submitted_by) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+      [w.tenantA, familyId, cv, terms, buyer])).id;
+    await h.owner.query(`UPDATE contract_approval_chains SET closed_at = now(), outcome = 'APPROVED' WHERE id = $1`, [chain]);
+  } else if (o.contract === 'LEGACY_VERIFIED') {
+    await h.owner.query(`UPDATE contract_terms SET verified_by = $2, verified_at = now() WHERE id = $1`, [terms, w.users.finance.id]);
+  }
   if (o.declarations !== false) {
     for (const u of [buyer, w.users.finance.id]) {
       await h.owner.query(`INSERT INTO coi_declarations (tenant_id, company_id, project_id, user_id, kind) VALUES ($1,$2,$3,$4,'NONE')`, [w.tenantA, company, p.id, u]);
     }
   }
-  return { id: p.id, code: p.code, familyId, award, bids };
+  return { id: p.id, code: p.code, familyId, award, bids, cv };
 }
 
 async function complete(projectId: string, completedOn?: string) {
@@ -199,9 +216,27 @@ describe('denetim motoru (R6–R9) — sağlayıcı yok', () => {
     expect(r.latest.summary).toContain('Uyumsuzluk nedeni (zorunlu kurallar): K01');
     const task = await one(`SELECT kind, assignee_role, severity, status FROM tasks WHERE dedupe_key = $1`, [`compliance-noncompliant:${p.id}`]);
     expect(task).toEqual({ kind: 'compliance_noncompliant', assignee_role: 'PROCUREMENT', severity: 'HIGH', status: 'OPEN' });
+
+    // Beyanlar sonradan verilir; yeniden koşu. Çalışan (RUNNING) iş yeniden kullanılmaz: yeni iş açılır (I2).
+    for (const u of [h.world.users.buyer.id, h.world.users.finance.id]) {
+      await h.owner.query(`INSERT INTO coi_declarations (tenant_id, company_id, project_id, user_id, kind) VALUES ($1,$2,$3,$4,'NONE')`, [h.world.tenantA, h.world.companyA1.id, p.id, u]);
+    }
+    const first = await call('buyer', 'POST', `/api/v1/projects/${p.id}/compliance-audits`);
+    await h.owner.query(`UPDATE jobs SET status = 'RUNNING' WHERE id = $1`, [first.body.jobId]);
+    const second = await call('buyer', 'POST', `/api/v1/projects/${p.id}/compliance-audits`);
+    expect(second.body).toMatchObject({ status: 'QUEUED', duplicate: false });
+    expect(second.body.jobId).not.toBe(first.body.jobId);
+    await h.owner.query(`UPDATE jobs SET status = 'FAILED' WHERE id = $1`, [first.body.jobId]);
+    await runWorker();
+    const r2 = (await report(p.id)).body;
+    expect(r2.latest.failedMandatory.map((f: any) => f.code)).toEqual(['K01']);
+    // Açık görevin nedeni güncel koşuyu yansıtır; tek açık görev kalır.
+    const open = await rows(`SELECT reason FROM tasks WHERE dedupe_key = $1 AND status = 'OPEN'`, [`compliance-noncompliant:${p.id}`]);
+    expect(open).toHaveLength(1);
+    expect(open[0].reason).toMatch(/^Zorunlu kural karşılanmadı: K01 [^;]*\.$/);
   });
 
-  it('R6 set seçimi: tamamlanma günü yeni setten önceyse eski set, sonraysa yeni set; set yoksa NO_RULESET + Yönetici görevi', async () => {
+  it('R6 set seçimi: tamamlanma günü yeni setten önceyse eski set, sonraysa yeni set; günde set yoksa ilk yayımlanan set görünür notla (Ruling 14)', async () => {
     const old = await fullProject();
     await complete(old.id, '2026-03-15');
     const none = await fullProject();
@@ -211,14 +246,78 @@ describe('denetim motoru (R6–R9) — sağlayıcı yok', () => {
     expect(o).toMatchObject({ ruleSet: { id: setV1, versionNo: 1, effectiveFrom: '2026-01-01' }, verdict: 'NONCOMPLIANT', score: 0 });
     expect(o.results).toHaveLength(1);
     expect(o.results[0]).toMatchObject({ code: 'K01', result: 'FAIL', finding: 'Son kapanan turda (Tur 1) 3 geçerli teklif var; en az 5 gerekli.' });
+    expect(o).toMatchObject({ ruleSetFallback: false, ruleSetNote: null });
+    const note = 'Tamamlanma gününde yürürlükte set yoktu; ilk yayımlanan set (sürüm 1) kullanıldı.';
     const n = (await report(none.id)).body.latest;
-    expect(n).toMatchObject({ status: 'NO_RULESET', statusLabel: 'Kural seti yok', score: null, verdict: null, ruleSet: null, results: [] });
-    expect(await one(`SELECT kind, assignee_role FROM tasks WHERE dedupe_key = $1 AND status = 'OPEN'`, [`compliance-no-ruleset:${none.id}`]))
-      .toEqual({ kind: 'compliance_no_ruleset', assignee_role: 'ADMIN' });
+    expect(n).toMatchObject({ status: 'DONE', ruleSet: { id: setV1, versionNo: 1 }, ruleSetFallback: true, ruleSetNote: note });
+    expect(n.summary).toContain(note);
+    const pdf = await call('auditor', 'GET', `/api/v1/compliance-audits/${n.id}/pdf`);
+    expect((await pageTexts(pdf.raw, 'application/pdf')).join('\n')).toContain('ilk yayımlanan set (sürüm 1) kullanıldı');
+    expect((await call('auditor', 'GET', '/api/v1/compliance-audits')).body.items.find((x: any) => x.projectId === none.id)).toMatchObject({ ruleSetFallback: true });
+    expect(await rows(`SELECT 1 FROM tasks WHERE dedupe_key = $1`, [`compliance-no-ruleset:${none.id}`])).toHaveLength(0);
     // Yeniden koşu da aynı seti kullanır (eski set).
     await call('buyer', 'POST', `/api/v1/projects/${old.id}/compliance-audits`);
     await runWorker();
     expect((await report(old.id)).body.latest).toMatchObject({ runNo: 2, ruleSet: { id: setV1 } });
+  });
+
+  it('Ruling 14: kiracıda hiç yayımlı set yoksa NO_RULESET + Yönetici görevi; set yayımlanıp koşu başarılı olunca görev kapanır', async () => {
+    const w = h.world;
+    const ctx: TenantContext = { userId: w.users.buyerB.id, tenantId: w.tenantB, roles: ['PROCUREMENT'], companyIds: [w.companyB1.id], departmentIds: [],
+      allDepartments: true, correlationId: randomUUID() };
+    const p = (await one<{ id: string }>(`INSERT INTO projects (tenant_id, company_id, code, title, category, owner_user_id, created_by, department_id, status, currency,
+        completed_on, completed_by) VALUES ($1,$2,$3,'Setsiz kiracı projesi (SENTETİK)','Genel',$4,$4,$5,'COMPLETED','TRY','2026-05-01',$4) RETURNING id`,
+      [w.tenantB, w.companyB1.id, `PRJ-UYB-${rand()}`, w.users.buyerB.id, w.departmentsB.bt])).id;
+    const r1 = await withTenant(h.pool, ctx, (tx) => runComplianceAudit(tx, ctx, p, 'COMPLETED', { aiAvailable: false }));
+    expect(r1).toMatchObject({ status: 'NO_RULESET', score: null, verdict: null });
+    expect(await one(`SELECT kind, assignee_role, status FROM tasks WHERE dedupe_key = $1`, [`compliance-no-ruleset:${p}`]))
+      .toEqual({ kind: 'compliance_no_ruleset', assignee_role: 'ADMIN', status: 'OPEN' });
+    const res = (await h.call('buyerB', 'GET', `/api/v1/projects/${p}/compliance`, { tenant: w.tenantB })).body;
+    expect(res.latest).toMatchObject({ status: 'NO_RULESET', statusLabel: 'Kural seti yok', ruleSet: null, results: [] });
+    await publishedSet(1, '2026-09-01', [['K14', null, 'MANUAL', {}, 5, false]], w.tenantB);
+    const r2 = await withTenant(h.pool, ctx, (tx) => runComplianceAudit(tx, ctx, p, 'RERUN', { aiAvailable: false }));
+    expect(r2).toMatchObject({ status: 'DONE', runNo: 2 });
+    expect(await one(`SELECT status FROM tasks WHERE dedupe_key = $1`, [`compliance-no-ruleset:${p}`])).toEqual({ status: 'DONE' });
+    expect((await h.call('buyerB', 'GET', `/api/v1/projects/${p}/compliance`, { tenant: w.tenantB })).body.latest).toMatchObject({ ruleSetFallback: true });
+  });
+
+  it('Ruling 12: Faz 3 öncesi sözleşme doğrulanmışsa zincir kuralı karşılanır, doğrulanmamışsa veri yok', async () => {
+    const v = await fullProject({ contract: 'LEGACY_VERIFIED' });
+    await complete(v.id);
+    const u = await fullProject({ contract: 'LEGACY' });
+    await complete(u.id);
+    await runWorker();
+    expect(resultOf((await report(v.id)).body, 'K06')).toMatchObject({ result: 'PASS', finding: expect.stringContaining('Faz 3 öncesi sözleşme, doğrulanmış') });
+    const ur = (await report(u.id)).body;
+    expect(resultOf(ur, 'K06')).toMatchObject({ result: 'NO_DATA', finding: expect.stringContaining('doğrulanmamış') });
+    expect(ur.latest.verdict).toBe('NONCOMPLIANT');
+  });
+
+  it('veri kontrolleri: brüt limit ve farklı para birimi NO_DATA, imza karardan önce FAIL, sınır içindeki fatura PASS, engelli düşük teklif en düşük sayılmaz', async () => {
+    const gross = await fullProject({ limitBasis: 'GROSS' });
+    await complete(gross.id);
+    const usd = await fullProject({ currency: 'USD' });
+    await complete(usd.id);
+    const early = await fullProject({ signedOn: '2026-01-10', lowerBlocked: true });
+    await complete(early.id);
+    const inv = await fullProject();
+    const w = h.world;
+    const i = (await one<{ id: string }>(`INSERT INTO invoices (tenant_id, company_id, supplier_id, kind, invoice_no, issue_date, currency, created_by, auto_match,
+        contract_family_id, project_id, match_method, matched_by, matched_at, department_id)
+      VALUES ($1,$2,$3,'INVOICE',$4,'2026-06-10','TRY',$5,false,$6,$7,'MANUAL',$5,now(),$8) RETURNING id`,
+      [w.tenantA, w.companyA1.id, w.suppliers.s1, `UYF${rand()}`, w.users.buyer.id, inv.familyId, inv.id, w.departments.bt])).id;
+    await h.owner.query(`INSERT INTO invoice_lines (tenant_id, company_id, invoice_id, line_no, description, quantity, unit, unit_price, net_amount, tax_rate)
+      VALUES ($1,$2,$3,1,'Bakım hizmeti (SENTETİK)',1,'adet',50000,50000,20)`, [w.tenantA, w.companyA1.id, i]);
+    await complete(inv.id);
+    await runWorker();
+    expect(resultOf((await report(gross.id)).body, 'K08')).toMatchObject({ result: 'NO_DATA', finding: expect.stringContaining('KDV dahil (brüt)') });
+    expect(resultOf((await report(usd.id)).body, 'K08')).toMatchObject({ result: 'NO_DATA', finding: expect.stringContaining('para birimi') });
+    const e = (await report(early.id)).body;
+    expect(resultOf(e, 'K07')).toMatchObject({ result: 'FAIL', finding: expect.stringContaining('imza 10.01.2026, kazanan kararı 20.01.2026') });
+    expect(resultOf(e, 'K02').finding).toMatch(/^En düşük teklif \(Tedarikçi 1 \(SENTETİK\)/);
+    const k09 = resultOf((await report(inv.id)).body, 'K09');
+    expect(k09).toMatchObject({ result: 'PASS' });
+    expect(k09.evidence[0]).toMatchObject({ type: 'usage', used: '50000.00', amount: '100000.00', level: 'OK' });
   });
 
   it('RF3: contract_reviews / risk_assessments tablosu yokken ilgili kural NO_DATA (hata değil)', async () => {
@@ -306,7 +405,11 @@ describe('denetim motoru (R6–R9) — sağlayıcı yok', () => {
     const m = await call('buyer', 'POST', `/api/v1/projects/${p.id}/compliance-marks`, { ruleCode: 'K12', result: 'PASS', note: 'Firma araştırması incelendi, yeterli (sentetik).', documentVersionId: dv });
     expect(m.status, JSON.stringify(m.body)).toBe(201);
     expect(m.body).toMatchObject({ mark: { ruleCode: 'K12', result: 'PASS', resultLabel: 'Karşılandı' }, auditJobId: expect.any(String) });
-    const m2 = await call('buyer', 'POST', `/api/v1/projects/${p.id}/compliance-marks`, { ruleCode: 'K14', result: 'PASS', note: 'Kurum içi kural karşılandı (sentetik).', documentVersionId: dv });
+    // Belge yalnız yüklendiği kural için kanıttır.
+    expect((await call('buyer', 'POST', `/api/v1/projects/${p.id}/compliance-marks`, { ruleCode: 'K14', result: 'PASS', note: 'Kurum içi kural karşılandı (sentetik).',
+      documentVersionId: dv })).body.error.code).toBe('invalid_evidence');
+    const dv14 = await uploadEvidence(p.id, researchPdf(p.code, 'Kurum ici kural kaniti.'), 'K14');
+    const m2 = await call('buyer', 'POST', `/api/v1/projects/${p.id}/compliance-marks`, { ruleCode: 'K14', result: 'PASS', note: 'Kurum içi kural karşılandı (sentetik).', documentVersionId: dv14 });
     expect(m2.status).toBe(201);
     expect((await rows(`SELECT data FROM audit_events WHERE action = 'compliance.marked' AND entity_id = $1`, [p.id])).map((x) => x.data.ruleCode).sort()).toEqual(['K12', 'K14']);
     await runWorker();

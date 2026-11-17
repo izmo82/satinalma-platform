@@ -53,9 +53,11 @@ const trDate = (d: string) => `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4
 interface ResultRow { rule: ComplianceRule & { id: string; sortOrder: number }; result: RuleResult; method: 'DATA' | 'AI' | 'MANUAL' | null; finding: string; evidence: Record<string, unknown>[] }
 
 /** Kodla yazılan özet (R8): hüküm, puan, karşılanmayan kurallar, öneriler. Aynı sonuçlar → aynı metin. */
-export function autoSummary(i: { verdict: Verdict; score: number | null; set: { versionNo: number; effectiveFrom: string }; results: ResultRow[]; aiLabel: string | null }): string {
+export function autoSummary(i: { verdict: Verdict; score: number | null; set: { versionNo: number; effectiveFrom: string }; results: ResultRow[]; aiLabel: string | null;
+  fallback?: boolean }): string {
   const lines = [`${SUMMARY_SOURCE_TR.AUTO} (kodla yazıldı; yapay zekâ özeti değildir).`,
     `Hüküm: ${VERDICT_TR[i.verdict]}. Puan: ${i.score === null ? 'yok' : `${i.score}/100`}. Kural seti: sürüm ${i.set.versionNo} (yürürlük ${trDate(i.set.effectiveFrom)}).`];
+  if (i.fallback) lines.push(fallbackNote(i.set.versionNo));
   const open = i.results.filter((r) => r.result !== 'PASS' && r.result !== 'NOT_APPLICABLE');
   const mandatory = open.filter((r) => r.rule.mandatory);
   if (mandatory.length) lines.push(`Uyumsuzluk nedeni (zorunlu kurallar): ${mandatory.map((r) => `${r.rule.code} ${r.rule.name} — ${RESULT_TR[r.result]}`).join('; ')}.`);
@@ -81,10 +83,8 @@ export async function runComplianceAudit(tx: Tx, ctx: TenantContext, projectId: 
   if (st.status !== 'COMPLETED') throw conflict('invalid_state', NOT_COMPLETED_MESSAGE);
   const project = (await loadAuditProject(tx, projectId))!;
   const runNo = (await tx.query<{ n: number }>(`SELECT coalesce(max(run_no), 0)::int + 1 AS n FROM compliance_audits WHERE project_id = $1`, [projectId])).rows[0]!.n;
-  const prevSet = (await tx.query<{ rule_set_id: string }>(
-    `SELECT rule_set_id FROM compliance_audits WHERE project_id = $1 AND rule_set_id IS NOT NULL ORDER BY run_no DESC LIMIT 1`, [projectId])).rows[0]?.rule_set_id;
-  const set = (prevSet ? await ruleSetById(tx, prevSet) : null) ?? await ruleSetForDay(tx, project.completedOn);
-  if (!set) {
+  const chosen = await chooseSet(tx, projectId, project.completedOn);
+  if (!chosen) {
     const a = (await tx.query<{ id: string }>(`INSERT INTO compliance_audits (tenant_id, company_id, project_id, run_no, trigger, status, summary, summary_source, run_by)
       VALUES ($1,$2,$3,$4,$5,'NO_RULESET',$6,'AUTO',$7) RETURNING id`,
       [ctx.tenantId, project.companyId, projectId, runNo, trigger, `${SUMMARY_SOURCE_TR.AUTO}: ${NO_RULESET_MESSAGE}`, runBy(ctx)])).rows[0]!;
@@ -94,6 +94,7 @@ export async function runComplianceAudit(tx: Tx, ctx: TenantContext, projectId: 
     await audit(tx, ctx, 'compliance.audited', 'project', projectId, { auditId: a.id, runNo, trigger, status: 'NO_RULESET' });
     return { auditId: a.id, runNo, status: 'NO_RULESET', score: null, verdict: null };
   }
+  const { set, fallback } = chosen;
   const ec: EvidenceContext = { aiAvailable: opts.aiAvailable ?? hasAiProviders(), modelId: opts.modelId ?? DEFAULT_AI_MODEL_ID, marks: await latestMarks(tx, projectId) };
   const scope = { method: project.method, amount: project.amount, currency: project.currency };
   const results: ResultRow[] = [];
@@ -121,7 +122,7 @@ export async function runComplianceAudit(tx: Tx, ctx: TenantContext, projectId: 
   }
   const score = complianceScore(results.map((r) => ({ weight: r.rule.weight, mandatory: r.rule.mandatory, result: r.result })));
   const aiLabel = ai ? providerLabel(ai.provider, ai.isTest) : null;
-  const summary = autoSummary({ verdict: score.verdict, score: score.score, set, results, aiLabel });
+  const summary = autoSummary({ verdict: score.verdict, score: score.score, set, results, aiLabel, fallback });
   const a = (await tx.query<{ id: string }>(`INSERT INTO compliance_audits (tenant_id, company_id, project_id, run_no, rule_set_id, trigger, status, score, verdict,
       summary, summary_source, ai_provider, ai_provider_is_test, run_by) VALUES ($1,$2,$3,$4,$5,$6,'DONE',$7,$8,$9,'AUTO',$10,$11,$12) RETURNING id`,
     [ctx.tenantId, project.companyId, projectId, runNo, set.id, trigger, score.score, score.verdict, summary.slice(0, 20000), ai?.provider ?? null, ai?.isTest ?? false, runBy(ctx)])).rows[0]!;
@@ -132,8 +133,13 @@ export async function runComplianceAudit(tx: Tx, ctx: TenantContext, projectId: 
   await closeTasks(tx, `compliance-no-ruleset:${projectId}`);
   if (score.verdict === 'NONCOMPLIANT') {
     const reasons = score.failedMandatory.map((i) => `${results[i]!.rule.code} ${results[i]!.rule.name} (${RESULT_TR[results[i]!.result]})`);
+    const reason = `Zorunlu kural karşılanmadı: ${reasons.join('; ')}.`.slice(0, 2000);
+    // Sonraki koşuda neden değiştiyse açık görev kapatılıp güncel nedenle yeniden açılır (görev metni güncellenemez; tek açık görev kalır).
+    const openReason = (await tx.query<{ reason: string }>(`SELECT reason FROM tasks WHERE dedupe_key = $1 AND status = 'OPEN'`,
+      [`compliance-noncompliant:${projectId}`])).rows[0]?.reason;
+    if (openReason !== undefined && openReason !== reason) await closeTasks(tx, `compliance-noncompliant:${projectId}`);
     await openTask(tx, ctx, { companyId: project.companyId, kind: 'compliance_noncompliant', entityType: 'project', entityId: projectId,
-      title: `Uyumsuz proje: ${project.code} ${project.title}`, reason: `Zorunlu kural karşılanmadı: ${reasons.join('; ')}.`.slice(0, 2000),
+      title: `Uyumsuz proje: ${project.code} ${project.title}`, reason,
       nextAction: 'Uyum denetimi raporundaki bulguları inceleyin; eksikleri tamamlayıp denetimi yeniden koşun.', assigneeRole: 'PROCUREMENT', severity: 'HIGH',
       dedupeKey: `compliance-noncompliant:${projectId}` });
   } else await closeTasks(tx, `compliance-noncompliant:${projectId}`);
@@ -142,6 +148,22 @@ export async function runComplianceAudit(tx: Tx, ctx: TenantContext, projectId: 
   return { auditId: a.id, runNo, status: 'DONE', score: score.score, verdict: score.verdict };
 }
 const SYSTEM_USER = '00000000-0000-0000-0000-000000000000';
+
+export const fallbackNote = (versionNo: number | null) => `Tamamlanma gününde yürürlükte set yoktu; ilk yayımlanan set (sürüm ${versionNo}) kullanıldı.`;
+/**
+ * Koşunun seti (R6 + Ruling 14): önceki koşunun seti; yoksa `day` gününde yürürlükteki set; o da yoksa (set geriye tarihlenemez) en erken
+ * yürürlüğe giren yayımlı set (`fallback`). Hiç yayımlı set yoksa null (NO_RULESET).
+ */
+export async function chooseSet(tx: Tx, projectId: string, day: string) {
+  const prev = (await tx.query<{ rule_set_id: string }>(
+    `SELECT rule_set_id FROM compliance_audits WHERE project_id = $1 AND rule_set_id IS NOT NULL ORDER BY run_no DESC LIMIT 1`, [projectId])).rows[0]?.rule_set_id;
+  const set = (prev ? await ruleSetById(tx, prev) : null) ?? await ruleSetForDay(tx, day);
+  if (set) return { set, fallback: set.effectiveFrom > day };
+  const first = (await tx.query<{ id: string }>(`SELECT id FROM procurement_rule_sets WHERE status = 'PUBLISHED' AND effective_from IS NOT NULL
+    ORDER BY effective_from, version_no LIMIT 1`)).rows[0];
+  const f = first ? await ruleSetById(tx, first.id) : null;
+  return f ? { set: f, fallback: true } : null;
+}
 const runBy = (ctx: TenantContext) => (ctx.userId && ctx.userId !== SYSTEM_USER ? ctx.userId : null);
 
 /**
@@ -155,9 +177,7 @@ export async function prefetchEvidenceReadings(pool: pg.Pool, ctx: TenantContext
   const runIds = await withTenant(pool, ctx, async (tx) => {
     const project = await loadAuditProject(tx, projectId);
     if (!project) return [];
-    const prevSet = (await tx.query<{ rule_set_id: string }>(
-      `SELECT rule_set_id FROM compliance_audits WHERE project_id = $1 AND rule_set_id IS NOT NULL ORDER BY run_no DESC LIMIT 1`, [projectId])).rows[0]?.rule_set_id;
-    const set = (prevSet ? await ruleSetById(tx, prevSet) : null) ?? await ruleSetForDay(tx, project.completedOn);
+    const set = (await chooseSet(tx, projectId, project.completedOn))?.set;
     if (!set) return [];
     const marks = await latestMarks(tx, projectId);
     const out: string[] = [];
@@ -225,15 +245,18 @@ export async function processComplianceAudit(pool: pg.Pool, ctx: TenantContext, 
 interface AuditRow {
   id: string; project_id: string; run_no: number; rule_set_id: string | null; version_no: number | null; effective_from: string | null; trigger: Trigger;
   status: keyof typeof AUDIT_STATUS_TR; score: number | null; verdict: Verdict | null; summary: string | null; summary_source: 'AUTO' | 'AI' | null;
-  ai_provider: string | null; ai_provider_is_test: boolean; run_by: string | null; run_by_name: string | null; created_at: Date;
+  ai_provider: string | null; ai_provider_is_test: boolean; run_by: string | null; run_by_name: string | null; created_at: Date; completed_on: string | null;
 }
 const AUDIT_SELECT = `SELECT a.id, a.project_id, a.run_no, a.rule_set_id, s.version_no, s.effective_from::text AS effective_from, a.trigger, a.status, a.score, a.verdict,
-    a.summary, a.summary_source, a.ai_provider, a.ai_provider_is_test, a.run_by, u.display_name AS run_by_name, a.created_at
-  FROM compliance_audits a LEFT JOIN procurement_rule_sets s ON s.id = a.rule_set_id LEFT JOIN users u ON u.id = a.run_by`;
+    a.summary, a.summary_source, a.ai_provider, a.ai_provider_is_test, a.run_by, u.display_name AS run_by_name, a.created_at, pp.completed_on::text AS completed_on
+  FROM compliance_audits a LEFT JOIN procurement_rule_sets s ON s.id = a.rule_set_id LEFT JOIN users u ON u.id = a.run_by LEFT JOIN projects pp ON pp.id = a.project_id`;
 
 const summaryView = (a: AuditRow) => ({
   id: a.id, runNo: a.run_no, trigger: a.trigger, triggerLabel: TRIGGER_TR[a.trigger], status: a.status, statusLabel: AUDIT_STATUS_TR[a.status],
   ruleSet: a.rule_set_id ? { id: a.rule_set_id, versionNo: a.version_no, effectiveFrom: a.effective_from } : null,
+  // Ruling 14: set tamamlanma gününden sonra yürürlüğe girdiyse (ilk yayımlanan set kullanıldı) görünür not.
+  ruleSetFallback: !!(a.rule_set_id && a.effective_from && a.completed_on && a.effective_from > a.completed_on),
+  ruleSetNote: a.rule_set_id && a.effective_from && a.completed_on && a.effective_from > a.completed_on ? fallbackNote(a.version_no) : null,
   score: a.score, verdict: a.verdict, verdictLabel: a.verdict ? VERDICT_TR[a.verdict] : AUDIT_STATUS_TR[a.status],
   aiProvider: a.ai_provider, aiProviderIsTest: a.ai_provider_is_test, providerLabel: providerLabel(a.ai_provider, a.ai_provider_is_test),
   runBy: a.run_by_name ?? (a.run_by ? null : 'Sistem'), createdAt: a.created_at, pdfUrl: `/api/v1/compliance-audits/${a.id}/pdf`,
@@ -272,10 +295,8 @@ async function projectHead(tx: Tx, projectId: string) {
 
 /** Elle işaretlenebilir kurallar: projenin setindeki (koşulmuş set, yoksa tamamlanma günü ya da bugün) kanıt ve elle kuralları. */
 async function markableRules(tx: Tx, projectId: string, completedOn: string | null) {
-  const prev = (await tx.query<{ rule_set_id: string }>(
-    `SELECT rule_set_id FROM compliance_audits WHERE project_id = $1 AND rule_set_id IS NOT NULL ORDER BY run_no DESC LIMIT 1`, [projectId])).rows[0]?.rule_set_id;
   const day = completedOn ?? (await tx.query<{ d: string }>(`SELECT (now() AT TIME ZONE 'Europe/Istanbul')::date::text AS d`)).rows[0]!.d;
-  const set = (prev ? await ruleSetById(tx, prev) : null) ?? await ruleSetForDay(tx, day);
+  const set = (await chooseSet(tx, projectId, day))?.set;
   return (set?.rules ?? []).filter((r) => r.checkType === 'EVIDENCE_AI' || r.checkType === 'MANUAL')
     .map((r) => ({ code: r.code, name: r.name, checkType: r.checkType, checkTypeLabel: CHECK_TYPE_TR[r.checkType], checkKey: r.checkKey }));
 }
@@ -310,7 +331,8 @@ export async function requestRerun(tx: Tx, ctx: TenantContext, projectId: string
   if (!ctx.companyIds.includes(p.company_id)) throw notFound();
   if (p.status !== 'COMPLETED') throw conflict('invalid_state', NOT_COMPLETED_MESSAGE);
   await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`compliance-rerun:${projectId}`]);
-  const open = (await tx.query<{ id: string; status: string }>(`SELECT id, status FROM jobs WHERE kind = $1 AND payload->>'projectId' = $2 AND status IN ('QUEUED','RUNNING')
+  // Yalnız sıradaki (QUEUED) iş yeniden kullanılır: çalışan iş yeni işareti/veriyi görmeyebilir, bu yüzden yeni iş açılır.
+  const open = (await tx.query<{ id: string; status: string }>(`SELECT id, status FROM jobs WHERE kind = $1 AND payload->>'projectId' = $2 AND status = 'QUEUED'
     ORDER BY created_at DESC LIMIT 1`, [AUDIT_JOB, projectId])).rows[0];
   if (open) return { jobId: open.id, status: open.status, duplicate: true };
   const jobId = await enqueueAudit(tx, ctx, p.company_id, projectId, 'RERUN', `audit:${projectId}:rerun:${randomUUID()}`);
@@ -328,8 +350,10 @@ export async function addMark(tx: Tx, ctx: TenantContext, projectId: string, b: 
   if (note.length > 4000) throw unprocessable('note_too_long', 'Not en fazla 4000 karakter olabilir.');
   const rule = (await markableRules(tx, projectId, p.completed_on)).find((r) => r.code === b.ruleCode);
   if (!rule) throw unprocessable('invalid_rule', 'Bu kural elle işaretlenemez: yalnız projenin kural setindeki kanıt ve elle kuralları işaretlenir.');
-  const ev = (await tx.query(`SELECT 1 FROM compliance_evidence WHERE project_id = $1 AND document_version_id = $2 LIMIT 1`, [projectId, b.documentVersionId])).rowCount;
-  if (!ev) throw unprocessable('invalid_evidence', 'Kanıt belgesi bu projenin uyum kanıtlarından seçilmeli.');
+  // Kanıt belgesi bu kural için (kuralın kontrol anahtarı ya da koduyla) yüklenmiş olmalı.
+  const ev = (await tx.query(`SELECT 1 FROM compliance_evidence WHERE project_id = $1 AND document_version_id = $2 AND check_key = ANY($3::text[]) LIMIT 1`,
+    [projectId, b.documentVersionId, [rule.checkKey, rule.code].filter(Boolean)])).rowCount;
+  if (!ev) throw unprocessable('invalid_evidence', 'Kanıt belgesi bu projede bu kural için yüklenmiş uyum kanıtlarından seçilmeli.');
   const m = (await tx.query<{ id: string; marked_at: Date }>(`INSERT INTO compliance_manual_marks (tenant_id, company_id, project_id, rule_code, result, note, document_version_id, marked_by)
     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id, marked_at`, [ctx.tenantId, p.company_id, projectId, rule.code, b.result, note, b.documentVersionId, ctx.userId])).rows[0]!;
   await audit(tx, ctx, 'compliance.marked', 'project', projectId, { markId: m.id, ruleCode: rule.code, result: b.result, documentVersionId: b.documentVersionId });

@@ -190,7 +190,7 @@ export async function decisionSummaryPdf(e: EvalForReport, awards: AwardForRepor
 /** v2 Faz 7 (D112) Görev 6: uyum denetimi raporunun girdisi (`compliance.auditForPdf`). */
 export interface ComplianceReportForPdf {
   id: string; runNo: number; triggerLabel: string; status: string; statusLabel: string; score: number | null; verdict: string | null; verdictLabel: string;
-  ruleSet: { versionNo: number | null; effectiveFrom: string | null } | null; providerLabel: string; aiProviderIsTest: boolean; runBy: string | null; createdAt: Date;
+  ruleSet: { versionNo: number | null; effectiveFrom: string | null } | null; ruleSetNote?: string | null; providerLabel: string; aiProviderIsTest: boolean; runBy: string | null; createdAt: Date;
   summary: string | null; summarySourceLabel: string | null;
   failedMandatory: { code: string; name: string; resultLabel: string }[];
   results: { code: string; name: string; checkTypeLabel: string; weight: number; mandatory: boolean; resultLabel: string; methodLabel: string | null; finding: string | null;
@@ -240,6 +240,7 @@ export async function complianceReportPdf(a: ComplianceReportForPdf): Promise<Bu
   doc.moveDown(0.3);
   para(`${setText} · Koşu ${a.runNo} (${a.triggerLabel}) · ${dt(a.createdAt)}${a.runBy ? ` · ${a.runBy}` : ''}`);
   para(`Departman: ${a.project.departmentName ?? '—'} · Tamamlanma: ${day(a.project.completedOn)}`);
+  if (a.ruleSetNote) para(a.ruleSetNote, DANGER);
   doc.moveDown(0.3);
   doc.font('b').fontSize(10).fillColor(a.aiProviderIsTest ? DANGER : MUTED).text(`Yapay zekâ sağlayıcısı: ${a.providerLabel}`, { width: W });
   doc.moveDown(0.5);

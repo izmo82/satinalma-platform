@@ -25,6 +25,8 @@ export const NO_PHASE_DATA = 'Veri yok (Faz 4/6 kaydı bulunamadı)';
 export interface AuditContract {
   familyId: string; code: string; title: string; status: string; statusLabel: string; signedOn: string | null; amount: string | null;
   currency: string | null; valueType: string | null; legacy: boolean; approvedChain: boolean;
+  /** Güncel koşul revizyonu D95a ile doğrulanmış mı (`contract_terms.verified_at`). */
+  termsVerified: boolean; limitBasis: 'NET' | 'GROSS' | null;
 }
 export interface AuditProject {
   id: string; code: string; title: string; companyId: string; departmentId: string | null; currency: string; budget: string | null;
@@ -56,8 +58,9 @@ export async function loadAuditProject(tx: Tx, projectId: string): Promise<Audit
      FROM award_lines l JOIN suppliers s ON s.id = l.supplier_id WHERE l.award_id = $1 GROUP BY l.supplier_id, s.legal_name, s.status ORDER BY s.legal_name, l.supplier_id`,
     [a.id])).rows : [];
   const fams = (await tx.query<{ id: string; code: string; title: string; signed_on: string | null; intake_flow: boolean; amount: string | null; currency: string | null;
-      value_type: string | null; approved_chain: boolean }>(
+      value_type: string | null; approved_chain: boolean; terms_verified: boolean; limit_basis: 'NET' | 'GROSS' | null }>(
     `SELECT f.id, f.code, f.title, f.signed_on::text AS signed_on, f.intake_flow, t.amount::text AS amount, t.currency, t.value_type,
+       (t.verified_at IS NOT NULL) AS terms_verified, t.limit_basis,
        EXISTS (SELECT 1 FROM contract_approval_chains c WHERE c.family_id = f.id AND c.outcome = 'APPROVED') AS approved_chain
      FROM contract_families f
      LEFT JOIN LATERAL (SELECT v.id FROM contract_versions v WHERE v.family_id = f.id AND v.superseded_by_id IS NULL ORDER BY v.version_no DESC LIMIT 1) cv ON true
@@ -68,7 +71,7 @@ export async function loadAuditProject(tx: Tx, projectId: string): Promise<Audit
     const s = info.get(f.id);
     return { familyId: f.id, code: f.code, title: f.title, status: s?.status ?? 'INCOMPLETE', statusLabel: s?.statusLabel ?? 'Eksik alan', signedOn: f.signed_on,
       amount: f.value_type === 'UNPRICED' ? null : f.amount, currency: f.currency, valueType: f.value_type, legacy: !f.intake_flow && !f.approved_chain && s?.status === 'LEGACY',
-      approvedChain: f.approved_chain };
+      approvedChain: f.approved_chain, termsVerified: !!f.terms_verified, limitBasis: f.limit_basis };
   }).filter((c) => !OUT_OF_SCOPE.has(c.status));
   return {
     id: p.id, code: p.code, title: p.title, companyId: p.company_id, departmentId: p.department_id, currency: p.currency, budget: p.budget,
@@ -116,9 +119,10 @@ export async function runDataCheck(tx: Tx, key: CheckKey, params: Params, projec
     }
     case 'LOWEST_OR_JUSTIFIED': {
       if (!project.award) return outcome('NO_DATA', NO_AWARD);
-      const ev = (await tx.query<{ snapshot: { comparison?: { bids?: { bidId: string; tco: string | null; supplierName: string }[] } } }>(
+      const ev = (await tx.query<{ snapshot: { comparison?: { bids?: { bidId: string; tco: string | null; supplierName: string; blocker?: string | null }[] } } }>(
         `SELECT snapshot FROM evaluations WHERE id = $1`, [project.award.evaluationId])).rows[0];
-      const priced = (ev?.snapshot?.comparison?.bids ?? []).filter((b) => b.tco !== null && b.tco !== undefined);
+      // Engelli (blocker) teklif en düşük sayılmaz (sıralamaya girmez).
+      const priced = (ev?.snapshot?.comparison?.bids ?? []).filter((b) => b.tco !== null && b.tco !== undefined && !b.blocker);
       const winnerBids = [...new Set(project.winners.flatMap((w) => w.bidIds))];
       const rationale = (project.award.rationale ?? '').trim();
       const evidence: Record<string, unknown>[] = [{ type: 'award', awardId: project.award.id, versionNo: project.award.versionNo, evaluationId: project.award.evaluationId }];
@@ -169,7 +173,11 @@ export async function runDataCheck(tx: Tx, key: CheckKey, params: Params, projec
       if (!project.contracts.length) return outcome('NO_DATA', NO_CONTRACT);
       const parts = project.contracts.map((c) => {
         if ((c.status === 'APPROVED' || c.status === 'EXPIRED') && c.approvedChain) return { result: 'PASS' as const, text: `${c.code}: onay zinciri tamamlandı.` };
-        if (c.status === 'LEGACY' || (c.status === 'EXPIRED' && !c.approvedChain)) return { result: 'NO_DATA' as const, text: `${c.code}: eski kayıt sözleşme; onay zinciri sistemde yok.` };
+        // Ruling 12: Faz 3 öncesi (zincirsiz) sözleşme, koşulları D95a ile doğrulanmışsa karşılanmış sayılır; doğrulanmamışsa veri yok.
+        if (c.status === 'LEGACY' || (c.status === 'EXPIRED' && !c.approvedChain)) {
+          return c.termsVerified ? { result: 'PASS' as const, text: `${c.code}: Faz 3 öncesi sözleşme, doğrulanmış.` }
+            : { result: 'NO_DATA' as const, text: `${c.code}: Faz 3 öncesi sözleşme; onay zinciri sistemde yok ve koşulları doğrulanmamış.` };
+        }
         return { result: 'FAIL' as const, text: `${c.code}: ${c.statusLabel}.` };
       });
       return combine(parts, project.contracts.map((c) => ({ type: 'contract', familyId: c.familyId, code: c.code, status: c.status })));
@@ -191,6 +199,9 @@ export async function runDataCheck(tx: Tx, key: CheckKey, params: Params, projec
       if (scoped.some((c) => c.amount === null)) return outcome('NO_DATA', 'Sözleşme tutarı girilmemiş (ya da fiyatsız sözleşme).');
       const foreign = scoped.filter((c) => (c.currency ?? project.currency) !== project.currency);
       if (foreign.length) return outcome('NO_DATA', `Sözleşme para birimi (${foreign.map((c) => c.currency).join(', ')}) kazanan teklifin para biriminden (${project.currency}) farklı; kur çevrilmedi.`);
+      // Kazanan toplamı KDV hariçtir; KDV dahil (brüt) limitli sözleşme aynı esasla karşılaştırılamaz.
+      const gross = scoped.filter((c) => c.limitBasis === 'GROSS');
+      if (gross.length) return outcome('NO_DATA', `Sözleşme tutarı KDV dahil (brüt) girilmiş (${gross.map((c) => c.code).join(', ')}); kazanan teklif toplamı KDV hariç olduğundan karşılaştırılamadı.`);
       const tol = String(params.tolerancePercent ?? COMPLIANCE_CHECKS.CONTRACT_AMOUNT_MATCHES_AWARD.defaultParams.tolerancePercent);
       const total = add(...scoped.map((c) => dec(c.amount!)));
       const limit = mul(dec(project.award.total), add(dec('1'), mul(dec(tol), dec('0.01'))));
@@ -265,9 +276,9 @@ export async function evidenceDocs(tx: Tx, projectId: string, rule: Pick<Complia
 }
 
 /** Önbellek anahtarı: sha256(kural kodu | parametreler | belge sha256'ları | model | istem sürümü). */
-export function evidenceCacheKey(rule: Pick<ComplianceRule, 'code' | 'params'>, docShas: string[], modelId: string): string {
+export function evidenceCacheKey(rule: Pick<ComplianceRule, 'code' | 'checkKey' | 'params'>, docShas: string[], modelId: string): string {
   const params = JSON.stringify(Object.fromEntries(Object.entries(rule.params).sort(([a], [b]) => a.localeCompare(b))));
-  return createHash('sha256').update([rule.code, params, [...docShas].sort().join(','), modelId, `${PROMPT_VERSIONS.AI15}+${EVIDENCE_QUESTION_VERSION}`].join('|')).digest('hex');
+  return createHash('sha256').update([rule.code, rule.checkKey ?? '', params, [...docShas].sort().join(','), modelId, `${PROMPT_VERSIONS.AI15}+${EVIDENCE_QUESTION_VERSION}`].join('|')).digest('hex');
 }
 
 export interface ManualMark { id: string; ruleCode: string; result: 'PASS' | 'FAIL'; note: string; documentVersionId: string; markedBy: string; markedByName: string | null; markedAt: Date }
@@ -295,12 +306,12 @@ export interface EvidenceOutcome extends CheckOutcome { method: 'AI' | 'MANUAL' 
 const NOT_VERIFIED = 'Kanıt doğrulanamadı: yapay zekâ önerisinin alıntısı belgede birebir bulunamadı ya da belge kuralı açıkça karşılamıyor.';
 
 /** Belge başına en yeni (aynı soru kümesiyle) kanıt okuması; yoksa null. RLS belge görünürlüğü. */
-async function readingFor(tx: Tx, documentVersionId: string, key: 'WINNER_RESEARCH' | 'OWNERSHIP_RESEARCH') {
+async function readingFor(tx: Tx, documentVersionId: string, key: 'WINNER_RESEARCH' | 'OWNERSHIP_RESEARCH', modelId: string) {
   return (await tx.query<{ id: string; result: { answers: { questionId: string; answer: string; quote: string | null; page: number | null; explanation: string | null; flags: string[] }[] } | null;
       provider: string | null; response_model: string | null }>(
     `SELECT e.id, e.result, m.provider, r.response_model FROM ai_evidence_readings e JOIN ai_runs r ON r.id = e.ai_run_id LEFT JOIN ai_models m ON m.id = r.model_ref
-     WHERE e.document_version_id = $1 AND e.purpose = $2 AND e.question_set = $3::jsonb AND r.prompt_version = $4
-     ORDER BY e.created_at DESC, e.id DESC LIMIT 1`, [documentVersionId, evidencePurpose(key), JSON.stringify(EVIDENCE_QUESTIONS[key]), PROMPT_VERSIONS.AI15])).rows[0] ?? null;
+     WHERE e.document_version_id = $1 AND e.purpose = $2 AND e.question_set = $3::jsonb AND r.prompt_version = $4 AND m.model_id = $5
+     ORDER BY e.created_at DESC, e.id DESC LIMIT 1`, [documentVersionId, evidencePurpose(key), JSON.stringify(EVIDENCE_QUESTIONS[key]), PROMPT_VERSIONS.AI15, modelId])).rows[0] ?? null;
 }
 
 /**
@@ -335,7 +346,7 @@ export async function runEvidenceCheck(tx: Tx, ctx: TenantContext, rule: Complia
   const questions = EVIDENCE_QUESTIONS[rule.checkKey];
   const readings: { doc: EvidenceDoc; r: NonNullable<Awaited<ReturnType<typeof readingFor>>> }[] = [];
   for (const d of pdfs) {
-    const r = await readingFor(tx, d.documentVersionId, rule.checkKey);
+    const r = await readingFor(tx, d.documentVersionId, rule.checkKey, ec.modelId);
     if (r) readings.push({ doc: d, r });
   }
   if (readings.length < pdfs.length) {
@@ -358,12 +369,14 @@ export async function runEvidenceCheck(tx: Tx, ctx: TenantContext, rule: Complia
     return verdict;
   });
   const result: CachedEvidence['result'] = perQuestion.every((v) => v === 'YES') ? 'PASS' : perQuestion.some((v) => v === 'NO') ? 'FAIL' : 'NO_DATA';
-  const provider = readings[0]!.r.provider;
+  // Sağlayıcı ve test bayrağı okuma başına: biri test sağlayıcısındansa sonuç test etiketlidir.
+  const provider = readings.find((x) => x.r.provider)?.r.provider ?? null;
+  const anyTest = readings.some((x) => isTestProvider(x.r.provider));
   const cached: CachedEvidence = {
     satisfied: result === 'PASS' ? true : result === 'FAIL' ? false : null, result, quotes,
     explanation: result === 'PASS' ? 'Yapay zekâ önerisi: kanıt belgesi kuralı karşılıyor; alıntı belgede doğrulandı.'
       : result === 'FAIL' ? 'Yapay zekâ önerisi: kanıt belgesi kuralı karşılamıyor; alıntı belgede doğrulandı.' : NOT_VERIFIED,
-    provider, isTest: isTestProvider(provider), modelId: readings[0]!.r.response_model, flags: [...new Set(flags)].sort(),
+    provider, isTest: anyTest, modelId: readings[0]!.r.response_model, flags: [...new Set(flags)].sort(),
   };
   await tx.query(`INSERT INTO compliance_ai_cache (tenant_id, cache_key, output, provider) VALUES ($1,$2,$3,$4) ON CONFLICT (tenant_id, cache_key) DO NOTHING`,
     [ctx.tenantId, cacheKey, JSON.stringify(cached), provider ?? 'unknown']);
