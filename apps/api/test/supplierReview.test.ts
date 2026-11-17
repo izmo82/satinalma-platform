@@ -155,11 +155,17 @@ describe('Onay (R2, R10, R11, R14)', () => {
       [h.world.tenantA, vkn, h.world.users.masterData.id, h.world.users.legal.id])).rows[0]!.id;
     const a = await submitted({ taxId: vkn });
     const d = await detail(a.id);
-    expect(d.body.existingSupplier).toMatchObject({ id: existing, status: 'ACTIVE', stageLabel: 'Onaylı', blocksApproval: false });
+    expect(d.body.existingSupplier).toMatchObject({ id: existing, status: 'ACTIVE', stageLabel: 'Onaylı', blocksApproval: false, contactEmail: null, portalUserCount: 0 });
     const before = (await h.owner.query(`SELECT count(*)::int AS n FROM suppliers WHERE tenant_id = $1 AND tax_id = $2`, [h.world.tenantA, vkn])).rows[0].n;
     const r = await decide(a.id, { action: 'APPROVE' });
     expect(r.status, JSON.stringify(r.body)).toBe(200);
     expect(r.body.supplier).toMatchObject({ id: existing, status: 'ACTIVE', linkedToExisting: true });
+    // İnceleme I1: mevcut karta bağlanınca portal kullanıcısı açılmaz, erişim e-postası yazılmaz.
+    expect(r.body.portalUser).toEqual({ status: 'SKIPPED_EXISTING_CARD', userId: null,
+      message: 'Mevcut tedarikçi kartına bağlandı; portal kullanıcısını kartı doğruladıktan sonra karttan ekleyin.' });
+    expect((await h.owner.query(`SELECT count(*)::int AS n FROM memberships WHERE supplier_id = $1`, [existing])).rows[0].n).toBe(0);
+    expect((await h.owner.query(`SELECT count(*)::int AS n FROM users WHERE lower(email) = $1`, [a.email])).rows[0].n).toBe(0);
+    expect(r.body.emails.map((e: any) => e.kind)).toEqual(['decision']);
     expect((await h.owner.query(`SELECT count(*)::int AS n FROM suppliers WHERE tenant_id = $1 AND tax_id = $2`, [h.world.tenantA, vkn])).rows[0].n).toBe(before);
     expect((await h.owner.query(`SELECT status FROM suppliers WHERE id = $1`, [existing])).rows[0].status).toBe('ACTIVE');
     expect((await h.owner.query(`SELECT supplier_id FROM supplier_applications WHERE id = $1`, [a.id])).rows[0].supplier_id).toBe(existing);

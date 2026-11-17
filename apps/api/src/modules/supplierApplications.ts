@@ -14,7 +14,7 @@ import { enqueueEmailDispatch, queueEmail, type MailChannel } from '../mail/inde
 import { audit } from '../audit.ts';
 import { clientAddressKey, DEFAULT_PUBLIC_RATE_LIMIT } from '../publicRateLimit.ts';
 import { closeTasks, openTask } from '../tasks.ts';
-import { DOC_SELECT, documentView, ensurePortalUser, PORTAL_ACCESS_NOTE, PORTAL_INVITE_ERRORS, requiredMissing, today as cardToday, type DocRow } from './supplierCard.ts';
+import { DOC_SELECT, documentView, ensurePortalUser, PORTAL_ACCESS_NOTE, type PortalInviteOutcome, PORTAL_INVITE_ERRORS, requiredMissing, today as cardToday, type DocRow } from './supplierCard.ts';
 
 /**
  * v2 Faz 5 (D110) Görev 4: girişsiz tedarikçi başvurusu (R2–R5) ve başvuru ayarları (R3).
@@ -572,6 +572,8 @@ export async function getApplication(tx: Tx, ctx: TenantContext, id: string) {
   const day = cardToday();
   const tax = normalizeTaxId(a.country, a.tax_id_type, a.tax_id);
   const existing = await sameIdentitySupplier(tx, a);
+  const existingExtra = existing ? (await tx.query<{ contact_email: string | null; n: number }>(
+    `SELECT s.contact_email, (SELECT count(*)::int FROM memberships m WHERE m.supplier_id = s.id) AS n FROM suppliers s WHERE s.id = $1`, [existing.id])).rows[0] : undefined;
   const docRows = (await tx.query<DocRow>(`${DOC_SELECT} WHERE d.application_id = $1 ORDER BY d.type_code, d.created_at`, [id])).rows;
   const missing = await requiredMissing(tx, a.categories, docRows.map((r) => ({ typeCode: r.type_code, validUntil: r.valid_until, supersededById: r.superseded_by_id })), day);
   const events = (await tx.query<{ action: string; at: Date; actor: string | null; reason: string | null; data: Record<string, unknown> }>(
@@ -594,6 +596,7 @@ export async function getApplication(tx: Tx, ctx: TenantContext, id: string) {
     requestedDocuments: a.requested_documents, requestedNote: a.requested_note, completionTokenExpiresAt: a.token_purpose === 'COMPLETE' ? a.token_expires_at : null,
     decidedAt: a.decided_at, decisionReason: a.decision_reason, supplierId: a.supplier_id,
     existingSupplier: existing ? { id: existing.id, legalName: existing.legal_name, status: existing.status, stage: stage!.code, stageLabel: stage!.label,
+      contactEmail: existingExtra?.contact_email ?? null, portalUserCount: existingExtra?.n ?? 0,
       blocksApproval: INACTIVE_FOR_LINK.has(existing.status), blockReason: INACTIVE_FOR_LINK.has(existing.status) ? SUPPLIER_INACTIVE_MSG : null } : null,
     documents: docRows.map((r) => documentView(r, day)), missingRequired: missing, history,
     can: { decide: can(ctx.roles, 'supplier.application.review') && decidable,
@@ -660,9 +663,13 @@ async function approve(tx: Tx, ctx: TenantContext, a: AppRow, note: string | nul
       token_hash = NULL, token_purpose = NULL, token_expires_at = NULL, row_version = row_version + 1 WHERE id = $1`, [a.id, ctx.userId, note, supplierId]);
 
   // R11: portal kullanıcısı (davetli) + SUPPLIER üyeliği. Başka kurumdaki e-posta onayı engellemez; kartta elle eklenir.
-  const portal = await ensurePortalUser(tx, ctx, supplierId, a.contact_name, a.contact_email);
+  // İnceleme I1: mevcut karta bağlanınca portal kullanıcısı kendiliğinden açılmaz (başvuru e-postası kartın sahibi olmayabilir).
+  const portal: PortalInviteOutcome | { status: 'SKIPPED_EXISTING_CARD'; userId: null } = linked
+    ? { status: 'SKIPPED_EXISTING_CARD', userId: null }
+    : await ensurePortalUser(tx, ctx, supplierId, a.contact_name, a.contact_email);
   const emails: { kind: string; status: string }[] = [];
-  if (portal.status === 'CREATED' || portal.status === 'EXISTS') {
+  // Askıdaki üyelik için "erişiminiz hazır" yazılmaz.
+  if (portal.status === 'CREATED' || (portal.status === 'EXISTS' && portal.membershipStatus === 'ACTIVE')) {
     const m = portalAccessEmail({ name: a.contact_name, link: `${origin}/portal` });
     emails.push({ kind: 'portal_access', status: (await queueEmail(tx, ctx, { toUserId: portal.userId, toEmail: a.contact_email, subject: m.subject, body: m.body,
       relatedType: 'supplier_application', relatedId: a.id })).status });
@@ -681,7 +688,9 @@ async function approve(tx: Tx, ctx: TenantContext, a: AppRow, note: string | nul
   const stage = supplierStage(s.status);
   return { supplier: { id: supplierId, status: s.status, stage: stage.code, stageLabel: stage.label, linkedToExisting: linked }, documentsMoved: moved,
     portalUser: { status: portal.status, userId: portal.userId,
-      message: portal.status === 'USER_IN_OTHER_TENANT' || portal.status === 'USER_HAS_OTHER_MEMBERSHIP' ? PORTAL_INVITE_ERRORS[portal.status] : null },
+      message: portal.status === 'USER_IN_OTHER_TENANT' || portal.status === 'USER_HAS_OTHER_MEMBERSHIP' || portal.status === 'SKIPPED_EXISTING_CARD'
+        ? PORTAL_INVITE_ERRORS[portal.status]
+        : portal.status === 'EXISTS' && portal.membershipStatus !== 'ACTIVE' ? 'Portal kullanıcısı zaten var ve askıda; erişim e-postası gönderilmedi. Gerekirse karttan yeniden açın.' : null },
     emails, portalAccessNote: PORTAL_ACCESS_NOTE };
 }
 

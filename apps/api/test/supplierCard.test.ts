@@ -186,7 +186,7 @@ describe('Pasife alma ve ayrılış (R13)', () => {
     const task = (await h.owner.query(`SELECT id, kind, assignee_role, status FROM tasks WHERE dedupe_key = $1`, [`offboarding:${d.body.offboardingId}`])).rows;
     expect(task).toEqual([expect.objectContaining({ kind: 'supplier_offboarding', assignee_role: 'PROCUREMENT', status: 'OPEN' })]);
     c = await card(sid);
-    expect(c).toMatchObject({ stageLabel: 'Pasif', deactivation: { reason: 'Sözleşme sona erdi, hizmet alınmayacak (sentetik).' }, offboarding: { completed: false },
+    expect(c).toMatchObject({ stageLabel: 'Pasif', deactivation: { reason: 'Sözleşme sona erdi, hizmet alınmayacak (sentetik).' }, offboarding: { completed: false, status: 'OPEN' },
       can: { offboard: false, reactivate: false } });
     expect(c.portalUsers[0]).toMatchObject({ status: 'SUSPENDED', statusLabel: 'Askıda' });
     // Yeni tura davet edilemez.
@@ -210,7 +210,7 @@ describe('Pasife alma ve ayrılış (R13)', () => {
     }
     expect((await h.call('buyer', 'PUT', `/api/v1/supplier-offboarding-items/${items[0]!.id}`, { body: { done: true } })).body.error.code).toBe('already_decided');
     expect((await h.owner.query(`SELECT status FROM tasks WHERE id = $1`, [task[0].id])).rows[0].status).toBe('DONE');
-    expect((await card(sid)).offboarding).toMatchObject({ completed: true });
+    expect((await card(sid)).offboarding).toMatchObject({ completed: true, status: 'COMPLETED' });
 
     // İkinci Satınalma kullanıcısı yeniden açar → önceki durum (ACTIVE), portal kullanıcısı geri gelir.
     c = await card(sid);
@@ -236,6 +236,8 @@ describe('Pasife alma ve ayrılış (R13)', () => {
     expect(d.status).toBe(200);
     const re = await h.call('legal', 'POST', `/api/v1/suppliers/${sid}/reactivate`, { body: { reason: 'Aday yeniden değerlendirilecek (sentetik).', expectedRowVersion: d.body.rowVersion } });
     expect(re.body).toMatchObject({ status: 'CANDIDATE', stageLabel: 'Aday' });
+    // İnceleme (6): yeniden açıldıktan sonra tamamlanmamış liste işaretlenir.
+    expect((await card(sid)).offboarding).toMatchObject({ completed: false, status: 'OPEN_AFTER_REACTIVATION' });
     // Açık (onayda) teklif turu uyarıdır, engel değildir.
     const act = await newSupplier('ACTIVE');
     const p = await h.call('buyer', 'POST', '/api/v1/projects', { body: { companyId: h.world.companyA1.id, title: `Uyarı turu ${rand()}`, category: 'BT hizmetleri',

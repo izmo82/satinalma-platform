@@ -165,8 +165,11 @@ export async function cardExtras(tx: Tx, ctx: TenantContext, id: string) {
   const ob = (await tx.query<{ id: string; reason: string; started_at: Date; started_by_name: string; completed_at: Date | null }>(
     `SELECT o.id, o.reason, o.started_at, u.display_name AS started_by_name, o.completed_at FROM supplier_offboardings o JOIN users u ON u.id = o.started_by
      WHERE o.supplier_id = $1 ORDER BY o.started_at DESC LIMIT 1`, [id])).rows[0];
+  // İnceleme (6): yeniden açıldıktan sonra açık kalan liste ayrıca işaretlenir (T7 etiketi).
+  const obStatus = !ob ? null : ob.completed_at ? 'COMPLETED' : s.status !== 'SUSPENDED' && s.status !== 'ARCHIVED' ? 'OPEN_AFTER_REACTIVATION' : 'OPEN';
+  const OB_TR = { COMPLETED: 'Tamamlandı', OPEN: 'Açık', OPEN_AFTER_REACTIVATION: 'Tedarikçi yeniden açıldı; kontrol listesi tamamlanmadı' } as const;
   const offboarding = ob ? { id: ob.id, reason: ob.reason, startedAt: ob.started_at, startedByName: ob.started_by_name, completedAt: ob.completed_at,
-    completed: !!ob.completed_at, items: await offboardingItems(tx, ob.id) } : null;
+    completed: !!ob.completed_at, status: obStatus!, statusLabel: OB_TR[obStatus!], items: await offboardingItems(tx, ob.id) } : null;
 
   // R10: "Onaylı yapmadan önce" bilgi kutusu (engellemez).
   const activationHints = s.status !== 'CANDIDATE' ? [] : [
@@ -279,7 +282,8 @@ export async function listPortalUsers(tx: Tx, supplierId: string) {
     firstLogin: r.invited ? 'PENDING' : 'DONE', firstLoginLabel: r.invited ? 'İlk giriş yapılmadı (davetli)' : 'Giriş yaptı', since: r.valid_from }));
 }
 
-export type PortalInviteOutcome = { status: 'CREATED' | 'EXISTS'; userId: string } | { status: 'USER_IN_OTHER_TENANT' | 'USER_HAS_OTHER_MEMBERSHIP'; userId: null };
+export type PortalInviteOutcome = { status: 'CREATED'; userId: string } | { status: 'EXISTS'; userId: string; membershipStatus: string }
+  | { status: 'USER_IN_OTHER_TENANT' | 'USER_HAS_OTHER_MEMBERSHIP'; userId: null };
 
 /**
  * R11: e-posta Faz 2 `directory_invite_user` ile davetli kullanıcıya bağlanır (046 kuralları; başka kurumdaki e-posta → NULL) ve
@@ -288,8 +292,8 @@ export type PortalInviteOutcome = { status: 'CREATED' | 'EXISTS'; userId: string
 export async function ensurePortalUser(tx: Tx, ctx: TenantContext, supplierId: string, name: string, email: string): Promise<PortalInviteOutcome> {
   const userId = (await tx.query<{ id: string | null }>(`SELECT directory_invite_user($1, $2) AS id`, [email, name])).rows[0]!.id;
   if (!userId) return { status: 'USER_IN_OTHER_TENANT', userId: null };
-  const m = (await tx.query<{ supplier_id: string | null }>(`SELECT supplier_id FROM memberships WHERE tenant_id = $1 AND user_id = $2 FOR UPDATE`, [ctx.tenantId, userId])).rows[0];
-  if (m) return m.supplier_id === supplierId ? { status: 'EXISTS', userId } : { status: 'USER_HAS_OTHER_MEMBERSHIP', userId: null };
+  const m = (await tx.query<{ supplier_id: string | null; status: string }>(`SELECT supplier_id, status FROM memberships WHERE tenant_id = $1 AND user_id = $2 FOR UPDATE`, [ctx.tenantId, userId])).rows[0];
+  if (m) return m.supplier_id === supplierId ? { status: 'EXISTS', userId, membershipStatus: m.status } : { status: 'USER_HAS_OTHER_MEMBERSHIP', userId: null };
   await tx.query(`INSERT INTO memberships (tenant_id, user_id, roles, company_ids, supplier_id, status) VALUES ($1, $2, ARRAY['SUPPLIER'], '{}', $3, 'ACTIVE')`,
     [ctx.tenantId, userId, supplierId]);
   return { status: 'CREATED', userId };
@@ -298,6 +302,7 @@ export async function ensurePortalUser(tx: Tx, ctx: TenantContext, supplierId: s
 export const PORTAL_INVITE_ERRORS = {
   USER_IN_OTHER_TENANT: 'Bu e-posta başka bir kurumda kayıtlı; erişimi operatör tanımlar.',
   USER_HAS_OTHER_MEMBERSHIP: 'Bu e-posta kurumda başka bir kullanıcıya ya da başka bir tedarikçiye bağlı; portal kullanıcısı olarak eklenemez.',
+  SKIPPED_EXISTING_CARD: 'Mevcut tedarikçi kartına bağlandı; portal kullanıcısını kartı doğruladıktan sonra karttan ekleyin.',
 } as const;
 
 const INACTIVE = new Set(['SUSPENDED', 'ARCHIVED', 'REJECTED', 'MERGED']);
