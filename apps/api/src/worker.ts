@@ -15,6 +15,7 @@ import { directoryProvider, type DirectoryProvider } from './directory/provider.
 import { directoryJobContext, enqueueNightlySyncs, processDirectorySync } from './modules/directory.ts';
 import { configureMailChannel, DISPATCH_JOB, mailSender, processEmailDispatch, type MailSender } from './mail/index.ts';
 import { EXPIRE_JOB, processApplicationExpiry, processApplicationSubmitted, SUBMITTED_JOB } from './modules/supplierApplications.ts';
+import { dailyRiskSchedules, processRiskJob, RISK_JOB_KINDS } from './modules/riskCycle.ts';
 
 /** İsteğe bağlı işçi bağımlılıkları; eski çağrılar etkilenmez. */
 export interface WorkerOptions {
@@ -34,7 +35,7 @@ export async function processJobs(pool: pg.Pool, store: ObjectStore, detectorPro
   const sender = opts.mailSender ?? null;
   // Kiracı dışa aktarımı saatler sürebilir: ayrı şeritte tek tek çalışır, ihbar/imza/silme işlerini bekletmez.
   const short = ['signature.detect', 'contract.notice_reminder', 'contract.end_reminder', 'contract.reminder_backfill', 'contract.obligation_due', 'retention.purge', ...(erpAdapterName ? ['erp.export'] : []), ...(hasAiProviders() ? ['ai.run'] : []),
-    ...(directory ? ['directory.sync'] : []), ...(sender ? [DISPATCH_JOB] : []), SUBMITTED_JOB, EXPIRE_JOB];
+    ...(directory ? ['directory.sync'] : []), ...(sender ? [DISPATCH_JOB] : []), SUBMITTED_JOB, EXPIRE_JOB, ...RISK_JOB_KINDS];
   const kinds = lane === 'export' ? ['tenant.export'] : lane === 'short' ? short : [...short, 'tenant.export'];
   const claimed = await withoutTenant(pool, async (c) =>
     (await c.query<{ id: string; tenant_id: string; company_id: string | null; kind: string; requested_by: string | null }>(
@@ -67,6 +68,8 @@ export async function processJobs(pool: pg.Pool, store: ObjectStore, detectorPro
       if (job.kind === SUBMITTED_JOB) { await processApplicationSubmitted(pool, job.tenant_id, job.id); continue; }
       if (job.kind === EXPIRE_JOB) { await processApplicationExpiry(pool, job.tenant_id, job.id); continue; }
       if (job.kind === 'contract.reminder_backfill') { await processReminderBackfill(pool, job.tenant_id, job.id); continue; }
+      // v2 Faz 6 (R6, R7, R10): yıllık açılış, gecikme yükseltmesi ve çeyreklik görevler sistem işidir (isteyen yok).
+      if (RISK_JOB_KINDS.includes(job.kind)) { await processRiskJob(pool, job.kind, job.tenant_id, job.id); continue; }
       if (job.kind === 'retention.purge') { await withTenant(pool, { ...ctx, roles: [], companyIds: [] }, (tx) => processPurge(tx, store, job.id)); continue; }
       if (!m || (job.company_id && !m.company_ids.includes(job.company_id))) {
         await withTenant(pool, { ...ctx, companyIds: job.company_id ? [job.company_id] : [] }, (tx) =>
@@ -106,6 +109,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const directory = directoryProvider(config.directory);
   let lastNightly = 0;
   const reminderBackfill = dailyReminderBackfill();
+  const riskSchedules = dailyRiskSchedules();
   const loop = async (lane: 'short' | 'export') => {
     while (!stopping) {
       // R8: gece eşitlemesi en fazla dakikada bir denetlenir (İstanbul 06:00 sonrası, kiracı başına günde bir iş).
@@ -116,6 +120,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       // R7 geri doldurma: başlangıçta ve sonra İstanbul gününde bir kez taranır (final inceleme, ertelenen #3); kiracı başına günde bir iş.
       if (lane === 'short') {
         await reminderBackfill(pool, new Date()).catch((e) => console.error('reminder backfill enqueue failed', (e as Error).message));
+        // v2 Faz 6: risk döngüsü işleri İstanbul gününde bir kez (kiracı başına tekil iş anahtarı).
+        await riskSchedules(pool, new Date()).catch((e) => console.error('risk schedules enqueue failed', (e as Error).message));
       }
       const n = await processJobs(pool, store, config.signatureDetectorProvider, 10, config.erpAdapter ?? null, lane, { directoryProvider: directory, mailSender: mail });
       if (n === 0) await new Promise((r) => setTimeout(r, 2000));

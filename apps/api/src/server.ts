@@ -33,6 +33,7 @@ import * as approvers from './modules/approvers.ts';
 import * as templates from './modules/templates.ts';
 import * as riskQuestions from './modules/riskQuestions.ts';
 import * as riskAssessments from './modules/riskAssessments.ts';
+import * as riskCycle from './modules/riskCycle.ts';
 import * as intake from './modules/contractIntake.ts';
 import * as contractAi from './modules/contractAi.ts';
 import * as reminders from './modules/contractReminders.ts';
@@ -854,6 +855,12 @@ export async function buildApp(deps: AppDeps) {
     app.get('/api/v1/suppliers/:id/risk-history', { schema: { tags: ['risk'], params: idParams } }, async (req) =>
       scoped(req, 'risk.read', (tx, ctx) => riskAssessments.supplierHistory(tx, ctx, id(req))));
     app.get('/api/v1/portal/risk', { schema: { tags: ['portal'] } }, async (req) => scoped(req, 'portal.standing', (tx, ctx) => riskAssessments.portalRisk(tx, ctx)));
+    // v2 Faz 6 Görev 5 (R6): yılı elle açma (yıl ortasında başlangıç); işçinin 1 Ocak açılışıyla aynı işlev, idempotent.
+    app.post('/api/v1/risk/cycles/:year/open', { schema: { tags: ['risk'], params: { type: 'object', required: ['year'], properties: { year } } } }, async (req) =>
+      scoped(req, 'risk.cycle.manage', async (tx, ctx) => {
+        await riskCycle.tenantWideScope(tx);
+        return riskCycle.openRiskYear(tx, ctx, (req.params as { year: number }).year, riskAssessments.istanbulToday());
+      }));
   }
   app.get('/api/v1/settings/contract-reminders', { schema: { tags: ['settings'] } }, async (req) =>
     scoped(req, 'reminder.settings', (tx) => reminders.getSettings(tx)));
