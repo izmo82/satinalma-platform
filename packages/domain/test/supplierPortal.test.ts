@@ -33,6 +33,11 @@ describe('R2 başvuru geçişleri', () => {
     for (const s of ['APPROVED', 'REJECTED', 'EXPIRED'] as const) for (const a of ['VERIFY', 'APPROVE', 'REQUEST_DOCUMENTS', 'COMPLETE', 'REJECT', 'EXPIRE'] as const) expect(nextApplicationStatus(s, a)).toEqual({ error: 'invalid_transition' });
     expect(APPLICATION_STATUSES).toHaveLength(6);
   });
+  it('son inceleme I1: eksik belge bekleyen başvuruda istek yeniden gönderilebilir (süresi dolan bağlantı için)', () => {
+    expect(nextApplicationStatus('NEEDS_DOCUMENTS', 'REQUEST_DOCUMENTS')).toBe('NEEDS_DOCUMENTS');
+    expect(nextApplicationStatus('NEEDS_DOCUMENTS', 'REJECT')).toBe('REJECTED');
+    expect(nextApplicationStatus('NEEDS_DOCUMENTS', 'VERIFY')).toEqual({ error: 'invalid_transition' });
+  });
 });
 
 const T = (code: string, o: Partial<DocType> = {}): DocType => ({ code, name: code, active: true, requiredMode: 'ALWAYS', categories: [], requiresExpiry: false, ...o });

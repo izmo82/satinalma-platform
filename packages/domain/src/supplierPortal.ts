@@ -48,7 +48,8 @@ export type ApplicationAction = 'VERIFY' | 'APPROVE' | 'REQUEST_DOCUMENTS' | 'CO
 const APP_TRANSITIONS: Record<ApplicationStatus, Partial<Record<ApplicationAction, ApplicationStatus>>> = {
   UNVERIFIED: { VERIFY: 'SUBMITTED', EXPIRE: 'EXPIRED' },
   SUBMITTED: { REQUEST_DOCUMENTS: 'NEEDS_DOCUMENTS', APPROVE: 'APPROVED', REJECT: 'REJECTED' },
-  NEEDS_DOCUMENTS: { COMPLETE: 'SUBMITTED', REJECT: 'REJECTED' },
+  // Son inceleme I1: tamamlama bağlantısı (24 saat) dolduğunda başvuru takılı kalmasın; Satınalma eksik belge isteğini yeniden gönderir (yeni belirteç).
+  NEEDS_DOCUMENTS: { COMPLETE: 'SUBMITTED', REQUEST_DOCUMENTS: 'NEEDS_DOCUMENTS', REJECT: 'REJECTED' },
   APPROVED: {}, REJECTED: {}, EXPIRED: {},
 };
 export function nextApplicationStatus(from: ApplicationStatus, action: ApplicationAction): ApplicationStatus | { error: 'invalid_transition' } {

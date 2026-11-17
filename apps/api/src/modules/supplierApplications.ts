@@ -565,6 +565,7 @@ const SUPPLIER_INACTIVE_MSG = 'Bu VKN ile kayıtlı kart pasif ya da reddedilmi�
 
 const HISTORY_TR: Record<string, string> = {
   'supplier_application.approved': 'Onaylandı', 'supplier_application.documents_requested': 'Eksik belge istendi', 'supplier_application.rejected': 'Reddedildi',
+  'supplier_application.link_resent': 'Tamamlama bağlantısı yeniden gönderildi',
 };
 
 /** İnceleme ekranı (Figma 15). Departman kullanıcısı görür; karar yalnız Satınalma (`can.decide`). */
@@ -587,6 +588,7 @@ export async function getApplication(tx: Tx, ctx: TenantContext, id: string) {
   ].sort((x, y) => +new Date(x.at) - +new Date(y.at));
   const stage = existing ? supplierStage(existing.status) : null;
   const decidable = a.status === 'SUBMITTED' || a.status === 'NEEDS_DOCUMENTS';
+  const completionTokenExpiresAt = a.status === 'NEEDS_DOCUMENTS' && a.token_purpose === 'COMPLETE' ? a.token_expires_at : null;
   return {
     id: a.id, status: a.status, statusLabel: APPLICATION_STATUS_TR[a.status], rowVersion: a.row_version,
     legalName: a.legal_name, country: a.country, taxIdType: a.tax_id_type, taxId: a.tax_id,
@@ -594,7 +596,9 @@ export async function getApplication(tx: Tx, ctx: TenantContext, id: string) {
       : { valid: false, normalized: null, reason: tax.reason, label: 'Vergi kimliği denetimi başarısız' },
     contactName: a.contact_name, contactEmail: a.contact_email, contactPhone: a.contact_phone, address: a.address, categories: a.categories, services: a.services,
     createdAt: a.created_at, verifiedAt: a.verified_at, submittedAt: a.submitted_at,
-    requestedDocuments: a.requested_documents, requestedNote: a.requested_note, completionTokenExpiresAt: a.token_purpose === 'COMPLETE' ? a.token_expires_at : null,
+    requestedDocuments: a.requested_documents, requestedNote: a.requested_note, completionTokenExpiresAt,
+    // Son inceleme I1: tamamlama bağlantısı (24 saat) dolduysa başvuru takılı kalmaz; Satınalma aynı belge isteğini yeni bağlantıyla yeniden gönderir.
+    completionLinkExpired: a.status === 'NEEDS_DOCUMENTS' && (!completionTokenExpiresAt || completionTokenExpiresAt.getTime() <= Date.now()),
     decidedAt: a.decided_at, decisionReason: a.decision_reason, supplierId: a.supplier_id,
     existingSupplier: existing ? { id: existing.id, legalName: existing.legal_name, status: existing.status, stage: stage!.code, stageLabel: stage!.label,
       contactEmail: existingExtra?.contact_email ?? null, portalUserCount: existingExtra?.n ?? 0,
@@ -602,7 +606,8 @@ export async function getApplication(tx: Tx, ctx: TenantContext, id: string) {
     documents: docRows.map((r) => documentView(r, day)), missingRequired: missing, history,
     can: { decide: can(ctx.roles, 'supplier.application.review') && decidable,
       approve: can(ctx.roles, 'supplier.application.review') && a.status === 'SUBMITTED' && !(existing && INACTIVE_FOR_LINK.has(existing.status)),
-      requestDocuments: can(ctx.roles, 'supplier.application.review') && a.status === 'SUBMITTED' },
+      requestDocuments: can(ctx.roles, 'supplier.application.review') && a.status === 'SUBMITTED',
+      resendLink: can(ctx.roles, 'supplier.application.review') && a.status === 'NEEDS_DOCUMENTS' },
   };
 }
 
@@ -697,8 +702,13 @@ async function approve(tx: Tx, ctx: TenantContext, a: AppRow, note: string | nul
     emails, portalAccessNote: PORTAL_ACCESS_NOTE };
 }
 
-async function requestDocuments(tx: Tx, ctx: TenantContext, a: AppRow, documents: string[], note: string | null, origin: string) {
-  const codes = [...new Set(documents.map((c) => c.trim()).filter(Boolean))];
+async function requestDocuments(tx: Tx, ctx: TenantContext, a: AppRow, documents: string[], rawNote: string | null, origin: string) {
+  // Son inceleme I1: NEEDS_DOCUMENTS'ta yeniden gönderim. Belge listesi verilmezse önceki istek (liste ve not) aynen yeniden gönderilir;
+  // eski belirteç geçersizleşir (özet değişir), yeni 24 saatlik bağlantı e-postayla kuyruğa girer (posta kapalıysa dürüstçe NOT_CONFIGURED).
+  const resend = a.status === 'NEEDS_DOCUMENTS';
+  const given = documents.map((c) => c.trim()).filter(Boolean);
+  const note = resend && !given.length && rawNote === null ? a.requested_note : rawNote;
+  const codes = [...new Set(resend && !given.length ? (a.requested_documents ?? []) : given)];
   if (!codes.length) throw unprocessable('documents_required', 'İstenecek en az bir belge türü seçin.');
   const types = (await tx.query<{ code: string; name: string }>(`SELECT code, name FROM supplier_document_types WHERE active AND code = ANY($1::text[])`, [codes])).rows;
   const unknown = codes.filter((c) => !types.some((t) => t.code === c));
@@ -710,8 +720,10 @@ async function requestDocuments(tx: Tx, ctx: TenantContext, a: AppRow, documents
   const names = codes.map((c) => types.find((t) => t.code === c)!.name);
   const m = documentsRequestedEmail({ legalName: a.legal_name, documents: names, note, link: `${origin}/basvuru/tamamla#token=${token}` });
   const out = await queueEmail(tx, ctx, { toEmail: a.contact_email, subject: m.subject, body: m.body, relatedType: 'supplier_application', relatedId: a.id });
-  await audit(tx, ctx, 'supplier_application.documents_requested', 'supplier_application', a.id, { documents: codes, emailStatus: out.status }, note ?? undefined);
-  return { requestedDocuments: codes, emails: [{ kind: 'documents_requested', status: out.status }] };
+  await audit(tx, ctx, resend ? 'supplier_application.link_resent' : 'supplier_application.documents_requested', 'supplier_application', a.id,
+    { documents: codes, emailStatus: out.status }, note ?? undefined);
+  const exp = (await tx.query<{ t: Date }>(`SELECT token_expires_at AS t FROM supplier_applications WHERE id = $1`, [a.id])).rows[0]!.t;
+  return { requestedDocuments: codes, completionTokenExpiresAt: exp, resent: resend, emails: [{ kind: 'documents_requested', status: out.status }] };
 }
 
 async function reject(tx: Tx, ctx: TenantContext, a: AppRow, rawReason: string) {

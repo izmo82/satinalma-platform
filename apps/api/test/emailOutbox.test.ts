@@ -93,6 +93,18 @@ describe('GET /api/v1/admin/email-outbox', () => {
     expect((await prod.call('buyer', 'GET', '/api/v1/admin/email-outbox')).status).toBe(403);
   });
 
+  it('non_dev_non_test_env_masks_token_too', async () => {
+    // Son inceleme M2: yalnız `production` değil; geliştirme ve test dışındaki her ortam (ör. NODE_ENV=staging) maskeler.
+    const staging = await makeHarness({ env: 'staging' as never });
+    try {
+      const { verify } = await seed(staging);
+      const r = await staging.call('tenantAdmin', 'GET', '/api/v1/admin/email-outbox?limit=200');
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      expect(r.body.items.find((i: any) => i.id === verify.id).body).toContain('/basvuru/dogrula#token=••••');
+      expect(JSON.stringify(r.body)).not.toContain(TOKEN);
+    } finally { await staging.close(); }
+  });
+
   it('mask_helper', () => {
     expect(maskTokens('a https://x.test/basvuru/tamamla#token=abc-DEF_123 b')).toBe('a https://x.test/basvuru/tamamla#token=•••• b');
     expect(maskTokens('iki #token=aaa ve #token=bbb')).toBe('iki #token=•••• ve #token=••••');

@@ -76,6 +76,42 @@ beforeAll(async () => {
 afterAll(async () => { await h?.close(); });
 
 describe('R8 davet e-postası', () => {
+  it('supplier_suspended_between_request_and_approval_gets_no_invite_and_distinct_task', async () => {
+    const a = await newSupplier('ACTIVE', `Pasife Düşen ${rand()} (SENTETİK)`);
+    const ok = await newSupplier('ACTIVE', `Etkin Kalan ${rand()} (SENTETİK)`);
+    const ua = await portalUser(a);
+    const uok = await portalUser(ok);
+    const p = await h.call('buyer', 'POST', '/api/v1/projects', { body: { companyId: h.world.companyA1.id, title: `Pasif davet ${rand()}`, category: 'BT hizmetleri',
+      need: 'Sentetik kapsam.', currency: 'TRY', budget: '1000.00', budgetVerified: false,
+      lines: [{ description: 'Bakım', unit: 'ay', quantity: '1' }], criteria: [{ code: 'PRICE', name: 'Fiyat', kind: 'PRICE', weight: '100' }] } });
+    expect(p.status).toBe(201);
+    const snap = (await h.call('buyer', 'GET', `/api/v1/projects/${p.body.id}`)).body;
+    const req = await h.call('buyer', 'POST', `/api/v1/projects/${p.body.id}/rounds`, { body: { closesAt: inHours(72), supplierIds: [a, ok] }, headers: { 'if-match': snap.project.etag } });
+    expect(req.status).toBe(201);
+    // Yayın talebinden sonra, onaydan önce kart askıya alınır.
+    await h.owner.query(`UPDATE suppliers SET status = 'SUSPENDED' WHERE id = $1`, [a]);
+    const dec = await h.call('legal2', 'POST', `/api/v1/rfq-rounds/${req.body.roundId}/decision`, { body: { approve: true } });
+    expect(dec.status, JSON.stringify(dec.body)).toBe(200);
+    expect(dec.body).toMatchObject({ status: 'OPEN', invites: { queued: 1, missingUsers: [], ineligible: [a] } });
+    const rows = (await h.owner.query(`SELECT to_user_id FROM email_outbox WHERE related_type = 'rfq_round_invite' AND related_id = $1`, [req.body.roundId])).rows;
+    expect(rows.map((r: any) => r.to_user_id)).toEqual([uok.id]);
+    expect(rows.some((r: any) => r.to_user_id === ua.id)).toBe(false);
+    const tasks = (await h.owner.query(`SELECT kind, assignee_role, title, reason FROM tasks WHERE tenant_id = $1 AND entity_id = $2 AND dedupe_key LIKE $3`,
+      [h.world.tenantA, a, `round:${req.body.roundId}:%`])).rows;
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]).toMatchObject({ kind: 'supplier_invite_ineligible', assignee_role: 'PROCUREMENT' });
+    expect(tasks[0].title).toMatch(/^Davetli tedarikçi pasif: Pasife Düşen/);
+    expect(tasks[0].reason).toContain('pasif');
+    expect(tasks[0].title).not.toContain('portal kullanıcısı');
+    // İç ekran dürüst etiket.
+    const byId = new Map((await h.call('buyer', 'GET', `/api/v1/projects/${p.body.id}`)).body.round.inviteEmails.map((x: any) => [x.supplierId, x]));
+    expect(byId.get(a)).toMatchObject({ status: 'NONE', statusLabel: 'Tedarikçi pasif; davet e-postası yazılmadı', recipients: 0 });
+    // Tekrar çağrı çift görev açmaz.
+    const ctx = { ...systemContext(h.world.tenantA, [h.world.companyA1.id], 'rerun') };
+    expect(await withTenant(h.pool, ctx, (tx) => queueRoundInvites(tx, ctx, req.body.roundId, 'http://localhost:5174'))).toEqual({ queued: 0, missingUsers: [], ineligible: [a] });
+    expect((await h.owner.query(`SELECT count(*)::int AS n FROM tasks WHERE dedupe_key = $1`, [`round:${req.body.roundId}:ineligible:${a}`])).rows[0].n).toBe(1);
+  });
+
   it('one_row_per_active_portal_user_task_for_missing_user_no_duplicates_and_honest_status', async () => {
     const a = await newSupplier('ACTIVE', `Davetli A ${rand()} (SENTETİK)`);
     const b = await newSupplier('ACTIVE', `Davetli B ${rand()} (SENTETİK)`);
@@ -99,7 +135,7 @@ describe('R8 davet e-postası', () => {
     // İkinci onay denemesi ve işçi/çağrı tekrarı çift satır ya da görev yazmaz.
     expect((await h.call('legal2', 'POST', `/api/v1/rfq-rounds/${roundId}/decision`, { body: { approve: true } })).status).toBe(409);
     const ctx = { ...systemContext(h.world.tenantA, [h.world.companyA1.id], 'rerun') };
-    expect(await withTenant(h.pool, ctx, (tx) => queueRoundInvites(tx, ctx, roundId, 'http://localhost:5174'))).toEqual({ queued: 0, missingUsers: [b] });
+    expect(await withTenant(h.pool, ctx, (tx) => queueRoundInvites(tx, ctx, roundId, 'http://localhost:5174'))).toEqual({ queued: 0, missingUsers: [b], ineligible: [] });
     expect((await h.owner.query(`SELECT count(*)::int AS n FROM email_outbox WHERE related_type = 'rfq_round_invite' AND related_id = $1`, [roundId])).rows[0].n).toBe(1);
     expect((await h.owner.query(`SELECT count(*)::int AS n FROM tasks WHERE dedupe_key = $1`, [`round:${roundId}:no_portal_user:${b}`])).rows[0].n).toBe(1);
 

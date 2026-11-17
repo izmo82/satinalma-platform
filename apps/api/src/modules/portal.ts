@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { documentValidity, formatDateTr, inviteEmail, portalStanding, supplierStage, type Level, type SupplierStatus } from '@sp/domain';
+import { canInviteSupplier, documentValidity, formatDateTr, inviteEmail, portalStanding, supplierStage, type Level, type SupplierStatus } from '@sp/domain';
 import type { TenantContext, Tx } from '../db.ts';
 import { audit } from '../audit.ts';
 import { ApiError, conflict, forbidden, notFound, unprocessable } from '../errors.ts';
@@ -30,21 +30,34 @@ const INVITE_STATUS_ORDER: (OutboxStatus | 'NONE')[] = ['FAILED', 'NOT_CONFIGURE
  * Tur Satınalma onayıyla OPEN olduğunda (decidePublish) her davetli tedarikçinin etkin portal kullanıcısına tek satır. Aynı tur ve alıcı
  * için ikinci satır yazılmaz (052/052a tekil dizinleri; ON CONFLICT DO NOTHING). Portal kullanıcısı olmayan davetli için e-posta yazılmaz,
  * Satınalma'ya "Tedarikçinin portal kullanıcısı yok" görevi açılır. Onaycının departman kapsamı ne olursa olsun yazılır (kiracı geneli kapsam).
+ * Son inceleme M1: yayın talebi ile onay arasında davet edilemez duruma düşen (askıda, arşiv, reddedilmiş, birleşmiş; `canInviteSupplier`)
+ * tedarikçiye davet e-postası yazılmaz; Satınalma'ya ayrı "Davetli tedarikçi pasif: …" görevi açılır (`ineligible`).
  */
-export async function queueRoundInvites(tx: Tx, ctx: TenantContext, roundId: string, webOrigin = ''): Promise<{ queued: number; missingUsers: string[] }> {
+export async function queueRoundInvites(tx: Tx, ctx: TenantContext, roundId: string, webOrigin = ''): Promise<{ queued: number; missingUsers: string[]; ineligible: string[] }> {
   return withTenantWideScope(tx, async () => {
     const r = (await tx.query<{ id: string; status: string; closes_at: Date; title: string; need: string | null }>(
       `SELECT r.id, r.status, r.closes_at, p.title, p.need FROM rfq_rounds r JOIN projects p ON p.id = r.project_id WHERE r.id = $1`, [roundId])).rows[0];
-    if (!r || r.status !== 'OPEN') return { queued: 0, missingUsers: [] };
-    const invited = (await tx.query<{ supplier_id: string; legal_name: string }>(
-      `SELECT i.supplier_id, s.legal_name FROM rfq_invitations i JOIN suppliers s ON s.id = i.supplier_id WHERE i.round_id = $1 ORDER BY s.legal_name, s.id`, [roundId])).rows;
+    if (!r || r.status !== 'OPEN') return { queued: 0, missingUsers: [], ineligible: [] };
+    const invited = (await tx.query<{ supplier_id: string; legal_name: string; status: SupplierStatus }>(
+      `SELECT i.supplier_id, s.legal_name, s.status FROM rfq_invitations i JOIN suppliers s ON s.id = i.supplier_id WHERE i.round_id = $1 ORDER BY s.legal_name, s.id`, [roundId])).rows;
     const channel = mailChannel();
     const status: OutboxStatus = channel.kind === 'graph' ? 'QUEUED' : 'NOT_CONFIGURED';
     const link = `${webOrigin.replace(/\/$/, '')}/portal/${roundId}`;
     const scope = (r.need ?? '').trim() || r.title;
     let queued = 0;
     const missingUsers: string[] = [];
+    const ineligible: string[] = [];
     for (const s of invited) {
+      if (!canInviteSupplier(s.status)) {
+        ineligible.push(s.supplier_id);
+        const stage = supplierStage(s.status);
+        await openTask(tx, ctx, { companyId: null, departmentId: null, kind: 'supplier_invite_ineligible', entityType: 'supplier', entityId: s.supplier_id,
+          title: `Davetli tedarikçi pasif: ${s.legal_name}`.slice(0, 300),
+          reason: `${s.legal_name}, "${r.title}" teklif turuna davet edilmişti; yayın onayında kartı ${stage.label.toLocaleLowerCase('tr-TR')} olduğu için davet e-postası yazılmadı.`,
+          nextAction: 'Tedarikçi kartını inceleyin; gerekiyorsa turu bu tedarikçi olmadan sürdürün ya da kart yeniden onaylanınca yeni tur açın.', assigneeRole: 'PROCUREMENT',
+          dedupeKey: `round:${roundId}:ineligible:${s.supplier_id}` });
+        continue;
+      }
       const users = (await tx.query<{ user_id: string; email: string }>(
         `SELECT m.user_id, u.email FROM memberships m JOIN users u ON u.id = m.user_id
           WHERE m.tenant_id = $1 AND m.supplier_id = $2 AND m.status = 'ACTIVE' ORDER BY u.email, u.id`, [ctx.tenantId, s.supplier_id])).rows;
@@ -69,30 +82,31 @@ export async function queueRoundInvites(tx: Tx, ctx: TenantContext, roundId: str
         if (status === 'QUEUED') await enqueueEmailDispatch(tx, ctx.tenantId, id);
       }
     }
-    return { queued, missingUsers };
+    return { queued, missingUsers, ineligible };
   });
 }
 
 /** İç ekran: davetin e-posta durumu (tedarikçi başına; birden çok alıcıda en az ilerlemiş durum — "gönderildi" abartılmaz). */
 export async function roundInviteEmails(tx: Tx, roundId: string) {
   return withTenantWideScope(tx, async () => {
-    const rows = (await tx.query<{ supplier_id: string; status: OutboxStatus | null; has_user: boolean }>(
-      `SELECT i.supplier_id, e.status,
+    const rows = (await tx.query<{ supplier_id: string; status: OutboxStatus | null; has_user: boolean; supplier_status: SupplierStatus }>(
+      `SELECT i.supplier_id, e.status, s.status AS supplier_status,
               EXISTS (SELECT 1 FROM memberships m WHERE m.supplier_id = i.supplier_id AND m.status = 'ACTIVE') AS has_user
          FROM rfq_invitations i
+         JOIN suppliers s ON s.id = i.supplier_id
          LEFT JOIN memberships m ON m.supplier_id = i.supplier_id
          LEFT JOIN email_outbox e ON e.related_type = $2 AND e.related_id = i.round_id AND e.to_user_id = m.user_id
         WHERE i.round_id = $1`, [roundId, ROUND_INVITE])).rows;
-    const by = new Map<string, { statuses: OutboxStatus[]; hasUser: boolean }>();
+    const by = new Map<string, { statuses: OutboxStatus[]; hasUser: boolean; eligible: boolean }>();
     for (const r of rows) {
-      const x = by.get(r.supplier_id) ?? { statuses: [], hasUser: r.has_user };
+      const x = by.get(r.supplier_id) ?? { statuses: [], hasUser: r.has_user, eligible: canInviteSupplier(r.supplier_status) };
       if (r.status) x.statuses.push(r.status);
       by.set(r.supplier_id, x);
     }
     return [...by.entries()].map(([supplierId, x]) => {
       if (!x.statuses.length) {
         return { supplierId, status: 'NONE' as const, recipients: 0,
-          statusLabel: x.hasUser ? 'Davet e-postası yazılmadı' : 'Portal kullanıcısı yok; davet e-postası yazılmadı' };
+          statusLabel: !x.eligible ? 'Tedarikçi pasif; davet e-postası yazılmadı' : x.hasUser ? 'Davet e-postası yazılmadı' : 'Portal kullanıcısı yok; davet e-postası yazılmadı' };
       }
       const status = INVITE_STATUS_ORDER.find((s) => x.statuses.includes(s as OutboxStatus)) as OutboxStatus;
       return { supplierId, status, statusLabel: EMAIL_STATUS_LABEL[status], recipients: x.statuses.length };

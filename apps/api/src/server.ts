@@ -808,12 +808,13 @@ export async function buildApp(deps: AppDeps) {
   // v2 Faz 7 (Ruling 3): Faz 3 ucu genişletildi — tahsisli kalemler aynen + bağlı faturalar, eşleşme durumu ve kullanım (R4).
   app.get('/api/v1/contracts/:id/invoices', { schema: { tags: ['contracts'], params: idParams } }, async (req) =>
     scoped(req, 'contract.read', (tx) => invoiceMatching.contractInvoices(tx, (req.params as { id: string }).id)));
-  // v2 Faz 5 (R7): Yönetim > E-posta kutusu (yalnız Yönetici, yalnız okuma). Üretimde belirteçli bağlantı maskelenir.
+  // v2 Faz 5 (R7): Yönetim > E-posta kutusu (yalnız Yönetici, yalnız okuma). Belirteçli bağlantı yalnız geliştirme ve testte açık görünür;
+  // son inceleme M2: başka her ortamda (üretim, hazırlık vb.) maskelenir.
   app.get('/api/v1/admin/email-outbox', { schema: { tags: ['admin'], querystring: { type: 'object', additionalProperties: false, properties: {
     status: { type: 'string', enum: ['QUEUED', 'NOT_CONFIGURED', 'SENT', 'FAILED'] }, relatedType: { type: 'string', minLength: 1, maxLength: 100 },
     limit: { type: 'integer', minimum: 1, maximum: 200 }, offset: { type: 'integer', minimum: 0, maximum: 1_000_000 } } } } }, async (req) =>
     scoped(req, 'email.outbox.read', (tx) => emailOutbox.listOutbox(tx, req.query as emailOutbox.OutboxQuery,
-      { channel: mail, maskTokens: deps.config.env === 'production' })));
+      { channel: mail, maskTokens: deps.config.env !== 'development' && deps.config.env !== 'test' })));
   // --- v2 Faz 6 Görev 3: risk soru setleri ve ayar ---------------------------------------------------------------------
   app.get('/api/v1/risk/question-sets', { schema: { tags: ['risk'] } }, async (req) =>
     scoped(req, 'risk.read', async (tx, ctx) => ({ ...(await riskQuestions.listSets(tx)), can: { manage: can(ctx.roles, 'risk.questions.manage') } })));

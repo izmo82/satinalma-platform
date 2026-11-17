@@ -233,6 +233,59 @@ describe('Eksik belge ve red', () => {
     expect((await detail(a.id)).body.history.map((x: any) => x.code)).toContain('supplier_application.documents_requested');
   });
 
+  it('expired_completion_link_can_be_resent_old_token_rejected_new_token_completes', async () => {
+    const a = await submitted();
+    const first = await decide(a.id, { action: 'REQUEST_DOCUMENTS', documents: ['IMZA_SIRKULERI'], note: 'İlk istek notu (sentetik).' });
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    expect(first.body.resent).toBe(false);
+    const mails = async () => (await h.owner.query<{ body_text: string; status: string }>(
+      `SELECT body_text, status FROM email_outbox WHERE related_id = $1 AND subject = 'Tedarikçi başvurunuz: eksik belgeler' ORDER BY created_at, id`, [a.id])).rows;
+    const tokenOf = (body: string) => /\/basvuru\/tamamla#token=([A-Za-z0-9_-]+)/.exec(body)![1]!;
+    const oldToken = tokenOf((await mails())[0]!.body_text);
+    // 24 saatlik bağlantı dolar.
+    await h.owner.query(`UPDATE supplier_applications SET token_expires_at = now() - interval '1 minute' WHERE id = $1`, [a.id]);
+    const info = async (t: string) => h.app.inject({ method: 'GET', url: '/api/v1/public/applications/complete-info', remoteAddress: nextIp(), headers: { 'x-application-token': t } });
+    expect((await info(oldToken)).statusCode).toBe(410);
+    const d = await detail(a.id);
+    expect(d.body).toMatchObject({ status: 'NEEDS_DOCUMENTS', completionLinkExpired: true, can: { decide: true, approve: false, requestDocuments: false, resendLink: true } });
+    expect(new Date(d.body.completionTokenExpiresAt).getTime()).toBeLessThan(Date.now());
+    expect((await detail(a.id, 'techEval')).body.can.resendLink).toBe(false);
+    expect((await decide(a.id, { action: 'REQUEST_DOCUMENTS' }, 'techEval')).status).toBe(403);
+    // Yeniden gönderim: belge listesi verilmez, önceki istek ve not aynen; yeni belirteç, yeni e-posta (posta kapalı: NOT_CONFIGURED).
+    const re = await decide(a.id, { action: 'REQUEST_DOCUMENTS' });
+    expect(re.status, JSON.stringify(re.body)).toBe(200);
+    expect(re.body).toMatchObject({ status: 'NEEDS_DOCUMENTS', requestedDocuments: ['IMZA_SIRKULERI'], resent: true, emails: [{ kind: 'documents_requested', status: 'NOT_CONFIGURED' }] });
+    expect(new Date(re.body.completionTokenExpiresAt).getTime()).toBeGreaterThan(Date.now() + 23 * 3_600_000);
+    expect(JSON.stringify(re.body)).not.toMatch(/token=|tokenHash/);
+    const all = await mails();
+    expect(all).toHaveLength(2);
+    expect(all[1]!.status).toBe('NOT_CONFIGURED');
+    expect(all[1]!.body_text).toContain('İlk istek notu (sentetik).');
+    const newToken = tokenOf(all[1]!.body_text);
+    expect(newToken).not.toBe(oldToken);
+    const after = await detail(a.id);
+    expect(after.body).toMatchObject({ completionLinkExpired: false, requestedNote: 'İlk istek notu (sentetik).', can: { resendLink: true } });
+    expect(after.body.history.map((x: any) => x.label)).toContain('Tamamlama bağlantısı yeniden gönderildi');
+    const ev = (await h.owner.query(`SELECT data::text AS d FROM audit_events WHERE action = 'supplier_application.link_resent' AND entity_id = $1`, [a.id])).rows;
+    expect(ev).toHaveLength(1);
+    expect(ev[0].d).not.toContain(newToken);
+    // Eski belirteç artık geçmez; yenisiyle tamamlanır.
+    expect((await info(oldToken)).statusCode).toBe(410);
+    const complete = async (t: string) => {
+      const m = multipart([], [doc('IMZA_SIRKULERI')]);
+      return h.app.inject({ method: 'POST', url: '/api/v1/public/applications/complete', payload: m.payload, remoteAddress: nextIp(),
+        headers: { 'content-type': m.contentType, 'x-application-token': t } });
+    };
+    expect((await complete(oldToken)).statusCode).toBe(410);
+    const ok = await complete(newToken);
+    expect(ok.statusCode, ok.body).toBe(200);
+    await runJobs();
+    const done = await detail(a.id);
+    expect(done.body).toMatchObject({ status: 'SUBMITTED', completionTokenExpiresAt: null, completionLinkExpired: false, can: { resendLink: false, approve: true } });
+    // Yeniden gönderim SUBMITTED'da belge listesi olmadan yapılamaz (yeni istek liste ister).
+    expect((await decide(a.id, { action: 'REQUEST_DOCUMENTS' })).body.error.code).toBe('documents_required');
+  });
+
   it('reject_requires_reason_and_writes_decision_email', async () => {
     const a = await submitted();
     const short = await decide(a.id, { action: 'REJECT', reason: 'kısa' });
