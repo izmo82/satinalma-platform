@@ -31,6 +31,7 @@ import * as departments from './modules/departments.ts';
 import * as directory from './modules/directory.ts';
 import * as approvers from './modules/approvers.ts';
 import * as templates from './modules/templates.ts';
+import * as riskQuestions from './modules/riskQuestions.ts';
 import * as intake from './modules/contractIntake.ts';
 import * as contractAi from './modules/contractAi.ts';
 import * as reminders from './modules/contractReminders.ts';
@@ -685,6 +686,22 @@ export async function buildApp(deps: AppDeps) {
     limit: { type: 'integer', minimum: 1, maximum: 200 }, offset: { type: 'integer', minimum: 0, maximum: 1_000_000 } } } } }, async (req) =>
     scoped(req, 'email.outbox.read', (tx) => emailOutbox.listOutbox(tx, req.query as emailOutbox.OutboxQuery,
       { channel: mail, maskTokens: deps.config.env === 'production' })));
+  // --- v2 Faz 6 Görev 3: risk soru setleri ve ayar ---------------------------------------------------------------------
+  app.get('/api/v1/risk/question-sets', { schema: { tags: ['risk'] } }, async (req) =>
+    scoped(req, 'risk.read', async (tx, ctx) => ({ ...(await riskQuestions.listSets(tx)), can: { manage: can(ctx.roles, 'risk.questions.manage') } })));
+  app.get('/api/v1/risk/question-sets/:id', { schema: { tags: ['risk'], params: idParams } }, async (req) =>
+    scoped(req, 'risk.read', (tx) => riskQuestions.getSet(tx, (req.params as { id: string }).id)));
+  app.post('/api/v1/risk/question-sets', { schema: { tags: ['risk'], body: { type: 'object', required: ['code', 'name', 'questions'], additionalProperties: false, properties: {
+    code: { type: 'string', maxLength: 100 }, name: { type: 'string', maxLength: 500 }, scopeNote: nullable({ type: 'string', maxLength: 5000 }),
+    questions: { type: 'array', maxItems: 200, items: { type: 'object', required: ['code', 'text', 'weight'], additionalProperties: false, properties: {
+      code: { type: 'string', maxLength: 100 }, text: { type: 'string', maxLength: 5000 }, weight: { type: ['string', 'number'] },
+      riskAnswer: { type: 'string', enum: ['YES', 'NO'] }, guidance: nullable({ type: 'string', maxLength: 5000 }) } } } } } } }, async (req, reply) =>
+    reply.status(201).send(await scoped(req, 'risk.questions.manage', (tx, ctx) => riskQuestions.createSet(tx, ctx, req.body as riskQuestions.QuestionSetInput))));
+  app.post('/api/v1/risk/question-sets/:id/publish', { schema: { tags: ['risk'], params: idParams } }, async (req) =>
+    scoped(req, 'risk.questions.manage', (tx, ctx) => riskQuestions.publishSet(tx, ctx, (req.params as { id: string }).id)));
+  app.get('/api/v1/settings/risk', { schema: { tags: ['settings'] } }, async (req) => scoped(req, 'risk.cycle.manage', (tx) => riskQuestions.getRiskSettings(tx)));
+  app.put('/api/v1/settings/risk', { schema: { tags: ['settings'], body: { type: 'object', required: ['dueDays'], additionalProperties: false, properties: { dueDays: { type: 'number' } } } } }, async (req) =>
+    scoped(req, 'risk.cycle.manage', (tx, ctx) => riskQuestions.putRiskSettings(tx, ctx, req.body as { dueDays: unknown })));
   app.get('/api/v1/settings/contract-reminders', { schema: { tags: ['settings'] } }, async (req) =>
     scoped(req, 'reminder.settings', (tx) => reminders.getSettings(tx)));
   app.put('/api/v1/settings/contract-reminders', { schema: { tags: ['settings'], body: { type: 'object', required: ['offsets'], additionalProperties: false, properties: {
