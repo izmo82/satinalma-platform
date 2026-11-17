@@ -103,6 +103,11 @@ export function documentReminderDates(validUntil: string, offsets: number[] = [3
 export interface PortalStandingInput {
   surveys: { ratio: string }[]; review: { score: string } | null; verifiedIncidents: { severity: Level }[];
   residualLevel: Level | null; actions: { title: string; dueDate: string; status: string }[]; pendingSurveys: number; missingDocs: number;
+  /**
+   * Karne puanına giren risk seviyesi (052a `app_portal_standing().scoreRiskLevel`; supplierEval yearSummary ile aynı kural). Verilirse puan
+   * bununla hesaplanır (null = risk cezası yok); verilmezse eski davranış (residualLevel). Yanıtta hiçbir zaman dönmez.
+   */
+  scoreRiskLevel?: Level | null;
 }
 export interface PortalStanding {
   score: number | null; scoreReason: string | null; level: Level | null; levelLabel: string | null;
@@ -119,7 +124,7 @@ export function portalStanding(input: PortalStandingInput): PortalStanding {
   const scores = reviewScore === null ? null : Object.fromEntries(PERFORMANCE_DIMENSIONS.map((d) => [d, reviewScore])) as Record<Dimension, number>;
   const s = scorecardScore({
     surveyRates: input.surveys.map((x) => num(x.ratio)), review: scores ? { scores, weights: DEFAULT_WEIGHTS } : null,
-    riskLevel: input.residualLevel, incidentPenalty: input.verifiedIncidents.reduce((t, i) => t + DEFAULT_INCIDENT_POLICY.penalty[i.severity], 0),
+    riskLevel: input.scoreRiskLevel !== undefined ? input.scoreRiskLevel : input.residualLevel, incidentPenalty: input.verifiedIncidents.reduce((t, i) => t + DEFAULT_INCIDENT_POLICY.penalty[i.severity], 0),
   });
   const expectedActions: PortalStanding['expectedActions'] = [
     ...input.actions.filter((a) => !CLOSED_ACTION.has(a.status)).map((a) => ({ kind: 'CORRECTIVE' as const, title: a.title, dueDate: a.dueDate })),

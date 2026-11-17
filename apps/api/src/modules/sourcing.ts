@@ -13,6 +13,7 @@ import { inspectUpload } from '../files.ts';
 import { objectKey, type ObjectStore } from '../storage.ts';
 import * as approvals from './approvals.ts';
 import { resolveDepartment } from './departments.ts';
+import { queueRoundInvites, roundInviteEmails } from './portal.ts';
 
 /**
  * Faz 2: proje → RFQ turu (görev ayrılıklı yayın onayı) → tedarikçi portalı (mühürlü teklif, sunucu saati)
@@ -204,7 +205,8 @@ export async function requestPublish(tx: Tx, ctx: TenantContext, id: string, ifM
   return { roundId: round.id, roundNo, approval: { steps: plan.steps, explanation: plan.explanation } };
 }
 
-export async function decidePublish(tx: Tx, ctx: TenantContext, roundId: string, body: { approve: boolean; note?: string }) {
+/** `opts.webOrigin`: v2 Faz 5 (R8) davet e-postasındaki `<WEB_ORIGIN>/portal/<roundId>` bağlantısı. */
+export async function decidePublish(tx: Tx, ctx: TenantContext, roundId: string, body: { approve: boolean; note?: string }, opts: { webOrigin?: string } = {}) {
   const r = (await tx.query<{ id: string; project_id: string; company_id: string; status: string; requested_by: string; closes_at: Date; round_no: number }>(
     `SELECT id, project_id, company_id, status, requested_by, closes_at, round_no FROM rfq_rounds WHERE id = $1 FOR UPDATE`, [roundId])).rows[0];
   if (!r) throw notFound();
@@ -215,6 +217,7 @@ export async function decidePublish(tx: Tx, ctx: TenantContext, roundId: string,
   const step = await approvals.decideStep(tx, ctx, { entityType: 'rfq_round', entityId: roundId, action: 'RFQ_PUBLISH', companyId: r.company_id, requestedBy: r.requested_by,
     title: `Yayın onayı: ${p.title} (${r.round_no}. tur)`, projectId: p.id }, body.approve, body.note);
   if (step === 'PENDING') return { status: 'PENDING_APPROVAL' };
+  let invites: { queued: number; missingUsers: string[] } | null = null;
   if (body.approve) {
     // Teklif süresi tedarikçi için yayın anında başlar: onay gecikmesi politikadaki en az süreyi kısaltmamalı.
     const minDays = (await tx.query<{ d: number | null }>(`SELECT (plan->>'minResponseDays')::int AS d FROM approval_requests WHERE entity_type = 'rfq_round' AND entity_id = $1`, [roundId])).rows[0]?.d ?? null;
@@ -224,14 +227,17 @@ export async function decidePublish(tx: Tx, ctx: TenantContext, roundId: string,
     }
     await tx.query(`UPDATE rfq_rounds SET status = 'OPEN', approved_by = $2, approved_at = now() WHERE id = $1`, [roundId, ctx.userId]);
     await bump(tx, p.id, 'OPEN');
+    // v2 Faz 5 (R8): davetli tedarikçilerin etkin portal kullanıcılarına tek davet satırı; kullanıcısı olmayan için Satınalma görevi.
+    invites = await queueRoundInvites(tx, ctx, roundId, opts.webOrigin ?? '');
   } else {
     await tx.query(`UPDATE rfq_rounds SET status = 'CANCELLED', close_reason = $2 WHERE id = $1`, [roundId, body.note!.trim()]);
     const prevRound = (await tx.query(`SELECT 1 FROM rfq_rounds WHERE project_id = $1 AND status = 'CLOSED'`, [p.id])).rowCount;
     await bump(tx, p.id, prevRound ? 'EVALUATION' : 'DRAFT');
   }
   await closeTasks(tx, `rfq-publish:${roundId}`);
-  await audit(tx, ctx, body.approve ? 'rfq.published' : 'rfq.publish_rejected', 'rfq_round', roundId, { projectId: p.id }, body.note);
-  return { status: body.approve ? 'OPEN' : 'CANCELLED' };
+  await audit(tx, ctx, body.approve ? 'rfq.published' : 'rfq.publish_rejected', 'rfq_round', roundId,
+    invites ? { projectId: p.id, inviteEmails: invites.queued, suppliersWithoutPortalUser: invites.missingUsers.length } : { projectId: p.id }, body.note);
+  return invites ? { status: 'OPEN', invites } : { status: body.approve ? 'OPEN' : 'CANCELLED' };
 }
 
 // --- Kaynak bulma istisnaları (02 §5): tek kaynak, acil alım, iptal, sonuçsuz kapanış; onay motoruyla karara bağlanır ---
@@ -417,7 +423,9 @@ export async function getProject(tx: Tx, ctx: TenantContext, id: string) {
       departmentName: p.department_id ? (await tx.query<{ name: string }>(`SELECT name FROM departments WHERE id = $1`, [p.department_id])).rows[0]?.name ?? null : null,
     },
     lines: await currentLines(tx, id), criteria: await currentCriteria(tx, id), criteriaHistory,
-    round: round && { id: round.id, roundNo: round.round_no, closesAt: round.closes_at, status: round.status, requestedByMe: round.requested_by === ctx.userId, closeReason: round.close_reason, approval: roundApproval },
+    round: round && { id: round.id, roundNo: round.round_no, closesAt: round.closes_at, status: round.status, requestedByMe: round.requested_by === ctx.userId, closeReason: round.close_reason, approval: roundApproval,
+      // v2 Faz 5 (R8): davetin e-posta durumu dürüst görünür (kanal yoksa "Gönderilmedi — e-posta kanalı yapılandırılmadı").
+      inviteEmails: round.status === 'OPEN' || round.status === 'CLOSED' ? await roundInviteEmails(tx, round.id) : [] },
     invitations, questions, evaluations, awards, exceptions: await listExceptions(tx, ctx, id),
     publishPolicy: { minInvitees: publishPolicy.minInvitees, minResponseDays: publishPolicy.minResponseDays, steps: publishPolicy.steps, explanation: publishPolicy.explanation },
     serverTime: new Date(),

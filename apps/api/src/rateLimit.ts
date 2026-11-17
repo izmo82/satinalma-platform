@@ -27,6 +27,9 @@ export const DEFAULT_RATE_LIMIT: Omit<RateLimitConfig, 'enabled'> = { perMinute:
 const HEAVY: [string, RegExp][] = [
   ['POST', /^\/api\/v1\/documents$/],
   ['POST', /^\/api\/v1\/portal\/rounds\/[^/]+\/files$/],
+  // v2 Faz 5: tedarikçi belgesi yüklemeleri (portal ve kart).
+  ['POST', /^\/api\/v1\/portal\/documents$/],
+  ['POST', /^\/api\/v1\/suppliers\/[^/]+\/documents$/],
   ['GET', /^\/api\/v1\/evaluations\/[^/]+\/(report\.xlsx|decision\.pdf)$/],
   ['GET', /^\/api\/v1\/reports\/summary(\.csv)?$/],
   ['POST', /^\/api\/v1\/tenant-exports(\/[^/]+\/download)?$/],

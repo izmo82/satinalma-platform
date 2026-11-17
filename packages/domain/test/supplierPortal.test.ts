@@ -79,6 +79,13 @@ describe('R15 portalStanding', () => {
     expect(portalStanding({ ...base, surveys: [{ ratio: '70' }, { ratio: '90' }] })).toMatchObject({ score: 80, scoreReason: null });
     expect(portalStanding({ ...base, surveys: [{ ratio: '70' }], review: { score: '80' }, residualLevel: 'HIGH', verifiedIncidents: [{ severity: 'MEDIUM' }] })).toMatchObject({ score: 65, level: 'HIGH', levelLabel: 'yüksek' });
   });
+  it('puanın risk girdisi scoreRiskLevel (yearSummary ile aynı); görünen seviye residualLevel; scoreRiskLevel dönmez', () => {
+    const r = portalStanding({ ...base, surveys: [{ ratio: '70' }], residualLevel: 'LOW', scoreRiskLevel: 'HIGH' });
+    expect(r).toMatchObject({ score: portalStanding({ ...base, surveys: [{ ratio: '70' }], residualLevel: 'HIGH' }).score, level: 'LOW' });
+    expect(r.score).toBeLessThan(70);
+    expect(Object.keys(r)).not.toContain('scoreRiskLevel');
+    expect(portalStanding({ ...base, surveys: [{ ratio: '70' }], residualLevel: 'HIGH', scoreRiskLevel: null }).score).toBe(70);
+  });
   it('veri yoksa puan yok, gerekçe var', () => {
     const r = portalStanding(base);
     expect(r.score).toBeNull(); expect(r.scoreReason).toContain('anket'); expect(r.level).toBeNull(); expect(r.levelLabel).toBeNull();

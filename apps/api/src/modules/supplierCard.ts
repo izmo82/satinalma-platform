@@ -13,6 +13,7 @@ import type { ObjectStore } from '../storage.ts';
 import { closeTasks, openTask } from '../tasks.ts';
 import { listInfo } from './contractIntake.ts';
 import { currentRisk } from './riskAssessments.ts';
+import { ensureDocumentReminderJob } from './supplierDocReminders.ts';
 import * as evals from './supplierEval.ts';
 
 /**
@@ -400,6 +401,8 @@ export async function addInternalDocument(tx: Tx, ctx: TenantContext, supplierId
       title: 'Tedarikçi belgesi virüs taramasından geçemedi', reason: `${t.name} belgesi taranamadı ve karantinada.`,
       nextAction: 'Taramayı yeniden yaptırın ya da belgeyi yeniden yükleyin.', assigneeRole: 'PROCUREMENT', severity: 'HIGH', dedupeKey: `supplier-document:${id}:av_error` });
   }
+  // v2 Faz 5 Görev 6 (R12): hatırlatma zincirini başlatır (kiracı başına günlük iş; idempotent).
+  if (validUntil) await ensureDocumentReminderJob(tx, ctx.tenantId);
   await audit(tx, ctx, 'supplier_document.uploaded', 'supplier', supplierId, { documentId: id, typeCode, replacesId, avScanStatus: p.avScanStatus, via: 'INTERNAL' });
   const row = (await tx.query<DocRow>(`${DOC_SELECT} WHERE d.id = $1`, [id])).rows[0]!;
   return documentView(row);

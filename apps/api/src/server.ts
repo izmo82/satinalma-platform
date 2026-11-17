@@ -35,6 +35,7 @@ import * as approvers from './modules/approvers.ts';
 import * as templates from './modules/templates.ts';
 import * as riskQuestions from './modules/riskQuestions.ts';
 import * as riskAssessments from './modules/riskAssessments.ts';
+import * as portal from './modules/portal.ts';
 import * as riskCycle from './modules/riskCycle.ts';
 import * as intake from './modules/contractIntake.ts';
 import * as contractAi from './modules/contractAi.ts';
@@ -1203,7 +1204,7 @@ export async function buildApp(deps: AppDeps) {
     reply.status(201).send(await scoped(req, 'project.manage', (tx, ctx) => sourcing.requestPublish(tx, ctx, (req.params as any).id, ifMatch(req), req.body as any))));
   app.post('/api/v1/rfq-rounds/:id/decision', { schema: { tags: ['rfq'], params: idParams, body: { type: 'object', required: ['approve'],
     properties: { approve: { type: 'boolean' }, note: { type: 'string', maxLength: 2000 } } } } }, async (req) =>
-    scoped(req, 'approval.decide', (tx, ctx) => sourcing.decidePublish(tx, ctx, (req.params as any).id, req.body as any)));
+    scoped(req, 'approval.decide', (tx, ctx) => sourcing.decidePublish(tx, ctx, (req.params as any).id, req.body as any, { webOrigin: deps.config.webOrigin })));
   app.post('/api/v1/rfq-rounds/:id/close', { schema: { tags: ['rfq'], params: idParams, body: { type: 'object', required: ['reason'], properties: { reason: { type: 'string', maxLength: 2000 } } } } }, async (req) =>
     scoped(req, 'project.publish.approve', (tx, ctx) => sourcing.closeRoundEarly(tx, ctx, (req.params as any).id, (req.body as any).reason)));
   app.post('/api/v1/rfq-questions/:id/answer', { schema: { tags: ['rfq'], params: idParams, body: { type: 'object', required: ['answer'], properties: { answer: { type: 'string', maxLength: 4000 } } } } }, async (req) =>
@@ -1593,6 +1594,45 @@ export async function buildApp(deps: AppDeps) {
   });
   app.post('/api/v1/portal/rounds/:id/questions', { schema: { tags: ['portal'], params: idParams, body: { type: 'object', required: ['question'], properties: { question: { type: 'string', maxLength: 4000 } } } } }, async (req, reply) =>
     reply.status(201).send(await scoped(req, 'bid.submit', (tx, ctx) => sourcing.askQuestion(tx, ctx, (req.params as any).id, (req.body as any).question))));
+
+  // --- v2 Faz 5 (D110) Görev 6: tedarikçi portalı — özet, Tekliflerim, Belgelerim, Skorum ve risk, Firma bilgileri -----------------
+  // Yalnız SUPPLIER rolü; tedarikçi oturumu yalnız kendi kartını görür (R17). Skor/risk yalnız SECURITY DEFINER işlevlerinden (R15).
+  app.get('/api/v1/portal/summary', { schema: { tags: ['portal'] } }, async (req) => scoped(req, 'bid.submit', (tx, ctx) => portal.summary(tx, ctx)));
+  app.get('/api/v1/portal/bids', { schema: { tags: ['portal'] } }, async (req) => scoped(req, 'bid.submit', (tx, ctx) => portal.bids(tx, ctx)));
+  app.get('/api/v1/portal/documents', { schema: { tags: ['portal'] } }, async (req) => scoped(req, 'portal.documents', (tx, ctx) => portal.documents(tx, ctx)));
+  app.post('/api/v1/portal/documents', { schema: { tags: ['portal'], consumes: ['multipart/form-data'] } }, async (req, reply) => {
+    // İzin dosya okunmadan önce denetlenir; dosya denetimi ve tarama işlem dışında, depoya yazma işlemden önce (Görev 4 I1), hata olursa silinir.
+    await scoped(req, 'portal.documents', async () => undefined);
+    const fields: Record<string, string> = {};
+    let file: { filename: string; mimetype: string; body: Buffer } | null = null;
+    try {
+      for await (const part of req.parts({ limits: { fileSize: supplierCard.SUPPLIER_DOC_MAX_BYTES, files: 1, fields: 10, fieldSize: 2000 } })) {
+        if (part.type === 'file') file = { filename: part.filename, mimetype: part.mimetype, body: await part.toBuffer() };
+        else fields[part.fieldname] = String(part.value ?? '');
+      }
+    } catch (err: any) {
+      if (err?.code === 'FST_REQ_FILE_TOO_LARGE') throw unprocessable('file_too_large', 'Dosya 10 MB sınırını aşıyor.');
+      throw err;
+    }
+    if (!file) throw unprocessable('file_required', 'Dosya seçin.');
+    const upload = { ...file, fields };
+    const prepared = await scoped(req, 'portal.documents', async (_tx, ctx) => portal.preparePortalUpload(upload, ctx.tenantId, scanner));
+    await deps.store.put(prepared.storageKey, file.body, prepared.mimeType);
+    try {
+      return reply.status(201).send(await scoped(req, 'portal.documents', (tx, ctx) => portal.addPortalDocument(tx, ctx, upload, prepared)));
+    } catch (err) {
+      await deps.store.delete(prepared.storageKey).catch(() => req.log.warn({ key: prepared.storageKey }, 'portal document cleanup failed'));
+      throw err;
+    }
+  });
+  app.get('/api/v1/portal/standing', { schema: { tags: ['portal'] } }, async (req) => scoped(req, 'portal.standing', (tx, ctx) => portal.standing(tx, ctx)));
+  app.get('/api/v1/portal/profile', { schema: { tags: ['portal'] } }, async (req) => scoped(req, 'portal.profile', (tx, ctx) => portal.profile(tx, ctx)));
+  app.put('/api/v1/portal/profile', { schema: { tags: ['portal'], body: { type: 'object', required: ['contactName'], additionalProperties: false, properties: {
+    contactName: { type: 'string', maxLength: 200 }, contactPhone: { type: ['string', 'null'], maxLength: 40 }, address: { type: ['string', 'null'], maxLength: 1000 } } } } }, async (req) =>
+    scoped(req, 'portal.profile', (tx, ctx) => portal.updateProfile(tx, ctx, req.body as { contactName: string; contactPhone?: string | null; address?: string | null })));
+  app.post('/api/v1/portal/profile/change-request', { schema: { tags: ['portal'], body: { type: 'object', required: ['field', 'note'], additionalProperties: false, properties: {
+    field: { type: 'string', enum: ['LEGAL_NAME', 'TAX_ID', 'OTHER'] }, note: { type: 'string', maxLength: 1000 } } } } }, async (req, reply) =>
+    reply.status(201).send(await scoped(req, 'portal.profile', (tx, ctx) => portal.requestChange(tx, ctx, req.body as { field: portal.ChangeField; note: string }))));
 
   // --- v2 Faz 5 (D110): girişsiz tedarikçi başvurusu (R2–R5) -------------------------------------------------
   // Oturum gerekmez; yalnız 052 SECURITY DEFINER işlevleri çağrılır, yanıtta kiracı kimliği (`internal`) yoktur.

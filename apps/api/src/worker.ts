@@ -16,6 +16,7 @@ import { directoryJobContext, enqueueNightlySyncs, processDirectorySync } from '
 import { configureMailChannel, DISPATCH_JOB, mailSender, processEmailDispatch, type MailSender } from './mail/index.ts';
 import { EXPIRE_JOB, processApplicationExpiry, processApplicationSubmitted, SUBMITTED_JOB } from './modules/supplierApplications.ts';
 import { dailyRiskSchedules, processRiskJob, RISK_JOB_KINDS } from './modules/riskCycle.ts';
+import { DOC_REMINDER_JOB, processDocumentReminderJob } from './modules/supplierDocReminders.ts';
 
 /** İsteğe bağlı işçi bağımlılıkları; eski çağrılar etkilenmez. */
 export interface WorkerOptions {
@@ -23,6 +24,8 @@ export interface WorkerOptions {
   directoryProvider?: DirectoryProvider | null;
   /** v2 Faz 5 (R6): yapılandırılmış e-posta göndericisi; yoksa `email.dispatch` işi çekilmez (kanal `none` iken QUEUED satır da yazılmaz). */
   mailSender?: MailSender | null;
+  /** v2 Faz 5 (R12): hatırlatma e-postasındaki portal bağlantısının kökü; verilmezse WEB_ORIGIN ortam değişkeni. */
+  webOrigin?: string;
 }
 
 /**
@@ -35,7 +38,7 @@ export async function processJobs(pool: pg.Pool, store: ObjectStore, detectorPro
   const sender = opts.mailSender ?? null;
   // Kiracı dışa aktarımı saatler sürebilir: ayrı şeritte tek tek çalışır, ihbar/imza/silme işlerini bekletmez.
   const short = ['signature.detect', 'contract.notice_reminder', 'contract.end_reminder', 'contract.reminder_backfill', 'contract.obligation_due', 'retention.purge', ...(erpAdapterName ? ['erp.export'] : []), ...(hasAiProviders() ? ['ai.run'] : []),
-    ...(directory ? ['directory.sync'] : []), ...(sender ? [DISPATCH_JOB] : []), SUBMITTED_JOB, EXPIRE_JOB, ...RISK_JOB_KINDS];
+    ...(directory ? ['directory.sync'] : []), ...(sender ? [DISPATCH_JOB] : []), SUBMITTED_JOB, EXPIRE_JOB, ...RISK_JOB_KINDS, DOC_REMINDER_JOB];
   const kinds = lane === 'export' ? ['tenant.export'] : lane === 'short' ? short : [...short, 'tenant.export'];
   const claimed = await withoutTenant(pool, async (c) =>
     (await c.query<{ id: string; tenant_id: string; company_id: string | null; kind: string; requested_by: string | null }>(
@@ -67,6 +70,11 @@ export async function processJobs(pool: pg.Pool, store: ObjectStore, detectorPro
       // v2 Faz 5 (R2): girişsiz başvurunun işleri sistem işidir (isteyen kullanıcı yok; kiracı başvurudan gelir).
       if (job.kind === SUBMITTED_JOB) { await processApplicationSubmitted(pool, job.tenant_id, job.id); continue; }
       if (job.kind === EXPIRE_JOB) { await processApplicationExpiry(pool, job.tenant_id, job.id); continue; }
+      // v2 Faz 5 (R12): belge hatırlatmaları sistem işidir (kiracı başına günlük; her çalışma ertesi günün işini kurar).
+      if (job.kind === DOC_REMINDER_JOB) {
+        await processDocumentReminderJob(pool, job.tenant_id, job.id, { webOrigin: opts.webOrigin ?? process.env.WEB_ORIGIN ?? '' });
+        continue;
+      }
       if (job.kind === 'contract.reminder_backfill') { await processReminderBackfill(pool, job.tenant_id, job.id); continue; }
       // v2 Faz 6 (R6, R7, R10): yıllık açılış, gecikme yükseltmesi ve çeyreklik görevler sistem işidir (isteyen yok).
       if (RISK_JOB_KINDS.includes(job.kind)) { await processRiskJob(pool, job.kind, job.tenant_id, job.id); continue; }
@@ -123,7 +131,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         // v2 Faz 6: risk döngüsü işleri İstanbul gününde bir kez (kiracı başına tekil iş anahtarı).
         await riskSchedules(pool, new Date()).catch((e) => console.error('risk schedules enqueue failed', (e as Error).message));
       }
-      const n = await processJobs(pool, store, config.signatureDetectorProvider, 10, config.erpAdapter ?? null, lane, { directoryProvider: directory, mailSender: mail });
+      const n = await processJobs(pool, store, config.signatureDetectorProvider, 10, config.erpAdapter ?? null, lane, { directoryProvider: directory, mailSender: mail, webOrigin: config.webOrigin });
       if (n === 0) await new Promise((r) => setTimeout(r, 2000));
     }
   };

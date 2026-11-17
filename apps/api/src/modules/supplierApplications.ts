@@ -10,6 +10,7 @@ import { ApiError, notFound, unprocessable } from '../errors.ts';
 import { inspectUpload } from '../files.ts';
 import type { ObjectStore } from '../storage.ts';
 import { scanStatus, type AvScanner, type AvScanStatus } from '../av/index.ts';
+import { ensureDocumentReminderJob } from './supplierDocReminders.ts';
 import { enqueueEmailDispatch, queueEmail, type MailChannel } from '../mail/index.ts';
 import { audit } from '../audit.ts';
 import { clientAddressKey, DEFAULT_PUBLIC_RATE_LIMIT } from '../publicRateLimit.ts';
@@ -659,6 +660,8 @@ async function approve(tx: Tx, ctx: TenantContext, a: AppRow, note: string | nul
       services_offered = coalesce(services_offered, $7), application_id = coalesce(application_id, $8), row_version = row_version + 1 WHERE id = $1`,
     [supplierId, a.contact_name.slice(0, 200), a.contact_email, a.contact_phone, a.address, a.categories, a.services, a.id]);
   const moved = (await tx.query(`UPDATE supplier_documents SET supplier_id = $1 WHERE application_id = $2 AND supplier_id IS NULL`, [supplierId, a.id])).rowCount ?? 0;
+  // v2 Faz 5 Görev 6 (R12): karta geçen geçerlilik tarihli belge hatırlatma zincirini başlatır (idempotent).
+  if (moved) await ensureDocumentReminderJob(tx, ctx.tenantId);
   await tx.query(`UPDATE supplier_applications SET status = 'APPROVED', decided_by = $2, decided_at = now(), decision_reason = $3, supplier_id = $4,
       token_hash = NULL, token_purpose = NULL, token_expires_at = NULL, row_version = row_version + 1 WHERE id = $1`, [a.id, ctx.userId, note, supplierId]);
 
