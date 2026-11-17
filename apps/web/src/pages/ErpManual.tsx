@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, ApiError } from '../lib/api.ts';
 import { useResource } from '../lib/useApi.ts';
-import { hasPermission, hasRole, useSession } from '../lib/session.tsx';
+import { hasPermission, useSession } from '../lib/session.tsx';
 import { fmtDate, fmtDateTime } from '../lib/format.ts';
 import type { Label } from '../lib/labels.ts';
 import { Banner, Field, Loading, Modal, Tag } from '../ui/kit.tsx';
@@ -12,7 +12,7 @@ import { Button } from '@/components/ui/button';
 // "ERP (taklit)", "ERP (kaynağı doğrulanamadı)". Taklit sağlayıcıdan gelen değer gerçek ERP değeri gibi gösterilmez.
 
 const SOURCE_TONE: Record<string, Label['tone']> = { Elle: 'human', ERP: 'ok' };
-export const sourceTag = (label: string): Label => ({ text: `Kaynak: ${label}`, tone: SOURCE_TONE[label] ?? 'warn', icon: label === 'Elle' ? 'pen' : label === 'ERP' ? 'check' : 'alert' });
+export const sourceTag = (label: string, mock?: boolean | null): Label => ({ text: `Kaynak: ${label}`, tone: mock ? 'warn' : SOURCE_TONE[label] ?? 'warn', icon: mock ? 'alert' : label === 'Elle' ? 'pen' : label === 'ERP' ? 'check' : 'alert' });
 
 type Msg = { tone: 'info' | 'warn' | 'danger'; title: string; text?: string } | null;
 
@@ -149,7 +149,7 @@ function ManualOutboundDialog({ feature, label, entityType, entityId, onClose, o
       await onDone({ tone: 'info', title: 'ERP\'ye elle iletildi olarak kaydedildi.', text: `ERP referans no ${ref.trim()}.` });
     } catch (x) { setErr(x as ApiError); } finally { setBusy(false); }
   }
-  const retry = typeof err?.details?.retryAfterMinutes === 'number' ? ` En geç ${err.details.retryAfterMinutes} dakika sonra yeniden bakın.` : '';
+  const retry = typeof err?.details?.retryAfterMinutes === 'number' && !/\d+\s*dakika/.test(err.message) ? ` En geç ${err.details.retryAfterMinutes} dakika sonra yeniden bakın.` : '';
   return (
     <Modal title={`${label}: ERP'ye elle iletildi`} onClose={onClose} footer={<>
       <Button variant="ghost" onClick={onClose}>Vazgeç</Button>
@@ -169,13 +169,14 @@ function ManualOutboundDialog({ feature, label, entityType, entityId, onClose, o
 
 export interface ErpSource {
   kind: 'ERP' | 'EINVOICE' | 'MANUAL'; label: string; erp: { invoiceId: string; providerKind: string | null; providerLabel: string | null; real: boolean } | null;
-  payment: { status: string; statusLabel: string; at: string | null; source: 'ERP' | 'MANUAL'; sourceLabel: string } | null;
+  // v2 Faz 8 izleme: sourceLabel sunucudan olduğu gibi ("Elle" | "ERP (taklit)" | "ERP" | "ERP (kaynağı doğrulanamadı)"); taklitte uyarı tonu.
+  payment: { status: string; statusLabel: string; at: string | null; source: 'ERP' | 'MANUAL'; sourceLabel: string; mock?: boolean | null; provider?: string | null } | null;
 }
 const PAYMENT_OPTIONS = [['PAID', 'Ödendi'], ['PARTIAL', 'Kısmi'], ['UNPAID', 'Ödenmedi'], ['UNKNOWN', 'Bilinmiyor']] as const;
 
 export function InvoiceErpPanel({ invoiceId, src, refs, onChanged }: { invoiceId: string; src: ErpSource; refs: { contract: string | null; order: string | null }; onChanged: () => Promise<void> }) {
   const { me } = useSession();
-  const canEdit = hasRole(me, 'PROCUREMENT'); // erp.manual.record
+  const canEdit = hasPermission(me, 'erp.manual.record');
   const [editing, setEditing] = useState(false);
   const [status, setStatus] = useState(src.payment?.status ?? 'UNKNOWN');
   const [at, setAt] = useState(src.payment?.at ?? '');
@@ -202,7 +203,8 @@ export function InvoiceErpPanel({ invoiceId, src, refs, onChanged }: { invoiceId
           <dt>ERP sözleşme referansı</dt><dd className="mono">{refs.contract ?? '—'}</dd>
           <dt>ERP sipariş referansı</dt><dd className="mono">{refs.order ?? '—'}</dd>
           <dt>ERP ödeme durumu</dt>
-          <dd>{src.payment ? <span className="flex flex-wrap items-center gap-2"><span className="font-semibold">{src.payment.statusLabel}</span>{src.payment.at && <span className="text-sm">{fmtDate(src.payment.at)}</span>}<Tag label={sourceTag(src.payment.sourceLabel)} /></span> : 'Bilgi yok'}</dd>
+          <dd>{src.payment ? <span className="flex flex-wrap items-center gap-2"><span className="font-semibold">{src.payment.statusLabel}</span>{src.payment.at && <span className="text-sm">{fmtDate(src.payment.at)}</span>}<Tag label={sourceTag(src.payment.sourceLabel, src.payment.mock)} /></span> : 'Bilgi yok'}
+            {src.payment?.mock && <span className="block text-sm text-warn">Ödeme durumu taklit sağlayıcıdan geldi; gerçek ERP bilgisi değil.</span>}</dd>
         </dl>
         <p className="text-sm text-ink-subtle">Ödeme ERP'de yürür; bu alan yalnız bilgidir. ERP okuması elle girilen değeri ezmez.</p>
         {canEdit && (editing ? (

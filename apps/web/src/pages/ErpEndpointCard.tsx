@@ -213,7 +213,8 @@ function errorDetail(x: ApiError, card: EndpointCard): string | undefined {
   if (x.code === 'endpoint_invalid' && Array.isArray(x.details?.errors)) {
     return (x.details.errors as { field: string; code: string }[]).map((e) => `${fieldName(e.field, card)}: ${CODE_TR[e.code] ?? 'Geçersiz değer.'}`).join(' ');
   }
-  if (x.status === 429 && typeof x.details?.retryAfterSeconds === 'number') return `${x.details.retryAfterSeconds} saniye sonra yeniden deneyin.`;
+  // v2 Faz 8 izleme: bekleme süresi sunucu iletisinde zaten yazıyorsa ikinci kez eklenmez.
+  if (x.status === 429 && typeof x.details?.retryAfterSeconds === 'number' && !/\d+\s*saniye/.test(x.message)) return `${x.details.retryAfterSeconds} saniye sonra yeniden deneyin.`;
   return undefined;
 }
 function fieldName(field: string, card: EndpointCard): string {
@@ -326,7 +327,7 @@ function ConnectionForm({ card, onSaved }: { card: EndpointCard; onSaved: (n: No
       <fieldset className="grid gap-x-3 min-[640px]:grid-cols-2">
         <legend className="mb-2 text-[15px] font-semibold">Kimlik doğrulama</legend>
         <Field id={`${idp}-auth`} label="Tür" error={errors.authType}>
-          {(p) => <select className="input" {...p} value={f.authType} onChange={(e) => set({ authType: e.target.value as FormState['authType'] })}>
+          {(p) => <select className="input" {...p} value={f.authType} onChange={(e) => { set({ authType: e.target.value as FormState['authType'] }); setSecret(''); /* v2 Faz 8 izleme: tür değişince yazılan sır başka türe taşınmaz. */ }}>
             <option value="">Seçin</option><option value="BASIC">Kullanıcı adı ve parola</option><option value="OAUTH2_CLIENT_CREDENTIALS">OAuth 2.0 istemci kimliği</option></select>}</Field>
         {f.authType === 'BASIC' && <Field id={`${idp}-user`} label="Kullanıcı adı" error={errors.username}>
           {(p) => <input className="input" {...p} autoComplete="off" value={f.username} maxLength={200} onChange={(e) => set({ username: e.target.value })} />}</Field>}
@@ -352,7 +353,7 @@ function ConnectionForm({ card, onSaved }: { card: EndpointCard; onSaved: (n: No
             ) : (
               <div className="field">
                 <span id={`${idp}-secret-l`} className="text-sm font-semibold">{secretLabel}</span>
-                <div className="flex flex-wrap items-center gap-2" aria-labelledby={`${idp}-secret-l`}>
+                <div role="group" className="flex flex-wrap items-center gap-2" aria-labelledby={`${idp}-secret-l`}>
                   <span data-testid="secret-state">Ayarlı · {fmtDate(card.secretUpdatedAt)}</span>
                   <Button type="button" variant="outline" size="sm" disabled={!card.secretKeyConfigured} onClick={() => setReplacing(true)}>Değiştir</Button>
                   {!card.enabled && <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => void removeSecret()}>Kaldır</Button>}

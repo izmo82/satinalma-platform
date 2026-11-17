@@ -50,7 +50,9 @@ interface InvoiceRow { id: string; kind: keyof typeof KIND; invoiceNo: string; i
   netAmount: string; legalStatus: string; paymentStatus: string; decision: string | null; erpStatus: string | null; duplicateCount: number; matched: boolean; departmentId: string | null; departmentName: string | null;
   // v2 Faz 7 (R1): eşleşme durumu, sözleşme ve proje. Faz 8: kaynak etiketi.
   matchState?: MatchState; matchStateLabel?: string; matchMethod?: string | null; contract?: { id: string; code: string; title: string } | null; project?: { id: string; code: string; title: string } | null;
-  sourceLabel?: string | null; erpPaymentStatusLabel?: string | null; erpProviderKind?: string | null }
+  sourceLabel?: string | null; erpPaymentStatusLabel?: string | null; erpProviderKind?: string | null;
+  // v2 Faz 8 izleme: ödeme durumu kaynağı (etiket sunucuda "(taklit ERP)" vb. ile gelir; olduğu gibi gösterilir).
+  erpPaymentSource?: string | null; erpPaymentMock?: boolean | null; erpPaymentProvider?: string | null }
 /** Eski tahsis kontrolü (bulgulardan): v2 durumunun yanında ikincil satır olarak görünür kalır. */
 const matchOf = (x: InvoiceRow) => (x.legalStatus !== 'RECEIVED' ? 'IPTAL' : x.matched ? 'ESLESTI' : 'ESLESMEDI');
 interface InvoiceList { items: InvoiceRow[]; counts?: { all: number; matched: number; unmatched: number }; can?: { match: boolean; retryQueue: boolean } }
@@ -148,7 +150,7 @@ export function InvoicesPage() {
                   <Button size="xs" variant="outline" className="mt-1" onClick={() => setLinking(x)} aria-label={`${x.invoiceNo} faturasını elle bağla`}>Elle bağla</Button>}</TableCell>
               {show('erp') && <TableCell className="text-sm text-ink-muted max-[900px]:hidden">{x.erpStatus ? ERP[x.erpStatus] : '—'}{x.paymentStatus === 'PAID' ? ' · ödendi (ERP)' : ''}
                 {/* v2 Faz 8 (R6): ERP ödeme durumu bilgisi (ERP'den ya da elle); v1 ödeme durumundan ayrı. */}
-                {x.erpPaymentStatusLabel && <span className="block">ERP ödeme: {x.erpPaymentStatusLabel}</span>}</TableCell>}
+                {x.erpPaymentStatusLabel && <span className={cn('block', x.erpPaymentMock && 'text-warn')}>ERP ödeme: {x.erpPaymentStatusLabel}</span>}</TableCell>}
             </TableRow>
           ))}</TableBody>
         </Table>

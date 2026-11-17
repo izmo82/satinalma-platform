@@ -32,6 +32,8 @@ export function IntegrationsPage() {
         <li className="shrink-0"><Link to="/yonetim/entegrasyonlar?bolum=baglantilar" aria-current={section === 'baglantilar' ? 'page' : undefined} className={item(section === 'baglantilar')}>Bağlantılar</Link></li>
         <li className="shrink-0"><Link to="/yonetim/entegrasyonlar?bolum=mutabakat" aria-current={section === 'mutabakat' ? 'page' : undefined} className={item(section === 'mutabakat')}>Fatura aktarım mutabakatı</Link></li>
       </ul>
+      {/* v2 Faz 8 izleme (sıfır gerileme): Faz 1'de Yönetici'nin ilk ekranında görünen mutabakat açıklaması varsayılan (Bağlantılar) görünümünde de. */}
+      {!recon && section === 'baglantilar' && <p className="mt-2 text-sm text-ink-muted">ERP mutabakatı Satınalma ve Denetçi rollerine açık: fatura aktarımlarının mutabakatını Satınalma yürütür, Denetçi okur.</p>}
     </nav>
     {section === 'baglantilar' ? <Connections /> : recon ? <Suspense fallback={<div className="page"><Loading rows={5} /></div>}><ErpReconciliationPage /></Suspense> : (
       // Yönetici rolünün mutabakat uçlarına yetkisi yok (Faz 1'deki açıklama aynen).
