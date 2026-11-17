@@ -81,7 +81,7 @@ function Summary({ d, savedDraft }: { d: ContractV2; savedDraft: boolean }) {
         {d.missing.map((m) => m.label).join(', ')}</Banner>}
       {!d.missing.length && d.can.submit && ['DRAFT', 'REJECTED', 'LEGACY'].includes(d.status.code) && (
         <Banner tone="info" title={d.status.code === 'REJECTED' ? 'Reddedildi; düzeltip yeniden gönderin' : 'Onaya gönderilebilir'}
-          action={<Button size="sm" asChild><Link to={`/sozlesmeler/ekle?taslak=${d.family.id}&adim=${d.status.code === 'REJECTED' ? 3 : 4}`}>{d.status.code === 'REJECTED' ? 'Düzenle ve yeniden gönder' : 'İncele ve gönder'}</Link></Button>} />
+          action={<Button size="sm" asChild><Link to={`/sozlesmeler/ekle?taslak=${d.family.id}&adim=3`}>{d.status.code === 'REJECTED' ? 'Düzenle ve yeniden gönder' : 'Doğrula ve gönder'}</Link></Button>} />
       )}
       <AmendmentNote d={d} rem={rem.data} />
       <div className="grid grid-cols-[minmax(0,1fr)_420px] gap-5 max-[1100px]:grid-cols-1">
@@ -94,7 +94,8 @@ function Summary({ d, savedDraft }: { d: ContractV2; savedDraft: boolean }) {
             <div className="panel-head"><h2 id="inv-h">Eşleşen faturalar</h2></div>
             <div className="panel-body grid gap-3">
               {limit.loading && !limit.data ? <Loading rows={2} /> : limit.error ? <p className="text-ink-muted">Tüketim bilgisi alınamadı.</p> : limit.data && <Usage l={limit.data} />}
-              <p className="text-sm text-ink-muted">Tüketim, bu sözleşmeye tahsis edilmiş onaylı faturalardan hesaplanır. Fatura bazında liste <Link to="/faturalar">Faturalar</Link> ekranındadır.</p>
+              <InvoiceRows familyId={d.family.id} />
+              <p className="text-sm text-ink-muted">Tüketim yalnız onaylı faturalardan hesaplanır; tutar, faturanın bu sözleşmeye tahsis edilen kısmıdır. Bütün faturalar: <Link to="/faturalar">Faturalar</Link>.</p>
             </div>
           </section>
         </div>
@@ -123,6 +124,32 @@ function Summary({ d, savedDraft }: { d: ContractV2; savedDraft: boolean }) {
           </section>
         </div>
       </div>
+    </div>
+  );
+}
+
+interface FamilyInvoice { id: string; invoiceNo: string; date: string; amount: string; currency: string; status: 'APPROVED' | 'REJECTED' | 'PENDING'; statusLabel: string; supplier: { legalName: string } }
+const INVOICE_TONE = { APPROVED: { tone: 'ok', icon: 'check' }, REJECTED: { tone: 'danger', icon: 'x' }, PENDING: { tone: 'warn', icon: 'clock' } } as const;
+
+function InvoiceRows({ familyId }: { familyId: string }) {
+  const r = useResource<{ items: FamilyInvoice[] }>(`/api/v1/contracts/${familyId}/invoices`);
+  if (r.loading && !r.data) return <Loading rows={2} />;
+  if (r.error || !r.data) return <p className="text-sm text-ink-muted">Faturalar alınamadı. <button type="button" className="underline" onClick={() => void r.reload()}>Yeniden dene</button></p>;
+  if (!r.data.items.length) return <p className="text-ink-muted">Bu sözleşmeye tahsis edilmiş fatura yok.</p>;
+  return (
+    <div className="overflow-x-auto rounded-md border border-border">
+      <table className="w-full text-left text-sm">
+        <caption className="sr-only">Bu sözleşmeye tahsis edilmiş faturalar</caption>
+        <thead className="bg-sunken text-ink-muted"><tr><th scope="col" className="px-3 py-2 font-semibold">Fatura no</th><th scope="col" className="px-3 py-2 font-semibold">Tarih</th>
+          <th scope="col" className="px-3 py-2 text-right font-semibold">Tutar</th><th scope="col" className="px-3 py-2 font-semibold">Durum</th></tr></thead>
+        <tbody>{r.data.items.map((i) => (
+          <tr key={i.id} className="border-t border-border">
+            <td className="px-3 py-2"><Link to={`/faturalar/${i.id}`} className="tabular">{i.invoiceNo}</Link></td>
+            <td className="tabular whitespace-nowrap px-3 py-2">{fmtDate(i.date)}</td>
+            <td className="tabular whitespace-nowrap px-3 py-2 text-right">{fmtMoney(i.amount, i.currency)}</td>
+            <td className="px-3 py-2"><Tag label={{ text: i.statusLabel, ...INVOICE_TONE[i.status] }} /></td>
+          </tr>))}</tbody>
+      </table>
     </div>
   );
 }
@@ -221,7 +248,11 @@ function Approvals({ d, reload }: { d: ContractV2; reload: () => Promise<void> }
       setMsg({ tone: 'info', text: mode === 'REJECTED' ? 'Reddedildi; sözleşme ekleyene döndü.' : r.data.chainStatus === 'APPROVED' ? 'Onaylandı; zincir tamamlandı, hatırlatıcılar kuruldu.' : `Onaylandı; sıradaki: ${r.data.nextStep?.kindLabel ?? '—'}.` });
       setMode(null); setReason('');
       await reload();
-    } catch (e) { const err = e as ApiError; setMsg({ tone: err.status === 409 ? 'warn' : 'danger', text: err.message }); }
+    } catch (e) {
+      const err = e as ApiError; setMsg({ tone: err.status === 409 ? 'warn' : 'danger', text: err.message });
+      // Zincir başka biri tarafından ilerletilmiş ya da iptal edilmiş olabilir: güncel durumu göster.
+      if (err.status === 409 || err.status === 422 || err.status === 403) await reload();
+    }
     finally { setBusy(false); }
   }
   const short = mode === 'REJECTED' && reason.trim().length < 10;
@@ -230,7 +261,7 @@ function Approvals({ d, reload }: { d: ContractV2; reload: () => Promise<void> }
       {params.get('gonderildi') === '1' && c?.status === 'OPEN' && <Banner tone="info" icon="check" title="Onaya gönderildi">İlk onaycıya görev açıldı; karar verildikçe sıradaki onaycıya geçer.</Banner>}
       {msg && <Banner tone={msg.tone} title={msg.text} />}
       {!c ? <div className="rounded-md border border-border bg-surface"><Empty icon="stamp" title={d.legacy ? 'Onay kaydı yok (eski kayıt)' : 'Henüz onaya gönderilmedi'}>
-        {d.can.submit && !d.missing.length ? <Link to={`/sozlesmeler/ekle?taslak=${d.family.id}&adim=4`}>İncele ve gönder</Link> : d.missing.length ? 'Zorunlu alanlar tamamlanınca onaya gönderilebilir.' : null}</Empty></div> : (
+        {d.can.submit && !d.missing.length ? <Link to={`/sozlesmeler/ekle?taslak=${d.family.id}&adim=3`}>Alanları doğrula ve gönder</Link> : d.missing.length ? 'Zorunlu alanlar tamamlanınca onaya gönderilebilir.' : null}</Empty></div> : (
         <section className="panel">
           <div className="panel-head"><h2 className="flex-1">Onay zinciri</h2>
             <Tag label={c.status === 'OPEN' ? { text: d.status.label, tone: 'info', icon: 'info' } : c.status === 'APPROVED' ? { text: 'Tamamlandı', tone: 'human', icon: 'stamp' }
@@ -354,12 +385,28 @@ function Reminders({ d }: { d: ContractV2 }) {
 // --- Geçmiş -------------------------------------------------------------------------------------------------------------
 
 interface AuditRow { id: string; action: string; entityType: string; entityId: string; reason: string | null; at: string; actorName: string | null }
+// API'nin yazdığı denetim eylemleri (apps/api/src/modules: audit(tx, ctx, '…')). Bilinmeyen eylemde ham kod gösterilmez.
 const ACTION: Record<string, string> = {
-  'contract.created': 'Sözleşme eklendi', 'contract.draft.created': 'Taslak açıldı', 'contract.fields.updated': 'Alanlar güncellendi', 'contract.submitted': 'Onaya gönderildi',
-  'contract.approval.decided': 'Onay kararı verildi', 'contract.approval.approved': 'Onay zinciri tamamlandı', 'contract.approval.rejected': 'Reddedildi',
-  'contract.approval.cancelled': 'Onay turu iptal edildi', 'contract.reminders.scheduled': 'Hatırlatıcılar kuruldu', 'contract.version.added': 'Yeni sürüm eklendi',
-  'contract.terms.saved': 'Koşullar kaydedildi', 'contract.terms.verified': 'Koşullar doğrulandı', 'contract.renewal.decided': 'Yenileme kararı verildi',
+  'contract.created': 'Sözleşme eklendi', 'contract.draft.created': 'Taslak açıldı', 'contract.fields.updated': 'Alanlar güncellendi',
+  'contract.submitted': 'Onaya gönderildi', 'contract.approval.decided': 'Onay kararı verildi', 'contract.approval.approved': 'Onay zinciri tamamlandı',
+  'contract.approval.rejected': 'Reddedildi', 'contract.approval.cancelled': 'Onay turu iptal edildi (içerik değişti)',
+  'contract.reminders.scheduled': 'Hatırlatıcılar kuruldu', 'contract.reminder_settings.updated': 'Hatırlatıcı süreleri değişti',
+  'contract.version.added': 'Yeni sürüm eklendi', 'contract.supplier_party.added': 'Tedarikçi tarafı eklendi',
+  'contract.terms_entered': 'Koşullar girildi', 'contract.terms_revised': 'Koşullar değiştirildi', 'contract.terms_verified': 'Koşullar doğrulandı',
+  'contract.renewal_decided': 'Yenileme kararı verildi',
+  'contract.obligation_added': 'Yükümlülük eklendi', 'contract.obligation_recorded': 'Yükümlülük dönemi kaydedildi', 'contract.obligation_retired': 'Yükümlülük kaldırıldı',
+  'contract.price_rule.created': 'Fiyat kuralı eklendi', 'contract.price_revision.proposed': 'Fiyat revizyonu önerildi', 'contract.price_revision.approved': 'Fiyat revizyonu onaylandı',
+  'contract.sla.created': 'SLA eklendi', 'contract.sla.measured': 'SLA ölçümü kaydedildi',
+  'contract.guarantee.received': 'Teminat alındı', 'contract.guarantee.returned': 'Teminat iade edildi',
+  'signature.analysis.requested': 'İmza taraması istendi', 'signature.analysis.completed': 'İmza taraması tamamlandı',
+  'signature.custody.recorded': 'Fiziksel asıl kaydı', 'signature.digital_validation.blocked': 'E-imza doğrulaması engellendi',
+  'signature.exception.requested': 'İmza istisnası istendi', 'signature.exception.decided': 'İmza istisnası karara bağlandı', 'signature.exception.expired': 'İmza istisnasının süresi doldu',
+  'signature.finalization.reopened': 'İmza kesinleştirmesi yeniden açıldı', 'signature.requirement.defined': 'İmza gereksinimi tanımlandı',
+  'signature.review.recorded': 'İmza incelemesi kaydedildi', 'signature.review.finalized': 'İmza kontrolü kesinleşti',
+  'template.created': 'Şablon yüklendi', 'template.version_added': 'Şablonun yeni sürümü yüklendi', 'template.downloaded': 'Şablon indirildi',
 };
+const actionLabel = (a: string) => ACTION[a] ?? (a.startsWith('signature.') ? 'İmza kontrolü kaydı' : a.startsWith('contract.') ? 'Sözleşme kaydı' : 'Kayıt olayı');
+
 
 export function HistoryTab({ v2 }: { v2: V2State }) {
   return <V2Gate v2={v2}>{(d) => <History d={d} />}</V2Gate>;
@@ -392,7 +439,7 @@ function History({ d }: { d: ContractV2 }) {
           <div className="panel-head"><h2>Denetim olayları</h2></div>
           <div className="panel-body">
             {(fam.loading && !fam.data) ? <Loading rows={3} /> : fam.error ? <ErrorState error={fam.error} onRetry={fam.reload} /> : !audit.length ? <p className="text-ink-muted">Kayıt yok.</p> : (
-              <ol className="timeline">{audit.map((a) => <li key={a.id}><span className="font-semibold">{ACTION[a.action] ?? a.action}</span>
+              <ol className="timeline">{audit.map((a) => <li key={a.id}><span className="font-semibold">{actionLabel(a.action)}</span>
                 <span className="text-ink-muted">{a.actorName ?? 'Sistem'} · {fmtDateTime(a.at)}</span>{a.reason && <span className="text-ink-muted">{a.reason}</span>}</li>)}</ol>
             )}
           </div>

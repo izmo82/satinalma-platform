@@ -57,8 +57,8 @@ const sigMethod = { type: 'string', enum: ['WET_IMAGE_REVIEW', 'QUALIFIED_ELECTR
 const stage = { type: 'string', enum: ['DRAFT', 'EXECUTION', 'ARCHIVE_IMPORT'] } as const;
 const text = (max = 2000) => ({ type: 'string', minLength: 1, maxLength: max }) as const;
 /** v2 Faz 3 (D108+): sözleşme listesine eklenen alanlar (eski alanlar aynen kalır). */
-const v2Fields = (i: { status: string; statusLabel: string; project: unknown; supplier: unknown; endDate: string | null; indefinite: boolean; amount: string | null; currency: string | null } | undefined) =>
-  ({ status: i?.status ?? null, statusLabel: i?.statusLabel ?? null, project: i?.project ?? null, supplier: i?.supplier ?? null,
+const v2Fields = (i: { code: string; status: string; statusLabel: string; project: unknown; supplier: unknown; endDate: string | null; indefinite: boolean; amount: string | null; currency: string | null } | undefined) =>
+  ({ code: i?.code ?? null, status: i?.status ?? null, statusLabel: i?.statusLabel ?? null, project: i?.project ?? null, supplier: i?.supplier ?? null,
     endDate: i?.endDate ?? null, indefinite: i?.indefinite ?? false, amount: i?.amount ?? null, currency: i?.currency ?? null });
 
 export async function buildApp(deps: AppDeps) {
@@ -546,24 +546,26 @@ export async function buildApp(deps: AppDeps) {
 
   // --- Sözleşmeler ve imza kontrolü (UX09/UX14) -------------------------------------
   app.get('/api/v1/contracts', { schema: { tags: ['contracts'], querystring: { type: 'object', additionalProperties: false, properties: {
-    limit: { type: 'integer', minimum: 1, maximum: 100 }, offset: { type: 'integer', minimum: 0 }, departmentId: uuid,
+    limit: { type: 'integer', minimum: 1, maximum: 100 }, offset: { type: 'integer', minimum: 0 }, departmentId: uuid, projectId: uuid,
     // v2 Faz 3 (D108+): türetilmiş durum süzgeci (Tümü/Onayda/Yürürlükte/90 gün içinde biten/Eksik alan); imza süzgeci istemcide kalır.
     status: { type: 'string', enum: ['ALL', 'IN_APPROVAL', 'ACTIVE', 'ENDING_90', 'INCOMPLETE'] } } } } }, async (req) => scoped(req, 'contract.read', async (tx, ctx) => {
-    const { limit = 100, offset = 0, departmentId = null, status = 'ALL' } = req.query as { limit?: number; offset?: number; departmentId?: string; status?: intake.StatusFilter };
+    const { limit = 100, offset = 0, departmentId = null, status = 'ALL', projectId = null } = req.query as { limit?: number; offset?: number; departmentId?: string; status?: intake.StatusFilter; projectId?: string };
     // İmza durumu satır başına türetilir; sayfa boyutu bu maliyeti sınırlar (D89).
-    const deptSql = `($1::uuid IS NULL OR EXISTS (SELECT 1 FROM contract_families f WHERE f.id = cv.family_id AND f.department_id = $1))`;
+    // Görev 7 inceleme (I5): proje süzgeci de sunucuda (proje detayının Sözleşmeler sekmesi tek istekle).
+    const deptSql = `($1::uuid IS NULL OR EXISTS (SELECT 1 FROM contract_families f WHERE f.id = cv.family_id AND f.department_id = $1))
+      AND ($2::uuid IS NULL OR EXISTS (SELECT 1 FROM contract_families f WHERE f.id = cv.family_id AND f.project_id = $2))`;
     let total: number;
     let r: { rows: { id: string; family_id: string }[] };
     let info: Awaited<ReturnType<typeof intake.listInfo>>;
     if (status === 'ALL') {
-      total = (await tx.query<{ n: number }>(`SELECT count(*)::int AS n FROM contract_versions cv WHERE cv.superseded_by_id IS NULL AND ${deptSql}`, [departmentId])).rows[0]!.n;
+      total = (await tx.query<{ n: number }>(`SELECT count(*)::int AS n FROM contract_versions cv WHERE cv.superseded_by_id IS NULL AND ${deptSql}`, [departmentId, projectId])).rows[0]!.n;
       r = await tx.query<{ id: string; family_id: string }>(
-        `SELECT cv.id, cv.family_id FROM contract_versions cv WHERE cv.superseded_by_id IS NULL AND ${deptSql} ORDER BY cv.created_at DESC, cv.id LIMIT $2 OFFSET $3`, [departmentId, limit, offset]);
+        `SELECT cv.id, cv.family_id FROM contract_versions cv WHERE cv.superseded_by_id IS NULL AND ${deptSql} ORDER BY cv.created_at DESC, cv.id LIMIT $3 OFFSET $4`, [departmentId, projectId, limit, offset]);
       info = await intake.listInfo(tx, r.rows.map((x) => x.family_id));
     } else {
       // Durum saklanmaz: süzgeç türetilmiş durumla, sayfalamadan önce uygulanır.
       const all = (await tx.query<{ id: string; family_id: string }>(
-        `SELECT cv.id, cv.family_id FROM contract_versions cv WHERE cv.superseded_by_id IS NULL AND ${deptSql} ORDER BY cv.created_at DESC, cv.id`, [departmentId])).rows;
+        `SELECT cv.id, cv.family_id FROM contract_versions cv WHERE cv.superseded_by_id IS NULL AND ${deptSql} ORDER BY cv.created_at DESC, cv.id`, [departmentId, projectId])).rows;
       info = await intake.listInfo(tx, all.map((x) => x.family_id));
       const matched = all.filter((x) => { const i = info.get(x.family_id); return i ? intake.matchesFilter(status, i) : false; });
       total = matched.length;
@@ -622,6 +624,9 @@ export async function buildApp(deps: AppDeps) {
   // --- Sözleşme hatırlatıcıları (v2 Faz 3, Görev 6: R7) -------------------------------------------------------------------
   app.get('/api/v1/contracts/:id/reminders', { schema: { tags: ['contracts'], params: idParams } }, async (req) =>
     scoped(req, 'contract.read', (tx, ctx) => reminders.getReminders(tx, ctx, (req.params as { id: string }).id)));
+  // Görev 7 inceleme (I4): ailenin sürümlerine (doğrudan ya da sözleşmeye bağlı sipariş üzerinden) tahsis edilmiş faturalar; limit ucuyla aynı veri.
+  app.get('/api/v1/contracts/:id/invoices', { schema: { tags: ['contracts'], params: idParams } }, async (req) =>
+    scoped(req, 'contract.read', (tx) => invoices.familyInvoices(tx, (req.params as { id: string }).id)));
   app.get('/api/v1/settings/contract-reminders', { schema: { tags: ['settings'] } }, async (req) =>
     scoped(req, 'reminder.settings', (tx) => reminders.getSettings(tx)));
   app.put('/api/v1/settings/contract-reminders', { schema: { tags: ['settings'], body: { type: 'object', required: ['offsets'], additionalProperties: false, properties: {

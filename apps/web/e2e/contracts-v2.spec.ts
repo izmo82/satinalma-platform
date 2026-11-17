@@ -80,7 +80,10 @@ async function assignApprovers(request: APIRequestContext) {
     organization: { leadUserId: id('kerem.hukuk@example.test'), leadDeputyUserId: id('ferda.finans@example.test'), directorUserId: id('mine.anaveri@example.test'), directorDeputyUserId: id('nur.finansonay@example.test') },
     departments: [{ departmentId: bt.departmentId, headUserId: id('selin.guvenlik@example.test'), deputyUserId: id('tolga.teknik@example.test') }] } });
   expect(set.ok(), await set.text()).toBe(true);
-  return async () => { await request.put('/api/v1/approver-assignments', { headers: h, data: restore }); };
+  return async () => {
+    const r = await request.put('/api/v1/approver-assignments', { headers: h, data: restore });
+    expect(r.ok(), `onaycı ataması geri alınamadı: ${await r.text()}`).toBe(true);
+  };
 }
 
 /** Alper'in şirketinde, Bilgi Teknolojileri'ne bağlı bir proje. */
@@ -209,6 +212,8 @@ test.describe('v2 sözleşmeler: veri değiştiren akışlar', () => {
     await expect(page.getByRole('heading', { level: 1 })).toContainText(code);
     await expect(page.getByText('Yürürlükte').first()).toBeVisible();
     for (const n of ['Onayladı']) await expect(page.getByText(n)).toHaveCount(3);
+    await expect(page.getByText('Bu sözleşmeye tahsis edilmiş fatura yok.')).toBeVisible();
+    await expect(page.getByRole('heading', { level: 1 })).toContainText(code);
     await axe(page, 'Detay Özet');
     await page.getByRole('tab', { name: 'Hatırlatıcılar' }).click();
     const rem = await (await request.get(`/api/v1/contracts/${familyId}/reminders`, { headers: h })).json();
@@ -233,6 +238,9 @@ test.describe('v2 sözleşmeler: veri değiştiren akışlar', () => {
   test('red gerekçesiyle ekleyene döner; düzenleyip yeniden gönderince yeni tur başlar', async ({ page, request }) => {
     test.setTimeout(120_000);
     const c = await submittedContract(request, `${Date.now()}`);
+    // İşlerim listesi en fazla 200 iş döner; sayaç sınırsızdır: red görevinin açıldığı sayaçtan doğrulanır.
+    const openCount = async () => (await (await request.get('/api/v1/tasks?view=mine', { headers: c.h })).json()).counts.mine as number;
+    const before = await openCount();
     await login(page, 'selin.guvenlik@example.test');
     await page.goto(`${c.url}?sekme=onaylar`);
     await page.getByRole('button', { name: 'Reddet' }).click();
@@ -242,6 +250,7 @@ test.describe('v2 sözleşmeler: veri değiştiren akışlar', () => {
     await page.getByRole('button', { name: 'Reddi kaydet' }).click();
     await expect(page.getByText('Reddedildi; sözleşme ekleyene döndü.')).toBeVisible();
     await logout(page);
+    expect(await openCount(), 'ekleyene red görevi açılır').toBe(before + 1);
 
     await login(page, 'alper.satinalma@example.test');
     // Red görevi ekleyene açılır (aile kimliğiyle). İşlerim en fazla 200 iş listeler ve geliştirme verisinde Alper'in 200'den fazla işi
@@ -258,6 +267,7 @@ test.describe('v2 sözleşmeler: veri değiştiren akışlar', () => {
     await page.getByRole('button', { name: 'Onaya gönder' }).click();
     await expect(page).toHaveURL(/sekme=onaylar/);
     await expect(page.getByText(/2\. onay turu/)).toBeVisible();
+    expect(await openCount(), 'yeniden gönderimde red görevi kapanır').toBe(before);
     await expect(page.getByText('Departman sorumlusu onayında').first()).toBeVisible();
   });
 
@@ -339,4 +349,36 @@ test('şablonlar, sihirbaz ve proje sekmesi: taşma ve erişilebilirlik; Departm
   await expect(page.getByLabel('Süreler (gün)')).toHaveValue(/\d/);
   expect(await fits(page)).toBe(true);
   await axe(page, 'Yönetim Şablonlar');
+});
+
+test('mevcut taslakta sihirbaz 3–4 ve onay karar formu: taşma ve erişilebilirlik (salt okunur gezinti)', async ({ page, request }) => {
+  // Önceki 1440 koşularının açık bıraktığı onay turu (Selin 1. adımda) kullanılır; hiçbir şey kaydedilmez.
+  const hs = await bearer(request, 'selin.guvenlik@example.test');
+  const mine = (await (await request.get('/api/v1/contract-approvals/mine', { headers: hs })).json()).items as { canDecide: boolean; contract: { familyId: string } }[];
+  const item = mine.find((x) => x.canDecide);
+  test.skip(!item, 'Selin\'i bekleyen onay turu yok (önce 1440 veri değiştiren testleri çalıştırın).');
+  const v2 = await (await request.get(`/api/v1/contracts/${item!.contract.familyId}/v2`, { headers: hs })).json();
+  await login(page, 'selin.guvenlik@example.test');
+  await page.goto(`/sozlesmeler/${v2.document.contractVersionId}?sekme=onaylar`);
+  await page.getByRole('button', { name: 'Reddet' }).click();
+  await expect(page.getByLabel('Red gerekçesi')).toBeVisible();
+  expect(await fits(page)).toBe(true);
+  await axe(page, 'Onay karar formu');
+  await logout(page);
+  // Sihirbaz: ekleyen (Alper) açık turdaki taslağı görür; 4. adım karşılaştırma onayı olmadan açılmaz.
+  await login(page, 'alper.satinalma@example.test');
+  await page.goto(`/sozlesmeler/ekle?taslak=${item!.contract.familyId}&adim=4`);
+  await expect(page).toHaveURL(/adim=3/);
+  await expect(page.getByRole('heading', { name: 'Sözleşme alanları' })).toBeVisible();
+  await page.waitForLoadState('networkidle');
+  expect(await fits(page)).toBe(true);
+  await axe(page, 'Sihirbaz 3 (mevcut taslak)');
+  await page.getByLabel("Tutar, tarih ve VKN'yi belgeyle karşılaştırdım.").check();
+  await page.getByRole('button', { name: 'Devam: İncele ve gönder' }).click();
+  await expect(page).toHaveURL(/adim=4/);
+  await expect(page.getByText('Onaya gönderilemez', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Onaya gönder' })).toBeDisabled();
+  await page.waitForLoadState('networkidle');
+  expect(await fits(page)).toBe(true);
+  await axe(page, 'Sihirbaz 4 (mevcut taslak)');
 });

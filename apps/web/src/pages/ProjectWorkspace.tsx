@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { api, apiBlob, ApiError } from '../lib/api.ts';
 import { useResource } from '../lib/useApi.ts';
@@ -689,32 +689,17 @@ async function saveBlob(path: string, name: string) {
 interface ContractRow { id: string; title: string; code?: string | null; status?: string | null; statusLabel?: string | null; project?: { id: string } | null;
   supplier?: { legalName: string } | null; supplierNames?: string[]; endDate?: string | null; indefinite?: boolean; amount?: string | null; currency?: string | null; departmentName: string | null }
 
-/** Projeye bağlı sözleşmeler. Liste ucu proje süzgeci sunmaz: görünür sözleşmeler sayfa sayfa alınıp proje bağıyla süzülür. */
+/** Projeye bağlı sözleşmeler: liste ucunun proje süzgeciyle tek istek (sunucuda süzülür). */
 function ProjectContracts({ projectId }: { projectId: string }) {
   const { me } = useSession();
-  const [state, setState] = useState<{ rows: ContractRow[] | null; error: unknown; partial: boolean }>({ rows: null, error: null, partial: false });
-  const [attempt, setAttempt] = useState(0);
-  useEffect(() => {
-    let off = false;
-    setState({ rows: null, error: null, partial: false });
-    (async () => {
-      const all: ContractRow[] = [];
-      let total = Infinity;
-      for (let page = 0; page < 10 && all.length < total; page++) {
-        const r = await api<{ items: ContractRow[]; total: number }>(`/api/v1/contracts?limit=100&offset=${all.length}`);
-        total = r.data.total; all.push(...r.data.items);
-        if (!r.data.items.length) break;
-      }
-      if (!off) setState({ rows: all.filter((c) => c.project?.id === projectId), error: null, partial: all.length < total });
-    })().catch((error) => { if (!off) setState({ rows: null, error, partial: false }); });
-    return () => { off = true; };
-  }, [projectId, attempt]);
+  const r = useResource<{ items: ContractRow[]; total: number }>(`/api/v1/contracts?projectId=${projectId}&limit=100`);
+  const state = { rows: r.data?.items ?? null, error: r.error, partial: !!r.data && r.data.total > r.data.items.length };
   const canAdd = hasRole(me, 'PROCUREMENT', 'DEPARTMENT_USER');
   return (
     <section className="panel">
       <div className="panel-head"><h2 className="flex-1">Bağlı sözleşmeler</h2>
         {canAdd && <Button size="sm" asChild><Link to={`/sozlesmeler/ekle?proje=${projectId}`}><Icon name="upload" />Bu projeye sözleşme ekle</Link></Button>}</div>
-      {state.error ? <ErrorState error={state.error} onRetry={() => setAttempt((x) => x + 1)} /> : !state.rows ? <Loading rows={3} /> : !state.rows.length ? (
+      {state.error ? <ErrorState error={state.error} onRetry={r.reload} /> : !state.rows ? <Loading rows={3} /> : !state.rows.length ? (
         <Empty icon="file" title="Bu projeye bağlı sözleşme yok">{canAdd ? 'Sözleşme eklerken proje seçimi zorunludur; buradan eklenen sözleşmede proje dolu gelir.' : null}</Empty>
       ) : (
         <ul className="divide-y divide-[#ebe6da]" aria-label="Projenin sözleşmeleri">
@@ -729,7 +714,7 @@ function ProjectContracts({ projectId }: { projectId: string }) {
           ))}
         </ul>
       )}
-      {state.partial && <p className="px-4 pb-3 text-sm text-ink-muted">İlk 1.000 sözleşmede arandı; daha eskileri Sözleşmeler listesinden bulun.</p>}
+      {state.partial && <p className="px-4 pb-3 text-sm text-ink-muted">İlk 100 sözleşme gösteriliyor; tamamı için Sözleşmeler listesini kullanın.</p>}
     </section>
   );
 }

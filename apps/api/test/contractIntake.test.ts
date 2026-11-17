@@ -493,3 +493,36 @@ describe('inceleme düzeltmeleri (Görev 4, tur 1)', () => {
     expect((await v2(w, 'buyer', d.familyId)).body.can.decide).toBe(true);
   });
 });
+
+describe('Görev 7 inceleme (web arayüzü için API ekleri)', () => {
+  it('karantinadaki belgeyle taslak açılmaz (422 document_quarantined); aile oluşmaz', async () => {
+    const w = await fresh();
+    const projectId = await project(w, 'buyer', w.departments.bt);
+    const up = await multipart(w, 'techEval', '/api/v1/documents', { companyId: w.companyA1.id, kind: 'CONTRACT', title: 'Aktif içerikli sözleşme (SENTETİK)' },
+      { name: 'zararli.pdf', mime: 'application/pdf', data: Buffer.from(`%PDF-1.4\n% SENTETIK ${randomUUID()}\n1 0 obj << /S /JavaScript /JS (app.alert(1)) >> endobj\ntrailer << >>\n%%EOF\n`) });
+    expect([200, 201]).toContain(up.status);
+    expect(up.body.basicCheckStatus).toBe('QUARANTINED');
+    const before = await famCount(w);
+    const r = await call(w, 'techEval', 'POST', '/api/v1/contract-drafts', { documentVersionId: up.body.documentVersionId, projectId });
+    expect(r.status, JSON.stringify(r.body)).toBe(422);
+    expect(r.body.error.code).toBe('document_quarantined');
+    expect(await famCount(w)).toBe(before);
+  });
+
+  it('liste: aile kodu her satırda; proje süzgeci sunucuda ve sayfalamadan önce', async () => {
+    const w = await fresh();
+    const a = await draft(w);
+    const b = await draft(w);
+    const list = async (q = '') => (await call(w, 'legal', 'GET', `/api/v1/contracts${q}`)).body;
+    const all = await list();
+    const codes = (await h.owner.query<{ id: string; code: string }>(`SELECT id, code FROM contract_families WHERE id = ANY($1::uuid[])`, [[a.familyId, b.familyId]])).rows;
+    for (const c of codes) expect(all.items.find((x: any) => x.familyId === c.id)?.code).toBe(c.code);
+    expect(codes[0]!.code).toMatch(/^SZL-/);
+    const onlyA = await list(`?projectId=${a.projectId}`);
+    expect(onlyA.total).toBe(1);
+    expect(onlyA.items.map((x: any) => x.familyId)).toEqual([a.familyId]);
+    expect((await list(`?projectId=${a.projectId}&status=INCOMPLETE`)).items.map((x: any) => x.familyId)).toEqual([a.familyId]);
+    expect((await list(`?projectId=${randomUUID()}`)).total).toBe(0);
+    expect((await call(w, 'legal', 'GET', '/api/v1/contracts?projectId=yok')).status).toBe(400);
+  });
+});

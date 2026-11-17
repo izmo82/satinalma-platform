@@ -768,6 +768,31 @@ export async function ingestErpEvents(tx: Tx, ctx: TenantContext, events: { even
 
 
 /** Sözleşme limiti görünümü (T14): tavan, net tüketim, açık taahhüt, kullanılabilir. */
+/**
+ * Sözleşme ailesine tahsis edilmiş faturalar (Görev 7 inceleme, I4). Tutar, faturanın bu aileye tahsis edilen kısmıdır (iade negatif);
+ * avans faturası tüketime sayılmadığı gibi burada da listelenmez. Durum: onaylı (tüketime sayılır), reddedildi ya da karar bekliyor.
+ * Görünürlük: aile ve faturalar kendi RLS kurallarıyla; görülmeyen aile 404.
+ */
+export async function familyInvoices(tx: Tx, familyId: string) {
+  const fam = (await tx.query<{ id: string }>(`SELECT id FROM contract_families WHERE id = $1`, [familyId])).rows[0];
+  if (!fam) throw notFound();
+  const rows = (await tx.query<{ id: string; invoiceNo: string; issueDate: string; currency: string; kind: string; supplierId: string; supplierName: string;
+    amount: string; approved: boolean; decision: string | null }>(
+    `SELECT i.id, i.invoice_no AS "invoiceNo", i.issue_date::text AS "issueDate", i.currency, i.kind, s.id AS "supplierId", s.legal_name AS "supplierName",
+            sum(CASE i.kind WHEN 'CREDIT_NOTE' THEN -a.amount ELSE a.amount END)::numeric(20,2)::text AS amount,
+            (${APPROVED}) AS approved,
+            (SELECT d.kind FROM invoice_decisions d WHERE d.invoice_id = i.id AND d.kind IN ('APPROVAL','REJECTION') LIMIT 1) AS decision
+       FROM invoice_allocations a JOIN invoices i ON i.id = a.invoice_id JOIN suppliers s ON s.id = i.supplier_id
+       LEFT JOIN po_lines pl ON pl.id = a.po_line_id LEFT JOIN purchase_orders po ON po.id = pl.po_id
+       JOIN contract_versions cv ON cv.id = coalesce(po.contract_version_id, a.contract_version_id)
+      WHERE cv.family_id = $1 AND i.kind <> 'ADVANCE'
+      GROUP BY i.id, s.id ORDER BY i.issue_date DESC, i.invoice_no LIMIT 200`, [familyId])).rows;
+  const status = (r: (typeof rows)[number]) => r.approved ? { status: 'APPROVED', statusLabel: 'Onaylandı (tüketime sayılır)' }
+    : r.decision === 'REJECTION' ? { status: 'REJECTED', statusLabel: 'Reddedildi' } : { status: 'PENDING', statusLabel: 'Karar bekliyor' };
+  return { items: rows.map((r) => ({ id: r.id, invoiceNo: r.invoiceNo, date: r.issueDate, kind: r.kind, supplier: { id: r.supplierId, legalName: r.supplierName },
+    amount: r.amount, currency: r.currency, ...status(r) })) };
+}
+
 export async function contractLimit(tx: Tx, cvId: string) {
   const c = await contractState(tx, cvId, null);
   if (!c) throw notFound();

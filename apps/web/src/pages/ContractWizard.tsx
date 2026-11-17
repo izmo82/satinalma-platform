@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Link, Navigate, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { api, ApiError } from '../lib/api.ts';
 import { useResource } from '../lib/useApi.ts';
 import { hasRole, useSession } from '../lib/session.tsx';
@@ -47,6 +47,8 @@ function StepIndicator({ current }: { current: number }) {
   );
 }
 
+/** İptal edilmiş ya da sonuçsuz kapanmış projeye yeni sözleşme bağlanmaz (listede sunulmaz). */
+const CLOSED = new Set(['CANCELLED', 'NO_AWARD']);
 interface ProjectRow { id: string; code: string; title: string; companyName: string; departmentId: string | null; departmentName: string | null; status: string }
 
 // --- 1. Yükle ---------------------------------------------------------------------------------------------------------------
@@ -81,7 +83,7 @@ function UploadStep() {
               {(p) => projects.loading && !projects.data ? <span className="text-sm text-ink-muted">Projeler yükleniyor…</span> : (
                 <select className="input" required {...p} value={projectId} onChange={(e) => setProjectId(e.target.value)}>
                   <option value="">Seçin</option>
-                  {(projects.data?.items ?? []).filter((x) => !companyName(companyId) || x.companyName === companyName(companyId)).map((x) =>
+                  {(projects.data?.items ?? []).filter((x) => (!companyName(companyId) || x.companyName === companyName(companyId)) && (!CLOSED.has(x.status) || x.id === projectId)).map((x) =>
                     <option key={x.id} value={x.id}>{x.code} · {x.title}{x.departmentName ? ` · ${x.departmentName}` : ''}</option>)}
                 </select>
               )}
@@ -98,12 +100,18 @@ function UploadStep() {
         ) : kind === 'CONTRACT' ? <Banner tone="info" title="Sözleşme kaydını Satınalma ya da departman kullanıcısı açar">Belge yüklenir; sözleşme alanları rolünüze açık değildir.</Banner> : null}
         onResult={async (r, ctx) => {
           if (ctx.kind !== 'CONTRACT' || !canIntake) return false;
+          // Güvenlik kontrolünden geçmeyen belgeyle taslak açılmaz; sonuç kartı (karantina nedeni) eskisi gibi gösterilir.
+          if (r.basicCheckStatus !== 'PASSED') return false;
           setDraftError(null);
           try {
             const res = await api<{ familyId: string; duplicateOf: { familyId: string; code: string; title: string } | null }>('/api/v1/contract-drafts', { method: 'POST', json: {
               documentVersionId: r.documentVersionId, projectId, templateVersionId: templateVersionId || null } });
             const dup = res.data.duplicateOf ? `&ayni=${encodeURIComponent(`${res.data.duplicateOf.code} · ${res.data.duplicateOf.title}`)}` : '';
-            navigate(`/sozlesmeler/ekle?taslak=${res.data.familyId}&adim=3${dup}`);
+            navigate(`/sozlesmeler/ekle?taslak=${res.data.familyId}&adim=3${dup}`, { state: { upload: {
+              message: r.processing.message,
+              detail: r.basicCheckReason ?? (r.avScanStatus === 'NOT_AVAILABLE' ? 'Yerleşik dosya kontrolleri geçti. Antivirüs taraması bu ortamda bağlı değil.' : null),
+              supplier: r.supplier?.message ?? null, supplierWarn: !!r.supplier && ['SELLER_IS_OWN_COMPANY', 'IDENTITY_REVIEW_REQUIRED', 'MATCHED_RESTRICTED'].includes(r.supplier.outcome),
+            } satisfies UploadNote } });
             return true;
           } catch (e) {
             setDraftError((e as ApiError).message);
@@ -117,10 +125,20 @@ function UploadStep() {
 
 // --- 2–4. Taslak üzerindeki adımlar --------------------------------------------------------------------------------------------
 
+interface UploadNote { message: string; detail: string | null; supplier: string | null; supplierWarn: boolean }
+
 function DraftSteps({ familyId, step }: { familyId: string; step: number }) {
+  const location = useLocation();
+  const upload = (location.state as { upload?: UploadNote } | null)?.upload ?? null;
+  // "Tutar, tarih ve VKN'yi belgeyle karşılaştırdım." onayı adım durumunda tutulur: işaretlenmeden 4. adım açılmaz (yenileme ya da bağlantı 3'e döner).
+  const [ack, setAck] = useState(false);
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const first = useRef(true);
+  useEffect(() => { if (first.current) { first.current = false; return; } headingRef.current?.focus(); }, [step]);
   const r = useResource<ContractV2>(`/api/v1/contracts/${familyId}/v2`);
   const [params, setParams] = useSearchParams();
-  const go = (n: number) => { const p = new URLSearchParams(params); p.set('adim', String(n)); p.delete('ayni'); setParams(p); };
+  const go = (n: number) => { const p = new URLSearchParams(params); p.set('adim', String(n)); p.delete('ayni'); setParams(p, { state: location.state }); };
+  if (step === 4 && !ack) { const p = new URLSearchParams(params); p.set('adim', '3'); return <Navigate to={`/sozlesmeler/ekle?${p}`} replace state={location.state} />; }
   if (r.loading && !r.data) return <div className="page"><Loading rows={6} /></div>;
   if (r.error || !r.data) return <div className="page"><ErrorState error={r.error} onRetry={r.reload} /></div>;
   const d = r.data;
@@ -131,6 +149,9 @@ function DraftSteps({ familyId, step }: { familyId: string; step: number }) {
         <span className="tabular">{d.family.code}</span> · {d.family.title} <Tag className="ml-1 align-middle" label={statusTag(d.status.code, d.status.label)} />
       </PageHeader>
       <StepIndicator current={step} />
+      <h2 ref={headingRef} tabIndex={-1} className="sr-only">Adım {step}: {STEPS[step - 1]}</h2>
+      {upload && step === 3 && <Banner tone="info" icon="check" title={upload.message}>{upload.detail}</Banner>}
+      {upload?.supplier && step === 3 && <Banner tone={upload.supplierWarn ? 'warn' : 'info'} title={upload.supplier} />}
       {dup && <Banner tone="warn" title="Aynı belge başka bir sözleşmede de kayıtlı">{dup}. Yanlışlıkla ikinci kez eklendiyse bu taslağı göndermeyin.</Banner>}
       {step === 2 ? (
         <section className="panel max-w-[720px]">
@@ -141,8 +162,8 @@ function DraftSteps({ familyId, step }: { familyId: string; step: number }) {
             <Button className="justify-self-start" onClick={() => go(3)}>Devam: Tamamla ve doğrula</Button>
           </div>
         </section>
-      ) : step === 3 ? <CompleteStep d={d} reload={r.reload} onNext={() => go(4)} onBack={() => go(2)} />
-        : <ReviewStep d={d} onBack={() => go(3)} />}
+      ) : step === 3 ? <CompleteStep d={d} reload={r.reload} onNext={() => { setAck(true); go(4); }} onBack={() => go(2)} />
+        : <ReviewStep d={d} reload={r.reload} onBack={() => go(3)} />}
     </div>
   );
 }
@@ -156,15 +177,28 @@ const fromFields = (d: ContractV2): Form => {
     projectId: f.projectId ?? '', departmentId: d.family.departmentId ?? '', supplierId: f.supplierId ?? '', contractType: f.contractType ?? d.template?.contractType ?? '',
     ownerUserId: f.ownerUserId ?? '', signedOn: f.signedOn ?? '', indefinite: f.indefinite, contractNo: f.contractNo ?? '', governingCourt: f.governingCourt ?? '',
     kvkkClause: f.kvkkClause === null ? '' : f.kvkkClause ? 'yes' : 'no', priceEscalation: f.priceEscalation ?? '',
-    currency: f.currency ?? 'TRY', valueType: f.valueType ?? 'FIXED', amount: f.amount ?? '', limitBasis: f.limitBasis ?? 'NET',
+    currency: f.currency ?? 'TRY', valueType: f.valueType ?? 'FIXED', amount: trAmount(f.amount), limitBasis: f.limitBasis ?? 'NET',
     startDate: f.startDate ?? '', endDate: f.endDate ?? '', autoRenewal: !!f.autoRenewal, renewalMonths: f.renewalMonths != null ? String(f.renewalMonths) : '',
     noticeAmount: f.noticeAmount != null ? String(f.noticeAmount) : '', noticeUnit: f.noticeUnit ?? 'DAY', paymentDays: f.paymentDays != null ? String(f.paymentDays) : '',
     paymentTerms: f.paymentTerms ?? '', sourceRef: f.sourceRef ?? '', fxDifference: f.fxDifference ?? '',
   };
 };
 const TERMS_KEYS = ['currency', 'valueType', 'amount', 'limitBasis', 'startDate', 'endDate', 'autoRenewal', 'renewalMonths', 'noticeAmount', 'noticeUnit', 'paymentDays', 'paymentTerms', 'sourceRef', 'fxDifference'];
-/** "2.400.000,50" ya da "2400000.50" → "2400000.50" (decimal string; sayıya çevrilmez). */
-const normAmount = (v: string) => { const t = v.replace(/\s/g, ''); return t.includes(',') ? t.replace(/\./g, '').replace(',', '.') : t; };
+/** Sunucunun decimal string'i ("2400000.50") → ekranda tr-TR ("2.400.000,50"). Sayıya çevrilmez (kayan nokta yok). */
+const trAmount = (v: string | null) => {
+  if (!v) return '';
+  const [int, frac = ''] = v.split('.');
+  return `${int!.replace(/\B(?=(\d{3})+(?!\d))/g, '.')},${frac.padEnd(2, '0').slice(0, 2)}`;
+};
+/** tr-TR tutar: nokta binlik ayırıcı (yalnız 3'lü gruplar), virgül ondalık (en çok 2 hane). Geçersizse null. */
+export const parseTrAmount = (v: string): string | null => {
+  const t = v.replace(/\s/g, '');
+  const m = /^(\d{1,3}(?:\.\d{3})+|\d+)(?:,(\d{1,2}))?$/.exec(t);
+  if (!m) return null;
+  const int = m[1]!.replace(/\./g, '').replace(/^0+(?=\d)/, '');
+  return m[2] ? `${int}.${m[2]}` : int;
+};
+export const AMOUNT_ERROR = 'Tutarı 120.000,00 biçiminde girin: binlik için nokta, kuruş için virgül.';
 const nul = (v: string | boolean) => (typeof v === 'string' && v.trim() === '' ? null : v);
 const int = (v: string | boolean) => (typeof v === 'string' && v.trim() !== '' ? Number(v) : null);
 
@@ -175,7 +209,7 @@ function bodyOf(before: Form, f: Form): Record<string, unknown> {
   const conv: Record<string, (v: string | boolean) => unknown> = {
     projectId: nul, departmentId: nul, supplierId: nul, contractType: nul, ownerUserId: nul, signedOn: nul, indefinite: (v) => v,
     contractNo: nul, governingCourt: nul, kvkkClause: (v) => (v === '' ? null : v === 'yes'), priceEscalation: nul,
-    currency: (v) => v, valueType: (v) => v, amount: (v) => (f.valueType === 'UNPRICED' ? null : nul(typeof v === 'string' ? normAmount(v) : v)),
+    currency: (v) => v, valueType: (v) => v, amount: (v) => (f.valueType === 'UNPRICED' || (typeof v === 'string' && v.trim() === '') ? null : parseTrAmount(String(v))),
     limitBasis: (v) => v, startDate: nul, endDate: (v) => (f.indefinite ? null : nul(v)), autoRenewal: (v) => v,
     renewalMonths: (v) => (f.autoRenewal ? int(v) : null), noticeAmount: int, noticeUnit: (v) => (f.noticeAmount === '' ? null : v), paymentDays: int,
     paymentTerms: (v) => v, sourceRef: (v) => v, fxDifference: nul,
@@ -211,8 +245,10 @@ function CompleteStep({ d, reload, onNext, onBack }: { d: ContractV2; reload: ()
   const set = (k: string, v: string | boolean) => setF((x) => ({ ...x, [k]: v }));
   const dirty = Object.keys(base).some((k) => base[k] !== f[k]);
   const ro = !d.can.edit;
+  const amountError = f.valueType !== 'UNPRICED' && String(f.amount).trim() !== '' && parseTrAmount(String(f.amount)) === null;
 
   async function save(next: boolean) {
+    if (amountError) { setMsg({ tone: 'danger', text: AMOUNT_ERROR }); return; }
     setBusy(true); setMsg(null);
     try {
       const body = bodyOf(base, f);
@@ -301,7 +337,8 @@ function CompleteStep({ d, reload, onNext, onBack }: { d: ContractV2; reload: ()
             <div className="col-span-full my-1 border-t border-border pt-3"><h3 className="mb-2 text-base">Bedel ve süre</h3></div>
             {sel('valueType', 'Bedel türü', [['FIXED', 'Sabit bedel'], ['CEILING', 'Tavan (limit)'], ['UNPRICED', 'Bedelsiz']], undefined, 'Seçin')}
             <div className="grid grid-cols-[minmax(0,1fr)_76px] gap-x-2">
-              {inp('amount', 'Tutar', { inputMode: 'decimal', className: 'input tabular text-right', disabled: ro || f.valueType === 'UNPRICED' }, 'Ondalık için virgül.')}
+              <Field label="Tutar" hint="Örnek: 120.000,00" error={amountError ? AMOUNT_ERROR : null}>{(p) => <input className="input tabular text-right" inputMode="decimal"
+                disabled={ro || f.valueType === 'UNPRICED'} {...p} value={String(f.amount)} onChange={(e) => set('amount', e.target.value)} />}</Field>
               {inp('currency', 'Para', { maxLength: 3 })}
             </div>
             {sel('limitBasis', 'KDV', [['NET', 'KDV hariç'], ['GROSS', 'KDV dahil']], undefined, 'Seçin')}
@@ -385,7 +422,7 @@ export function PlannedList({ d }: { d: ContractV2 }) {
   );
 }
 
-function ReviewStep({ d, onBack }: { d: ContractV2; onBack: () => void }) {
+function ReviewStep({ d, reload, onBack }: { d: ContractV2; reload: () => Promise<void>; onBack: () => void }) {
   const navigate = useNavigate();
   const members = useResource<Member[]>('/api/v1/members');
   const [useDeputy, setUseDeputy] = useState(false);
@@ -407,7 +444,12 @@ function ReviewStep({ d, onBack }: { d: ContractV2; onBack: () => void }) {
     try {
       await api(`/api/v1/contracts/${d.family.id}/submit`, { method: 'POST', json: { useDeputyForHead: useDeputy, extraApproverIds: extra, note: note.trim() || null } });
       navigate(`${detail}?sekme=onaylar&gonderildi=1`);
-    } catch (e) { setError((e as ApiError).message); setBusy(false); }
+    } catch (e) {
+      const err = e as ApiError;
+      setError(err.message); setBusy(false);
+      // 409/422: zincir açık, alan eksik ya da onaycı değişti: güncel durum ve önizleme yeniden yüklenir.
+      if (err.status === 409 || err.status === 422) { await reload(); await preview.reload(); }
+    }
   }
 
   return (

@@ -132,12 +132,12 @@ export async function listInfo(tx: Tx, familyIds: string[]) {
   const suppliers = new Map((await tx.query<{ id: string; legal_name: string; status: string }>(`SELECT id, legal_name, status FROM suppliers WHERE id = ANY($1::uuid[])`,
     [fams.map((f) => f.supplier_id).filter(Boolean)])).rows.map((s) => [s.id, s]));
   const day = today();
-  const out = new Map<string, { status: ContractStatus; statusLabel: string; project: { id: string; code: string; title: string } | null;
+  const out = new Map<string, { code: string; status: ContractStatus; statusLabel: string; project: { id: string; code: string; title: string } | null;
     supplier: { id: string; legalName: string; status: string } | null; endDate: string | null; indefinite: boolean; amount: string | null; currency: string | null }>();
   for (const f of fams) {
     const s = statusOf(f, chains.get(f.id) ?? [], day);
     const sup = f.supplier_id ? suppliers.get(f.supplier_id) : undefined;
-    out.set(f.id, { status: s.code, statusLabel: s.label, project: f.project_id ? projects.get(f.project_id) ?? null : null,
+    out.set(f.id, { code: f.code, status: s.code, statusLabel: s.label, project: f.project_id ? projects.get(f.project_id) ?? null : null,
       supplier: sup ? { id: sup.id, legalName: sup.legal_name, status: sup.status } : null,
       endDate: f.end_date, indefinite: f.indefinite, amount: f.amount, currency: f.currency });
   }
@@ -200,10 +200,12 @@ export async function createDraft(tx: Tx, ctx: TenantContext, body: { documentVe
   const project = (await tx.query<{ id: string; company_id: string; department_id: string | null }>(
     `SELECT id, company_id, department_id FROM projects WHERE id = $1`, [body.projectId])).rows[0];
   if (!project) throw notFound();
-  const doc = (await tx.query<{ company_id: string; sha256: string; title: string }>(
-    `SELECT dv.company_id, dv.sha256, d.title FROM document_versions dv JOIN documents d ON d.id = dv.document_id WHERE dv.id = $1 AND d.kind = 'CONTRACT'`,
+  const doc = (await tx.query<{ company_id: string; sha256: string; title: string; basic_check_status: string }>(
+    `SELECT dv.company_id, dv.sha256, d.title, dv.basic_check_status FROM document_versions dv JOIN documents d ON d.id = dv.document_id WHERE dv.id = $1 AND d.kind = 'CONTRACT'`,
     [body.documentVersionId])).rows[0];
   if (!doc) throw notFound();
+  // Görev 7 inceleme (I2): güvenlik kontrolünden geçmeyen belgeyle taslak açılmaz (aile oluşmadan, açık hata kodu).
+  if (doc.basic_check_status !== 'PASSED') throw unprocessable('document_quarantined', 'Karantinadaki belgeyle sözleşme oluşturulamaz.');
   if (doc.company_id !== project.company_id) throw unprocessable('project_company_mismatch', 'Belge ve proje aynı şirkete ait olmalı.');
   let contractType: string | null = null;
   if (body.templateVersionId) contractType = (await templateVersion(tx, body.templateVersionId)).contract_type;

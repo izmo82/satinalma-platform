@@ -36,6 +36,8 @@ const FILTERS: [string, string, (r: Row) => boolean][] = [
   ['istisna', 'İstisnalı', (r) => r.signature.hasActiveException],
 ];
 
+const quiet = (code: string) => ['NOT_PROCESSED', 'UNSUPPORTED'].includes(code);
+
 /** Sözleşme tarafı (imza) adları; yoksa ekleme akışında seçilen tedarikçi. */
 const supplierText = (r: Row) => r.supplierNames?.length ? r.supplierNames.join(', ') : r.supplier?.legalName ?? '';
 
@@ -150,7 +152,8 @@ function ContractsList({ dep, status }: { dep: string; status: string }) {
                   <Tag label={overallLabel[c.signature.overall]} />{c.finalizedAt && <span className="ml-2 text-sm text-ink-subtle">Kesinleşti</span>}
                   {c.signature.missingParties.length > 0 && <div className="mt-1 flex gap-1.5 text-sm"><Icon name="x" size={16} className="mt-0.5 shrink-0 text-danger" /><span>{c.signature.missingParties.join(', ')} <span className="text-danger">eksik</span></span></div>}
                   <div className="mt-1 flex flex-wrap gap-x-2 text-sm text-ink-subtle">
-                    <span>Tarama: {detectionLabel[c.signature.automaticCheck]?.text ?? '—'}</span>
+                    {quiet(c.signature.automaticCheck) ? <span>Tarama: {detectionLabel[c.signature.automaticCheck]?.text ?? '—'}</span>
+                      : <span className="flex items-center gap-1">Tarama: <Tag label={detectionLabel[c.signature.automaticCheck]} /></span>}
                     <span className={c.originalCustodyRequired && c.signature.custody !== 'CUSTODY_CONFIRMED' ? 'font-semibold text-warn' : undefined}>Asıl: {!c.originalCustodyRequired ? 'zorunlu değil' : custodyLabel[c.signature.custody]?.text ?? '—'}</span>
                     {c.lastReviewedAt && <span>İnceleme: {fmtDateTime(c.lastReviewedAt)}</span>}
                   </div>
