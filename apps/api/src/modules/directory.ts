@@ -308,18 +308,31 @@ async function suspend(tx: Tx, ctx: TenantContext, userId: string, runId: string
     [ctx.tenantId, userId]);
   if (!r.rowCount) return false;
   await audit(tx, ctx, 'directory.membership_suspended', 'user', userId, { runId });
-  // Açık görevler: kişinin asıl olduğu atamadaki etkin vekile, yoksa rol kuyruğuna (assignee_user_id NULL).
+  await handOffOpenTasks(tx, ctx, userId, 'directory_suspended', { runId });
+  return 'suspended';
+}
+
+/**
+ * R5 devri (eşitlemenin askıya alması, rol kaldırma ve rol düşürme ortak kullanır): kişiye atanmış açık görevler kişinin asıl
+ * olduğu atamadaki etkin vekile, vekil yoksa rol kuyruğuna (assignee_user_id NULL) döner; her görev için `task.reassigned`.
+ * `keepRoles` verilirse yalnız atandığı rol (assignee_role) bu rollerde olmayan görevler devredilir (rol düşürme).
+ * Onaycı atamaları değişmez (Görev 5 etkin olmayan kişiyi gösterir). Devredilen görev sayısını döndürür.
+ */
+export async function handOffOpenTasks(tx: Tx, ctx: TenantContext, userId: string, reason: string, extra: Record<string, unknown> = {},
+  keepRoles: string[] | null = null): Promise<number> {
+  const tasks = (await tx.query<{ id: string }>(`SELECT id FROM tasks WHERE status = 'OPEN' AND assignee_user_id = $1
+      AND ($2::text[] IS NULL OR NOT (assignee_role = ANY ($2::text[]))) ORDER BY created_at, id FOR UPDATE`, [userId, keepRoles])).rows;
+  if (!tasks.length) return 0;
   const deputy = (await tx.query<{ deputy_user_id: string }>(
     `SELECT a.deputy_user_id FROM approver_assignments a
        JOIN memberships m ON m.tenant_id = a.tenant_id AND m.user_id = a.deputy_user_id AND m.status = 'ACTIVE' AND m.supplier_id IS NULL
       WHERE a.primary_user_id = $1 AND a.deputy_user_id IS NOT NULL
       ORDER BY a.kind, a.department_id NULLS FIRST LIMIT 1`, [userId])).rows[0]?.deputy_user_id ?? null;
-  const tasks = (await tx.query<{ id: string }>(`SELECT id FROM tasks WHERE status = 'OPEN' AND assignee_user_id = $1 ORDER BY created_at, id FOR UPDATE`, [userId])).rows;
   for (const t of tasks) {
     await tx.query(`UPDATE tasks SET assignee_user_id = $2 WHERE id = $1`, [t.id, deputy]);
-    await audit(tx, ctx, 'task.reassigned', 'task', t.id, { from: userId, to: deputy, reason: 'directory_suspended', runId });
+    await audit(tx, ctx, 'task.reassigned', 'task', t.id, { from: userId, to: deputy, reason, ...extra });
   }
-  return 'suspended';
+  return tasks.length;
 }
 
 async function reactivate(tx: Tx, ctx: TenantContext, userId: string, runId: string): Promise<boolean> {
@@ -340,6 +353,7 @@ const ADMIN_MSG = {
   email_missing: 'Dizin kaydında e-posta yok; bu kullanıcıya rol verilemez. Entra\'da posta alanını doldurup yeniden eşitleyin.',
   directory_user_inactive: 'Kullanıcı dizinde kapalı ya da kapsam dışında; rol verilemez.',
   user_linked_elsewhere: 'Bu e-postadaki kullanıcı başka bir dizin kaydına bağlı; rol verilemez.',
+  user_in_other_tenant: 'Bu e-posta başka bir kurumda kayıtlı; erişimi operatör tanımlar.',
   supplier_membership: 'Bu e-postadaki kullanıcı bu kurumda tedarikçi portalı kullanıcısı; kurum rolü verilemez.',
   self_demotion: 'Kendi Yönetici rolünüzü kaldıramazsınız; başka bir Yönetici kaldırabilir.',
   last_admin: 'Kurumun son etkin Yönetici\'sinin rolü kaldırılamaz; önce başka bir kullanıcıya Yönetici rolü verin.',
@@ -471,7 +485,10 @@ export async function setDirectoryUserRoles(tx: Tx, ctx: TenantContext, director
   let userId = du.user_id;
   if (!userId && du.email) userId = await findUserByEmail(tx, ctx, du.email);
   if (!userId && granting) {
-    userId = (await tx.query<{ id: string }>(`SELECT directory_invite_user($1, $2) AS id`, [du.email, du.display_name])).rows[0]!.id;
+    // 046: yalnız bu kiracıda üyesi olan ya da hiçbir kurumda üyeliği olmayan davetli kullanıcı yeniden kullanılır; başka kurumdaki
+    // kullanıcı için NULL döner (kimlik ya da ad sızmaz, hiçbir şey oluşturulmaz ya da bağlanmaz).
+    userId = (await tx.query<{ id: string | null }>(`SELECT directory_invite_user($1, $2) AS id`, [du.email, du.display_name])).rows[0]!.id;
+    if (!userId) throw conflict('user_in_other_tenant', ADMIN_MSG.user_in_other_tenant);
   }
   if (!userId) return toView(await dirUserRow(tx, directoryUserId)); // üyeliği olmayan kullanıcıdan rol kaldırmak: değişiklik yok
   if (!du.user_id) {
@@ -496,12 +513,14 @@ export async function setDirectoryUserRoles(tx: Tx, ctx: TenantContext, director
 
   const before = m ? { roles: m.roles, status: m.status } : null;
   let after: { roles: string[]; status: string } | null;
+  let handedOff = 0;
   if (!granting) {
     if (!m || m.status === 'REVOKED') after = before;
     else {
       await tx.query(`UPDATE memberships SET roles = '{}', status = 'REVOKED', suspended_by_directory = false WHERE tenant_id = $1 AND user_id = $2`,
         [ctx.tenantId, userId]);
       after = { roles: [], status: 'REVOKED' };
+      handedOff = await handOffOpenTasks(tx, ctx, userId, 'membership_revoked', { directoryUserId: du.id });
     }
   } else if (!m) {
     const companyIds = (await tx.query<{ id: string }>(`SELECT id FROM legal_entities ORDER BY id`)).rows.map((r) => r.id);
@@ -515,9 +534,13 @@ export async function setDirectoryUserRoles(tx: Tx, ctx: TenantContext, director
     await tx.query(`UPDATE memberships SET roles = $3, status = 'ACTIVE', suspended_by_directory = false, department_ids = $4, directory_department_id = $5
       WHERE tenant_id = $1 AND user_id = $2`, [ctx.tenantId, userId, roles, depts, du.department_id]);
     after = { roles, status: 'ACTIVE' };
+    // Rol düşürme: yeni rollerde olmayan rolle atanmış açık görevler devredilir (Yönetici rolü kalırsa görev kendisinde kalabilir).
+    if (m.status === 'ACTIVE') {
+      handedOff = await handOffOpenTasks(tx, ctx, userId, 'membership_roles_changed', { directoryUserId: du.id }, normalizeRoles(roles));
+    }
   }
   if (du.user_id !== userId) await tx.query(`UPDATE directory_users SET user_id = $2, updated_at = now() WHERE id = $1`, [du.id, userId]);
-  await audit(tx, ctx, 'membership.roles.set', 'user', userId, { before, after, directoryUserId: du.id, source: 'directory' });
+  await audit(tx, ctx, 'membership.roles.set', 'user', userId, { before, after, directoryUserId: du.id, source: 'directory', tasksHandedOff: handedOff });
   return toView(await dirUserRow(tx, directoryUserId));
 }
 

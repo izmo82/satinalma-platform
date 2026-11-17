@@ -178,9 +178,10 @@ export async function mergeDepartments(tx: Tx, ctx: TenantContext, sourceId: str
   // Kiracının bütün şirketleri kapsama alınır: birleştirme, Yönetici'nin şirket kapsamından bağımsız olarak hiçbir kaydı kaynakta bırakmaz.
   await tx.query(`SELECT set_config('app.company_ids', coalesce((SELECT array_agg(id ORDER BY id) FROM legal_entities), '{}')::text, true),
     set_config('app.department_scope', 'ALL', true)`);
-  // Eşzamanlı birleştirmelere karşı iki departman kimlik sırasıyla kilitlenir.
+  // Eşzamanlı birleştirmelere karşı iki departman kimlik sırasıyla kilitlenir. FOR NO KEY UPDATE: merged_into anahtar sütun değil;
+  // yabancı anahtar KEY SHARE kilitleriyle (ör. eşitlemenin directory_users yazması) çakışmaz.
   const rows = (await tx.query<{ id: string; name: string; merged_into: string | null }>(
-    `SELECT id, name, merged_into FROM departments WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE`, [[sourceId, b.intoId]])).rows;
+    `SELECT id, name, merged_into FROM departments WHERE id = ANY($1::uuid[]) ORDER BY id FOR NO KEY UPDATE`, [[sourceId, b.intoId]])).rows;
   const source = rows.find((r) => r.id === sourceId);
   const target = rows.find((r) => r.id === b.intoId);
   if (!source || !target) throw notFound();

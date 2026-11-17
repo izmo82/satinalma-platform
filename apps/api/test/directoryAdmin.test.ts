@@ -299,40 +299,109 @@ describe('rol ataması (R3)', () => {
     expect(await count(`SELECT count(*)::int AS n FROM users WHERE email IN ($1, $2)`, [`x-${s}@example.test`, `z-${s}@example.test`])).toBe(0);
   });
 
-  it('aynı e-postayla var olan kullanıcı yeniden kullanılır (başka kiracıda OIDC ya da davetli; büyük/küçük harf duyarsız)', async () => {
+  it('başka kurumdaki kullanıcı (OIDC ya da başka yerde üyeliği olan davetli) bağlanmaz: 409 user_in_other_tenant, ad sızmaz, hiçbir şey açılmaz', async () => {
     const w = await freshWorld();
     await enable(w);
     const s = sfx();
-    // Başka kiracıda OIDC ile girmiş kullanıcı (bu kiracıda üyeliği yok, RLS ile görünmez).
-    const oidcEmail = `oidc-${s}@example.test`;
-    const oidcUser = (await h.owner.query<{ id: string }>(`INSERT INTO users (auth_subject, email, display_name) VALUES ($1, $2, 'OIDC Kişi (sentetik)') RETURNING id`,
-      [`oidc|https://idp.example.test|${s}`, oidcEmail])).rows[0]!.id;
-    await h.owner.query(`INSERT INTO memberships (tenant_id, user_id, roles, company_ids) VALUES ($1, $2, ARRAY['PROCUREMENT'], $3)`, [w.tenantB, oidcUser, [w.companyB1.id]]);
-    // Başka kiracıda davet edilmiş, henüz girmemiş kullanıcı.
-    const invEmail = `davetli-${s}@example.test`;
-    const invUser = (await h.owner.query<{ id: string }>(`INSERT INTO users (auth_subject, email, display_name) VALUES ($1, $2, 'Davetli (sentetik)') RETURNING id`,
-      [`invite|${invEmail}`, invEmail])).rows[0]!.id;
-    await h.owner.query(`INSERT INTO memberships (tenant_id, user_id, roles, company_ids) VALUES ($1, $2, ARRAY['AUDITOR'], $3)`, [w.tenantB, invUser, [w.companyB1.id]]);
+    const mk = async (subject: string, email: string, name: string, tenant: string | null) => {
+      const id = (await h.owner.query<{ id: string }>(`INSERT INTO users (auth_subject, email, display_name) VALUES ($1, $2, $3) RETURNING id`, [subject, email, name])).rows[0]!.id;
+      if (tenant) await h.owner.query(`INSERT INTO memberships (tenant_id, user_id, roles, company_ids) VALUES ($1, $2, ARRAY['PROCUREMENT'], $3)`, [tenant, id, [w.companyB1.id]]);
+      return id;
+    };
+    const secretName = `Gizli Ad ${s} (sentetik)`;
+    // Başka kiracıda OIDC ile girmiş; başka kiracıda davetli; hiçbir yerde üyeliği olmayan OIDC kullanıcısı.
+    await mk(`oidc|https://idp.example.test|${s}`, `oidc-${s}@example.test`, secretName, w.tenantB);
+    await mk(`invite|davetli-${s}@example.test`, `davetli-${s}@example.test`, secretName, w.tenantB);
+    await mk(`oidc|https://idp2.example.test|${s}`, `yetim-${s}@example.test`, secretName, null);
     await syncNow(w, [
-      du(`o-${s}`, oidcEmail.toUpperCase(), null),
-      du(`i-${s}`, `Davetli-${s}@EXAMPLE.test`, null),
-      du(`f-${s}`, w.users.finance.email.toUpperCase(), null),
+      du(`o-${s}`, `OIDC-${s}@EXAMPLE.test`, null),
+      du(`i-${s}`, `Davetli-${s}@Example.test`, null),
+      du(`y-${s}`, `yetim-${s}@example.test`, null),
     ]);
     const usersBefore = await count(`SELECT count(*)::int AS n FROM users`, []);
-    for (const o of [`o-${s}`, `i-${s}`, `f-${s}`]) {
+    const membersBefore = await count(`SELECT count(*)::int AS n FROM memberships WHERE tenant_id = $1`, [w.tenantA]);
+    for (const o of [`o-${s}`, `i-${s}`, `y-${s}`]) {
+      const id = await dirUserId(w, o);
+      const r = await as(w, 'tenantAdmin', 'PUT', `/api/v1/directory/users/${id}/roles`, { roles: ['AUDITOR'] });
+      expect(r.status, o).toBe(409);
+      expect(r.body.error.code).toBe('user_in_other_tenant');
+      expect(r.body.error.message).toBe('Bu e-posta başka bir kurumda kayıtlı; erişimi operatör tanımlar.');
+      expect(r.raw).not.toContain(secretName);
+      expect(r.body.error.details).toBeUndefined();
+      expect((await h.owner.query(`SELECT user_id FROM directory_users WHERE id = $1`, [id])).rows[0].user_id).toBeNull();
+    }
+    expect(await count(`SELECT count(*)::int AS n FROM users`, [])).toBe(usersBefore);
+    expect(await count(`SELECT count(*)::int AS n FROM memberships WHERE tenant_id = $1`, [w.tenantA])).toBe(membersBefore);
+    const list = await as(w, 'tenantAdmin', 'GET', '/api/v1/directory/users');
+    expect(list.raw).not.toContain(secretName);
+  });
+
+  it('aynı kiracıdaki kullanıcı ve hiçbir yerde üyeliği olmayan davetli yeniden kullanılır; yeni e-posta yeni davetli açar (büyük/küçük harf duyarsız)', async () => {
+    const w = await freshWorld();
+    await enable(w);
+    const s = sfx();
+    // Bu kiracıda REVOKED üyeliği olan OIDC kullanıcısı (herhangi durumda üyelik yeterli).
+    const oidcHere = (await h.owner.query<{ id: string }>(`INSERT INTO users (auth_subject, email, display_name) VALUES ($1, $2, 'Burada (sentetik)') RETURNING id`,
+      [`oidc|https://idp.example.test|h-${s}`, `burada-${s}@example.test`])).rows[0]!.id;
+    await h.owner.query(`INSERT INTO memberships (tenant_id, user_id, roles, company_ids, status) VALUES ($1, $2, '{}', '{}', 'REVOKED')`, [w.tenantA, oidcHere]);
+    const orphanInvite = (await h.owner.query<{ id: string }>(`INSERT INTO users (auth_subject, email, display_name) VALUES ($1, $2, 'Yetim davet (sentetik)') RETURNING id`,
+      [`invite|yetimdavet-${s}@example.test`, `yetimdavet-${s}@example.test`])).rows[0]!.id;
+    await syncNow(w, [
+      du(`h-${s}`, `BURADA-${s}@example.test`, null),
+      du(`v-${s}`, `YetimDavet-${s}@EXAMPLE.test`, null),
+      du(`f-${s}`, w.users.finance.email.toUpperCase(), null),
+      du(`n-${s}`, `Taze-${s}@Example.test`, null),
+    ]);
+    const usersBefore = await count(`SELECT count(*)::int AS n FROM users`, []);
+    for (const o of [`h-${s}`, `v-${s}`, `f-${s}`, `n-${s}`]) {
       const r = await as(w, 'tenantAdmin', 'PUT', `/api/v1/directory/users/${await dirUserId(w, o)}/roles`, { roles: ['AUDITOR'] });
       expect(r.status, o).toBe(200);
     }
-    expect(await count(`SELECT count(*)::int AS n FROM users`, [])).toBe(usersBefore);
+    expect(await count(`SELECT count(*)::int AS n FROM users`, [])).toBe(usersBefore + 1);
     const linked = async (o: string) => (await h.owner.query<{ user_id: string }>(`SELECT user_id FROM directory_users WHERE tenant_id = $1 AND entra_object_id = $2`,
       [w.tenantA, o])).rows[0]!.user_id;
-    expect(await linked(`o-${s}`)).toBe(oidcUser);
-    expect(await linked(`i-${s}`)).toBe(invUser);
+    expect(await linked(`h-${s}`)).toBe(oidcHere);
+    expect(await linked(`v-${s}`)).toBe(orphanInvite);
     expect(await linked(`f-${s}`)).toBe(w.users.finance.id);
-    expect((await membershipOf(w.tenantA, oidcUser))!).toMatchObject({ status: 'ACTIVE', roles: ['AUDITOR'] });
-    // Var olan üyelik yeniden kullanılır; başka kiracıdaki üyelik değişmez.
+    expect((await h.owner.query(`SELECT auth_subject FROM users WHERE id = $1`, [await linked(`n-${s}`)])).rows[0].auth_subject).toBe(`invite|taze-${s}@example.test`);
+    expect((await membershipOf(w.tenantA, oidcHere))!).toMatchObject({ status: 'ACTIVE', roles: ['AUDITOR'] });
     expect((await membershipOf(w.tenantA, w.users.finance.id))!.roles).toEqual(['AUDITOR']);
-    expect((await membershipOf(w.tenantB, oidcUser))!.roles).toEqual(['PROCUREMENT']);
+  });
+
+  it('rol kaldırma açık görevleri etkin vekile, rol düşürme yalnız kaybedilen roldeki görevleri devreder; onaycı ataması kalır', async () => {
+    const w = await freshWorld();
+    await enable(w);
+    const s = sfx();
+    await syncNow(w, [du(`l-${s}`, w.users.legal.email, null), du(`f-${s}`, w.users.finance.email, null)]);
+    // legal: PROCUREMENT + DEPARTMENT_USER; vekili legal2 (etkin) olan satınalma sorumlusu ataması.
+    await h.owner.query(`UPDATE memberships SET roles = ARRAY['PROCUREMENT','DEPARTMENT_USER'] WHERE tenant_id = $1 AND user_id = $2`, [w.tenantA, w.users.legal.id]);
+    await h.owner.query(`INSERT INTO approver_assignments (tenant_id, kind, primary_user_id, deputy_user_id) VALUES ($1, 'PROCUREMENT_LEAD', $2, $3)`,
+      [w.tenantA, w.users.legal.id, w.users.legal2.id]);
+    const task = async (assignee: string, role: string) => (await h.owner.query<{ id: string }>(
+      `INSERT INTO tasks (tenant_id, company_id, kind, entity_type, entity_id, title, reason, next_action, assignee_role, assignee_user_id, dedupe_key)
+       VALUES ($1, $2, 'review', 'tenant', $1, 'Sentetik görev', 'sentetik', 'incele', $3, $4, $5) RETURNING id`,
+      [w.tenantA, w.companyA1.id, role, assignee, `test:${randomUUID()}`])).rows[0]!.id;
+    const assignee = async (id: string) => (await h.owner.query(`SELECT assignee_user_id FROM tasks WHERE id = $1`, [id])).rows[0].assignee_user_id;
+    const procTask = await task(w.users.legal.id, 'PROCUREMENT');
+    const deptTask = await task(w.users.legal.id, 'DEPARTMENT_USER');
+    // Rol düşürme: DEPARTMENT_USER kalır, PROCUREMENT gider → yalnız PROCUREMENT görevi vekile.
+    const r1 = await as(w, 'tenantAdmin', 'PUT', `/api/v1/directory/users/${await dirUserId(w, `l-${s}`)}/roles`, { roles: ['DEPARTMENT_USER'] });
+    expect(r1.status).toBe(200);
+    expect(await assignee(procTask)).toBe(w.users.legal2.id);
+    expect(await assignee(deptTask)).toBe(w.users.legal.id);
+    // Rol kaldırma: kalan görev de vekile.
+    const r2 = await as(w, 'tenantAdmin', 'PUT', `/api/v1/directory/users/${await dirUserId(w, `l-${s}`)}/roles`, { roles: [] });
+    expect(r2.status).toBe(200);
+    expect(await assignee(deptTask)).toBe(w.users.legal2.id);
+    const re = (await h.owner.query<{ data: any }>(`SELECT data FROM audit_events WHERE tenant_id = $1 AND action = 'task.reassigned' ORDER BY at, id`, [w.tenantA])).rows;
+    expect(re.map((x) => x.data.reason)).toEqual(['membership_roles_changed', 'membership_revoked']);
+    expect(re[0]!.data).toMatchObject({ from: w.users.legal.id, to: w.users.legal2.id });
+    // Onaycı ataması değişmez.
+    expect(await count(`SELECT count(*)::int AS n FROM approver_assignments WHERE tenant_id = $1 AND primary_user_id = $2`, [w.tenantA, w.users.legal.id])).toBe(1);
+    // Vekili olmayan kullanıcı: görev rol kuyruğuna (assignee NULL).
+    const finTask = await task(w.users.finance.id, 'PROCUREMENT');
+    expect((await as(w, 'tenantAdmin', 'PUT', `/api/v1/directory/users/${await dirUserId(w, `f-${s}`)}/roles`, { roles: [] })).status).toBe(200);
+    expect(await assignee(finTask)).toBeNull();
   });
 
   it('askıdaki (eşitlemenin askıya aldığı) üyeliği rol ataması yeniden açar ve bayrağı temizler', async () => {
