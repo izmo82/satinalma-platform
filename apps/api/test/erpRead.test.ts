@@ -8,8 +8,8 @@ import { randomUUID } from 'node:crypto';
 import { ERP_FEATURE_CATALOG, syntheticVkn, type ErpFeature } from '@sp/domain';
 import type { ErpConfig } from '../src/config.ts';
 import { withoutTenant, withTenant, type TenantContext } from '../src/db.ts';
-import { erpProvider, type ErpProvider, type ErpProviderKind } from '../src/erp/providers.ts';
-import { enqueueTenantErpReads, importErpInvoice, runErpReadJob, PROTECTED_DEMO_INVOICES } from '../src/modules/erpRead.ts';
+import { erpProvider, ErpProviderError, type ErpProvider, type ErpProviderKind } from '../src/erp/providers.ts';
+import { enqueueTenantErpReads, ERP_READ_LIMITS, importErpInvoice, reapAllStaleErpRuns, runErpReadJob, PROTECTED_DEMO_INVOICES } from '../src/modules/erpRead.ts';
 import { makeHarness } from './harness.ts';
 
 const KEY = Buffer.alloc(32, 7);
@@ -376,6 +376,121 @@ describe('zamanlama (R7)', () => {
     const last = await one(`SELECT status, provider_kind, trigger, counts FROM integration_runs WHERE tenant_id = $1 AND feature = 'COST_CENTER' ORDER BY started_at DESC LIMIT 1`,
       [h.world.tenantA]);
     expect(last).toMatchObject({ status: 'NOT_CONFIGURED', provider_kind: null, trigger: 'SCHEDULE', counts: { reason: 'provider_not_configured', slot: 'D:2027-02-03' } });
+    await h.call('tenantAdmin', 'PUT', url('COST_CENTER'), { body: { schedule: { mode: 'MANUAL' } } });
+  });
+});
+
+describe('düzeltme 1 (taklitle denendi)', () => {
+  const ctxA = (): TenantContext => ({ tenantId: h.world.tenantA, userId: h.world.users.tenantAdmin.id, roles: ['ADMIN'],
+    companyIds: [h.world.companyA1.id, h.world.companyA2.id], departmentIds: [], allDepartments: true, correlationId: 'test-erp-fix1' });
+
+  it('I1: aynı numaralı ERP siparişleri farklı sözleşmelere (ya da biri hiçbirine) çıkıyorsa referans belirsiz → Eşleşmedi', async () => {
+    const f1 = await contract(sup[2]!);
+    const f2 = await contract(sup[2]!);
+    const code = async (id: string) => (await one<{ code: string }>(`SELECT code FROM contract_families WHERE id = $1`, [id])).code;
+    const po = (erpPoId: string, poNo: string, ref: string | null) => h.owner.query(`INSERT INTO erp_purchase_orders (tenant_id, erp_po_id, po_no, supplier_id, contract_ref,
+      currency, amount, provider_kind) VALUES ($1,$2,$3,$4,$5,'TRY','10.00','TAKLIT')`, [h.world.tenantA, erpPoId, poNo, sup[2], ref]);
+    const dup = `SNTDUP${rand()}`;
+    const mix = `SNTMIX${rand()}`;
+    const one1 = `SNTONE${rand()}`;
+    await po(`E-${rand()}`, dup, await code(f1)); await po(`E-${rand()}`, dup, await code(f2));
+    await po(`E-${rand()}`, mix, await code(f1)); await po(`E-${rand()}`, mix, null);
+    await po(`E-${rand()}`, one1, await code(f2)); await po(`E-${rand()}`, one1, await code(f2));
+    const ctx = ctxA();
+    const rec = (poRef: string) => ({ erpInvoiceId: `X-${rand()}`, invoiceNo: `SNT${rand()}`, supplierTaxId: VKN[2]!, erpSupplierCode: null, issueDate: '2026-10-10',
+      currency: 'TRY', netAmount: '100.00', grossAmount: '120.00', contractRef: null, poRef, companyTaxId: h.world.companyA1.vkn });
+    const res = await withTenant(h.pool, ctx, async (tx) => ({
+      dup: await importErpInvoice(tx, ctx, rec(dup), { providerKind: 'TAKLIT' }),
+      mix: await importErpInvoice(tx, ctx, rec(mix), { providerKind: 'TAKLIT' }),
+      same: await importErpInvoice(tx, ctx, rec(one1), { providerKind: 'TAKLIT' }),
+    }));
+    expect(res.dup).toMatchObject({ outcome: 'CREATED', match: { state: 'UNMATCHED', reason: 'ref_not_found' } });
+    expect(res.mix).toMatchObject({ outcome: 'CREATED', match: { state: 'UNMATCHED', reason: 'ref_not_found' } });
+    // Aynı numaralı iki ERP siparişi aynı sözleşmeye çıkıyorsa belirsizlik yok.
+    expect(res.same).toMatchObject({ outcome: 'CREATED', match: { state: 'MATCHED', method: 'ERP_REF', familyId: f2 } });
+  });
+
+  it('I3: sayfa bağlantı tutulmadan okunur, her sayfa kendi işleminde kaydedilir; 2. sayfa hatası 1. sayfayı geri almaz; ileti genel', async () => {
+    await configure('COST_CENTER');
+    let heldDuringRead = -1;
+    const failing = (kind: ErpProviderKind): ErpProvider | null => {
+      const p = erpProvider(kind, h.config)!;
+      return { ...p, read: async (ep, f, cursor) => {
+        heldDuringRead = Math.max(heldDuringRead, h.pool.totalCount - h.pool.idleCount);
+        if (cursor !== null) throw new ErpProviderError('http_500', 'ham ERP yanıtı: gizli-ayrinti-123');
+        return p.read(ep, f, cursor);
+      } };
+    };
+    const req = await h.call('tenantAdmin', 'POST', url('COST_CENTER', '/run'));
+    const job = await jobOf(req.body.runId);
+    await runErpReadJob(h.pool, job, await memberOf(job.requested_by!), { config: h.config, provider: failing });
+    expect(heldDuringRead).toBe(0);
+    const run = await runOf(req.body.runId);
+    expect(run.status).toBe('PARTIAL');
+    expect(run.counts).toMatchObject({ read: 2, unchanged: 2, page: 1, cursor: '2' });
+    expect(typeof run.counts.heartbeatAt).toBe('string');
+    const errs = await errorsOf(req.body.runId);
+    expect(errs.map((e) => e.code)).toEqual(['http_500']);
+    expect(errs[0]!.message).not.toContain('gizli-ayrinti');
+  });
+
+  it('I3: kayıt kilidi lock_timeout ile sınırlı: kilitli kayıt reddedilir (55P03), diğerleri işlenir', async () => {
+    const prev = ERP_READ_LIMITS.lockTimeout;
+    ERP_READ_LIMITS.lockTimeout = '300ms';
+    const c = await h.owner.connect();
+    try {
+      await c.query('BEGIN');
+      await c.query(`SELECT 1 FROM erp_cost_centers WHERE tenant_id = $1 AND code = 'TKL-MM-100' FOR UPDATE`, [h.world.tenantA]);
+      const r = await runRead('COST_CENTER');
+      expect(r.run.status).toBe('PARTIAL');
+      expect(r.run.counts).toMatchObject({ read: 3, unchanged: 2, failed: 1 });
+      expect(r.errors).toEqual([expect.objectContaining({ code: 'record_failed', record_key: 'TKL-MM-100' })]);
+      expect(r.errors[0]!.message).toContain('55P03');
+    } finally {
+      await c.query('ROLLBACK'); c.release();
+      ERP_READ_LIMITS.lockTimeout = prev;
+    }
+  });
+
+  it('I2: bayat okuma çalışması (nabız eski / süre aşıldı) ve işi FAILED stale_run; taze çalışma ve yazma yeniden denemesi dokunulmaz', async () => {
+    const ep = (await one<{ id: string }>(`SELECT id FROM integration_endpoints WHERE tenant_id = $1 AND feature = 'COST_CENTER'`, [h.world.tenantA])).id;
+    const run = async (startedAgo: string, counts: Record<string, unknown>) => (await one<{ id: string }>(`INSERT INTO integration_runs (tenant_id, endpoint_id, feature,
+      trigger, provider_kind, mock, status, counts, started_at) VALUES ($1,$2,'COST_CENTER','SCHEDULE','TAKLIT',true,'RUNNING',$3, now() - $4::interval) RETURNING id`,
+      [h.world.tenantA, ep, JSON.stringify(counts), startedAgo])).id;
+    const job = (runId: string) => h.owner.query(`INSERT INTO jobs (tenant_id, kind, idempotency_key, payload, requested_by) VALUES ($1,'erp.read',$2,$3,$4)`,
+      [h.world.tenantA, `test:${runId}`, JSON.stringify({ feature: 'COST_CENTER', runId }), h.world.users.tenantAdmin.id]);
+    const oldNoBeat = await run('20 minutes', { mode: 'READ' });
+    const beating = await run('20 minutes', { mode: 'READ', heartbeatAt: new Date().toISOString() });
+    const tooLong = await run('90 minutes', { mode: 'READ', heartbeatAt: new Date().toISOString() });
+    const write = await run('90 minutes', { mode: 'WRITE_RETRY' });
+    for (const id of [oldNoBeat, beating, tooLong]) await job(id);
+    expect(await reapAllStaleErpRuns(h.pool, new Date())).toBeGreaterThanOrEqual(2);
+    for (const id of [oldNoBeat, tooLong]) {
+      expect((await runOf(id)).status, id).toBe('FAILED');
+      expect((await errorsOf(id)).map((e) => e.code)).toEqual(['stale_run']);
+      expect((await jobOf(id)).status).toBe('FAILED');
+    }
+    expect((await runOf(beating)).status).toBe('RUNNING');
+    expect((await runOf(write)).status).toBe('RUNNING');
+    // Temizlik: test satırları kapatılır (son denetim RUNNING kalmadığını arar).
+    await h.owner.query(`UPDATE integration_runs SET status = 'FAILED', finished_at = now() WHERE id = ANY($1)`, [[beating, write]]);
+  });
+
+  it('INTERVAL yuvalarında sağlayıcı yoksa NOT_CONFIGURED İstanbul gününde en fazla bir kez yazılır', async () => {
+    await configure('COST_CENTER', { schedule: { mode: 'INTERVAL', intervalMinutes: 15 } });
+    const sys: TenantContext = { tenantId: h.world.tenantA, userId: '00000000-0000-0000-0000-000000000000', roles: [], companyIds: [], departmentIds: [],
+      allDepartments: true, correlationId: 'test-erp-interval' };
+    const enq = (iso: string) => withTenant(h.pool, sys, (tx) => enqueueTenantErpReads(tx, h.world.tenantA, new Date(iso), () => null));
+    const count = async () => (await one<{ n: number }>(`SELECT count(*)::int AS n FROM integration_runs WHERE tenant_id = $1 AND feature = 'COST_CENTER'
+      AND trigger = 'SCHEDULE' AND status = 'NOT_CONFIGURED' AND (started_at AT TIME ZONE 'Europe/Istanbul')::date = (now() AT TIME ZONE 'Europe/Istanbul')::date`,
+      [h.world.tenantA])).n;
+    const before = await count();
+    const today = new Date();
+    await enq(new Date(today.getTime()).toISOString());
+    await enq(new Date(today.getTime() + 16 * 60_000).toISOString());
+    await enq(new Date(today.getTime() + 32 * 60_000).toISOString());
+    expect((await count()) - before).toBeLessThanOrEqual(1);
+    expect(await count()).toBeGreaterThanOrEqual(1);
     await h.call('tenantAdmin', 'PUT', url('COST_CENTER'), { body: { schedule: { mode: 'MANUAL' } } });
   });
 });

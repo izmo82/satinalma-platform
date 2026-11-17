@@ -90,39 +90,44 @@ export async function failRunForJob(tx: Tx, ctx: TenantContext, jobId: string, c
     [jobId, jobStatus, clip(code.toUpperCase(), 80), JSON.stringify({ runId, status: 'FAILED', reason: code })]);
 }
 
-/**
- * `erp.read` işini işler (tek işlem; kayıt başına SAVEPOINT). Sağlayıcı yalnız özellik açık, sağlayıcı yapılandırılmış ve sır açılmışken
- * çağrılır. Dönüş: çalışmanın son durumu ve sayılar.
- */
-export async function processErpRead(tx: Tx, ctx: TenantContext, jobId: string, deps: ErpReadDeps): Promise<{ runId: string | null; status: string; counts?: RunCounts }> {
+/** Sayfa işlemi sınırları (Ruling 9): kilit beklemesi ve deyim süresi kısa; çalışma toplam süresi sınırlı. YALNIZ TEST değiştirir. */
+export const ERP_READ_LIMITS = { lockTimeout: '5s', statementTimeout: '30s', maxRunMs: 30 * 60_000 };
+
+type Prepared =
+  | { kind: 'done'; result: { runId: string | null; status: string } }
+  | { kind: 'go'; runId: string; feature: ReadFeature; trigger: string; provider: ErpProvider; ep: EndpointRow; resolved: ResolvedEndpoint; secrets: string[] };
+
+/** 1. kısa işlem: iş, çalışma, uç nokta ve sır; koşul yoksa çalışma istek atılmadan kapanır. */
+async function prepareRead(tx: Tx, ctx: TenantContext, jobId: string, deps: ErpReadDeps): Promise<Prepared> {
   const resolve: ProviderResolver = deps.provider ?? ((k) => erpProvider(k, deps.config));
+  await tx.query(`SET LOCAL lock_timeout = '${ERP_READ_LIMITS.lockTimeout}'`);
+  await tx.query(`SET LOCAL statement_timeout = '${ERP_READ_LIMITS.statementTimeout}'`);
   const job = (await tx.query<{ payload: { feature?: unknown; runId?: unknown }; status: string }>(`SELECT payload, status FROM jobs WHERE id = $1`, [jobId])).rows[0];
-  if (!job) return { runId: null, status: 'SKIPPED' };
+  if (!job) return { kind: 'done', result: { runId: null, status: 'SKIPPED' } };
   const feature = job.payload?.feature;
   const runId = typeof job.payload?.runId === 'string' ? job.payload.runId : null;
   if (!isReadFeature(feature) || !runId) {
     await tx.query(`UPDATE jobs SET status = 'FAILED', error_code = 'INVALID_PAYLOAD', updated_at = now() WHERE id = $1`, [jobId]);
-    return { runId, status: 'SKIPPED' };
+    return { kind: 'done', result: { runId, status: 'SKIPPED' } };
   }
   const run = (await tx.query<RunRow>(`SELECT id, status, provider_kind, mock, trigger, counts FROM integration_runs WHERE id = $1 AND feature = $2 FOR UPDATE`,
     [runId, feature])).rows[0];
   if (!run) {
     await tx.query(`UPDATE jobs SET status = 'FAILED', error_code = 'RUN_NOT_FOUND', updated_at = now() WHERE id = $1`, [jobId]);
-    return { runId, status: 'SKIPPED' };
+    return { kind: 'done', result: { runId, status: 'SKIPPED' } };
   }
   if (run.status !== 'RUNNING') {
     await tx.query(`UPDATE jobs SET status = 'SUCCEEDED', result = $2, updated_at = now() WHERE id = $1`, [jobId, JSON.stringify({ runId, skipped: 'run_closed', status: run.status })]);
-    return { runId, status: run.status };
+    return { kind: 'done', result: { runId, status: run.status } };
   }
-  const refuse = async (code: string, message: string) => {
+  const ep = (await tx.query<EndpointRow>(`SELECT id, enabled, provider_kind, base_url, resource_path, auth_type, username, client_id, token_url, field_map, timeout_ms
+    FROM integration_endpoints WHERE feature = $1`, [feature])).rows[0];
+  const refuse = async (code: string, message: string): Promise<Prepared> => {
     await failRunForJob(tx, ctx, jobId, code, message);
     await audit(tx, ctx, 'integration.endpoint.read_finished', 'integration_endpoint', ep?.id ?? null,
       { feature, runId, status: 'FAILED', reason: code, requestSent: false, mock: run.mock, providerKind: run.provider_kind });
-    return { runId, status: 'FAILED' };
+    return { kind: 'done', result: { runId, status: 'FAILED' } };
   };
-
-  const ep = (await tx.query<EndpointRow>(`SELECT id, enabled, provider_kind, base_url, resource_path, auth_type, username, client_id, token_url, field_map, timeout_ms
-    FROM integration_endpoints WHERE feature = $1`, [feature])).rows[0];
   if (!ep || !ep.enabled) return refuse('feature_disabled', 'Özellik çalışma başlamadan kapatıldı; ERP\'ye istek atılmadı.');
   if (!ep.base_url || !ep.resource_path || !ep.auth_type) return refuse('endpoint_not_configured', 'Bağlantı ayarları eksik; ERP\'ye istek atılmadı.');
   const provider = resolve(ep.provider_kind);
@@ -130,7 +135,6 @@ export async function processErpRead(tx: Tx, ctx: TenantContext, jobId: string, 
   if (provider.kind !== run.provider_kind) return refuse('provider_changed', 'Sağlayıcı türü çalışma istendikten sonra değişti; istek atılmadı.');
   const missing = missingMappings(feature, ep.field_map ?? {});
   if (missing.length) return refuse('mapping_incomplete', `Zorunlu alan eşlenmemiş (${missing.join(', ')}); istek atılmadı.`);
-
   let secret: string | null;
   try {
     secret = await loadEndpointSecret(tx, ep.id, new SecretBox(deps.config.erp?.secretKey ?? null));
@@ -140,71 +144,145 @@ export async function processErpRead(tx: Tx, ctx: TenantContext, jobId: string, 
     if (e instanceof SecretOpenFailed) return refuse('secret_unreadable', 'Kayıtlı sır açılamadı; sırrı yeniden girin. İstek atılmadı.');
     throw e;
   }
-  const secrets = secret ? [secret] : [];
-  const resolved: ResolvedEndpoint = {
-    id: ep.id, tenantId: ctx.tenantId, feature, baseUrl: ep.base_url, resourcePath: ep.resource_path, authType: ep.auth_type,
-    username: ep.username, clientId: ep.client_id, tokenUrl: ep.token_url, secret, timeoutMs: ep.timeout_ms,
+  // Nabız: çalışma alındı (bayat çalışma temizleyicisi bunu izler).
+  await tx.query(`UPDATE integration_runs SET counts = counts || $2::jsonb WHERE id = $1`, [runId, JSON.stringify({ heartbeatAt: new Date().toISOString() })]);
+  return {
+    kind: 'go', runId, feature, trigger: run.trigger, provider, ep, secrets: secret ? [secret] : [],
+    resolved: { id: ep.id, tenantId: ctx.tenantId, feature, baseUrl: ep.base_url, resourcePath: ep.resource_path, authType: ep.auth_type,
+      username: ep.username, clientId: ep.client_id, tokenUrl: ep.token_url, secret, timeoutMs: ep.timeout_ms },
   };
+}
 
+/** Sağlayıcı hatası saklanırken genel iletiye çevrilir (ERP yanıt metni saklanmaz; yalnız makine kodu). */
+function pageFailure(e: unknown): Note {
+  if (e instanceof ErpTimeout) return { code: 'timeout', message: 'ERP yanıt vermedi (zaman aşımı); okuma durduruldu.' };
+  if (e instanceof ErpProviderError) {
+    const code = /^[A-Za-z0-9_.:-]{1,80}$/.test(e.code) ? e.code : 'read_failed';
+    return { code, message: code === 'http_401' ? 'ERP kimlik doğrulamayı reddetti (HTTP 401); okuma durduruldu.' : `ERP okuması başarısız oldu (kod ${code}); okuma durduruldu.` };
+  }
+  return { code: 'read_failed', message: 'ERP okuması başarısız oldu; okuma durduruldu.' };
+}
+
+/**
+ * `erp.read` işini işler (Ruling 9). Sayfa ERP'den hiçbir veritabanı bağlantısı tutulmadan okunur; her sayfa kısa bir kiracı işleminde
+ * (lock_timeout + statement_timeout, kayıt başına SAVEPOINT) işlenir ve aynı işlemde çalışmanın sayıları, imleci ve nabzı yazılır.
+ * Çalışma ayrı küçük işlemde kapanır. Toplam süre sınırı aşılırsa okuma durur (PARTIAL/FAILED). Bayat çalışmaları `reapStaleErpRuns` kapatır.
+ */
+export async function processErpRead(pool: pg.Pool, ctx: TenantContext, jobId: string, deps: ErpReadDeps): Promise<{ runId: string | null; status: string; counts?: RunCounts }> {
+  const p = await withTenant(pool, ctx, (tx) => prepareRead(tx, ctx, jobId, deps));
+  if (p.kind === 'done') return p.result;
+  const { runId, feature, provider, ep, resolved, secrets } = p;
   const counts: RunCounts = { read: 0, created: 0, updated: 0, unchanged: 0, skipped: 0, failed: 0 };
   let errorRows = 0;
   let pageError: Note | null = null;
+  let closedElsewhere = false;
   const handler = HANDLERS[feature];
   const hctx: HandlerCtx = { providerKind: provider.kind, mock: !provider.real, runId };
+  const started = Date.now();
   try {
     let cursor: string | null = null;
     for (let page = 0; ; page++) {
       if (page >= MAX_PAGES) { pageError = { code: 'too_many_pages', message: `En fazla ${MAX_PAGES} sayfa okunur; okuma durduruldu.` }; break; }
+      if (Date.now() - started > ERP_READ_LIMITS.maxRunMs) { pageError = { code: 'run_duration_exceeded', message: 'Çalışma süre sınırını aştı; okuma durduruldu.' }; break; }
       let res: { records: unknown[]; nextCursor: string | null };
       try {
-        res = await provider.read(resolved, feature, cursor);
+        res = await provider.read(resolved, feature, cursor); // bağlantı tutulmaz
       } catch (e) {
-        pageError = e instanceof ErpTimeout ? { code: 'timeout', message: 'ERP yanıt vermedi (zaman aşımı); okuma durduruldu.' }
-          : e instanceof ErpProviderError ? { code: e.code, message: e.message }
-            : { code: 'read_failed', message: 'ERP okuması başarısız oldu; okuma durduruldu.' };
+        pageError = pageFailure(e);
         break;
       }
-      for (const record of Array.isArray(res.records) ? res.records : []) {
-        counts.read++;
-        const payloadSha = sha256(record);
-        const { values, errors } = applyFieldMap(ep.field_map, record, feature);
-        const key = recordKey(feature, values);
-        if (errors.length) {
-          counts.failed++;
-          const fields = errors.map((x) => `${x.field} (${x.code})`).join(', ');
-          await addError(tx, ctx, runId, key, errors[0]!.code, `Satır reddedildi; yuvarlanmadı/uydurulmadı: ${fields}.`, payloadSha, secrets);
-          errorRows++;
-          continue;
-        }
-        let r: HandlerResult;
-        await tx.query('SAVEPOINT erp_read_record');
-        try {
-          r = await handler(tx, ctx, values, hctx);
-          if (r.outcome === 'failed') await tx.query('ROLLBACK TO SAVEPOINT erp_read_record');
-          else await tx.query('RELEASE SAVEPOINT erp_read_record');
-        } catch (e) {
-          await tx.query('ROLLBACK TO SAVEPOINT erp_read_record');
-          const pgCode = typeof (e as { code?: unknown })?.code === 'string' ? (e as { code: string }).code : null;
-          r = failed('record_failed', e instanceof ApiError ? e.message : `Kayıt işlenemedi${pgCode ? ` (veritabanı kodu ${pgCode})` : ''}.`);
-        }
-        counts[r.outcome]++;
-        for (const n of r.notes ?? []) { await addError(tx, ctx, runId, key, n.code, n.message, payloadSha, secrets); errorRows++; }
+      const records = Array.isArray(res.records) ? res.records : [];
+      const nextCursor = res.nextCursor;
+      try {
+        const alive = await withTenant(pool, ctx, async (tx) => {
+          await tx.query(`SET LOCAL lock_timeout = '${ERP_READ_LIMITS.lockTimeout}'`);
+          await tx.query(`SET LOCAL statement_timeout = '${ERP_READ_LIMITS.statementTimeout}'`);
+          const st = (await tx.query<{ status: string }>(`SELECT status FROM integration_runs WHERE id = $1 FOR UPDATE`, [runId])).rows[0]?.status;
+          if (st !== 'RUNNING') return false;
+          const local = { ...counts };
+          let localErrors = 0;
+          for (const record of records) {
+            local.read++;
+            const payloadSha = sha256(record);
+            const { values, errors } = applyFieldMap(ep.field_map, record, feature);
+            const key = recordKey(feature, values);
+            if (errors.length) {
+              local.failed++;
+              const fields = errors.map((x) => `${x.field} (${x.code})`).join(', ');
+              await addError(tx, ctx, runId, key, errors[0]!.code, `Satır reddedildi; yuvarlanmadı/uydurulmadı: ${fields}.`, payloadSha, secrets);
+              localErrors++;
+              continue;
+            }
+            let r: HandlerResult;
+            await tx.query('SAVEPOINT erp_read_record');
+            try {
+              r = await handler(tx, ctx, values, hctx);
+              if (r.outcome === 'failed') await tx.query('ROLLBACK TO SAVEPOINT erp_read_record');
+              else await tx.query('RELEASE SAVEPOINT erp_read_record');
+            } catch (e) {
+              await tx.query('ROLLBACK TO SAVEPOINT erp_read_record');
+              const pgCode = typeof (e as { code?: unknown })?.code === 'string' ? (e as { code: string }).code : null;
+              r = failed('record_failed', e instanceof ApiError ? e.message : `Kayıt işlenemedi${pgCode ? ` (veritabanı kodu ${pgCode})` : ''}.`);
+            }
+            local[r.outcome]++;
+            for (const n of r.notes ?? []) { await addError(tx, ctx, runId, key, n.code, n.message, payloadSha, secrets); localErrors++; }
+          }
+          await tx.query(`UPDATE integration_runs SET counts = counts || $2::jsonb WHERE id = $1`,
+            [runId, JSON.stringify({ ...local, page: page + 1, cursor: nextCursor, heartbeatAt: new Date().toISOString() })]);
+          Object.assign(counts, local);
+          errorRows += localErrors;
+          return true;
+        });
+        if (!alive) { closedElsewhere = true; break; }
+      } catch (e) {
+        // Sayfa işlemi geri alındı (ör. kilit beklemesi aşıldı); önceki sayfalar kalır, okuma durur.
+        const pgCode = typeof (e as { code?: unknown })?.code === 'string' ? (e as { code: string }).code : null;
+        pageError = { code: 'page_failed', message: `Sayfa işlenemedi${pgCode ? ` (veritabanı kodu ${pgCode})` : ''}; bu sayfanın kayıtları geri alındı, okuma durduruldu.` };
+        break;
       }
-      cursor = res.nextCursor;
+      cursor = nextCursor;
       if (!cursor) break;
     }
   } finally {
     resolved.secret = null;
   }
-  if (pageError) { await addError(tx, ctx, runId, null, pageError.code, pageError.message, null, secrets); errorRows++; }
+  if (closedElsewhere) {
+    await withTenant(pool, ctx, (tx) => tx.query(`UPDATE jobs SET status = 'FAILED', error_code = 'RUN_CLOSED', updated_at = now() WHERE id = $1 AND status IN ('QUEUED','RUNNING')`, [jobId]));
+    return { runId, status: 'FAILED', counts };
+  }
   const okRecords = counts.created + counts.updated + counts.unchanged + counts.skipped;
   const status: 'SUCCESS' | 'PARTIAL' | 'FAILED' = (pageError && okRecords === 0) || (counts.read > 0 && okRecords === 0 && counts.failed > 0) ? 'FAILED'
-    : errorRows > 0 ? 'PARTIAL' : 'SUCCESS';
-  await closeRun(tx, runId, status, { ...counts, requestSent: true });
-  await tx.query(`UPDATE jobs SET status = 'SUCCEEDED', result = $2, updated_at = now() WHERE id = $1`, [jobId, JSON.stringify({ runId, status, counts })]);
-  await audit(tx, ctx, 'integration.endpoint.read_finished', 'integration_endpoint', ep.id,
-    { feature, runId, status, counts, errorRows, mock: !provider.real, providerKind: provider.kind, trigger: run.trigger });
+    : errorRows > 0 || pageError ? 'PARTIAL' : 'SUCCESS';
+  await withTenant(pool, ctx, async (tx) => {
+    if (pageError) await addError(tx, ctx, runId, null, pageError.code, pageError.message, null, secrets);
+    await closeRun(tx, runId, status, { ...counts, requestSent: true });
+    await tx.query(`UPDATE jobs SET status = 'SUCCEEDED', result = $2, updated_at = now() WHERE id = $1`, [jobId, JSON.stringify({ runId, status, counts })]);
+    await audit(tx, ctx, 'integration.endpoint.read_finished', 'integration_endpoint', ep.id,
+      { feature, runId, status, counts, errorRows: errorRows + (pageError ? 1 : 0), mock: !provider.real, providerKind: provider.kind, trigger: p.trigger });
+  });
   return { runId, status, counts };
+}
+
+/** Bayat çalışma sınırları: nabız bu kadar eskiyse ya da çalışma bu kadar uzun sürdüyse kapatılır. YALNIZ TEST değiştirir. */
+export const ERP_STALE = { heartbeatMinutes: 15, maxRunMinutes: 60 };
+
+/**
+ * Bayat okuma çalışmalarını (işçi çöktü, iş hiç alınmadı) FAILED `stale_run` kapatır ve işini FAILED yapar; kiracı bağlamında (RLS).
+ * Yazma yeniden deneme çalışmaları (mode WRITE_RETRY) ve sınamalar dokunulmaz. Döner: kapatılan çalışma sayısı.
+ */
+export async function reapStaleErpRuns(tx: Tx, tenantId: string, now: Date = new Date()): Promise<number> {
+  const stale = (await tx.query<{ id: string }>(`SELECT id FROM integration_runs WHERE status = 'RUNNING' AND trigger <> 'TEST' AND coalesce(counts->>'mode', 'READ') = 'READ'
+      AND (coalesce((counts->>'heartbeatAt')::timestamptz, started_at) < $1::timestamptz - make_interval(mins => $2)
+           OR started_at < $1::timestamptz - make_interval(mins => $3))
+    ORDER BY started_at FOR UPDATE SKIP LOCKED`, [now.toISOString(), ERP_STALE.heartbeatMinutes, ERP_STALE.maxRunMinutes])).rows;
+  for (const r of stale) {
+    await tx.query(`INSERT INTO integration_run_errors (tenant_id, run_id, code, message) VALUES ($1,$2,'stale_run',$3)`,
+      [tenantId, r.id, 'Çalışma zamanında bitmedi (işçi durmuş ya da iş alınmamış); başarısız sayıldı. Yeniden çalıştırın.']);
+    await tx.query(`UPDATE integration_runs SET status = 'FAILED', finished_at = now(), counts = counts || '{"reason":"stale_run"}'::jsonb WHERE id = $1 AND status = 'RUNNING'`, [r.id]);
+    await tx.query(`UPDATE jobs SET status = 'FAILED', error_code = 'STALE_RUN', updated_at = now() WHERE kind = $1 AND payload->>'runId' = $2 AND status IN ('QUEUED','RUNNING')`,
+      [ERP_READ_JOB, r.id]);
+  }
+  return stale.length;
 }
 
 function recordKey(feature: ReadFeature, v: Record<string, string | null>): string | null {
@@ -501,6 +579,10 @@ export async function enqueueTenantErpReads(tx: Tx, tenantId: string, now: Date,
     if (running) continue;
     const provider = resolve(e.provider_kind);
     if (!provider || !e.updated_by) {
+      // INTERVAL'de her yuvada değil, İstanbul gününde en fazla bir NOT_CONFIGURED satırı (çalışma listesi şişmesin).
+      const today = (await tx.query(`SELECT 1 FROM integration_runs WHERE endpoint_id = $1 AND trigger = 'SCHEDULE' AND status = 'NOT_CONFIGURED'
+        AND (started_at AT TIME ZONE 'Europe/Istanbul')::date = ($2::timestamptz AT TIME ZONE 'Europe/Istanbul')::date LIMIT 1`, [e.id, now.toISOString()])).rowCount;
+      if (today) { await tx.query(`UPDATE integration_endpoints SET last_slot = $2 WHERE id = $1`, [e.id, due.slot]); continue; }
       await tx.query(`INSERT INTO integration_runs (tenant_id, endpoint_id, feature, trigger, provider_kind, mock, finished_at, status, counts)
         VALUES ($1,$2,$3,'SCHEDULE',NULL,false,now(),'NOT_CONFIGURED',$4)`,
         [tenantId, e.id, e.feature, JSON.stringify({ mode: 'READ', slot: due.slot, reason: provider ? 'no_requester' : 'provider_not_configured', requestSent: false })]);
@@ -524,11 +606,28 @@ export async function enqueueTenantErpReads(tx: Tx, tenantId: string, now: Date,
 const systemCtx = (tenantId: string, companyIds: string[], correlationId: string): TenantContext =>
   ({ tenantId, userId: SYSTEM_USER, roles: [], companyIds, departmentIds: [], allDepartments: true, correlationId });
 
+/** Bütün kiracılarda bayat okuma çalışmalarını kapatır (058d dar kiracı kapısı). Döner: kapatılan çalışma sayısı. */
+export async function reapAllStaleErpRuns(pool: pg.Pool, now: Date = new Date()): Promise<number> {
+  const tenants = await withoutTenant(pool, async (c) => (await c.query<{ id: string }>(`SELECT t AS id FROM erp_stale_run_tenants($1, $2) t`,
+    [now.toISOString(), Math.min(ERP_STALE.heartbeatMinutes, ERP_STALE.maxRunMinutes)])).rows);
+  let n = 0;
+  for (const { id } of tenants) {
+    try {
+      n += await withTenant(pool, systemCtx(id, [], `erp-reap-${now.toISOString()}`), (tx) => reapStaleErpRuns(tx, id, now));
+    } catch (e) {
+      console.error('erp stale run reap failed', id, (e as { code?: string })?.code ?? 'error');
+    }
+  }
+  return n;
+}
+
 /**
  * İşçide dakikada bir: zamanlanmış (INTERVAL/DAILY) açık okuyan özelliklerin zamanı geldiyse `erp.read` işi + SCHEDULE çalışması
  * (idempotency `erp.read:<feature>:<tenant>:<slot>`; DAILY'de İstanbul günü başına bir). Sağlayıcı yoksa NOT_CONFIGURED, iş yok.
  */
 export async function enqueueDueErpReads(pool: pg.Pool, now: Date, config: ErpCfg, resolve: ProviderResolver = (k) => erpProvider(k, config)): Promise<number> {
+  // Bayat okuma çalışmaları (işçi çöktü / iş alınmadı) önce kapatılır: dakikalık tıkta, işçi dosyası değişmeden.
+  await reapAllStaleErpRuns(pool, now).catch((e) => console.error('erp stale run reap failed', (e as { code?: string })?.code ?? 'error'));
   const tenants = await withoutTenant(pool, async (c) => (await c.query<{ id: string }>(`SELECT t AS id FROM erp_read_schedule_tenants() t`)).rows);
   let n = 0;
   for (const { id } of tenants) {
@@ -560,7 +659,7 @@ export async function runErpReadJob(pool: pg.Pool, job: { id: string; tenant_id:
   }
   const ctx: TenantContext = { tenantId: job.tenant_id, userId: job.requested_by, roles, companyIds, departmentIds: [], allDepartments: true, correlationId: `job-${job.id}` };
   try {
-    await withTenant(pool, ctx, (tx) => processErpRead(tx, ctx, job.id, deps));
+    await processErpRead(pool, ctx, job.id, deps);
   } catch (e) {
     // İleti yazılmaz (sır içerebilecek sağlayıcı ayrıntısı olmasın); yalnız kod.
     console.error('erp.read failed', job.id, (e as { code?: string })?.code ?? (e as Error)?.name ?? 'error');
