@@ -5,14 +5,20 @@ import SwiftUI
 struct RiskAssessmentView: View {
     let assessmentId: String
     let titleHint: String
+    /// Görevden açıldıysa görev başlığındaki dönem ("Çeyreklik risk gözden geçirmesi 2026-2: …"); varsayılan seçimde öncelik alır.
+    let preferredPeriod: String?
     @Environment(SessionStore.self) private var session
+    @State private var chosenPeriod: String?
     @State private var detail: RiskDetail?
     @State private var error: Notice?
     @State private var confirming = false
     @State private var sending = false
     @State private var actionNotice: Notice?
 
-    init(assessmentId: String, title: String = "Risk değerlendirmesi") { self.assessmentId = assessmentId; titleHint = title }
+    init(assessmentId: String, title: String = "Risk değerlendirmesi", taskKind: String? = nil) {
+        self.assessmentId = assessmentId; titleHint = title
+        preferredPeriod = taskKind == "risk_quarterly_review" ? RiskFmt.period(inTitle: title) : nil
+    }
 
     var body: some View {
         List {
@@ -94,21 +100,25 @@ struct RiskAssessmentView: View {
         }
     }
 
-    /// Çeyreklik gözden geçirme: yalnız tamamlanmış kayıtta ve sunucu izin veriyorsa; "Güncelle" web'de.
+    /// Çeyreklik gözden geçirme: yalnız tamamlanmış kayıtta; kaydı olmayan dönemler (yılın çeyrekleri, cari çeyreğe kadar) seçilebilir,
+    /// varsayılan en eski eksik dönem (ya da görevin dönemi). Eksik dönem yoksa düğme görünmez. "Güncelle" web'de.
     @ViewBuilder private func review(_ d: RiskDetail) -> some View {
         if d.assessment.status == "COMPLETED", d.can?.review != false {
-            let period = RiskFmt.reviewPeriod(year: d.assessment.year)
-            let done = (d.reviews ?? []).first { $0.period == period }
+            let missing = RiskFmt.missingPeriods(year: d.assessment.year, reviews: d.reviews ?? [])
+            let period = (chosenPeriod.flatMap { missing.contains($0) ? $0 : nil }) ?? preferredPeriod.flatMap { missing.contains($0) ? $0 : nil } ?? missing.first
             Section {
-                if let done {
-                    Label("\(period) dönemi: \(done.outcome == "NO_CHANGE" ? "Değişiklik yok olarak onaylandı" : "Güncelleme başlatıldı").", systemImage: "checkmark.seal").font(.subheadline)
-                } else {
-                    Button { confirming = true } label: { Label(sending ? "Gönderiliyor…" : "Değişiklik yok", systemImage: "checkmark.circle") }
+                if let period {
+                    if missing.count > 1 {
+                        Picker("Dönem", selection: Binding(get: { period }, set: { chosenPeriod = $0 })) { ForEach(missing, id: \.self) { Text($0).tag($0) } }
+                    }
+                    Button { confirming = true } label: { Label(sending ? "Gönderiliyor…" : "Değişiklik yok (\(period))", systemImage: "checkmark.circle") }
                         .disabled(sending || !session.isOnline)
                         .confirmationDialog("\(period) dönemi için \"Değişiklik yok\" onaylansın mı?", isPresented: $confirming, titleVisibility: .visible) {
-                            Button("Değişiklik yok") { Task { await submitNoChange(period: period) } }
+                            Button("Değişiklik yok (\(period))") { Task { await submitNoChange(period: period) } }
                             Button("Vazgeç", role: .cancel) {}
                         } message: { Text("Değerlendirme aynen geçerli kalır; çeyreklik gözden geçirme görevi kapanır.") }
+                } else if let last = (d.reviews ?? []).compactMap(\.period).max() {
+                    Label("Son gözden geçirme: \(last). Bekleyen dönem yok.", systemImage: "checkmark.seal").font(.subheadline)
                 }
                 if let actionNotice { NoticeView(notice: actionNotice) }
             } header: { Text("Çeyreklik gözden geçirme") } footer: {
@@ -159,21 +169,23 @@ struct RiskAssessmentView: View {
 struct RiskMatrixView: View {
     let band: Int
     let column: Int
+    @ScaledMetric(relativeTo: .caption2) private var labelWidth: CGFloat = 44
+    @ScaledMetric(relativeTo: .caption) private var cellHeight: CGFloat = 28
     static let levels: [[Int]] = [[1, 1, 2, 2, 3], [1, 2, 2, 3, 3], [2, 2, 3, 3, 4], [2, 3, 3, 4, 5], [3, 3, 4, 5, 5]]
     static let bandLabels = ["0–20", "20–40", "40–60", "60–80", "80–100"]
     var body: some View {
         VStack(spacing: 3) {
             ForEach((1...5).reversed(), id: \.self) { b in
                 HStack(spacing: 3) {
-                    Text(Self.bandLabels[b - 1]).font(.system(size: 10)).foregroundStyle(.secondary).frame(width: 44, alignment: .trailing).accessibilityHidden(true)
+                    Text(Self.bandLabels[b - 1]).font(.caption2).foregroundStyle(.secondary).frame(width: labelWidth, alignment: .trailing).accessibilityHidden(true)
                     ForEach(1...5, id: \.self) { c in cell(b, c) }
                 }
             }
             HStack(spacing: 3) {
-                Spacer().frame(width: 44)
-                ForEach(1...5, id: \.self) { c in Text("\(c)").font(.system(size: 10)).foregroundStyle(.secondary).frame(maxWidth: .infinity).accessibilityHidden(true) }
+                Spacer().frame(width: labelWidth)
+                ForEach(1...5, id: \.self) { c in Text("\(c)").font(.caption2).foregroundStyle(.secondary).frame(maxWidth: .infinity).accessibilityHidden(true) }
             }
-            Text("Satır: risk skoru bandı; sütun: kritiklik").font(.system(size: 10)).foregroundStyle(.secondary).accessibilityHidden(true)
+            Text("Satır: risk skoru bandı; sütun: kritiklik").font(.caption2).foregroundStyle(.secondary).accessibilityHidden(true)
         }
         .accessibilityElement(children: .contain)
     }
@@ -181,7 +193,7 @@ struct RiskMatrixView: View {
         let level = Self.levels[b - 1][c - 1]
         let selected = b == band && c == column
         return Text("\(level)").font(.caption.weight(selected ? .bold : .regular))
-            .frame(maxWidth: .infinity, minHeight: 28)
+            .frame(maxWidth: .infinity, minHeight: cellHeight)
             .background(RiskLabels.color(level).opacity(selected ? 0.9 : 0.25), in: RoundedRectangle(cornerRadius: 4))
             .overlay(RoundedRectangle(cornerRadius: 4).stroke(selected ? Color.primary : .clear, lineWidth: 2))
             .foregroundStyle(selected ? Color.white : Color.primary)
@@ -221,12 +233,19 @@ enum RiskFmt {
         let f = NumberFormatter(); f.locale = Locale(identifier: "tr_TR"); f.numberStyle = .decimal; f.minimumFractionDigits = 2; f.maximumFractionDigits = 2
         return f.string(from: dec as NSDecimalNumber) ?? v
     }
-    /// Dönem adı `YYYY-Ç` (İstanbul); değerlendirmenin yılı geçmişse o yılın son çeyreği.
-    static func reviewPeriod(year: Int?, now: Date = Date()) -> String {
+    /// Kaydı olmayan dönemler `YYYY-Ç`: değerlendirme yılının çeyrekleri, cari İstanbul çeyreğine kadar (geçmiş yılda 4'ü); en eski başta.
+    static func missingPeriods(year: Int?, reviews: [RiskDetail.Review], now: Date = Date()) -> [String] {
         var cal = Calendar(identifier: .gregorian); cal.timeZone = TimeZone(identifier: "Europe/Istanbul")!
         let y = cal.component(.year, from: now), q = (cal.component(.month, from: now) - 1) / 3 + 1
-        guard let year, year != y else { return "\(y)-\(q)" }
-        return "\(year)-4"
+        guard let year, year <= y else { return [] }
+        let last = year == y ? q : 4
+        let done = Set(reviews.compactMap(\.period))
+        return (1...last).map { "\(year)-\($0)" }.filter { !done.contains($0) }
+    }
+    /// Görev başlığındaki dönem (`risk_quarterly_review` başlığı: "… gözden geçirmesi 2026-2: Tedarikçi").
+    static func period(inTitle title: String) -> String? {
+        guard let r = title.range(of: #"\d{4}-[1-4]"#, options: .regularExpression) else { return nil }
+        return String(title[r])
     }
     /// Web taban adresi: Info.plist SPWebBaseURL; yoksa yerel geliştirmede 4100 → 5174, aksi halde API ile aynı kök.
     static func webURL(session: SessionStore, assessmentId: String) -> URL? {

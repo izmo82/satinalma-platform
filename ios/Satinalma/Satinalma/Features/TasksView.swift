@@ -136,7 +136,7 @@ struct TaskDestination: View {
         case "contract_approval_step": ContractApprovalView(stepId: task.entityId)
         case "contract_rejection", "contract_family", "contract_reminder": ContractSummaryView(familyId: task.entityId)
         // v2 Faz 6 (R15): risk görevi salt okunur özet açar; form web'de.
-        case "risk_assessment": RiskAssessmentView(assessmentId: task.entityId, title: task.title)
+        case "risk_assessment": RiskAssessmentView(assessmentId: task.entityId, title: task.title, taskKind: task.kind)
         default:
             ContentUnavailableView("Bu iş webde yapılır", systemImage: "desktopcomputer",
                                    description: Text("\(task.title)\n\nBu kayıt türü için mobil ekran yok; aynı görev web uygulamasında açıktır."))
