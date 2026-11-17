@@ -20,6 +20,7 @@ struct ContractApprovalView: View {
     @State private var reviews: ContractReviews?
     @State private var reviewError: Notice?
     @State private var reviewTimedOut = false
+    @State private var reviewToken = UUID()
 
     private var meId: String? { session.me?.user.id }
     /// Karar verilecek adım: görevin adımı, yoksa zincirin sıradaki adımı.
@@ -36,7 +37,7 @@ struct ContractApprovalView: View {
             } else {
                 Loadable(value: contract, error: error, retry: load) { c in
                     ContractHeaderCard(c: c)
-                    Section("Ön inceleme") { ReviewInfoCard(data: reviews, error: reviewError, timedOut: reviewTimedOut, familyId: c.family.id) }
+                    Section("Ön inceleme") { ReviewInfoCard(data: reviews, error: reviewError, timedOut: reviewTimedOut, familyId: c.family.id, retry: { reviewToken = UUID() }) }
                     Section("Onay zinciri") { ApprovalChainView(c: c, meId: meId) }
                     if let doc = c.document, let dv = doc.documentVersionId {
                         Section("Belge") {
@@ -75,10 +76,10 @@ struct ContractApprovalView: View {
         .sheet(isPresented: $rejecting) {
             RejectReasonSheet { reason in await decide("REJECTED", reason: reason) }
         }
-        .refreshable { await load() }
+        .refreshable { reviewToken = UUID(); await load() }
         .task { await load() }
         // Ön inceleme ayrı yüklenir: alınamazsa onay ekranı ve karar düğmeleri etkilenmez.
-        .task(id: resolvedFamily) {
+        .task(id: "\(resolvedFamily ?? "")|\(reviewToken)") {
             guard let fid = resolvedFamily else { return }
             reviewTimedOut = false
             await pollReviews(session, familyId: fid, update: { r in
@@ -290,6 +291,9 @@ struct ContractSummaryView: View {
     let familyId: String
     @Environment(SessionStore.self) private var session
     @State private var contract: ContractV2?
+    private var canReadReviews: Bool {
+        (session.me?.roles ?? []).map(Labels.v2Role).contains { ["ADMIN", "PROCUREMENT", "DEPARTMENT_USER", "AUDITOR"].contains($0) }
+    }
     @State private var error: Notice?
 
     var body: some View {
@@ -305,7 +309,10 @@ struct ContractSummaryView: View {
                                 }
                             }
                         }
-                        NavigationLink { ContractReviewView(familyId: c.family.id) } label: { ReviewSummaryRow(review: c.review) }
+                        // `contract.review.read` (Yönetici, Satınalma, Departman kullanıcısı, Denetçi) ya da sunucu özeti verdiyse (onaycı görünürlüğü).
+                        if c.review != nil || canReadReviews {
+                            NavigationLink { ContractReviewView(familyId: c.family.id) } label: { ReviewSummaryRow(review: c.review) }
+                        }
                         if c.can.decide {
                             NavigationLink { ContractApprovalView(familyId: c.family.id) } label: { Label("Onay kararı ver", systemImage: "checkmark.seal") }
                         }
@@ -347,6 +354,7 @@ struct ReviewSummaryRow: View {
                     Text("Ön inceleme: \(r.score) / 100")
                     Text("Eşik \(r.threshold)\(r.belowThreshold ? " · eşiğin altında" : "")\(r.stale ? " · güncel değil" : "") · yalnız bilgi")
                         .font(.footnote).foregroundStyle(.secondary)
+                    Text(r.disclaimer).font(.footnote).foregroundStyle(.secondary)
                     if r.isTestProvider { TestProviderTag(label: r.providerLabel) }
                 } else {
                     Text("Ön inceleme")

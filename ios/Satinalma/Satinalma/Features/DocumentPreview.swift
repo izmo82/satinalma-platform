@@ -47,10 +47,33 @@ struct DocumentPreview: View {
 struct PDFKitView: UIViewRepresentable {
     let document: PDFDocument
     var page: Int? = nil
-    func makeUIView(context: Context) -> PDFView {
-        let v = PDFView(); v.autoScales = true; v.displayMode = .singlePageContinuous; v.document = document
-        if let page, page >= 1, let p = document.page(at: page - 1) { v.go(to: p) }
+    func makeUIView(context: Context) -> PagedPDFView {
+        let v = PagedPDFView(); v.autoScales = true; v.displayMode = .singlePageContinuous; v.document = document
+        v.pendingPage = page
         return v
     }
-    func updateUIView(_ v: PDFView, context: Context) { if v.document !== document { v.document = document } }
+    func updateUIView(_ v: PagedPDFView, context: Context) {
+        if v.document !== document { v.document = document; v.pendingPage = page; v.appliedPage = nil }
+        // Sayfa değişince yeniden atlanır (ör. başka bir bulgunun sayfası).
+        if page != v.appliedPage { v.pendingPage = page }
+        v.applyPendingPageIfReady()
+    }
+}
+
+/// v2 Faz 4: PDFView yerleşim yapılmadan `go(to:)` çağrılırsa ilk sayfada kalır. Sayfaya geçiş pencereye bağlanıp
+/// boyut aldıktan sonra (yerleşimde, ana kuyrukta) yapılır.
+final class PagedPDFView: PDFView {
+    var pendingPage: Int?
+    var appliedPage: Int?
+    override func didMoveToWindow() { super.didMoveToWindow(); applyPendingPageIfReady() }
+    override func layoutSubviews() { super.layoutSubviews(); applyPendingPageIfReady() }
+    func applyPendingPageIfReady() {
+        guard let target = pendingPage, window != nil, bounds.width > 0, bounds.height > 0 else { return }
+        pendingPage = nil
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let doc = self.document, target >= 1, let p = doc.page(at: min(target, doc.pageCount) - 1) else { return }
+            self.go(to: p)
+            self.appliedPage = target
+        }
+    }
 }

@@ -61,10 +61,12 @@ enum AiText {
     }
     /// Bulgular: doğrulanmış önce, sonra önem sırası (web ReviewCard ile aynı).
     static func ordered(_ f: [ContractReviews.Finding]) -> [ContractReviews.Finding] {
-        f.sorted { a, b in
-            if a.verified != b.verified { return a.verified }
-            return (severities.firstIndex(of: a.severity) ?? 9) < (severities.firstIndex(of: b.severity) ?? 9)
-        }
+        // Kararlı sıralama: eşit anahtarda sunucu sırası (ord) korunur.
+        f.enumerated().sorted { a, b in
+            if a.element.verified != b.element.verified { return a.element.verified }
+            let sa = severities.firstIndex(of: a.element.severity) ?? 9, sb = severities.firstIndex(of: b.element.severity) ?? 9
+            return sa != sb ? sa < sb : a.offset < b.offset
+        }.map(\.element)
     }
     /// "2 yüksek · 1 orta önemde bulgu" (yalnız doğrulanmış bulgular puana girer).
     static func counts(_ f: [ContractReviews.Finding]) -> String {
@@ -145,9 +147,10 @@ struct FindingRow: View {
             if let p = f.page {
                 if full, let dv = documentVersionId {
                     NavigationLink { DocumentPreview(documentVersionId: dv, expectedSha256: sha256, title: title, page: p) } label: {
-                        Text("Belgede s. \(p)'yı aç").font(.footnote.weight(.semibold))
+                        Text("\(p). sayfa").font(.footnote.weight(.semibold)).tapTarget()
                     }
-                    .accessibilityLabel("\(f.title): belgede sayfa \(p)'yı aç")
+                    // Ek almayan biçim (web ile aynı); etiket görünen metni içerir.
+                    .accessibilityLabel("\(f.title): Belgeyi \(p). sayfada aç, \(p). sayfa")
                 } else {
                     Text("s. \(p)").font(.footnote).foregroundStyle(.secondary)
                 }
@@ -166,7 +169,11 @@ func pollReviews(_ session: SessionStore, familyId: String, update: (Result<Cont
             let (r, _): (ContractReviews, String?) = try await session.get("/api/v1/contracts/\(familyId)/reviews")
             update(.success(r))
             guard r.run?.active == true else { return }
-        } catch { update(.failure(error)); return }
+        } catch {
+            // Görev iptali (ekrandan çıkış, yenileme) hata olarak gösterilmez.
+            if Task.isCancelled || error is CancellationError { return }
+            update(.failure(error)); return
+        }
         if Date().timeIntervalSince(start) > 120 { timedOut(); return }
         try? await Task.sleep(for: .seconds(3))
     }
@@ -179,6 +186,8 @@ struct ReviewInfoCard: View {
     let error: Notice?
     let timedOut: Bool
     let familyId: String
+    /// Hata durumunda "Yeniden dene" (yeniden sorar).
+    var retry: (() -> Void)? = nil
     var body: some View {
         if let d = data {
             if let cur = d.current {
@@ -207,6 +216,7 @@ struct ReviewInfoCard: View {
             }
         } else if let error {
             Label("Ön inceleme alınamadı: \(error.text) Belgeyi kendiniz inceleyin.", systemImage: "sparkles").font(.footnote).foregroundStyle(.secondary)
+            if let retry { Button("Yeniden dene", action: retry) }
         } else {
             ProgressView("Ön inceleme yükleniyor").frame(maxWidth: .infinity)
         }
@@ -352,6 +362,8 @@ struct ContractReviewView: View {
 /// Puan gönderimi engellemez; eşik altındaysa ek onaycı önerilir (zorunlu değil).
 struct ReviewSubmitCard: View {
     let familyId: String
+    /// Ekran yenilenince (aşağı çek) değişir; kart yeniden sorar.
+    var refreshID = UUID()
     @Environment(SessionStore.self) private var session
     @State private var data: ContractReviews?
     @State private var error: Notice?
@@ -369,7 +381,7 @@ struct ReviewSubmitCard: View {
                         .font(.footnote).foregroundStyle(.orange)
                 }
             }
-            ReviewInfoCard(data: freshOrRun, error: error, timedOut: timedOut, familyId: familyId)
+            ReviewInfoCard(data: freshOrRun, error: error, timedOut: timedOut, familyId: familyId, retry: { pollToken = UUID() })
             if let d = data, let cur = d.current, cur.stale, !(d.run?.active ?? false) {
                 Text("Önceki inceleme (puan \(cur.score)) güncel değil: belge ya da şablon sürümü değişti.").font(.footnote).foregroundStyle(.secondary)
             }
@@ -379,6 +391,7 @@ struct ReviewSubmitCard: View {
             }
             if let notice { NoticeView(notice: notice) }
         } header: { Text("Ön inceleme") }
+        .onChange(of: refreshID) { _, _ in pollToken = UUID() }
         .task(id: pollToken) {
             timedOut = false
             await pollReviews(session, familyId: familyId, update: { r in
