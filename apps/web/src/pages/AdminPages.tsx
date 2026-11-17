@@ -116,6 +116,19 @@ const departmentBound = (roles: string[]) => roles.length > 0 && roles.every((r)
 /** Bir kullanıcının satırı: rol adı, Departman kullanıcısı için departman seçimi (onay kutuları) ve kaydet. */
 function MemberItem({ m, deps, onSaved }: { m: Member; deps: Department[]; onSaved: () => Promise<void> }) {
   const [sel, setSel] = useState<string[]>(m.departmentIds);
+  // v2 Faz 2 (D105): liste yeniden kurulmadan yenilenir (eşitleme, rol, birleştirme). Sunucu değeri değişince: düzenlenmemiş satır yeni
+  // değere geçer; kaydedilmemiş düzenleme korunur. Her iki durumda da artık listede olmayan (birleştirilmiş) departman seçimden düşer.
+  const [base, setBase] = useState<string[]>(m.departmentIds);
+  const serverKey = [...m.departmentIds].sort().join();
+  const depKey = deps.map((d) => d.id).join();
+  useEffect(() => {
+    const known = new Set(deps.map((d) => d.id));
+    const wasClean = [...sel].sort().join() === [...base].sort().join();
+    const next = (wasClean ? m.departmentIds : sel).filter((id) => known.has(id));
+    if (next.join() !== sel.join()) setSel(next);
+    if ([...base].sort().join() !== serverKey) setBase(m.departmentIds);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverKey, depKey]);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ tone: 'info' | 'danger'; text: string } | null>(null);
   const editable = departmentBound(m.roles);
@@ -211,6 +224,8 @@ function AssignGroup({ kind, rows, deps, onDone }: { kind: AssignKind; rows: Una
   const selectId = `assign-${kind}`;
   // Liste yeniden yüklenince (başka sekmede atanan) artık görünmeyen kayıtlar seçimden düşer; görünenlerin seçimi korunur.
   useEffect(() => { setSel((s) => { const n = s.filter((id) => rows.some((r) => r.id === id)); return n.length === s.length ? s : n; }); }, [rows]);
+  // Seçili hedef departman listeden düştüyse (birleştirildi) seçim boşalır; eski kimlik gönderilmez.
+  useEffect(() => { if (dep && !deps.some((d) => d.id === dep)) setDep(''); }, [deps, dep]);
   const all = rows.length > 0 && sel.length === rows.length;
   async function save() {
     if (!sel.length || !dep || busy) return;

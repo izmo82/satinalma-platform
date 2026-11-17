@@ -260,3 +260,74 @@ test('Faz 1 öğeleri kalır, sayfalar yatay taşmaz ve axe ihlali yok (Yönetic
   expect(await fits(page)).toBe(true);
   await axe(page);
 });
+
+// Düzeltme turu 2: birleştirme sonrası liste yeniden kurulmadan yenilenir. Birleştirme ve kayıt istekleri taklit edilir (veri değişmez):
+// ilk yanıtlarda taklit bir departman vardır ve Selin'e atanmıştır; birleştirmeden sonra sunucu yanıtı gerçek veriye döner.
+test('birleştirme sonrası: düzenlenmemiş satır temiz kalır, kaydedilmemiş düzenleme korunur, birleştirilen kimlik gönderilmez', async ({ page, request }, info) => {
+  test.skip(info.project.name !== 'desktop-1440', 'tek projede yeterli');
+  await requireTestProvider(request);
+  const FAKE = '00000000-0000-4000-8000-0000000000aa';
+  const FAKE_NAME = 'Birleştirilecek departman (taklit)';
+  let merged = false;
+  const sent: unknown[] = [];
+  await page.route(/\/api\/v1\/departments(\?.*)?$/, async (route) => {
+    if (route.request().method() !== 'GET') return route.continue();
+    const res = await route.fetch();
+    const body = await res.json();
+    if (!merged) body.items = [...body.items, { id: FAKE, name: FAKE_NAME, source: 'MANUAL', userCount: 1 }];
+    await route.fulfill({ response: res, json: body });
+  });
+  await page.route(/\/api\/v1\/memberships$/, async (route) => {
+    const res = await route.fetch();
+    const body = await res.json();
+    if (!merged) for (const m of body.items) if (m.email === 'selin.guvenlik@example.test') m.departmentIds = [...m.departmentIds, FAKE];
+    await route.fulfill({ response: res, json: body });
+  });
+  await page.route(/\/api\/v1\/departments\/[^/]+\/merge$/, async (route) => {
+    merged = true;
+    await route.fulfill({ json: { sourceId: FAKE, intoId: route.request().postDataJSON().intoId, counts: {} } });
+  });
+  await page.route(/\/api\/v1\/memberships\/[^/]+\/departments$/, async (route) => {
+    sent.push(route.request().postDataJSON());
+    await route.fulfill({ json: {} });
+  });
+
+  await login(page, 'tamer.yonetici@example.test');
+  await page.goto('/yonetim/kullanicilar');
+  const selin = page.getByRole('group', { name: 'Selin Arslan departmanları' });
+  await expect(selin.getByRole('checkbox', { name: FAKE_NAME })).toBeChecked();
+  const selinSave = page.getByRole('button', { name: 'Selin Arslan departmanlarını kaydet' });
+  await expect(selinSave).toBeDisabled();
+  const tolga = page.getByRole('group', { name: 'Tolga Er departmanları' });
+  const tolgaIk = tolga.getByRole('checkbox', { name: 'İnsan Kaynakları' });
+  const tolgaIkBefore = await tolgaIk.isChecked();
+  await tolgaIk.setChecked(!tolgaIkBefore);
+  await tolga.getByRole('checkbox', { name: FAKE_NAME }).check();
+  // Departmansız kayıtlar: hedef olarak taklit departman seçilir (en az bir grupta seçici varsa).
+  const unassigned = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Departmansız kayıtlar' }) });
+  const target = unassigned.getByRole('combobox', { name: /^Departman/ }).first();
+  const hasTarget = await target.count() > 0;
+  if (hasTarget) { await target.selectOption(FAKE); await expect(target).toHaveValue(FAKE); }
+
+  await page.getByRole('button', { name: `${FAKE_NAME} departmanını birleştir` }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByLabel('Hedef departman').selectOption({ label: 'Bilgi Teknolojileri' });
+  await dialog.getByRole('button', { name: 'Birleştir' }).click();
+  await expect(page.getByText(`${FAKE_NAME} departmanı Bilgi Teknolojileri departmanına birleştirildi.`)).toBeVisible();
+  await expect(selin.getByRole('checkbox', { name: FAKE_NAME })).toHaveCount(0);
+
+  // Düzenlenmemiş satır: temiz, Kaydet kapalı.
+  await expect(selinSave).toBeDisabled();
+  // Kaydedilmemiş düzenleme korunur; birleştirilen kimlik gönderilmez.
+  await expect(tolgaIk).toBeChecked({ checked: !tolgaIkBefore });
+  await page.getByRole('button', { name: 'Tolga Er departmanlarını kaydet' }).click();
+  await expect.poll(() => sent.length).toBe(1);
+  const ids = (sent[0] as { departmentIds: string[] }).departmentIds;
+  expect(ids).not.toContain(FAKE);
+  if (hasTarget) {
+    await expect(target).toHaveValue('');
+    await expect(unassigned.getByRole('button', { name: /^Departman ata/ }).first()).toBeDisabled();
+  }
+  // Kayıt sonrası yenileme isteği sürerken test bitmesin.
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
+});
