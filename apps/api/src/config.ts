@@ -33,6 +33,11 @@ export interface Config {
   reportCacheSeconds?: number;
   /** Entra dizin sağlayıcısı (v2 Faz 2). `none` = bağlı değil. Sır yalnız ortamdan gelir; veritabanına, yanıta, günlüğe yazılmaz. */
   directory?: { kind: 'graph' | 'test' | 'none'; tenantId?: string; clientId?: string; clientSecret?: string; testFixture?: string };
+  /**
+   * Yapay zekâ sağlayıcısı (v2 Faz 4, R1). `none` = bağlı değil (varsayılan). `test` = etiketli deterministik test sağlayıcısı (üretimde yasak).
+   * `anthropic` = ücretli, kurum dışı; anahtar zorunlu, üretimde ayrıca KVKK/kurum onayı bayrağı. Anahtar yalnız ortamdan gelir; yanıta/günlüğe yazılmaz.
+   */
+  ai?: { provider: 'none' | 'test' | 'anthropic'; modelId: string; apiKey?: string; externalTransferApproved: boolean };
 }
 
 export interface OidcConfig {
@@ -80,6 +85,29 @@ function loadDirectory(env: Config['env']): Config['directory'] {
     return { kind: 'graph', tenantId: req('ENTRA_TENANT_ID'), clientId: req('ENTRA_CLIENT_ID'), clientSecret: req('ENTRA_CLIENT_SECRET') };
   }
   throw new Error('DIRECTORY_PROVIDER geçersiz: graph, test ya da none olmalı');
+}
+
+export const DEFAULT_AI_MODEL_ID = 'claude-sonnet-5-5';
+
+/** R1: başlangıçta reddedilen yapılandırmalar; hata iletisi yalnız değişken adını içerir (anahtar değeri asla). */
+export function loadAi(env: Config['env'], vars: NodeJS.ProcessEnv = process.env): NonNullable<Config['ai']> {
+  const provider = vars.AI_PROVIDER || 'none';
+  const modelId = vars.AI_MODEL_ID || DEFAULT_AI_MODEL_ID;
+  const externalTransferApproved = vars.AI_EXTERNAL_TRANSFER_APPROVED === 'true';
+  if (provider === 'none') return { provider, modelId, externalTransferApproved };
+  if (provider === 'test') {
+    if (env === 'production') throw new Error('AI_PROVIDER=test is forbidden in production');
+    return { provider, modelId, externalTransferApproved };
+  }
+  if (provider === 'anthropic') {
+    const apiKey = vars.ANTHROPIC_API_KEY;
+    if (!apiKey) throw new Error('Missing required env ANTHROPIC_API_KEY (AI_PROVIDER=anthropic)');
+    if (env === 'production' && !externalTransferApproved) {
+      throw new Error('AI_PROVIDER=anthropic in production requires AI_EXTERNAL_TRANSFER_APPROVED=true (KVKK/kurum onayı: sözleşme metni kurum dışına çıkar)');
+    }
+    return { provider, modelId, apiKey, externalTransferApproved };
+  }
+  throw new Error('AI_PROVIDER geçersiz: none, test ya da anthropic olmalı');
 }
 
 export function loadConfig(): Config {
@@ -130,6 +158,7 @@ export function loadConfig(): Config {
     trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
     reportCacheSeconds: Number(process.env.REPORT_CACHE_SECONDS ?? 120),
     directory: loadDirectory(env),
+    ai: loadAi(env),
     session: {
       secret: process.env.SESSION_SECRET || null,
       // Üretimde çerez yalnız HTTPS'te; web kökeni https ise yerelde de Secure.

@@ -3,8 +3,11 @@ import { createPool } from './db.ts';
 import { DevAuthProvider, OidcAuthProvider } from './auth.ts';
 import { S3ObjectStore } from './storage.ts';
 import { buildApp } from './server.ts';
+import { registerConfiguredAiProvider } from './ai/register.ts';
 
 const config = loadConfig();
+// v2 Faz 4 (R1): yapılandırılmış yapay zekâ sağlayıcısı (none/test/anthropic); ağ çağrısı yapılmaz.
+registerConfiguredAiProvider(config.ai);
 const pool = createPool(config.databaseUrl);
 const auth = config.authMode === 'oidc' ? new OidcAuthProvider(config.oidc!) : new DevAuthProvider(config.devAuthSecret!);
 const app = await buildApp({ config, pool, auth, store: new S3ObjectStore(config.objectStore) });

@@ -9,6 +9,7 @@ import { processErpExport } from './modules/invoices.ts';
 import { processAiRun } from './modules/ai.ts';
 import { processPurge, processTenantExport } from './modules/governance.ts';
 import { hasAiProviders } from './ai/provider.ts';
+import { registerConfiguredAiProvider } from './ai/register.ts';
 import { normalizeRoles } from '@sp/domain';
 import { directoryProvider, type DirectoryProvider } from './directory/provider.ts';
 import { directoryJobContext, enqueueNightlySyncs, processDirectorySync } from './modules/directory.ts';
@@ -82,6 +83,8 @@ export async function processJobs(pool: pg.Pool, store: ObjectStore, detectorPro
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const config = loadConfig();
+  // v2 Faz 4 (R1): API ile aynı sağlayıcı; `none` iken ai.run işi çekilmez (v1 davranışı).
+  registerConfiguredAiProvider(config.ai);
   const pool = createPool(config.databaseUrl, 4);
   const store = new S3ObjectStore(config.objectStore);
   let stopping = false;

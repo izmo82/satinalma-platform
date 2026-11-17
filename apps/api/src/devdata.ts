@@ -2,6 +2,7 @@
 // Vergi kimlikleri kontrol basamağı geçerli sentetik değerlerdir; e-posta alan adı example.test.
 import type pg from 'pg';
 import { syntheticVkn } from '@sp/domain';
+import { ZipStreamWriter } from './zip.ts';
 
 export interface SyntheticWorld {
   tenantA: string;
@@ -193,4 +194,102 @@ export function syntheticPdf(pages: string[][]): Buffer {
   out += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n${offsets.map((o) => `${String(o).padStart(10, '0')} 00000 n \n`).join('')}`;
   out += `trailer\n<< /Size ${objs.length + 1} /Root ${catalog} 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
   return Buffer.from(out, 'latin1');
+}
+
+/** "1250000.00" → "1.250.000,00" (tr-TR yazımı; kayan nokta yok). */
+function trAmount(dec: string): string {
+  const [i, f = '00'] = dec.split('.');
+  return `${i!.replace(/\B(?=(\d{3})+(?!\d))/g, '.')},${f.padEnd(2, '0').slice(0, 2)}`;
+}
+const trDate = (iso: string) => `${iso.slice(8, 10)}.${iso.slice(5, 7)}.${iso.slice(0, 4)}`;
+
+/** Sentetik sözleşme seçenekleri; `null` verilen alan belgeye yazılmaz (okunamayan alan sınaması için). */
+export interface SyntheticContractOpts {
+  title?: string | null; contractType?: string | null; contractNo?: string | null; supplierName?: string | null; supplierVkn?: string | null;
+  /** ISO tarih (YYYY-AA-GG); belgeye gün.ay.yıl yazılır. */
+  signedOn?: string | null; startDate?: string | null; endDate?: string | null;
+  /** Ondalık dize ("1250000.00"); belgeye tr-TR yazılır. */
+  amount?: string | null; currency?: string | null;
+  noticePeriodDays?: number | null; paymentTermDays?: number | null; autoRenewal?: boolean | null; limitBasis?: 'NET' | 'GROSS' | null;
+  guarantee?: string | null; slaPenalty?: string | null; kvkkClause?: string | null; governingCourt?: string | null; priceEscalation?: string | null;
+  /** 2. sayfadaki maddeler; verilmezse standart maddeler. */
+  clauses?: { heading: string; body: string }[];
+  /** 1. sayfa sonuna eklenecek etiketsiz satırlar (ör. istem enjeksiyonu sınaması). */
+  extraLines?: string[];
+}
+
+/**
+ * v2 Faz 4: etiketli satırlı SENTETİK sözleşme PDF'i (gerçek sözleşme değildir). 1. sayfa künye ("Sözleşme Bedeli: 1.250.000,00 TRY" …),
+ * 2. sayfa maddeler. Test sağlayıcısı (test-fixture) ve doğruluk düzeneği bu etiketleri okur. Yazı tipi aksanları düşürür (ş→s).
+ */
+export function syntheticContractPdf(o: SyntheticContractOpts = {}): Buffer {
+  const v = <T>(x: T | null | undefined, d: T) => (x === undefined ? d : x);
+  const title = v(o.title, 'Yillik Bakim Hizmet Sozlesmesi (SENTETIK)');
+  const lines: string[] = ['SENTETIK TEST BELGESI - gercek sozlesme degildir', ''];
+  const put = (label: string, value: string | null) => { if (value !== null) lines.push(`${label}: ${value}`); };
+  put('Sözleşme Başlığı', title);
+  put('Sözleşme Türü', v(o.contractType, 'Hizmet'));
+  put('Sözleşme No', v(o.contractNo, 'SNT-2026-0001'));
+  put('Tedarikçi Unvanı', v(o.supplierName, 'Anadolu Endustriyel Bakim Ltd. Sti. (SENTETIK)'));
+  put('Yüklenici VKN', v(o.supplierVkn, null));
+  const d = (x: string | null) => (x === null ? null : trDate(x));
+  put('İmza Tarihi', d(v(o.signedOn, '2026-12-15')));
+  put('Başlangıç Tarihi', d(v(o.startDate, '2027-01-01')));
+  put('Bitiş Tarihi', d(v(o.endDate, '2027-12-31')));
+  const amount = v(o.amount, '1250000.00');
+  put('Sözleşme Bedeli', amount === null ? null : `${trAmount(amount)} ${v(o.currency, 'TRY') ?? ''}`.trim());
+  const n = v(o.noticePeriodDays, 30);
+  put('İhbar Süresi', n === null ? null : `${n} gun`);
+  const pt = v(o.paymentTermDays, null);
+  put('Ödeme Vadesi', pt === null ? null : `${pt} gun`);
+  const ar = v(o.autoRenewal, null);
+  put('Yenileme', ar === null ? null : ar ? 'Sozlesme otomatik olarak yenilenir.' : 'Sozlesme yenilenmez.');
+  const lb = v(o.limitBasis, null);
+  put('Limit Esası', lb === null ? null : lb === 'NET' ? 'KDV haric' : 'KDV dahil');
+  put('Teminat', v(o.guarantee, null));
+  put('Cezai Şart', v(o.slaPenalty, null));
+  put('KVKK', v(o.kvkkClause, null));
+  put('Yetkili Mahkeme', v(o.governingCourt, null));
+  put('Fiyat Farkı', v(o.priceEscalation, null));
+  lines.push(...(o.extraLines ?? []));
+  const clauses = o.clauses ?? [
+    { heading: 'Madde 1 - Konu', body: 'Yuklenici bakim hizmetini bu sozlesmeye gore verir.' },
+    { heading: 'Madde 2 - Bedel ve Odeme', body: 'Bedel fatura tarihinden itibaren 30 gun icinde odenir.' },
+    { heading: 'Madde 3 - Fesih', body: 'Taraflar 30 gun onceden yazili bildirimle feshedebilir.' },
+  ];
+  const page2 = ['Taraflar', 'ALICI: Ornek Holding Uretim A.S.        TEDARIKCI: Anadolu Endustriyel Bakim Ltd.', ''];
+  for (const c of clauses) page2.push(c.heading, c.body, '');
+  return syntheticPdf([lines, page2]);
+}
+
+/** v2 Faz 4: paragraflardan SENTETİK .docx (Faz 3 şablon denetimi gibi yalnız `word/document.xml`); şablon metni sınamaları için. */
+export async function syntheticDocx(paragraphs: string[]): Promise<Buffer> {
+  const x = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const body = paragraphs.map((p) => `<w:p><w:r><w:t xml:space="preserve">${x(p)}</w:t></w:r></w:p>`).join('');
+  const chunks: Buffer[] = [];
+  const z = new ZipStreamWriter({ write: async (c) => { chunks.push(c); } });
+  await z.addFile('word/document.xml', Buffer.from(`<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${body}</w:body></w:document>`));
+  await z.finish();
+  return Buffer.concat(chunks);
+}
+
+/**
+ * v2 Faz 4 (R2): test sağlayıcısının katalog satırı. Migration'da DEĞİL; yalnız NODE_ENV≠production seed'inde ve test kurulumunda
+ * platform sahibi rolüyle eklenir. Görevler AI06/AI14/AI15, bölge `local`, tarife CALL 0.010000 USD ("test tarifesi").
+ * `model_id` = AI_MODEL_ID: sözleşme görevleri yalnız bu kimlikli satıra yönlenir.
+ */
+export async function ensureTestAiCatalog(owner: pg.Pool, modelId: string): Promise<string> {
+  if (process.env.NODE_ENV === 'production') throw new Error('test AI catalog row is forbidden in production');
+  await owner.query(`INSERT INTO ai_models (provider, model_id, model_version, tasks, capabilities, approved_regions, trains_on_customer_data, price, verified_at, enabled)
+    VALUES ('test-fixture', $1, 'test-fixture', ARRAY['AI06','AI14','AI15'], '{"structuredOutput":true,"vision":true}', ARRAY['local'], false,
+      '{"unit":"CALL","call":"0.010000","input":null,"output":null,"page":null,"currency":"USD"}', NULL, true)
+    ON CONFLICT (provider, model_id, model_version) DO NOTHING`, [modelId]);
+  return (await owner.query<{ id: string }>(`SELECT id FROM ai_models WHERE provider = 'test-fixture' AND model_id = $1 AND model_version = 'test-fixture'`, [modelId])).rows[0]!.id;
+}
+
+/** Demo kiracı politikası: yalnız test-fixture, bölge local, aylık 5.00 USD. Var olan politika değiştirilmez. */
+export async function ensureTestAiPolicy(owner: pg.Pool, tenantId: string): Promise<void> {
+  if (process.env.NODE_ENV === 'production') throw new Error('test AI policy is forbidden in production');
+  await owner.query(`INSERT INTO ai_tenant_policies (tenant_id, allowed_providers, allowed_regions, monthly_budget, budget_currency, daily_call_limit, allow_upgrade)
+    VALUES ($1, ARRAY['test-fixture'], ARRAY['local'], 5.00, 'USD', NULL, false) ON CONFLICT (tenant_id) DO NOTHING`, [tenantId]);
 }

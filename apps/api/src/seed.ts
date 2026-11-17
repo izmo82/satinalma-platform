@@ -9,7 +9,7 @@ import { createPool } from './db.ts';
 import { DevAuthProvider } from './auth.ts';
 import { S3ObjectStore } from './storage.ts';
 import { buildApp } from './server.ts';
-import { createSyntheticWorld, DEMO_TENANT_A, syntheticPdf, ublInvoiceXml } from './devdata.ts';
+import { createSyntheticWorld, DEMO_TENANT_A, ensureTestAiCatalog, ensureTestAiPolicy, syntheticPdf, ublInvoiceXml } from './devdata.ts';
 import { ensureDepartmentsDemo, ensureEvaluationDemo, ensureLifecycleDemo, ensurePurchasingDemo, ensureRetentionDemo, ensureSourcingDemo } from './seedSourcing.ts';
 import { processJobs } from './worker.ts';
 
@@ -17,6 +17,16 @@ const config = loadConfig();
 if (config.env === 'production' || config.authMode !== 'dev') throw new Error('Seed only runs in development with AUTH_MODE=dev');
 const owner = new pg.Pool({ connectionString: config.databaseOwnerUrl! });
 const exists = await owner.query<{ id: string }>(`SELECT id FROM tenants WHERE name = $1`, [DEMO_TENANT_A]);
+/**
+ * v2 Faz 4 (R2): yalnız NODE_ENV≠production ve AI_PROVIDER=test iken test sağlayıcısı katalog satırı + demo kiracı politikası
+ * (test-fixture, bölge local, 5.00 USD). Gerçek sağlayıcı değildir; ekranlarda "Test sağlayıcısı — gerçek değil" görünür. Var olan politika değişmez.
+ */
+async function ensureAiTestDemo(tenantId: string) {
+  if (config.env === 'production' || config.ai?.provider !== 'test') return;
+  await ensureTestAiCatalog(owner, config.ai.modelId);
+  await ensureTestAiPolicy(owner, tenantId);
+  console.log('Yapay zekâ: test sağlayıcısı (test-fixture) katalogda ve demo kiracı politikasında — gerçek değil.');
+}
 if (exists.rows[0]) {
   // Temel demo var: yalnız eksik Faz 2 demo verisi eklenir (mevcut kayıtlar silinmez).
   const pool0 = createPool(config.databaseUrl, 4);
@@ -28,6 +38,7 @@ if (exists.rows[0]) {
   await ensureEvaluationDemo(owner, app0, auth0, exists.rows[0].id);
   await ensureDepartmentsDemo(owner, exists.rows[0].id);
   await ensureRetentionDemo(owner, app0, auth0, exists.rows[0].id);
+  await ensureAiTestDemo(exists.rows[0].id);
   // v2 (D93): Lira Defteri ve fatura onayı kaldırıldı; geri kazanım demosu (seedRecovery.ts) artık eklenmez. Var olan demo kayıtları silinmez.
   console.log('Lira Defteri demosu v2 kapsamında eklenmiyor (D93); var olan kayıtlar korunur.');
   await app0.close(); await pool0.end(); await owner.end();
@@ -133,6 +144,7 @@ await ensurePurchasingDemo(owner, app, auth, world.tenantA);
 await ensureEvaluationDemo(owner, app, auth, world.tenantA);
 await ensureDepartmentsDemo(owner, world.tenantA);
 await ensureRetentionDemo(owner, app, auth, world.tenantA);
+await ensureAiTestDemo(world.tenantA);
 // v2 (D93): Lira Defteri ve fatura onayı kaldırıldı; geri kazanım demosu (seedRecovery.ts) eklenmez.
 console.log('Lira Defteri demosu v2 kapsamında eklenmiyor (D93).');
 console.log('Sentetik demo verisi oluşturuldu. Kullanıcılar (dev oturumu):');
