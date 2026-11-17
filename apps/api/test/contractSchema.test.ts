@@ -194,3 +194,106 @@ describe('048 sözleşme şeması', () => {
       [h.world.tenantA, h.world.companyA1.id, c2.cvId, c2.termsId, h.world.users.buyer.id]);
   });
 });
+
+// Görev 2 inceleme düzeltmesi (050): onaycı alt kayıtları ve belgeyi okur ama yazamaz; e-posta kuyruğu alıcıya göre okunur;
+// gönderimdeki vekil kaydı görünürlük vermez; kapalı zincir, tutarlılık, şablon sürümü ve gönderilmiş e-posta korumaları.
+describe('050 sözleşme sertleştirme', () => {
+  let c4: Contract; let obligationId: string;
+  const te = () => h.world.users.techEval.id;
+  const btCtx = () => ctxA(te(), { departmentIds: [h.world.departments.bt] });
+  const insObligation = (tx: { query: (s: string, p: unknown[]) => Promise<unknown> }, c: Contract) => tx.query(
+    `INSERT INTO contract_obligations (tenant_id, company_id, contract_version_id, title, counterparty, first_due, source_ref, created_by)
+     VALUES ($1, $2, $3, 'Aylık hizmet raporu (sentetik)', 'SUPPLIER', '2026-02-01', 'Madde 7', $4)`,
+    [h.world.tenantA, h.world.companyA1.id, c.cvId, te()]);
+  const insEvent = (tx: { query: (s: string, p: unknown[]) => Promise<unknown> }, due: string) => tx.query(
+    `INSERT INTO obligation_events (tenant_id, company_id, obligation_id, due_date, outcome, note, recorded_by) VALUES ($1, $2, $3, $4, 'FULFILLED', 'Rapor alındı (sentetik).', $5)`,
+    [h.world.tenantA, h.world.companyA1.id, obligationId, due, te()]);
+
+  beforeAll(async () => {
+    c4 = await ikContract('c4');
+    obligationId = (await h.owner.query<{ id: string }>(
+      `INSERT INTO contract_obligations (tenant_id, company_id, contract_version_id, title, counterparty, first_due, source_ref, created_by)
+       VALUES ($1, $2, $3, 'Çeyrek bakım (sentetik)', 'SUPPLIER', '2026-03-01', 'Madde 8', $4) RETURNING id`,
+      [h.world.tenantA, h.world.companyA1.id, c4.cvId, h.world.users.legal.id])).rows[0]!.id;
+    await h.owner.query(`INSERT INTO obligation_events (tenant_id, company_id, obligation_id, due_date, outcome, note, recorded_by) VALUES ($1, $2, $3, '2026-03-01', 'FULFILLED', 'Bakım yapıldı (sentetik).', $4)`,
+      [h.world.tenantA, h.world.companyA1.id, obligationId, h.world.users.legal.id]);
+  });
+
+  it('approver_reads_children_but_cannot_write', async () => {
+    const counts = () => withTenant(h.pool, btCtx(), async (tx) => ({
+      obligations: (await tx.query('SELECT 1 FROM contract_obligations WHERE id = $1', [obligationId])).rowCount,
+      events: (await tx.query('SELECT 1 FROM obligation_events WHERE obligation_id = $1', [obligationId])).rowCount,
+    }));
+    // obligation_events artık departman devrine bağlı: atanmadan önce görünmez.
+    expect(await counts()).toEqual({ obligations: 0, events: 0 });
+    const ch = await chain(c4, h.world.users.legal.id);
+    await h.owner.query(`INSERT INTO contract_approval_steps (tenant_id, chain_id, step_order, kind, assigned_user_id) VALUES ($1, $2, 1, 'EXTRA', $3)`, [h.world.tenantA, ch, te()]);
+    expect(await counts()).toEqual({ obligations: 1, events: 1 });
+    await expect(withTenant(h.pool, btCtx(), (tx) => insObligation(tx, c4))).rejects.toThrow(/row-level security/);
+    await expect(withTenant(h.pool, btCtx(), (tx) => insEvent(tx, '2026-06-01'))).rejects.toThrow(/row-level security/);
+    await expect(withTenant(h.pool, btCtx(), (tx) => tx.query('UPDATE document_versions SET page_count = 9 WHERE id = $1', [c4.docVersionId])))
+      .rejects.toThrow(/row-level security/);
+    // Mevcut yazarlar etkilenmez: İK departman kullanıcısı ve tüm departman bağlamı yazar.
+    const ikCtx = ctxA(te(), { departmentIds: [h.world.departments.ik] });
+    await withTenant(h.pool, ikCtx, (tx) => insObligation(tx, c4));
+    await withTenant(h.pool, ikCtx, (tx) => insEvent(tx, '2026-06-01'));
+    await withTenant(h.pool, ikCtx, (tx) => tx.query('UPDATE document_versions SET page_count = 1 WHERE id = $1', [c4.docVersionId]));
+    await withTenant(h.pool, ctxA(h.world.users.buyer.id, { all: true }), (tx) => insEvent(tx, '2026-09-01'));
+  });
+
+  it('email_outbox_read_by_recipient_or_all_departments', async () => {
+    const tag = randomUUID();
+    for (const u of [te(), h.world.users.buyer.id])
+      await h.owner.query(`INSERT INTO email_outbox (tenant_id, to_user_id, subject, body_text, related_type, related_id, status) VALUES ($1, $2, 'Sentetik', 'Gövde', 'test', $3, 'NOT_CONFIGURED')`,
+        [h.world.tenantA, u, tag]);
+    const seen = (ctx: TenantContext) => withTenant(h.pool, ctx, async (tx) =>
+      (await tx.query<{ to_user_id: string }>('SELECT to_user_id FROM email_outbox WHERE related_id = $1', [tag])).rows.map((r) => r.to_user_id));
+    expect(await seen(btCtx())).toEqual([te()]);
+    expect((await seen(ctxA(h.world.users.buyer.id, { all: true }))).length).toBe(2);
+    // Departman kullanıcısı başkasının satırını güncelleyemez (görmez: 0 satır).
+    const upd = await withTenant(h.pool, btCtx(), (tx) => tx.query(`UPDATE email_outbox SET error = 'x' WHERE related_id = $1 AND to_user_id <> $2`, [tag, te()]));
+    expect(upd.rowCount).toBe(0);
+    // Gönderilmiş satır değişmez.
+    const all = ctxA(h.world.users.buyer.id, { all: true });
+    await withTenant(h.pool, all, (tx) => tx.query(`UPDATE email_outbox SET status = 'SENT', sent_at = now() WHERE related_id = $1 AND to_user_id = $2`, [tag, h.world.users.buyer.id]));
+    await expect(withTenant(h.pool, all, (tx) => tx.query(`UPDATE email_outbox SET status = 'FAILED', sent_at = NULL, error = 'x' WHERE related_id = $1 AND to_user_id = $2`, [tag, h.world.users.buyer.id])))
+      .rejects.toThrow(/immutable_record/);
+  });
+
+  it('deputy_snapshot_alone_gives_no_visibility', async () => {
+    const ch = await chain(c2, h.world.users.legal.id);
+    await h.owner.query(`INSERT INTO contract_approval_steps (tenant_id, chain_id, step_order, kind, assigned_user_id, deputy_user_id) VALUES ($1, $2, 1, 'PROCUREMENT_LEAD', $3, $4)`,
+      [h.world.tenantA, ch, h.world.users.legal2.id, te()]);
+    expect(all(await seenBy(te(), c2), 0)).toEqual([]);
+    await h.owner.query(`UPDATE contract_approval_chains SET closed_at = now(), outcome = 'CANCELLED', cancel_reason = 'Sentetik iptal gerekçesi.' WHERE id = $1`, [ch]);
+    // Kapalı zincire adım eklenmez; kapalı zincirin adımına karar yazılmaz.
+    await expect(h.owner.query(`INSERT INTO contract_approval_steps (tenant_id, chain_id, step_order, kind, assigned_user_id) VALUES ($1, $2, 2, 'EXTRA', $3)`,
+      [h.world.tenantA, ch, h.world.users.buyer.id])).rejects.toThrow(/immutable_record/);
+    await expect(h.owner.query(`UPDATE contract_approval_steps SET decision = 'APPROVED', decided_by = assigned_user_id, decided_at = now() WHERE chain_id = $1`, [ch]))
+      .rejects.toThrow(/immutable_record/);
+  });
+
+  it('chain_and_reminder_consistency', async () => {
+    const ins = (family: string, version: string, terms: string) => h.owner.query(
+      `INSERT INTO contract_approval_chains (tenant_id, family_id, version_id, terms_id, submitted_by) VALUES ($1, $2, $3, $4, $5)`,
+      [h.world.tenantA, family, version, terms, h.world.users.legal.id]);
+    await expect(ins(c2.familyId, c1.cvId, c1.termsId)).rejects.toThrow(/inconsistent_record/);
+    await expect(ins(c2.familyId, c2.cvId, c1.termsId)).rejects.toThrow(/inconsistent_record/);
+    await expect(h.owner.query(`INSERT INTO contract_reminders (tenant_id, family_id, terms_id, kind, offset_days, due_on) VALUES ($1, $2, $3, 'END', 60, '2026-11-01')`,
+      [h.world.tenantA, c2.familyId, c1.termsId])).rejects.toThrow(/inconsistent_record/);
+  });
+
+  it('template_superseded_written_once', async () => {
+    const v = (await h.owner.query<{ id: string }>(
+      `INSERT INTO contract_template_versions (tenant_id, template_id, version_no, document_version_id, valid_from, uploaded_by) VALUES ($1, $2, 2, $3, '2026-11-10', $4) RETURNING id`,
+      [h.world.tenantA, templateId, templateDocVersion, h.world.users.buyer.id]).catch(async () => {
+        // 1. sürüm geçerliyse önce kapatılır (tek geçerli sürüm kuralı).
+        await h.owner.query(`UPDATE contract_template_versions SET superseded_at = now() WHERE template_id = $1 AND superseded_at IS NULL`, [templateId]);
+        return h.owner.query<{ id: string }>(`INSERT INTO contract_template_versions (tenant_id, template_id, version_no, document_version_id, valid_from, uploaded_by) VALUES ($1, $2, 2, $3, '2026-11-10', $4) RETURNING id`,
+          [h.world.tenantA, templateId, templateDocVersion, h.world.users.buyer.id]);
+      })).rows[0]!.id;
+    const app = ctxA(h.world.users.buyer.id, { all: true });
+    await withTenant(h.pool, app, (tx) => tx.query(`UPDATE contract_template_versions SET superseded_at = now() WHERE id = $1`, [v]));
+    await expect(withTenant(h.pool, app, (tx) => tx.query(`UPDATE contract_template_versions SET superseded_at = NULL WHERE id = $1`, [v]))).rejects.toThrow(/immutable_record/);
+  });
+});
