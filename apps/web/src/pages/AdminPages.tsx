@@ -1,5 +1,5 @@
 import { lazy, useCallback, useEffect, useReducer, useRef, useState, type ReactNode } from 'react';
-import { Link, Navigate, Outlet } from 'react-router-dom';
+import { Link, Navigate, Outlet, useSearchParams } from 'react-router-dom';
 import { api, ApiError } from '../lib/api.ts';
 import { hasRole, useSession, type Me } from '../lib/session.tsx';
 import { roleLabel } from '../lib/labels.ts';
@@ -9,6 +9,8 @@ import { SectionTabs } from '../ui/SectionTabs.tsx';
 import { Button } from '@/components/ui/button';
 import { ApproversPage } from './ApproversPage.tsx';
 import { TemplatesPage } from './TemplatesPage.tsx';
+import { RiskQuestionsAdmin } from './RiskQuestionsAdmin.tsx';
+import { cn } from '@/lib/utils';
 import { ConnectionCard, DirectoryUsersCard, EntraDepartmentList, useDirectorySync, type AdminDepartment, type DirectoryConnection } from './DirectoryAdmin.tsx';
 
 // v2 Faz 1 (D93): Yönetim merkezi. Sekme sırası onaylı Figma ekranlarıyla aynı. Sonraki fazların sekmeleri yalnız hangi fazda
@@ -82,7 +84,22 @@ export const ApproversTab = () => <ApproversPage />;
 
 /** v2 Faz 3 (R8, Figma 12): Faz 1'deki "Faz 3'te gelir" boş durumu yerine şablon kütüphanesi (Sözleşmeler > Şablonlar ile aynı sayfa) ve
  * Yöneticiye hatırlatıcı süreleri. Tedarikçi anket şablonları yerinde: Tedarikçiler > Anketler. */
-export const TemplatesTab = () => <TemplatesPage admin />;
+export function TemplatesTab() {
+  // v2 Faz 6 (D111): Şablonlar içinde ikinci sekme "Risk soruları" (`?sekme=risk-sorulari`); varsayılan sözleşme taslakları aynen.
+  const [params] = useSearchParams();
+  const risk = params.get('sekme') === 'risk-sorulari';
+  const item = (active: boolean) => cn('-mb-px flex min-h-10 items-center whitespace-nowrap border-b-2 font-semibold no-underline transition-colors duration-150',
+    active ? 'border-ink text-ink' : 'border-transparent text-ink-muted hover:text-ink');
+  return <>
+    <nav aria-label="Şablon türleri" className="px-8 pt-3 max-[900px]:px-4">
+      <ul className="flex gap-6 overflow-x-auto border-b border-border">
+        <li className="shrink-0"><Link to="/yonetim/sablonlar" aria-current={!risk ? 'page' : undefined} className={item(!risk)}>Sözleşme taslakları</Link></li>
+        <li className="shrink-0"><Link to="/yonetim/sablonlar?sekme=risk-sorulari" aria-current={risk ? 'page' : undefined} className={item(risk)}>Risk soruları</Link></li>
+      </ul>
+    </nav>
+    {risk ? <RiskQuestionsAdmin /> : <TemplatesPage admin />}
+  </>;
+}
 
 export const RulesTab = () => (
   <Planned title="Satınalma kuralları" heading="Satınalma kuralları kataloğu Faz 7'de gelir">

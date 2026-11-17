@@ -210,6 +210,7 @@ export function PortalStanding() {
             {s.levelLabel ? <Tag label={{ text: s.levelLabel, tone: 'info', icon: 'shield' }} className="justify-self-start" /> : <p className="text-ink-muted">Henüz tamamlanmış risk değerlendirmesi yok.</p>}
             {s.levelSourceLabel && <p className="text-sm text-ink-muted">Kaynak: {s.levelSourceLabel}</p>}
             {s.risk?.riskScore != null && <p className="text-sm">Risk puanı: <span className="tabular font-semibold">{fmtNum(s.risk.riskScore)}</span></p>}
+            {s.risk && <PortalRiskActions />}
           </div>
         </section>
       </div>
@@ -225,6 +226,27 @@ export function PortalStanding() {
             </li>))}</ul>
         )}
       </section>
+    </div>
+  );
+}
+
+/**
+ * v2 Faz 6 (D111, R13): yıllık risk değerlendirmesinde kurumun tedarikçiye görünür işaretlediği aksiyonlar (yalnız başlık, tarih, durum).
+ * Ölçütler, sorular, cevaplar, görüşler, iç notlar ve sorumlu kişiler gösterilmez; kaynak `GET /portal/risk` (app_portal_risk).
+ */
+const RISK_ACTION_STATUS: Record<string, string> = { OPEN: 'Açık', DONE: 'Tamamlandı', VERIFIED: 'Doğrulandı', CANCELLED: 'İptal' };
+function PortalRiskActions() {
+  const r = useResource<{ year: number | null; level: number | null; levelLabel: string | null; riskScore: string | null; actions: { title: string; dueOn: string | null; status: string }[] }>('/api/v1/portal/risk');
+  if (!r.data) return null;
+  return (
+    <div className="grid gap-1.5 border-t border-border pt-2">
+      <p className="text-sm text-ink-muted">Kurum yıl içinde değerlendirmeyi güncellerken, güncelleme tamamlanana dek son tamamlanmış değerlendirmenin sonucu gösterilir.</p>
+      <h3 className="text-sm font-semibold">Risk aksiyonları{r.data.year ? ` (${r.data.year})` : ''}</h3>
+      {!r.data.actions.length ? <p className="text-sm text-ink-muted">Sizinle paylaşılan risk aksiyonu yok.</p> : (
+        <ul className="grid gap-1" aria-label="Risk aksiyonları">{r.data.actions.map((a, i) => (
+          <li key={i} className="flex flex-wrap items-baseline gap-x-3 text-sm"><span className="min-w-0 flex-1 font-semibold">{a.title}</span>
+            <span className="tabular text-ink-subtle">{a.dueOn ? `Hedef ${fmtDate(a.dueOn)}` : 'Tarih yok'}</span><span>{RISK_ACTION_STATUS[a.status] ?? 'Durum bilinmiyor'}</span></li>))}</ul>
+      )}
     </div>
   );
 }

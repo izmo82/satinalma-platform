@@ -21,8 +21,13 @@ function supplierTab(kind?: string) {
   if (kind === 'supplier_no_portal_user') return '?sekme=portal';
   return '';
 }
-export const entityHref = (t: { entityType: string; entityId: string; kind?: string }) =>
-  t.entityType === 'supplier' ? `/tedarikciler/${t.entityId}${supplierTab(t.kind)}` : t.entityType === 'supplier_application' ? `/tedarikciler/basvurular/${t.entityId}` : t.entityType === 'contract_version' ? `/sozlesmeler/${t.entityId}`
+/** v2 Faz 6 (D111): risk görevi değerlendirme formunu açar; çeyreklik görevde dönem başlıktan (ör. "… 2026-2: …") önseçilir. */
+const riskHref = (t: { entityId: string; kind?: string; title?: string }) => {
+  const p = t.kind === 'risk_quarterly_review' ? /\b(\d{4}-[1-4])\b/.exec(t.title ?? '')?.[1] : undefined;
+  return `/tedarikciler/risk/${t.entityId}${p ? `?donem=${p}` : ''}`;
+};
+export const entityHref = (t: { entityType: string; entityId: string; kind?: string; title?: string }) =>
+  t.entityType === 'risk_assessment' ? riskHref(t) : t.entityType === 'supplier' ? `/tedarikciler/${t.entityId}${supplierTab(t.kind)}` : t.entityType === 'supplier_application' ? `/tedarikciler/basvurular/${t.entityId}` : t.entityType === 'contract_version' ? `/sozlesmeler/${t.entityId}`
     : t.entityType === 'document_version' ? `/belgeler/${t.entityId}` : t.entityType === 'project' ? `/projeler/${t.entityId}`
     : t.entityType === 'invoice' ? `/faturalar/${t.entityId}`
     : t.entityType === 'incident' ? `/tedarikciler/olaylar/${t.entityId}` : t.entityType === 'tenant' ? '/yonetim/yapay-zeka'

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { lazy, Suspense, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 import { SupplierEvaluation } from './SupplierEvaluation.tsx';
@@ -10,12 +10,14 @@ import { Banner, ErrorState, Field, Loading, Modal, Tag } from '../ui/kit.tsx';
 import { Icon } from '../ui/icons.tsx';
 import { StageWithStatus } from '../lib/supplierV2.tsx';
 import { ActivationHints, ContractsProjectsTab, DocumentsTab, LifecycleBanner, OffboardingTab, PortalUsersTab, ProfilePanel, ReasonDialog, ScoreRiskPanel, type CardV2 } from './SupplierCardV2.tsx';
+const SupplierAnnualRisk = lazy(() => import('./RiskPages.tsx').then((m) => ({ default: m.SupplierAnnualRisk })));
 
 // v2 Faz 5 (D110, Figma 14): Belgeler ve geçerlilik, Sözleşmeler ve projeler, Portal kullanıcıları ve (liste varsa) Ayrılış sekmeleri eklendi;
 // eski dört sekme aynı adla ve aynı `?sekme=` adresiyle kalır, varsayılan sekme yine "Kayıt ve onay".
 const SUPPLIER_TABS = [['kayit', 'Kayıt ve onay'], ['belgeler', 'Belgeler ve geçerlilik'], ['sozlesmeler', 'Sözleşmeler ve projeler'], ['degerlendirme', 'Değerlendirme ve risk'],
-  ['olaylar', 'Olaylar'], ['karne', 'Performans karnesi'], ['portal', 'Portal kullanıcıları'], ['ayrilis', 'Ayrılış kontrol listesi']] as const;
-const V2_TABS = new Set(['belgeler', 'sozlesmeler', 'portal', 'ayrilis']);
+  ['yillik-risk', 'Yıllık risk'], ['olaylar', 'Olaylar'], ['karne', 'Performans karnesi'], ['portal', 'Portal kullanıcıları'], ['ayrilis', 'Ayrılış kontrol listesi']] as const;
+const V2_TABS = new Set(['belgeler', 'sozlesmeler', 'portal', 'ayrilis', 'yillik-risk']);
+// v2 Faz 6 (D111): "Yıllık risk" sekmesi eklendi (R14: iki risk ayrı başlıkla); eski sekmeler ve adresleri aynen.
 
 interface Supplier extends CardV2 {
   id: string; status: string; country: string; taxIdType: string | null; taxId: string | null; legalName: string; identityReviewRequired: boolean;
@@ -122,6 +124,8 @@ export function SupplierDetailPage() {
         : tab === 'sozlesmeler' ? <ContractsProjectsTab s={s} />
         : tab === 'portal' ? <PortalUsersTab s={s} run={runV2} />
         : tab === 'ayrilis' ? <OffboardingTab s={s} run={runV2} />
+        : tab === 'yillik-risk' ? <Suspense fallback={<Loading />}><SupplierAnnualRisk supplierId={s.id} /></Suspense>
+        : tab === 'degerlendirme' ? <><h2 className="mb-3 text-base text-ink-muted">Anket riski (içsel/kalan)</h2><SupplierEvaluation tab={tab} supplierId={s.id} /></>
         : tab !== 'kayit' && !V2_TABS.has(tab) ? <SupplierEvaluation tab={tab} supplierId={s.id} /> : <>
       <ActivationHints s={s} />
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(340px, 100%), 1fr))', gap: 16 }}>

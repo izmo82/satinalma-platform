@@ -1,3 +1,4 @@
+// v2 Faz 6 (D111): Tedarikçiler bölüm sekmelerine (eski dört sekme aynı sırada) sona "Risk matrisi" eklendi; beklenen sekme listesi buna göre.
 // v2 Faz 5 (D110): Yönetim'e "Tedarikçi başvurusu" (Yönetici + Satınalma, R3) ve "E-posta kutusu" (yalnız Yönetici, R7) sekmeleri eklendi; beklenen sekme listeleri bu iki sekmeyle güncellendi, diğer denetimler aynen.
 // v2 Faz 3 (D108+): Yönetim > Şablonlar artık gerçek şablon kütüphanesi (Figma 12); "Faz 3'te gelir" boş durumu kalktı. Sonraki faz boş durumu denetimi Satınalma kuralları için sürer; Şablonlar sekmesinin tablosu ve yükleme alanı denetlenir.
 // v2 Faz 2 (D105): Denetçi Kullanıcılar ve Entra ile Onaycılar sekmelerini salt okunur görür (directory.read, approver.read); Onaycılar artık
@@ -147,7 +148,7 @@ test('taşınan girişler: Tedarikçiler sekmeleri, Sözleşme ekle ve Fatura y�
   const tabs = page.getByRole('navigation', { name: 'Tedarikçiler sekmeleri' });
   // Sekme çubuğu çizilmeden okunmaz (allInnerTexts beklemez; dar ekranda sayfa geçişi yavaş).
   await expect(tabs.getByRole('link', { name: 'Liste' })).toBeVisible();
-  expect(await entries(page, 'Tedarikçiler sekmeleri')).toEqual(['Liste', 'Olaylar', 'Anketler', 'Performans ağırlıkları']);
+  expect(await entries(page, 'Tedarikçiler sekmeleri')).toEqual(['Liste', 'Olaylar', 'Anketler', 'Performans ağırlıkları', 'Risk matrisi']);
   await tabs.getByRole('link', { name: 'Olaylar' }).click();
   await expect(page).toHaveURL(/\/tedarikciler\/olaylar$/);
   await expect(page.getByRole('heading', { name: 'Tedarikçi olayları' })).toBeVisible();

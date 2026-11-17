@@ -80,4 +80,25 @@ export async function apiBlob(path: string): Promise<Blob> {
   return res.blob();
 }
 
+/** v2 Faz 6: sunucunun verdiği dosya adıyla indirme (Content-Disposition `filename*` UTF-8, yoksa `filename`). */
+export async function apiDownload(path: string, fallbackName: string): Promise<string> {
+  const res = await fetch(path, { headers: baseHeaders(), credentials: 'same-origin' });
+  if (res.status === 401) window.dispatchEvent(new Event('sp:unauthenticated'));
+  checkIdentity(res);
+  if (!res.ok) {
+    const parsed = safeParse(await res.text());
+    throw new ApiError(res.status, parsed?.error?.code ?? 'error', parsed?.error?.message ?? 'Dosya indirilemedi.', parsed?.error?.details);
+  }
+  const cd = res.headers.get('Content-Disposition') ?? '';
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(cd);
+  const plain = /filename="([^"]+)"/i.exec(cd);
+  let name = fallbackName;
+  try { name = star ? decodeURIComponent(star[1]!) : plain ? plain[1]! : fallbackName; } catch { /* yedek ad */ }
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement('a');
+  a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return name;
+}
+
 function safeParse(t: string) { try { return JSON.parse(t); } catch { return null; } }

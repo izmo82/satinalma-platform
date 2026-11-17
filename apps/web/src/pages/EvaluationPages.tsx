@@ -14,6 +14,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { cn } from '@/lib/utils';
 import { trDecimal } from './ContractReview.tsx';
 import { CATEGORY, DEFAULT_W, DIMS, FACTORS, INCIDENT_STATUS, IncidentTable, LEVEL, OUTCOME, weightText, type WeightPolicy } from './SupplierEvaluation.tsx';
+import { RiskReportCard } from './RiskPages.tsx';
 
 function useAct(reload: () => Promise<void>) {
   const [busy, setBusy] = useState(false);
@@ -463,6 +464,8 @@ function ReportsContent() {
       </form>
       {err && <Banner tone="danger" title={err} />}
       {done && <Banner tone="info" icon="check" title={done} />}
+      {/* v2 Faz 6 (D111): yıllık risk matrisi kartı; göstergeler tablosu aynen altında. */}
+      <RiskReportCard />
       {r.loading && !r.data ? <Loading /> : r.error ? <ErrorState error={r.error} onRetry={r.reload} /> : r.data && <>
         <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1">
           <p className="text-sm text-ink-subtle">{fmtDate(r.data.period.from)}–{fmtDate(r.data.period.to)} · veri anı {fmtDateTime(r.data.dataAsOf)} · {r.data.scope.note} Para birimleri dönüştürülmez.</p>

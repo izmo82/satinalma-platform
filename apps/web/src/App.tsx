@@ -48,15 +48,21 @@ const SupplierApplicationReview = lazy(() => import('./pages/SupplierApplication
 const SupplierApplicationSettings = lazy(() => import('./pages/SupplierApplicationSettings.tsx').then((m) => ({ default: m.SupplierApplicationSettings })));
 const EmailOutboxPage = lazy(() => import('./pages/EmailOutboxPage.tsx').then((m) => ({ default: m.EmailOutboxPage })));
 const AuditPage = lazy(() => import('./pages/AuditPage.tsx').then((m) => ({ default: m.AuditPage })));
+// v2 Faz 6 (D111): yıllık risk matrisi, değerlendirme formu ve Excel içe aktarımı.
+const risk = () => import('./pages/RiskPages.tsx');
+const RiskMatrixPage = lazy(() => risk().then((m) => ({ default: m.RiskMatrixPage })));
+const RiskAssessmentPage = lazy(() => risk().then((m) => ({ default: m.RiskAssessmentPage })));
+const RiskImportPage = lazy(() => risk().then((m) => ({ default: m.RiskImportPage })));
 
 /** Adresin ilk bölümü kendi listesi olmayan detaylar: kiracı değişince dönülecek liste. */
 const LIST_OF: Record<string, string> = { belgeler: '/sozlesmeler/ekle', degerlendirmeler: '/tedarikciler' };
 /** Alt adresi olan liste sayfaları (sekmeler, yükleme ekranları): kiracı değişince adres korunur. */
-const KEEP = new Set(['/tedarikciler/olaylar', '/tedarikciler/anketler', '/tedarikciler/performans-agirliklari', '/sozlesmeler/ekle', '/sozlesmeler/sablonlar', '/faturalar/yukle']);
+const KEEP = new Set(['/tedarikciler/olaylar', '/tedarikciler/anketler', '/tedarikciler/performans-agirliklari', '/tedarikciler/risk', '/tedarikciler/risk/ice-aktar', '/sozlesmeler/ekle', '/sozlesmeler/sablonlar', '/faturalar/yukle']);
 /** Kiracı değişince gidilecek liste; null = adres kalır. */
 function listOf(path: string): string | null {
   if (KEEP.has(path) || path.startsWith('/yonetim/')) return null;
   if (path.startsWith('/tedarikciler/olaylar/')) return '/tedarikciler/olaylar';
+  if (path.startsWith('/tedarikciler/risk/')) return '/tedarikciler/risk';
   const section = path.split('/')[1];
   if (!section || path === `/${section}`) return null;
   return LIST_OF[section] ?? `/${section}`;
@@ -78,7 +84,7 @@ function DataGovernanceRemoved() {
   return <RemovedPage moved={exportsVisible ? <>Kiracı dışa aktarımı taşındı: <Link to="/yonetim/denetim-izi">Yönetim &gt; Denetim izi</Link>.</> : undefined} />;
 }
 
-/** Tedarikçiler: liste ve taşınan Olaylar, Anketler, Performans ağırlıkları alt çizgili sekme olarak. */
+/** Tedarikçiler: liste ve taşınan Olaylar, Anketler, Performans ağırlıkları alt çizgili sekme olarak; v2 Faz 6: Risk matrisi eklendi (sona). */
 function SuppliersSection() {
   return (
     <div className="flex min-h-full flex-col">
@@ -87,6 +93,7 @@ function SuppliersSection() {
         { to: '/tedarikciler/olaylar', label: 'Olaylar' },
         { to: '/tedarikciler/anketler', label: 'Anketler' },
         { to: '/tedarikciler/performans-agirliklari', label: 'Performans ağırlıkları' },
+        { to: '/tedarikciler/risk', label: 'Risk matrisi' },
       ]} />
       <Outlet />
     </div>
@@ -229,7 +236,10 @@ function Shell() {
             <Route path="olaylar" element={<IncidentsPage />} />
             <Route path="anketler" element={<TemplatesPage />} />
             <Route path="performans-agirliklari" element={<PerformanceWeightsPage />} />
+            <Route path="risk" element={<RiskMatrixPage />} />
           </Route>
+          <Route path="/tedarikciler/risk/ice-aktar" element={<RiskImportPage />} />
+          <Route path="/tedarikciler/risk/:id" element={<RiskAssessmentPage />} />
           <Route path="/tedarikciler/olaylar/:id" element={<IncidentPage />} />
           <Route path="/tedarikciler/basvurular/:id" element={<SupplierApplicationReview />} />
           <Route path="/tedarikciler/:id" element={<SupplierDetailPage />} />
