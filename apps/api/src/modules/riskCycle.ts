@@ -6,6 +6,7 @@ import { unprocessable } from '../errors.ts';
 import { queueEmail } from '../mail/index.ts';
 import { openTask, RISK_TASKS } from '../tasks.ts';
 import { currentApprovers } from './approvers.ts';
+import { withTenantWideScope } from './contractChain.ts';
 import { istanbulDay, SYSTEM_USER, systemContext } from './contractReminders.ts';
 import { openDueTask, type RiskDraft } from './riskAssessments.ts';
 import { getRiskSettings } from './riskQuestions.ts';
@@ -68,7 +69,7 @@ export interface OpenYearResult { year: number; opened: number; skippedExisting:
  * İdempotent: (tedarikçi, yıl) tekil, var olan atlanır. Sorumlu departman (R5): önceki yılın değerlendirmesinin departmanı; yoksa
  * yürürlükteki sözleşmelerin tek departmanı; birden çoksa ya da yoksa boş + Satınalma'ya "Sorumlu departmanı seçin" görevi.
  * Departmanlıya `risk:{id}:due` görevi (son tarih bugün + due_days). Bağlamın gördüğü sözleşmeler sayılır: işçi ve API ucu
- * kiracının bütün şirketleriyle çağırır (`tenantWideScope`).
+ * kiracının bütün şirketleriyle çağırır (`openRiskYearTenantWide`).
  */
 export async function openRiskYear(tx: Tx, ctx: TenantContext, year: number, today: string): Promise<OpenYearResult> {
   if (!Number.isInteger(year) || year < 2000 || year > 2100) throw unprocessable('invalid_year', 'Yıl 2000–2100 arasında olmalı.');
@@ -115,12 +116,12 @@ export async function openRiskYear(tx: Tx, ctx: TenantContext, year: number, tod
 }
 
 /**
- * Döngü kiracı düzeyindedir (değerlendirmenin şirketi yok): işlemin RLS şirket kapsamı kiracının bütün şirketlerine, departman kapsamı
- * tümüne genişletilir (yalnız bu işlemde; Yönetici'nin şirket kapsamı boştur). Ucu yalnız `risk.cycle.manage` çağırır; yanıt yalnız sayılardır.
+ * API ucu: döngü kiracı düzeyindedir (değerlendirmenin şirketi yok); Yönetici'nin şirket kapsamı boştur. Sayım ve açılış, mevcut
+ * `withTenantWideScope` (contractChain.ts) içinde kiracının bütün şirketleri ve tüm departmanlarıyla yapılır, sonra kapsam geri alınır.
+ * Ucu yalnız `risk.cycle.manage` çağırır; yanıt yalnız sayılardır.
  */
-export async function tenantWideScope(tx: Tx): Promise<void> {
-  await tx.query(`SELECT set_config('app.company_ids', (SELECT '{' || coalesce(string_agg(id::text, ','), '') || '}' FROM legal_entities), true),
-    set_config('app.department_scope', 'ALL', true)`);
+export function openRiskYearTenantWide(tx: Tx, ctx: TenantContext, year: number, today: string): Promise<OpenYearResult> {
+  return withTenantWideScope(tx, () => openRiskYear(tx, ctx, year, today));
 }
 
 // ---- R7: gecikme yükseltmesi -------------------------------------------------------------------------------------------------
@@ -209,8 +210,8 @@ const CATCH_UP_DAYS = 7;
 export type TenantLister = (pool: pg.Pool) => Promise<string[] | null>;
 
 /**
- * Döngü kiracıları için SECURITY DEFINER kapısı `risk_cycle_tenants()` gerekir (sp_app kiracı bağlamı olmadan kiracıları listeleyemez).
- * Migration henüz yoksa null döner (zamanlayıcı iş kurmaz, uyarı yazar); elle açma ucu çalışır.
+ * Döngü kiracıları: SECURITY DEFINER kapısı `risk_cycle_tenants()` (054b; sp_app kiracı bağlamı olmadan kiracıları listeleyemez).
+ * Kapı yoksa (migration uygulanmamış ortam) null döner: zamanlayıcı iş kurmaz, uyarı yazar.
  */
 export const riskCycleTenants: TenantLister = (pool) => withoutTenant(pool, async (c) => {
   const ok = (await c.query<{ ok: boolean }>(`SELECT to_regprocedure('risk_cycle_tenants()') IS NOT NULL AS ok`)).rows[0]!.ok;

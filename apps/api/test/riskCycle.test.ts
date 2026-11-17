@@ -6,7 +6,7 @@ import { syntheticVkn } from '@sp/domain';
 import { withTenant } from '../src/db.ts';
 import { systemContext } from '../src/modules/contractReminders.ts';
 import {
-  dailyRiskSchedules, enqueueRiskSchedules, escalateOverdueRisk, openQuarterlyReviews, processRiskJob, riskSchedule, RISK_JOBS,
+  dailyRiskSchedules, enqueueRiskSchedules, escalateOverdueRisk, openQuarterlyReviews, processRiskJob, riskCycleTenants, riskSchedule, RISK_JOBS,
 } from '../src/modules/riskCycle.ts';
 import { makeHarness } from './harness.ts';
 
@@ -302,5 +302,30 @@ describe('işçi zamanlayıcısı', () => {
     expect(await gate(h.pool, new Date(jan1.getTime() + 120_000))).toBeNull();
     expect(await gate(h.pool, new Date('2031-01-02T06:00:00+03:00'))).toBe(0);
     expect(calls).toBe(2);
+  });
+
+  it('054b: varsayılan kapı risk_cycle_tenants() kiracıları listeler; işçi zamanlayıcısı varsayılan kapıyla iş kurar (yalnız kimlik, sp_app)', async () => {
+    const tenants = await riskCycleTenants(h.pool);
+    expect(tenants).not.toBeNull();
+    // A kiracısında tedarikçili sözleşme ve değerlendirme var; B'de yok.
+    expect(tenants).toContain(h.world.tenantA);
+    expect(tenants).not.toContain(h.world.tenantB);
+    const fn = await one(`SELECT p.prosecdef, p.proconfig, has_function_privilege('public', 'risk_cycle_tenants()', 'EXECUTE') AS pub
+      FROM pg_proc p WHERE p.proname = 'risk_cycle_tenants'`);
+    expect(fn).toEqual({ prosecdef: true, proconfig: ['search_path=public, pg_temp'], pub: false });
+
+    // Uzak gelecek bir gün (2093-07-01): A için yükseltme + çeyreklik iş varsayılan kapıyla kurulur; ikinci çağrı A için yeni iş kurmaz.
+    const day = new Date('2093-07-01T06:00:00+03:00');
+    const keys = ['risk-escalate:2093-07-01', 'risk-quarterly:2093-3'];
+    const jobsOfA = () => rows<{ idempotency_key: string }>(`SELECT idempotency_key FROM jobs WHERE tenant_id = $1 AND idempotency_key = ANY($2) ORDER BY idempotency_key`,
+      [h.world.tenantA, keys]);
+    expect(await enqueueRiskSchedules(h.pool, day)).toBeGreaterThanOrEqual(2);
+    // Kapı paylaşılan test veritabanındaki bütün kiracıları listeler: kurulan işler (her kiracıda) hemen kapatılır ki başka test
+    // dosyalarının işçisi 2093 tarihli yükseltmeyi çalıştırmasın.
+    await h.owner.query(`UPDATE jobs SET status = 'SUCCEEDED' WHERE idempotency_key = ANY($1) AND status = 'QUEUED'`, [keys]);
+    expect((await jobsOfA()).map((j) => j.idempotency_key)).toEqual(keys);
+    await enqueueRiskSchedules(h.pool, day);
+    await h.owner.query(`UPDATE jobs SET status = 'SUCCEEDED' WHERE idempotency_key = ANY($1) AND status = 'QUEUED'`, [keys]);
+    expect(await jobsOfA()).toHaveLength(2);
   });
 });
