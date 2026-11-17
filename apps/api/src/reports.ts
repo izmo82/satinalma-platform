@@ -1,8 +1,8 @@
 import ExcelJS from 'exceljs';
 import type { Comparison, Criterion, FxRate, ProjectLine } from '@sp/domain';
 
-/** Hücreye yazılan metin formül olarak yorumlanmaz (CSV/XLSX injection, T47). */
-const safe = (v: unknown) => {
+/** Hücreye yazılan metin formül olarak yorumlanmaz (CSV/XLSX injection, T47). v2 Faz 6 Görev 6: risk dışa aktarımı da kullanır. */
+export const safe = (v: unknown) => {
   const s = v == null ? '' : String(v);
   return /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
 };

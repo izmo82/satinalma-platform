@@ -120,7 +120,7 @@ export interface Computed {
   score: { value: string | null; source: ScoreSource; missing: string[] } | null;
   level: { level: RiskLevelNo; band: RiskLevelNo; bandLabel: string; label: string } | null;
 }
-async function compute(tx: Tx, draft: RiskDraft, set?: SetInfo | null): Promise<Computed & { set: SetInfo | null }> {
+export async function compute(tx: Tx, draft: RiskDraft, set?: SetInfo | null): Promise<Computed & { set: SetInfo | null }> {
   const full = fullCriteria(draft.criteria);
   const crit = full ? criticality(full) : null;
   let score: Computed['score'] = null;

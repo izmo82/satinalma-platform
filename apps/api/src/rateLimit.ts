@@ -36,6 +36,9 @@ const HEAVY: [string, RegExp][] = [
   ['GET', /^\/api\/v1\/integration\/erp\/(reconciliation|batch\.csv)$/],
   ['POST', /^\/api\/v1\/integration\/erp\/results$/],
   ['POST', /^\/api\/v1\/ai\/runs\/[^/]+\/retry$/],
+  // v2 Faz 6: risk tablosu Excel içe/dışa aktarımı.
+  ['POST', /^\/api\/v1\/risk\/imports$/],
+  ['GET', /^\/api\/v1\/risk\/export\.xlsx$/],
 ];
 // /auth/config herkese açık ve önbellekli; her açılışta çağrılır, sınırlanmaz (oturum kovası yoksa default sınıf adres kovasına girmez).
 // Geliştirme girişleri adres başına sınırlı. Kurumsal giriş uçları (auth/login, auth/session) bilinçli olarak dışarıda:

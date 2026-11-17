@@ -37,6 +37,7 @@ import * as riskQuestions from './modules/riskQuestions.ts';
 import * as riskAssessments from './modules/riskAssessments.ts';
 import * as portal from './modules/portal.ts';
 import * as riskCycle from './modules/riskCycle.ts';
+import * as riskImport from './modules/riskImport.ts';
 import * as intake from './modules/contractIntake.ts';
 import * as contractAi from './modules/contractAi.ts';
 import * as reminders from './modules/contractReminders.ts';
@@ -870,6 +871,33 @@ export async function buildApp(deps: AppDeps) {
     // v2 Faz 6 Görev 5 (R6): yılı elle açma (yıl ortasında başlangıç); işçinin 1 Ocak açılışıyla aynı işlev, idempotent.
     app.post('/api/v1/risk/cycles/:year/open', { schema: { tags: ['risk'], params: { type: 'object', required: ['year'], properties: { year } } } }, async (req) =>
       scoped(req, 'risk.cycle.manage', (tx, ctx) => riskCycle.openRiskYearTenantWide(tx, ctx, (req.params as { year: number }).year, riskAssessments.istanbulToday())));
+    // v2 Faz 6 Görev 6 (R11/R12): Excel içe aktarımı (yükle → önizleme → uygula/vazgeç) ve kaynak düzende dışa aktarım.
+    app.post('/api/v1/risk/imports', { schema: { tags: ['risk'], consumes: ['multipart/form-data'] } }, async (req, reply) => {
+      const file = await req.file();
+      if (!file) throw new ApiError(400, 'file_required', 'Dosya gerekli.');
+      const body = await file.toBuffer();
+      return reply.status(201).send(await scoped(req, 'risk.import', (tx, ctx) => riskImport.createImport(tx, ctx, { fileName: file.filename, body })));
+    });
+    app.get('/api/v1/risk/imports/:id', { schema: { tags: ['risk'], params: idParams } }, async (req) =>
+      scoped(req, 'risk.import', (tx, ctx) => riskImport.getImport(tx, ctx, id(req))));
+    app.put('/api/v1/risk/imports/:id', { schema: { tags: ['risk'], params: idParams, body: { type: 'object', minProperties: 1, additionalProperties: false, properties: {
+      year, teamMapping: { type: 'object', maxProperties: 500, additionalProperties: { anyOf: [uuid, { type: 'null' }] } },
+      rows: { type: 'array', maxItems: 5000, items: { type: 'object', required: ['rowNo'], additionalProperties: false, properties: {
+        rowNo: { type: 'integer', minimum: 1 }, decision: { type: 'string', enum: ['CREATE', 'SKIP', 'NEW_CANDIDATE'] },
+        supplierId: { anyOf: [uuid, { type: 'null' }] }, primary: { type: 'boolean' } } } } } } } }, async (req) =>
+      scoped(req, 'risk.import', (tx, ctx) => riskImport.updateImport(tx, ctx, id(req), req.body as riskImport.ImportPatch)));
+    app.post('/api/v1/risk/imports/:id/apply', { schema: { tags: ['risk'], params: idParams } }, async (req) =>
+      scoped(req, 'risk.import', (tx, ctx) => riskImport.applyImport(tx, ctx, id(req))));
+    app.post('/api/v1/risk/imports/:id/discard', { schema: { tags: ['risk'], params: idParams } }, async (req) =>
+      scoped(req, 'risk.import', (tx, ctx) => riskImport.discardImport(tx, ctx, id(req))));
+    app.get('/api/v1/risk/export.xlsx', { schema: { tags: ['risk'], querystring: { type: 'object', additionalProperties: false, properties: {
+      year, period: { type: 'string', pattern: '^[0-9]{4}-[1-4]$' } } } } }, async (req, reply) => {
+      const r = await scoped(req, 'risk.export', (tx, ctx) => riskImport.exportRisk(tx, ctx, req.query as { year?: number; period?: string }));
+      const ascii = r.fileName.replace(/[^\x20-\x7e]|["\\]/g, '_');
+      return reply.header('content-type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        .header('content-disposition', `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(r.fileName).replace(/['()*]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase())}`)
+        .header('cache-control', 'no-store').send(r.buf);
+    });
   }
   app.get('/api/v1/settings/contract-reminders', { schema: { tags: ['settings'] } }, async (req) =>
     scoped(req, 'reminder.settings', (tx) => reminders.getSettings(tx)));
