@@ -3,6 +3,9 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { DevAuthProvider } from '../src/auth.ts';
+import { withTenant } from '../src/db.ts';
+import { systemContext } from '../src/modules/contractReminders.ts';
+import { supersedeDuplicateCurrent } from '../src/modules/supplierCard.ts';
 import { makeHarness } from './harness.ts';
 
 type H = Awaited<ReturnType<typeof makeHarness>>;
@@ -166,8 +169,8 @@ describe('Kart (R10–R14)', () => {
 
   it('same_type_upload_without_replacesId_supersedes_older_current_and_list_counts_supplier_documents', async () => {
     const sid = await newSupplier('ACTIVE');
-    const a = await upload(sid, { typeCode: 'FAALIYET_BELGESI', validUntil: isoDay(200) });
-    const b = await upload(sid, { typeCode: 'FAALIYET_BELGESI', validUntil: isoDay(9) });
+    const a = await upload(sid, { typeCode: 'FAALIYET_BELGESI', validUntil: isoDay(9) });
+    const b = await upload(sid, { typeCode: 'FAALIYET_BELGESI', validUntil: isoDay(200) });
     expect(a.status).toBe(201); expect(b.status).toBe(201);
     const c = await card(sid);
     expect(c.supplierDocuments.find((d: any) => d.id === a.body.id)).toMatchObject({ current: false, supersededById: b.body.id, supersededLabel: 'Yerine yenisi yüklendi' });
@@ -175,7 +178,36 @@ describe('Kart (R10–R14)', () => {
     const row = (await h.call('buyer', 'GET', '/api/v1/suppliers')).body.items.find((i: any) => i.id === sid);
     expect(row.supplierDocumentCount).toBe(1); // yalnız güncel
     expect(row.documentCount).toBe(0); // eski alan: bağlı fatura/sözleşme belgesi, aynen
-    expect(row.documentAlert).toBe('EXPIRING'); // yalnız güncel belge sayılır
+    expect(row.documentAlert).toBeNull(); // yalnız güncel (200 gün) belge sayılır
+  });
+
+  it('shorter_validity_upload_does_not_supersede_and_quarantined_or_unmoved_types_are_left_alone', async () => {
+    const sid = await newSupplier('ACTIVE');
+    const a = await upload(sid, { typeCode: 'FAALIYET_BELGESI', validUntil: isoDay(300) });
+    const b = await upload(sid, { typeCode: 'FAALIYET_BELGESI', validUntil: isoDay(20) }); // eskisinden kısa: ikisi de güncel
+    const c = await card(sid);
+    expect(c.supplierDocuments.filter((d: any) => d.current).map((d: any) => d.id).sort()).toEqual([a.body.id, b.body.id].sort());
+    // Karta geçiş yolu: karantinadaki yeni belge eskisini geçersiz kılmaz; yalnız taşınan türler değerlendirilir.
+    const ins = async (type: string, status: string, vu: string | null, ageMin: number) => (await h.owner.query<{ id: string }>(
+      `INSERT INTO supplier_documents (tenant_id, supplier_id, type_code, title, original_filename, mime_type, size_bytes, sha256, storage_key, basic_check_status, av_scan_status, valid_until, uploaded_via, uploaded_by, created_at)
+       VALUES ($1,$2,$3,'t','x.pdf','application/pdf',700,$4,$5,$6,'NOT_CONFIGURED',$7,'INTERNAL', $9, now() - ($8 || ' minutes')::interval) RETURNING id`,
+      [h.world.tenantA, sid, type, randomUUID().replace(/-/g, '').padEnd(64, '0'), `t/x/${randomUUID()}`, status, vu, String(ageMin), h.world.users.buyer.id])).rows[0]!.id;
+    const sidSwap = sid;
+    const q1 = await ins('IMZA_SIRKULERI', 'PASSED', isoDay(100), 10);
+    const q2 = await ins('IMZA_SIRKULERI', 'QUARANTINED', isoDay(200), 1);
+    const m1 = await ins('VERGI_LEVHASI', 'PASSED', isoDay(100), 10);
+    const m2 = await ins('VERGI_LEVHASI', 'PASSED', isoDay(200), 1);
+    const ctx = systemContext(h.world.tenantA, [], 'sup-test');
+    await withTenant(h.pool, ctx, (tx) => supersedeDuplicateCurrent(tx, sidSwap, ['VERGI_LEVHASI']));
+    const cur = async (id: string) => (await h.owner.query(`SELECT superseded_by_id FROM supplier_documents WHERE id = $1`, [id])).rows[0].superseded_by_id;
+    expect(await cur(m1)).toBe(m2);
+    expect(await cur(m2)).toBeNull();
+    expect(await cur(q1)).toBeNull(); // taşınmayan tür
+    await withTenant(h.pool, ctx, (tx) => supersedeDuplicateCurrent(tx, sidSwap, ['IMZA_SIRKULERI']));
+    expect(await cur(q1)).toBeNull(); // karantinadaki yeni belge geçersiz kılmaz
+    expect(await cur(q2)).toBeNull();
+    // Hâlâ eski belge güncel + faaliyet belgeleri değişmedi.
+    expect(await cur(a.body.id)).toBeNull();
   });
 });
 

@@ -15,7 +15,7 @@ import { enqueueEmailDispatch, queueEmail, type MailChannel } from '../mail/inde
 import { audit } from '../audit.ts';
 import { clientAddressKey, DEFAULT_PUBLIC_RATE_LIMIT } from '../publicRateLimit.ts';
 import { closeTasks, openTask } from '../tasks.ts';
-import { DOC_SELECT, documentView, ensurePortalUser, supersedeDuplicateCurrent, PORTAL_ACCESS_NOTE, type PortalInviteOutcome, PORTAL_INVITE_ERRORS, requiredMissing, today as cardToday, type DocRow } from './supplierCard.ts';
+import { DOC_SELECT, documentView, ensurePortalUser, implicitSupersedes, supersedeDuplicateCurrent, PORTAL_ACCESS_NOTE, type PortalInviteOutcome, PORTAL_INVITE_ERRORS, requiredMissing, today as cardToday, type DocRow } from './supplierCard.ts';
 
 /**
  * v2 Faz 5 (D110) Görev 4: girişsiz tedarikçi başvurusu (R2–R5) ve başvuru ayarları (R3).
@@ -578,9 +578,8 @@ export async function getApplication(tx: Tx, ctx: TenantContext, id: string) {
     `SELECT s.contact_email, (SELECT count(*)::int FROM memberships m WHERE m.supplier_id = s.id) AS n FROM suppliers s WHERE s.id = $1`, [existing.id])).rows[0] : undefined;
   const rawDocRows = (await tx.query<DocRow>(`${DOC_SELECT} WHERE d.application_id = $1 ORDER BY d.type_code, d.created_at`, [id])).rows;
   // D3: karta geçmeden önce de aynı türdeki en yeni belge güncel, öncekiler "yenilendi" görünür (karta geçişte kalıcı yazılır).
-  const newestOfType = new Map<string, string>();
-  for (const r of rawDocRows) if (!r.superseded_by_id) newestOfType.set(r.type_code, r.id);
-  const docRows = rawDocRows.map((r) => (!r.superseded_by_id && newestOfType.get(r.type_code) !== r.id ? { ...r, superseded_by_id: newestOfType.get(r.type_code)! } : r));
+  const sup = implicitSupersedes(rawDocRows.map((r) => ({ ...r, valid_until: r.valid_until })));
+  const docRows = rawDocRows.map((r) => (sup.has(r.id) ? { ...r, superseded_by_id: sup.get(r.id)! } : r));
   const missing = await requiredMissing(tx, a.categories, docRows.map((r) => ({ typeCode: r.type_code, validUntil: r.valid_until, supersededById: r.superseded_by_id })), day);
   const events = (await tx.query<{ action: string; at: Date; actor: string | null; reason: string | null; data: Record<string, unknown> }>(
     `SELECT e.action, e.at, u.display_name AS actor, e.reason, e.data FROM audit_events e LEFT JOIN users u ON u.id = e.actor_user_id
@@ -672,9 +671,10 @@ async function approve(tx: Tx, ctx: TenantContext, a: AppRow, note: string | nul
       address = coalesce(address, $5), service_categories = CASE WHEN cardinality(service_categories) = 0 THEN $6 ELSE service_categories END,
       services_offered = coalesce(services_offered, $7), application_id = coalesce(application_id, $8), row_version = row_version + 1 WHERE id = $1`,
     [supplierId, a.contact_name.slice(0, 200), a.contact_email, a.contact_phone, a.address, a.categories, a.services, a.id]);
-  const moved = (await tx.query(`UPDATE supplier_documents SET supplier_id = $1 WHERE application_id = $2 AND supplier_id IS NULL`, [supplierId, a.id])).rowCount ?? 0;
+  const movedRows = (await tx.query<{ type_code: string }>(`UPDATE supplier_documents SET supplier_id = $1 WHERE application_id = $2 AND supplier_id IS NULL RETURNING type_code`, [supplierId, a.id])).rows;
+  const moved = movedRows.length;
   // v2 Faz 5 Görev 6 (R12): karta geçen geçerlilik tarihli belge hatırlatma zincirini başlatır (idempotent).
-  if (moved) await supersedeDuplicateCurrent(tx, supplierId);
+  if (moved) await supersedeDuplicateCurrent(tx, supplierId, [...new Set(movedRows.map((r) => r.type_code))]);
   if (moved) await ensureDocumentReminderJob(tx, ctx.tenantId);
   await tx.query(`UPDATE supplier_applications SET status = 'APPROVED', decided_by = $2, decided_at = now(), decision_reason = $3, supplier_id = $4,
       token_hash = NULL, token_purpose = NULL, token_expires_at = NULL, row_version = row_version + 1 WHERE id = $1`, [a.id, ctx.userId, note, supplierId]);

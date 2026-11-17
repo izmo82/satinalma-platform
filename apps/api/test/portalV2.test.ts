@@ -195,6 +195,25 @@ describe('Tekliflerim', () => {
 });
 
 describe('Belgelerim (R12)', () => {
+  it('implicit_supersede_via_portal_upload_closes_expired_task_and_shorter_validity_does_not', async () => {
+    const a = await newSupplier();
+    const ua = await portalUser(a);
+    const ctx = systemContext(h.world.tenantA, [], 'doc-test');
+    // Karar 20: replacesId olmadan portal yüklemesi, geçerliliği kısa olmayan yeni belgeyle eskisini yerine geçirir ve görevini kapatır; kısa olan geçirmez.
+    const implicitOld = await portalUpload(ua.token, { typeCode: 'VERGI_LEVHASI', validUntil: isoDay(0) });
+    expect(implicitOld.status).toBe(201);
+    await withTenant(h.pool, ctx, (tx) => runDocumentReminders(tx, ctx, isoDay(0), 'http://localhost:5174'));
+    const impKey = `doc:${implicitOld.body.id}:expired`;
+    expect((await h.owner.query(`SELECT status FROM tasks WHERE dedupe_key = $1`, [impKey])).rows).toEqual([{ status: 'OPEN' }]);
+    const implicitNew = await portalUpload(ua.token, { typeCode: 'VERGI_LEVHASI', validUntil: isoDay(200) });
+    expect(implicitNew.status).toBe(201);
+    expect((await h.owner.query(`SELECT superseded_by_id FROM supplier_documents WHERE id = $1`, [implicitOld.body.id])).rows[0].superseded_by_id).toBe(implicitNew.body.id);
+    expect((await h.owner.query(`SELECT status FROM tasks WHERE dedupe_key = $1`, [impKey])).rows).toEqual([{ status: 'DONE' }]);
+    const shorter = await portalUpload(ua.token, { typeCode: 'VERGI_LEVHASI', validUntil: isoDay(30) });
+    expect(shorter.status).toBe(201);
+    expect((await h.owner.query(`SELECT superseded_by_id FROM supplier_documents WHERE id = $1`, [implicitNew.body.id])).rows[0].superseded_by_id).toBeNull();
+  });
+
   it('renewal_supersedes_old_closes_expired_task_opens_info_task_and_isolated', async () => {
     const a = await newSupplier();
     const ua = await portalUser(a);

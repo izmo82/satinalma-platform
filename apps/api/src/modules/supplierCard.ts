@@ -62,16 +62,36 @@ export async function listCounts(tx: Tx, q: string | null) {
 
 export const stageFilterStatuses = (stage: ListStage | undefined): string[] | null => (stage ? stageStatuses(stage) : null);
 
-// ---------- Belgeler (R12) ----------
+/** D3 (Karar 20): yeni belge yalnız kontrolden geçtiyse (PASSED) ve geçerliliği eskisinden kısa değilse (süresiz ya da >=) eskisinin yerine geçer. */
+const gte = (newVu: string | null, oldVu: string | null) => newVu === null || (oldVu !== null && newVu >= oldVu);
+
+interface SupersedeRow { id: string; type_code: string; valid_until: string | null; created_at: Date; basic_check_status: string; superseded_by_id: string | null }
+
+/** Tür başına güncel belgeler arasından kazananı (kontrolden geçmiş, en geç geçerlilik, sonra en yeni) seçip yerine geçtiği eski belgeleri döndürür (eski → yeni). */
+export function implicitSupersedes(rows: SupersedeRow[]): Map<string, string> {
+  const out = new Map<string, string>();
+  const byType = new Map<string, SupersedeRow[]>();
+  for (const r of rows) if (!r.superseded_by_id) byType.set(r.type_code, [...(byType.get(r.type_code) ?? []), r]);
+  for (const list of byType.values()) {
+    const key = (r: SupersedeRow) => `${r.valid_until ?? '9999-12-31'}|${new Date(r.created_at).toISOString()}|${r.id}`;
+    const winner = list.filter((r) => r.basic_check_status === 'PASSED').sort((a, b) => key(b).localeCompare(key(a)))[0];
+    if (!winner) continue;
+    for (const o of list) if (o.id !== winner.id && gte(winner.valid_until, o.valid_until)) out.set(o.id, winner.id);
+  }
+  return out;
+}
 
 /**
- * D3: aynı tedarikçide aynı türden yeni belge eklenince (iç yükleme, portal, başvuru belgelerinin karta geçişi) önceki güncel belgeler
- * "yenilendi" olur (`superseded_by_id`); geçmiş silinmez. Açık `replacesId` yoksa en son güncel olan çıkarılır. Dönen kimliklerin
- * hatırlatma/"süresi doldu" görevleri kapatılır (güncel olmayan belge için hatırlatma anlamsızdır).
+ * Aynı tedarikçide aynı türden yeni belge eklenince (iç yükleme, portal) önceki güncel belgeler "yenilendi" olur; geçmiş silinmez.
+ * Yalnız yeni belge PASSED ise ve geçerliliği eskisinden kısa değilse (Karar 20); aksi halde eskisi güncel kalır (açık `replacesId` ayrıca çalışır).
+ * Yerine geçilen belgelerin hatırlatma/"süresi doldu" görevleri kapanır.
  */
 export async function supersedeOlderSameType(tx: Tx, supplierId: string, typeCode: string, newId: string) {
-  const old = (await tx.query<{ id: string }>(`SELECT id FROM supplier_documents WHERE supplier_id = $1 AND type_code = $2 AND id <> $3 AND superseded_by_id IS NULL FOR UPDATE`,
-    [supplierId, typeCode, newId])).rows;
+  const nw = (await tx.query<{ basic_check_status: string; valid_until: string | null }>(
+    `SELECT basic_check_status, valid_until::text AS valid_until FROM supplier_documents WHERE id = $1`, [newId])).rows[0];
+  if (!nw || nw.basic_check_status !== 'PASSED') return 0;
+  const old = (await tx.query<{ id: string }>(`SELECT id FROM supplier_documents WHERE supplier_id = $1 AND type_code = $2 AND id <> $3 AND superseded_by_id IS NULL
+      AND ($4::date IS NULL OR (valid_until IS NOT NULL AND valid_until <= $4::date)) FOR UPDATE`, [supplierId, typeCode, newId, nw.valid_until])).rows;
   for (const o of old) {
     await tx.query(`UPDATE supplier_documents SET superseded_by_id = $2 WHERE id = $1`, [o.id, newId]);
     await closeTasks(tx, `doc:${o.id}:`);
@@ -79,13 +99,20 @@ export async function supersedeOlderSameType(tx: Tx, supplierId: string, typeCod
   return old.length;
 }
 
-/** Karta geçen başvuru belgeleri: aynı türde birden çok güncel belge varsa en yenisi güncel kalır, öncekiler "yenilendi" olur. */
-export async function supersedeDuplicateCurrent(tx: Tx, supplierId: string) {
-  const dup = (await tx.query<{ type_code: string; newest: string }>(
-    `SELECT type_code, (array_agg(id ORDER BY created_at DESC, id DESC))[1] AS newest FROM supplier_documents
-      WHERE supplier_id = $1 AND superseded_by_id IS NULL GROUP BY type_code HAVING count(*) > 1`, [supplierId])).rows;
-  for (const d of dup) await supersedeOlderSameType(tx, supplierId, d.type_code, d.newest);
+/** Karta geçen başvuru belgelerinin türleri için aynı kural (yalnız `types`; karttaki diğer türlere dokunulmaz). */
+export async function supersedeDuplicateCurrent(tx: Tx, supplierId: string, types: string[]) {
+  if (!types.length) return 0;
+  const rows = (await tx.query<SupersedeRow>(`SELECT id, type_code, valid_until::text AS valid_until, created_at, basic_check_status, superseded_by_id FROM supplier_documents
+      WHERE supplier_id = $1 AND type_code = ANY($2::text[]) AND superseded_by_id IS NULL FOR UPDATE`, [supplierId, types])).rows;
+  const map = implicitSupersedes(rows);
+  for (const [oldId, newId] of map) {
+    await tx.query(`UPDATE supplier_documents SET superseded_by_id = $2 WHERE id = $1`, [oldId, newId]);
+    await closeTasks(tx, `doc:${oldId}:`);
+  }
+  return map.size;
 }
+
+// ---------- Belgeler (R12) ----------
 
 export interface DocRow {
   id: string; supplier_id: string | null; application_id: string | null; type_code: string; type_name: string | null; title: string; original_filename: string;
