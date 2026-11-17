@@ -9,15 +9,25 @@ import { processAiRun } from './modules/ai.ts';
 import { processPurge, processTenantExport } from './modules/governance.ts';
 import { hasAiProviders } from './ai/provider.ts';
 import { normalizeRoles } from '@sp/domain';
+import { directoryProvider, type DirectoryProvider } from './directory/provider.ts';
+import { directoryJobContext, enqueueNightlySyncs, processDirectorySync } from './modules/directory.ts';
+
+/** İsteğe bağlı işçi bağımlılıkları; eski çağrılar etkilenmez. */
+export interface WorkerOptions {
+  /** v2 Faz 2 (D105): yapılandırılmış dizin sağlayıcısı; yoksa `directory.sync` işi çekilmez. */
+  directoryProvider?: DirectoryProvider | null;
+}
 
 /**
  * Durumsuz worker: kuyruktan iş çeker (SKIP LOCKED), işi isteyen kullanıcının GÜNCEL üyeliğiyle kiracı bağlamı kurar.
  * Kiracı kimliği tek başına yetki sayılmaz; üyelik iptal edildiyse iş BLOCKED olur.
  */
 export async function processJobs(pool: pg.Pool, store: ObjectStore, detectorProvider: string | null, limit = 10, erpAdapterName: string | null = process.env.ERP_ADAPTER || null,
-  lane: 'all' | 'short' | 'export' = 'all'): Promise<number> {
+  lane: 'all' | 'short' | 'export' = 'all', opts: WorkerOptions = {}): Promise<number> {
+  const directory = opts.directoryProvider ?? null;
   // Kiracı dışa aktarımı saatler sürebilir: ayrı şeritte tek tek çalışır, ihbar/imza/silme işlerini bekletmez.
-  const short = ['signature.detect', 'contract.notice_reminder', 'contract.obligation_due', 'retention.purge', ...(erpAdapterName ? ['erp.export'] : []), ...(hasAiProviders() ? ['ai.run'] : [])];
+  const short = ['signature.detect', 'contract.notice_reminder', 'contract.obligation_due', 'retention.purge', ...(erpAdapterName ? ['erp.export'] : []), ...(hasAiProviders() ? ['ai.run'] : []),
+    ...(directory ? ['directory.sync'] : [])];
   const kinds = lane === 'export' ? ['tenant.export'] : lane === 'short' ? short : [...short, 'tenant.export'];
   const claimed = await withoutTenant(pool, async (c) =>
     (await c.query<{ id: string; tenant_id: string; company_id: string | null; kind: string; requested_by: string | null }>(
@@ -33,6 +43,11 @@ export async function processJobs(pool: pg.Pool, store: ObjectStore, detectorPro
     };
     try {
       // İmha onaylandıktan sonraki bayt silme kullanıcı yetkisi gerektirmez (karar verildi); onaylayan ayrılsa da silme yapılır.
+      // Dizin eşitlemesi sistem işidir: gece işinde isteyen yoktur; yetki API'de (Görev 4) denetlenir.
+      if (job.kind === 'directory.sync' && directory) {
+        await processDirectorySync(pool, directory, job.id, directoryJobContext(job.tenant_id, job.requested_by, job.id));
+        continue;
+      }
       if (job.kind === 'retention.purge') { await withTenant(pool, { ...ctx, roles: [], companyIds: [] }, (tx) => processPurge(tx, store, job.id)); continue; }
       if (!m || (job.company_id && !m.company_ids.includes(job.company_id))) {
         await withTenant(pool, { ...ctx, companyIds: job.company_id ? [job.company_id] : [] }, (tx) =>
@@ -61,9 +76,16 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const store = new S3ObjectStore(config.objectStore);
   let stopping = false;
   process.on('SIGTERM', () => { stopping = true; });
+  const directory = directoryProvider(config.directory);
+  let lastNightly = 0;
   const loop = async (lane: 'short' | 'export') => {
     while (!stopping) {
-      const n = await processJobs(pool, store, config.signatureDetectorProvider, 10, config.erpAdapter ?? null, lane);
+      // R8: gece eşitlemesi en fazla dakikada bir denetlenir (İstanbul 06:00 sonrası, kiracı başına günde bir iş).
+      if (lane === 'short' && directory && Date.now() - lastNightly >= 60_000) {
+        lastNightly = Date.now();
+        await enqueueNightlySyncs(pool, new Date(), directory).catch((e) => console.error('directory nightly enqueue failed', (e as Error).message));
+      }
+      const n = await processJobs(pool, store, config.signatureDetectorProvider, 10, config.erpAdapter ?? null, lane, { directoryProvider: directory });
       if (n === 0) await new Promise((r) => setTimeout(r, 2000));
     }
   };
