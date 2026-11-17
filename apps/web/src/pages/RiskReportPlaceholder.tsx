@@ -3,7 +3,7 @@
 import { Loading } from '../ui/kit.tsx';
 
 /** Kart gövdesinin sabit en küçük yüksekliği (1440 ve 390'da ölçülen yüklü kart gövdesi kadar). */
-export const RISK_CARD_BODY = 'min-h-[var(--risk-card-body)] [--risk-card-body:262px] max-[899px]:[--risk-card-body:520px]';
+export const RISK_CARD_BODY = 'min-h-[var(--risk-card-body)] [--risk-card-body:276px] max-[899px]:[--risk-card-body:516px]';
 
 export function RiskReportPlaceholder() {
   const year = new Date().getFullYear();

@@ -81,7 +81,8 @@ test('risk: bölüm ve kart sekmeleri aynen + yeni ekranlar; taşma ve erişileb
   await page.getByRole('link', { name: 'Değerlendirmeyi aç' }).click();
   await expect(page.getByRole('heading', { name: /^Yıllık risk değerlendirmesi · \d{4}$/, level: 1 })).toBeVisible();
   for (const h of ['1. Kritiklik ölçütleri', '2. Risk skoru', '3. Seviye', 'Aksiyon ve denetim planı', 'Görüşler', 'Revizyon geçmişi']) await expect(page.getByRole('heading', { name: h })).toBeVisible();
-  await expect(page.getByText(/yöntem khc-it-2100-002-r009\/v1/).first()).toBeVisible();
+  // v2 Faz 6 (D111): revizyon satırında yöntem kodu artık "Yöntem sürümü:" etiketiyle (izleme dalgası; kod aynı).
+  await expect(page.getByText(/Yöntem sürümü: khc-it-2100-002-r009\/v1/).first()).toBeVisible();
   await check(page, 'Risk değerlendirmesi');
 
   // Yönetim > Şablonlar: sözleşme taslakları varsayılan ve aynen; Risk soruları ikinci sekme.
