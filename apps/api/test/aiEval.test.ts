@@ -71,6 +71,15 @@ describe('AI doğruluk ölçüm düzeneği (R13)', () => {
     expect(r.perField.signedOn).toEqual({ correct: 4, total: 5 });
   });
 
+  it('sağlayıcı hatası belgeyi başarısız sayar, rapor sürer', async () => {
+    const real = testFixtureProvider(); let n = 0;
+    const flaky = { name: 'test-flaky', async run(...a: Parameters<typeof real.run>) { if (++n === 2) throw new Error('ağ'); return real.run(...a); } };
+    const r = await runEval({ dir: FIX, provider: flaky, modelId: 'm' });
+    expect(r.documents).toBe(5); expect(r.failedDocuments).toBe(1);
+    expect(r.perField.title).toEqual({ correct: 4, total: 5 });
+    expect(r.overall).toBeLessThan(1);
+  });
+
   it('etiket yoksa hata verir; gerçek sağlayıcı çağrılmaz (yalnız verilen sağlayıcı)', async () => {
     const empty = join(tmp, 'bos');
     mkdirSync(empty);

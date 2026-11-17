@@ -22,6 +22,8 @@ export interface EvalReport {
   modelId: string;
   promptVersion: string;
   documents: number;
+  /** Sağlayıcı hatası nedeniyle okunamayan belge sayısı; etiketli alanları yanlış sayılır. */
+  failedDocuments: number;
   perField: Record<string, { correct: number; total: number }>;
   /** 0–1; etiketli tüm alan-belge çiftleri üzerinden. */
   overall: number;
@@ -39,20 +41,24 @@ export async function runEval(o: { dir: string; provider: AiProvider; modelId: s
   if (names.length === 0) throw new Error('Etiketli belge yok (<ad>.labels.json)');
   const perField: EvalReport['perField'] = {};
   const critKeys = CRITICAL_AI_FIELDS as readonly string[];
-  let c = 0, t = 0, cc = 0, ct = 0;
+  let c = 0, t = 0, cc = 0, ct = 0, failed = 0;
   for (const name of names) {
     const labels = JSON.parse(readFileSync(join(o.dir, `${name}.labels.json`), 'utf8')) as Labels;
     const pdfPath = join(o.dir, `${name}.pdf`);
     const body = existsSync(pdfPath) ? readFileSync(pdfPath) : labels.synthetic ? syntheticContractPdf(labels.synthetic) : null;
     if (!body) throw new Error(`${name}: PDF yok ve etikette synthetic seçenekleri yok`);
-    const pages = await pageTexts(body, 'application/pdf');
-    const res = await o.provider.run(o.modelId, {
-      task: 'AI06', pages, mimeType: 'application/pdf', allowedFields: CONTRACT_AI_FIELDS,
-      document: { bytes: body, mimeType: 'application/pdf', pageCount: pages.length }, promptVersion: PROMPT_VERSIONS.AI06,
-    });
-    const got: Record<string, string | null> = {};
-    for (const f of checkContractExtraction(res.output, pages).fields) got[f.field] = f.value;
-    const acc = extractionAccuracy(labels.fields, got);
+    let got: Record<string, string | null> | null = null;
+    try {
+      const pages = await pageTexts(body, 'application/pdf');
+      const res = await o.provider.run(o.modelId, {
+        task: 'AI06', pages, mimeType: 'application/pdf', allowedFields: CONTRACT_AI_FIELDS,
+        document: { bytes: body, mimeType: 'application/pdf', pageCount: pages.length }, promptVersion: PROMPT_VERSIONS.AI06,
+      });
+      got = {};
+      for (const f of checkContractExtraction(res.output, pages).fields) got[f.field] = f.value;
+    } catch { failed++; }
+    // Başarısız belge: her etiketli alan yanlış sayılır (yok sayılmaz; doğruluk şişmez).
+    const acc = got ? extractionAccuracy(labels.fields, got) : { perField: Object.fromEntries(Object.keys(labels.fields).map((k) => [k, false])) };
     for (const [k, ok] of Object.entries(acc.perField)) {
       const e = (perField[k] ??= { correct: 0, total: 0 });
       e.total++; t++; if (critKeys.includes(k)) ct++;
@@ -61,7 +67,7 @@ export async function runEval(o: { dir: string; provider: AiProvider; modelId: s
   }
   const report: EvalReport = {
     provider: o.provider.name, isTestProvider: isTestProvider(o.provider.name), modelId: o.modelId, promptVersion: PROMPT_VERSIONS.AI06,
-    documents: names.length, perField, overall: ratio(c, t), critical: ratio(cc, ct), createdAt: new Date().toISOString(),
+    documents: names.length, failedDocuments: failed, perField, overall: ratio(c, t), critical: ratio(cc, ct), createdAt: new Date().toISOString(),
   };
   if (o.out) writeReport(o.out, report);
   return report;
@@ -72,7 +78,7 @@ export function renderReport(r: EvalReport): string {
   const L: string[] = [];
   L.push(r.isTestProvider ? '# Düzenek sınaması — gerçek ölçüm değil' : '# Sözleşme alan okuma doğruluğu');
   if (r.isTestProvider) L.push('', 'Sonuçlar test sağlayıcısından (etiket okuyucu) gelir; gerçek model doğruluğu hakkında bilgi vermez.');
-  L.push('', `- Sağlayıcı: ${r.provider}`, `- Model: ${r.modelId}`, `- İstem sürümü: ${r.promptVersion}`, `- Belge sayısı: ${r.documents}`,
+  L.push('', `- Sağlayıcı: ${r.provider}`, `- Model: ${r.modelId}`, `- İstem sürümü: ${r.promptVersion}`, `- Belge sayısı: ${r.documents}`, `- Okunamayan belge (sağlayıcı hatası): ${r.failedDocuments}`,
     `- Genel doğruluk: ${pct(r.overall)}`, `- Kritik alan doğruluğu: ${pct(r.critical)}`, `- Tarih: ${r.createdAt}`, '',
     '| Alan | Doğru | Toplam | Oran |', '|---|---|---|---|');
   for (const [k, v] of Object.entries(r.perField)) L.push(`| ${k}${(CRITICAL_AI_FIELDS as readonly string[]).includes(k) ? ' (kritik)' : ''} | ${v.correct} | ${v.total} | ${pct(ratio(v.correct, v.total))} |`);
@@ -81,7 +87,7 @@ export function renderReport(r: EvalReport): string {
 function writeReport(out: string, r: EvalReport) {
   mkdirSync(dirname(out), { recursive: true });
   writeFileSync(out, renderReport(r));
-  writeFileSync(out.replace(/\.md$/, '') + '.json', JSON.stringify(r, null, 2));
+  writeFileSync(out.slice(0, -3) + '.json', JSON.stringify(r, null, 2));
 }
 
 async function main() {
@@ -91,9 +97,13 @@ async function main() {
   if (!dir) throw new Error('Kullanım: ai:eval -- --dir <klasör> [--out <dosya.md>]');
   const ai = loadAi((process.env.NODE_ENV ?? 'development') as 'development');
   if (ai.provider === 'none') throw new Error('AI_PROVIDER yapılandırılmamış (none): ölçüm için test ya da anthropic seçin');
+  if (ai.provider === 'anthropic' && !ai.externalTransferApproved) {
+    throw new Error('AI_EXTERNAL_TRANSFER_APPROVED=true gerekli: gerçek sağlayıcıyla ölçüm sözleşme metnini kurum dışına gönderir (KVKK/kurum onayı)');
+  }
   const provider = ai.provider === 'test' ? testFixtureProvider() : anthropicProvider(ai);
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const out = resolve(arg('--out') ?? join(homedir(), 'ai-eval-raporlari', `ai-eval-${provider.name}-${stamp}.md`));
+  let out = resolve(arg('--out') ?? join(homedir(), 'ai-eval-raporlari', `ai-eval-${provider.name}-${stamp}.md`));
+  if (!out.endsWith('.md')) out += '.md'; // .json eşi .md'nin üstüne yazılmaz
   const r = await runEval({ dir: resolve(dir), provider, modelId: ai.modelId, out });
   console.log(`${r.isTestProvider ? 'Düzenek sınaması — gerçek ölçüm değil\n' : ''}sağlayıcı=${r.provider} belge=${r.documents} genel=${pct(r.overall)} kritik=${pct(r.critical)}\nrapor: ${out}`);
 }
