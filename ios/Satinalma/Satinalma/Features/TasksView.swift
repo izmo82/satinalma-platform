@@ -99,7 +99,7 @@ struct TaskDestination: View {
     /// v2 Faz 5: web'de yapılan tedarikçi görevleri; dokunulunca "Bu iş web'de yapılır" bilgisi (R16).
     static let webOnlySupplierKinds: Set<String> = [
         "supplier_application_review", "supplier_document_expired", "supplier_document_av_error", "supplier_document_renewed",
-        "supplier_offboarding", "supplier_no_portal_user", "supplier_profile_change_request", "portal_access",
+        "supplier_offboarding", "supplier_no_portal_user", "supplier_profile_change_request",
     ]
     static func opensOnMobile(_ task: TaskItem) -> Bool { webOnlySupplierKinds.contains(task.kind) || opensOnMobile(task.entityType) }
     static func opensOnMobile(_ entityType: String) -> Bool {
@@ -117,6 +117,7 @@ struct TaskDestination: View {
                 Text(task.reason).font(.subheadline).foregroundStyle(.secondary)
                 Text("Bu işlem için mobil ekran yok; aynı görev web uygulamasında açıktır.").font(.footnote).foregroundStyle(.secondary)
             }
+            // Özet yalnız entityType "supplier" için: başvuru görevlerinde (supplier_application) kayıt kimliği tedarikçi kartı değildir.
             if task.entityType == "supplier" {
                 Section { NavigationLink { SupplierSummaryView(supplierId: task.entityId, title: task.title) } label: { Label("Tedarikçi özetini gör", systemImage: "building.2") } }
             }

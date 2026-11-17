@@ -80,7 +80,7 @@ struct SupplierListRow: View {
                 Text(s.stageLabel ?? Labels.supplierStatus[s.status] ?? "Bilinmeyen durum").font(.caption.weight(.semibold))
                     .foregroundStyle(s.status == "ACTIVE" ? Color.secondary : Color.orange)
                 // Eski ayrıntı kaybolmasın: Pasif içinde Askıda/Arşiv, Onaylı (koşullu) vb.
-                if s.stageLabel != nil, s.status != "ACTIVE", let old = Labels.supplierStatus[s.status], old != s.stageLabel {
+                if s.stageLabel != nil, s.status != "ACTIVE", let old = Labels.supplierStatus[s.status], let st = s.stageLabel, !st.localizedCaseInsensitiveContains(old) {
                     Text(old).font(.caption).foregroundStyle(.secondary)
                 }
                 if let tail = s.taxIdTail { Text(tail).font(.caption.monospaced()).foregroundStyle(.secondary) }

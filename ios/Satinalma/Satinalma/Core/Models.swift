@@ -284,7 +284,7 @@ struct SupplierRow: Decodable, Identifiable, Sendable, Hashable {
     /// `EXPIRED` / `EXPIRING` / nil: en güncel belgenin geçerliliği (R12).
     var documentAlert: String? = nil
     var responsibleDepartment: Ref? = nil
-    struct Ref: Decodable, Sendable, Hashable { let id: String; let name: String }
+    struct Ref: Decodable, Sendable, Hashable { let id: String; let name: String? }
     /// Eski sunucu yanıtında `stage` yoksa durumdan türetilir (R1, yalnız süzgeç için).
     static func stage(forStatus s: String) -> String {
         switch s { case "CANDIDATE": "CANDIDATE"; case "ACTIVE", "CONDITIONAL": "APPROVED"; case "SUSPENDED", "ARCHIVED": "PASSIVE"; case "REJECTED": "REJECTED"; default: s }

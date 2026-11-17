@@ -19,7 +19,7 @@ struct SupplierSummaryView: View {
                 Section("Genel") {
                     Text(c.legalName).font(.headline)
                     row("Aşama", c.stageLabel ?? Labels.supplierStatus[c.status] ?? "Bilinmeyen durum")
-                    if c.stageLabel != nil, let old = Labels.supplierStatus[c.status], old != c.stageLabel { row("Durum", old) }
+                    if c.stageLabel != nil, let old = Labels.supplierStatus[c.status], let st = c.stageLabel, !st.localizedCaseInsensitiveContains(old) { row("Durum", old) }
                     row("Vergi kimliği", c.taxIdTail ?? "Doğrulanmadı")
                     row("Sorumlu ekip", c.profile?.responsibleDepartment?.name ?? "Atanmadı")
                 }
@@ -54,7 +54,7 @@ struct SupplierSummaryView: View {
                     Text(d.typeName).font(.body.weight(.semibold))
                     Text(d.validUntil.map { "Geçerlilik: \(Fmt.date($0))" } ?? "Geçerlilik tarihi yok").font(.subheadline).foregroundStyle(.secondary)
                     let b = DocumentValidity.badge(d.validity)
-                    Label(d.validityLabel, systemImage: b?.icon ?? "checkmark.circle").font(.caption.weight(.semibold)).foregroundStyle(b?.color ?? .secondary)
+                    Label(d.validityLabel, systemImage: b?.icon ?? "doc.text").font(.caption.weight(.semibold)).foregroundStyle(b?.color ?? .secondary)
                     if d.quarantined == true { Label("Karantinada", systemImage: "exclamationmark.shield").font(.caption).foregroundStyle(.red) }
                     if let av = d.avScanLabel { Text(av).font(.caption).foregroundStyle(.secondary) }
                 }
