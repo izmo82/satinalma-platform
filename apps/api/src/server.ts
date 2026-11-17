@@ -55,6 +55,7 @@ import * as applications from './modules/supplierApplications.ts';
 import * as supplierCard from './modules/supplierCard.ts';
 import * as offboarding from './modules/supplierOffboarding.ts';
 import * as completion from './modules/projectCompletion.ts';
+import * as procurementRules from './modules/procurementRules.ts';
 
 export interface AppDeps {
   config: Config;
@@ -826,6 +827,36 @@ export async function buildApp(deps: AppDeps) {
   app.get('/api/v1/settings/risk', { schema: { tags: ['settings'] } }, async (req) => scoped(req, 'risk.cycle.manage', (tx) => riskQuestions.getRiskSettings(tx)));
   app.put('/api/v1/settings/risk', { schema: { tags: ['settings'], body: { type: 'object', required: ['dueDays'], additionalProperties: false, properties: { dueDays: { type: 'number' } } } } }, async (req) =>
     scoped(req, 'risk.cycle.manage', (tx, ctx) => riskQuestions.putRiskSettings(tx, ctx, req.body as { dueDays: unknown })));
+  // --- v2 Faz 7 Görev 5: sürümlü satınalma kuralları kataloğu (R6, R7) ----------------------------------------------------
+  {
+    const ruleBody = { type: 'object', required: ['code', 'name', 'checkType', 'weight'], additionalProperties: false, properties: {
+      code: { type: 'string', maxLength: 100 }, name: { type: 'string', maxLength: 500 }, description: nullable({ type: 'string', maxLength: 5000 }),
+      checkType: { type: 'string', enum: ['DATA', 'EVIDENCE_AI', 'MANUAL'] }, checkKey: nullable({ type: 'string', maxLength: 60 }),
+      params: nullable({ type: 'object', maxProperties: 20, additionalProperties: { type: ['integer', 'string'], maxLength: 40 } }),
+      methods: { type: 'array', maxItems: 10, items: { type: 'string', maxLength: 40 } },
+      amountThreshold: nullable({ type: ['string', 'number'], maxLength: 40 }), currency: nullable({ type: 'string', maxLength: 10 }),
+      weight: { type: 'integer' }, mandatory: { type: 'boolean' }, sortOrder: { type: 'integer', minimum: 0, maximum: 100000 } } } as const;
+    const setRuleParams = { type: 'object', required: ['id', 'ruleId'], properties: { id: uuid, ruleId: uuid } } as const;
+    const ids = (req: FastifyRequest) => req.params as { id: string; ruleId: string };
+    app.get('/api/v1/compliance-checks', { schema: { tags: ['compliance'] } }, async (req) =>
+      scoped(req, 'rule.read', async () => procurementRules.complianceChecks()));
+    app.get('/api/v1/procurement-rule-sets', { schema: { tags: ['compliance'] } }, async (req) =>
+      scoped(req, 'rule.read', async (tx, ctx) => ({ ...(await procurementRules.listRuleSets(tx)), can: { manage: can(ctx.roles, 'rule.manage') } })));
+    app.get('/api/v1/procurement-rule-sets/:id', { schema: { tags: ['compliance'], params: idParams } }, async (req) =>
+      scoped(req, 'rule.read', async (tx, ctx) => ({ ...(await procurementRules.getRuleSet(tx, ids(req).id)), can: { manage: can(ctx.roles, 'rule.manage') } })));
+    app.post('/api/v1/procurement-rule-sets', { schema: { tags: ['compliance'], body: { type: 'object', required: ['from'], additionalProperties: false, properties: {
+      from: { anyOf: [{ type: 'string', enum: ['DEFAULT'] }, uuid] } } } } }, async (req, reply) =>
+      reply.status(201).send(await scoped(req, 'rule.manage', async (tx, ctx) => ({ ...(await procurementRules.createRuleSet(tx, ctx, req.body as { from: string })), can: { manage: true } }))));
+    app.post('/api/v1/procurement-rule-sets/:id/rules', { schema: { tags: ['compliance'], params: idParams, body: ruleBody } }, async (req, reply) =>
+      reply.status(201).send(await scoped(req, 'rule.manage', (tx, ctx) => procurementRules.addRule(tx, ctx, ids(req).id, req.body as procurementRules.RuleInput))));
+    app.put('/api/v1/procurement-rule-sets/:id/rules/:ruleId', { schema: { tags: ['compliance'], params: setRuleParams, body: ruleBody } }, async (req) =>
+      scoped(req, 'rule.manage', (tx, ctx) => procurementRules.updateRule(tx, ctx, ids(req).id, ids(req).ruleId, req.body as procurementRules.RuleInput)));
+    app.delete('/api/v1/procurement-rule-sets/:id/rules/:ruleId', { schema: { tags: ['compliance'], params: setRuleParams } }, async (req) =>
+      scoped(req, 'rule.manage', (tx, ctx) => procurementRules.deleteRule(tx, ctx, ids(req).id, ids(req).ruleId)));
+    app.post('/api/v1/procurement-rule-sets/:id/publish', { schema: { tags: ['compliance'], params: idParams, body: { type: 'object', required: ['effectiveFrom'],
+      additionalProperties: false, properties: { effectiveFrom: { type: 'string', maxLength: 10 } } } } }, async (req) =>
+      scoped(req, 'rule.manage', async (tx, ctx) => ({ ...(await procurementRules.publishRuleSet(tx, ctx, ids(req).id, req.body as { effectiveFrom: string })), can: { manage: true } })));
+  }
   // --- v2 Faz 6 Görev 4: yıllık risk değerlendirmesi ---------------------------------------------------------------------
   {
     const year = { type: 'integer', minimum: 2000, maximum: 2100 } as const;
