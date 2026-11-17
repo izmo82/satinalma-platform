@@ -235,7 +235,9 @@ describe('checkEvidenceOutput (R14)', () => {
       { questionId: 'zz', answer: 'YES', quote: 'x', page: 1, explanation: '' },
     ], approve: true }, pages, ['q1', 'q2', 'q3']);
     expect(r.answers.map((a) => [a.questionId, a.answer])).toEqual([['q1', 'YES'], ['q2', 'UNCLEAR'], ['q3', 'UNCLEAR']]);
-    expect(r.flags).toEqual(expect.arrayContaining(['IGNORED_KEY:approve', 'IGNORED_ANSWER:zz']));
+    expect(r.flags).toEqual(expect.arrayContaining(['IGNORED_KEY:approve', 'IGNORED_ANSWER']));
+    // Final inceleme M3: model kaynaklı soru kimliği işarete yazılmaz.
+    expect(r.flags.join(' ')).not.toContain('zz');
     expect(r.answers[1]!.flags).toContain('SOURCE_NOT_FOUND');
   });
 });

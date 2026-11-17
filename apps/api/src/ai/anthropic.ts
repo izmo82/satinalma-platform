@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { Config } from '../config.ts';
 import type { AiInput, AiProvider, AiResult } from './provider.ts';
-import { isContractAiTask, SCHEMAS, SYSTEM_PROMPTS, taskInstruction, templateBlockText } from './prompts.ts';
+import { isContractAiTask, schemaFor, SYSTEM_PROMPTS, taskInstruction, templateBlockText } from './prompts.ts';
 
 /**
  * v2 Faz 4 (R12) Anthropic bağdaştırıcısı. Ücretli, kurum dışı sağlayıcıdır: yalnız `AI_PROVIDER=anthropic` + anahtarla kurulur;
@@ -19,9 +19,19 @@ export const MAX_OUTPUT_TOKENS = 16000;
 export type AiProviderErrorCode = 'DOCUMENT_LIMIT' | 'UNSUPPORTED_DOCUMENT' | 'UNSUPPORTED_TASK' | 'MODEL_MISMATCH' | 'REFUSAL' | 'MAX_TOKENS'
   | 'INCOMPLETE' | 'INVALID_OUTPUT' | 'RATE_LIMITED' | 'AUTH' | 'BAD_REQUEST' | 'PROVIDER_UNAVAILABLE' | 'CONNECTION';
 
-/** Sağlayıcı hatası: `code` makine için, `message` Türkçe ve ekranda gösterilebilir (belge metni içermez). */
+/**
+ * Sağlayıcı hatası: `code` makine için, `message` Türkçe ve ekranda gösterilebilir (belge metni içermez).
+ * Final inceleme I1: sağlayıcı yanıt döndürdükten sonraki başarısızlıkta (ret, token sınırı, yarım yanıt, geçersiz çıktı) çağrı ücretlidir;
+ * yanıttaki kullanım (`usage`) ve model (`model`) hatayla taşınır, yönlendirici gerçekleşen ücreti bunlarla yazar.
+ * Yanıt yoksa (5xx, bağlantı) kullanım bilinmez: alanlar boş kalır, bütçede tahmin sayılır.
+ */
 export class AiProviderError extends Error {
-  constructor(readonly code: AiProviderErrorCode, message: string) { super(message); this.name = 'AiProviderError'; }
+  readonly usage?: AiResult['usage'];
+  readonly model?: string;
+  constructor(readonly code: AiProviderErrorCode, message: string, billed?: { usage: AiResult['usage']; model?: string }) {
+    super(message); this.name = 'AiProviderError';
+    if (billed) { this.usage = billed.usage; if (billed.model) this.model = billed.model; }
+  }
 }
 
 /** Testte taklit edilebilen asgari istemci yüzeyi (`client.messages.create`). */
@@ -81,16 +91,18 @@ export function anthropicProvider(cfg: NonNullable<Config['ai']>, deps: Anthropi
           max_tokens: MAX_OUTPUT_TOKENS,
           system: SYSTEM_PROMPTS[task],
           messages: [{ role: 'user', content }],
-          output_config: { format: { type: 'json_schema', schema: SCHEMAS[task] } },
+          output_config: { format: { type: 'json_schema', schema: schemaFor(task, input.questions) } },
         }, { maxRetries: 0 }) as Anthropic.Message;
       } catch (e) { throw classify(e); }
-      if (msg.stop_reason === 'refusal') throw new AiProviderError('REFUSAL', 'Model isteği reddetti; alanları elle girebilirsiniz.');
-      if (msg.stop_reason === 'max_tokens') throw new AiProviderError('MAX_TOKENS', 'Model yanıtı çıktı sınırına ulaştı; sonuç eksik olduğu için kullanılmadı.');
-      if (msg.stop_reason !== 'end_turn') throw new AiProviderError('INCOMPLETE', `Model yanıtı tamamlanmadı (${msg.stop_reason ?? 'bilinmiyor'}).`);
+      // I1: yanıt geldiyse çağrı ücretlidir; sonraki her hata kullanım ve modeli taşır.
+      const usage = { inputTokens: msg.usage?.input_tokens, outputTokens: msg.usage?.output_tokens, pages: d.pageCount };
+      const billed = { usage, ...(typeof msg.model === 'string' ? { model: msg.model } : {}) };
+      if (msg.stop_reason === 'refusal') throw new AiProviderError('REFUSAL', 'Model isteği reddetti; alanları elle girebilirsiniz.', billed);
+      if (msg.stop_reason === 'max_tokens') throw new AiProviderError('MAX_TOKENS', 'Model yanıtı çıktı sınırına ulaştı; sonuç eksik olduğu için kullanılmadı.', billed);
+      if (msg.stop_reason !== 'end_turn') throw new AiProviderError('INCOMPLETE', `Model yanıtı tamamlanmadı (${msg.stop_reason ?? 'bilinmiyor'}).`, billed);
       const text = msg.content.filter((b): b is Anthropic.TextBlock => b.type === 'text').map((b) => b.text).join('');
       let output: unknown;
-      try { output = JSON.parse(text); } catch { throw new AiProviderError('INVALID_OUTPUT', 'Model yanıtı geçerli JSON değil.'); }
-      const usage = { inputTokens: msg.usage.input_tokens, outputTokens: msg.usage.output_tokens, pages: d.pageCount };
+      try { output = JSON.parse(text); } catch { throw new AiProviderError('INVALID_OUTPUT', 'Model yanıtı geçerli JSON değil.', billed); }
       return { output, usage, actualCost: null, model: msg.model };
     },
   };

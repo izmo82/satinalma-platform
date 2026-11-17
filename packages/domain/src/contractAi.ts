@@ -300,7 +300,8 @@ export function checkEvidenceOutput(raw: unknown, pages: string[], questionIds: 
   for (const e of list) {
     if (!isObj(e)) continue;
     for (const k of Object.keys(e)) if (!['questionId', 'answer', 'quote', 'page', 'explanation'].includes(k)) pushOnce(flags, `IGNORED_KEY:${k}`);
-    if (typeof e.questionId === 'string' && !questionIds.includes(e.questionId)) pushOnce(flags, `IGNORED_ANSWER:${e.questionId}`);
+    // Final inceleme M3: bilinmeyen soru kimliği model metnidir (belge parçası olabilir); deftere/denetime yazılmaz, yalnız işaret kalır.
+    if (!(typeof e.questionId === 'string' && questionIds.includes(e.questionId))) pushOnce(flags, 'IGNORED_ANSWER');
   }
   const answers = questionIds.map((questionId): CheckedEvidenceAnswer => {
     const e = list.find((x): x is Record<string, unknown> => isObj(x) && x.questionId === questionId);

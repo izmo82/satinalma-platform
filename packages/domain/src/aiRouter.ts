@@ -56,6 +56,9 @@ export function estimateCost(m: AiModel, w: AiWorkload): string | null {
   return str(cost, 6);
 }
 
+/** Ayarlı model (ör. AI_MODEL_ID) katalogda kayıtlı ve etkin değilken gösterilen sebep. */
+export const NO_CONFIGURED_MODEL_REASON = 'Seçili yapay zekâ modeli bu ortamda etkin değil.';
+
 /**
  * Yönlendirme: görev yeteneği → kiracı politikası (sağlayıcı, bölge, eğitim yok) → bütçe/kota. Politika yoksa ücretli AI kapalıdır.
  * %80'de uyarı, %100'de yeni ücretli iş bekler (T23); manuel iş akışı ve belge korunur.
@@ -64,7 +67,8 @@ export function routeTask(task: AiTask, models: AiModel[], policy: AiPolicy | nu
   const need = AI_TASKS[task].needs;
   const capable = models.filter((m) => (opts?.modelId === undefined || m.modelId === opts.modelId) && m.enabled && m.tasks.includes(task) && need.every((c) => m.capabilities[c] === true));
   if (!capable.length) {
-    if (opts?.modelId !== undefined) return { decision: 'NO_PROVIDER', estimatedCost: null, reasons: [`${opts.modelId} için kayıtlı ve etkin model yok`] };
+    // Final inceleme I2: ekranda gösterilen tam Türkçe cümle; ham model kimliği kullanıcıya gösterilmez (defterde model_id ayrıca durur).
+    if (opts?.modelId !== undefined) return { decision: 'NO_PROVIDER', estimatedCost: null, reasons: [NO_CONFIGURED_MODEL_REASON] };
     return { decision: 'NO_PROVIDER', estimatedCost: null, reasons: [task === 'AI13' && models.some((m) => m.enabled && m.capabilities.vision)
       ? 'Görüntü işleyen model var ama imza tespiti yeteneği kayıtlı değil; görüntü işleme imza tespiti sayılmaz.'
       : `${AI_TASKS[task].name} için kayıtlı ve etkin model yok.`] };

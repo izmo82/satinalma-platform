@@ -50,7 +50,8 @@ enum AiText {
     static func value(_ field: String, _ value: String?, currency: String?) -> String {
         guard let value else { return "—" }
         switch field {
-        case "amount": return Fmt.money(value, currency ?? "TRY")
+        // Final inceleme M2: para birimi okunmadıysa simge yok (web ile aynı); tutar tr-TR, en az 2 ondalık.
+        case "amount": return currency.map { Fmt.money(value, $0) } ?? Fmt.amount(value)
         case "signedOn", "startDate", "endDate": return Fmt.date(value)
         case "indefinite", "autoRenewal": return value == "true" ? "Evet" : value == "false" ? "Hayır" : value
         case "contractType": return ContractLabels.types.first { $0.0 == value }?.1 ?? "Diğer"

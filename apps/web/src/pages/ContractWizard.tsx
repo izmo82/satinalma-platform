@@ -330,6 +330,15 @@ const AI_FORM: Record<string, AiMap> = {
   // KVKK önerisi madde metnidir; kullanmak "Var" demektir (kayıtta beyan; değer yazılmaz).
   kvkkClause: { key: 'kvkkClause', toForm: () => 'yes', same: (f) => f.kvkkClause === 'yes' },
 };
+/**
+ * Final inceleme M1: formda görünen değer kayıtta aynen saklanacak mı? Süresiz işaretliyken bitiş tarihi, bedelsizken tutar boş kaydedilir;
+ * bu durumda kullanılan öneri "Onaylandı" değil "Düzeltildi" gönderilir (sunucu eşit olmayan değeri asla onay saymaz).
+ */
+export function savedAsShown(field: string, f: Form): boolean {
+  if (field === 'endDate') return !f.indefinite;
+  if (field === 'amount') return f.valueType !== 'UNPRICED';
+  return true;
+}
 const AI_INFO_ONLY = ['title', 'supplierName', 'guarantee', 'slaPenalty'];
 const DECIDED: Record<Exclude<Decision, 'PENDING'>, string> = { CONFIRMED: 'Öneri onaylandı', CORRECTED: 'Öneriden farklı değer kaydedildi', REJECTED: 'Öneri yoksayıldı' };
 
@@ -378,7 +387,7 @@ function CompleteStep({ d, ex, reload, onNext, onBack }: { d: ContractV2; ex: Po
       }
       const m = AI_FORM[x.field];
       if (!m) continue;
-      if (used.has(x.id)) out.push({ extractionId: x.id, decision: m.same(f, x.value) ? 'CONFIRMED' : 'CORRECTED' });
+      if (used.has(x.id)) out.push({ extractionId: x.id, decision: m.same(f, x.value) && savedAsShown(x.field, f) ? 'CONFIRMED' : 'CORRECTED' });
       else if (prefillUnchanged(x) || f[m.key] !== base[m.key]) out.push({ extractionId: x.id, decision: 'CORRECTED' });
     }
     return out;
@@ -438,9 +447,11 @@ function CompleteStep({ d, ex, reload, onNext, onBack }: { d: ContractV2; ex: Po
       }
     } catch (e) {
       const err = e as ApiError;
-      setMsg({ tone: err.status === 409 ? 'warn' : 'danger', text: err.message });
+      // M1: karar/değer uyuşmazlığında kayıt bütünüyle geri alınır; kullanıcıya hiçbir alanın kaydedilmediği açıkça söylenir.
+      if (err.code === 'decision_mismatch') setMsg({ tone: 'warn', text: `Kaydedilmedi: ${err.message}` });
+      else setMsg({ tone: err.status === 409 ? 'warn' : 'danger', text: err.message });
       // Öneri artık güncel okumaya ait değilse (yeni sürüm/yeniden okuma) öneriler yenilenir.
-      if (err.code === 'extraction_unknown' || err.code === 'decision_mismatch') await ex.reload();
+      if (err.code === 'extraction_unknown' || err.code === 'decision_mismatch' || err.code === 'extraction_not_saved') await ex.reload();
     }
     finally { setBusy(false); }
   }

@@ -250,6 +250,8 @@ describe('inceleme hattı (R7–R9)', () => {
     expect(g.body.current).toMatchObject({ id: first.id, stale: true });
     expect(g.body.belowThreshold).toBe(false);
     expect(g.body.templateVersionId).toBe(tv2.body.versionId);
+    // Final inceleme M5: eski şablonun işi güncel şablonun "son işi" sayılmaz; 4. adım iş yok görür ve incelemeyi kendiliğinden ister.
+    expect(g.body.run).toBeNull();
 
     // Yeni ana belge sürümü → yeni inceleme isteği yeni anahtarla; eskisi geçmişte "güncel değil".
     const st = await call(w, 'techEval', 'GET', `/api/v1/contract-versions/${d.contractVersionId}/signature-status`);

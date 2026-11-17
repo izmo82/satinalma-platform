@@ -365,8 +365,10 @@ struct ContractFieldsView: View {
             showReview = true
         } catch {
             continueNotice = Notice.from(error)
+            // M1: karar/değer uyuşmazlığında kayıt bütünüyle geri alınır; hiçbir alanın kaydedilmediği açıkça söylenir.
+            if let e = error as? APIError, e.code == "decision_mismatch" { continueNotice = Notice(tone: .warn, text: "Kaydedilmedi: \(e.message)") }
             // Öneri artık güncel okumaya ait değilse (yeni sürüm/yeniden okuma) ya da değer öneriyle uyuşmuyorsa öneriler yenilenir.
-            if let e = error as? APIError, ["extraction_unknown", "decision_mismatch", "extraction_duplicate"].contains(e.code), let familyId {
+            if let e = error as? APIError, ["extraction_unknown", "decision_mismatch", "extraction_duplicate", "extraction_not_saved"].contains(e.code), let familyId {
                 // Kararlar yeniden hesaplanır: eski "kullanıldı" işaretleri düşer (değerler formda kalır, kullanıcı yeniden karar verir).
                 used = []; undo = [:]
                 await loadExtractions(familyId)
@@ -474,6 +476,12 @@ struct ContractFieldsView: View {
         default: true
         }
     }
+    /// M1: `willSave` yanlışken kullanıcıya gösterilen neden (alan bu kayıtta yazılmaz).
+    private func notSavedReason(_ field: String) -> String {
+        if field == "endDate" && indefinite { return "süresiz sözleşmede bitiş tarihi kaydedilmez" }
+        if field == "noticePeriodDays" && !needsNotice { return "ihbar süresi yalnız süresiz ya da otomatik yenilenen sözleşmede kaydedilir" }
+        return "tutar girilmeden bu alan kaydedilmez"
+    }
     private func apply(_ x: ContractExtractions.Field) {
         guard let v = x.value else { return }
         rejected.remove(x.id)
@@ -541,9 +549,12 @@ struct ContractFieldsView: View {
                 else if !supplierId.isEmpty, supplierId != (loaded?.fields.supplierId ?? "") { out.append((x.id, "CORRECTED")) }
                 continue
             }
-            guard Self.mapped.contains(x.field), willSave(x.field) else { continue }
-            if used.contains(x.id) { out.append((x.id, same(x.field, v) ? "CONFIRMED" : "CORRECTED")) }
-            else if prefillUnchanged(x) || formValue(x.field) != baseValue(x.field) { out.append((x.id, "CORRECTED")) }
+            guard Self.mapped.contains(x.field) else { continue }
+            // Final inceleme M1: kullanılan öneri bu kayıtta yazılmayacaksa (ör. tutarsız koşul alanı, süresizde bitiş) "Onaylandı" değil
+            // "Düzeltildi" gider; öneri sessizce beklemede kalmaz (sunucu kayıtlı değer öneriye eşitse "Onaylandı" saklar).
+            if used.contains(x.id) { out.append((x.id, willSave(x.field) && same(x.field, v) ? "CONFIRMED" : "CORRECTED")); continue }
+            guard willSave(x.field) else { continue }
+            if prefillUnchanged(x) || formValue(x.field) != baseValue(x.field) { out.append((x.id, "CORRECTED")) }
         }
         return out
     }
@@ -627,7 +638,7 @@ struct ContractFieldsView: View {
                 .accessibilityElement(children: .combine)
             } else if used.contains(x.id) && (x.field == "supplierVkn" ? vknMatches(x) : same(x.field, x.value!)) {
                 AdaptiveStack {
-                    Text("Öneri kullanıldı; kaydedince onaylanır\(willSave(x.field) ? "" : " (tutar girilince kaydedilir)").\(src.map { " · \($0). sayfa" } ?? "")")
+                    Text("\(willSave(x.field) ? "Öneri kullanıldı; kaydedince onaylanır" : "Öneri kullanıldı ama \(notSavedReason(x.field)); kaydedince karar \"Öneriden farklı\" olur").\(src.map { " · \($0). sayfa" } ?? "")")
                         .font(.footnote).foregroundStyle(.secondary)
                     if canEditAi {
                         Button("Geri al") { revert(x) }.buttonStyle(.borderless).font(.footnote).tapTarget()

@@ -9,6 +9,7 @@ import { DevAuthProvider } from '../src/auth.ts';
 import { DEFAULT_AI_MODEL_ID } from '../src/config.ts';
 import { registerAiProvider } from '../src/ai/provider.ts';
 import { testFixtureProvider } from '../src/ai/testProvider.ts';
+import { anthropicProvider } from '../src/ai/anthropic.ts';
 import { PROMPT_VERSIONS } from '../src/ai/prompts.ts';
 import { processJobs } from '../src/worker.ts';
 import { makeHarness } from './harness.ts';
@@ -229,6 +230,7 @@ describe('alan kaydında kararlar ve gönderim (R5, R6)', () => {
     expect(mismatch.status).toBe(422);
     expect(mismatch.body.error.code).toBe('decision_mismatch');
     expect(mismatch.body.error.details).toMatchObject({ fields: [{ field: 'amount', label: 'Tutar' }] });
+    expect(mismatch.body.error.message).toMatch(/öneriyi yoksayın\.$/); // M1: ekranda olmayan "Düzeltildi" denetimi istenmez
     expect((await h.owner.query(`SELECT count(*)::int AS n FROM contract_terms WHERE contract_version_id = $1`, [d.contractVersionId])).rows[0].n).toBe(0);
     expect((await h.owner.query(`SELECT decision FROM contract_extractions WHERE id = $1`, [id('amount')])).rows[0].decision).toBe('PENDING');
 
@@ -363,5 +365,70 @@ describe('Görev 4 inceleme düzeltmeleri (I1, I2, M3, M4)', () => {
       await h.owner.query(`DROP TRIGGER ${fn} ON ai_runs`);
       await h.owner.query(`DROP FUNCTION ${fn}()`);
     }
+  });
+});
+
+describe('Final inceleme I1: yanıt alınmış ücretli başarısızlık defterde ücretlendirilir (taklit Anthropic istemcisi, ağ yok)', () => {
+  const reply = (over: Record<string, unknown>) => ({ id: 'msg_x', type: 'message', role: 'assistant', model: 'claude-sonnet-5-5-20261101', stop_reason: 'end_turn',
+    stop_details: null, content: [{ type: 'text', text: '{}' }], usage: { input_tokens: 15000, output_tokens: 16000 }, ...over });
+  /** Katalogdaki test-fixture satırı (tarife: çağrı başına 0.01 USD) üzerinden gerçek bağdaştırıcı + taklit SDK istemcisi. */
+  const withMock = async (create: () => Promise<unknown>, body: () => Promise<void>) => {
+    const ap = anthropicProvider({ provider: 'anthropic', modelId: DEFAULT_AI_MODEL_ID, apiKey: 'sk-ant-test-SAHTE', externalTransferApproved: false },
+      { client: { messages: { create } } });
+    registerAiProvider({ name: 'test-fixture', run: (m, i) => ap.run(m, i) });
+    try { await body(); } finally { registerAiProvider(testFixtureProvider()); }
+  };
+
+  it('max_tokens / refusal / geçersiz JSON: token, yanıt modeli ve gerçekleşen ücret (tarifeden) yazılır', async () => {
+    for (const over of [{ stop_reason: 'max_tokens' }, { stop_reason: 'refusal' }, { content: [{ type: 'text', text: 'json değil' }] }]) {
+      const w = await fresh();
+      await ensureTestAiPolicy(h.owner, w.tenantA);
+      await withMock(async () => reply(over), async () => {
+        const d = await draft(w);
+        await runWorker();
+        const [run] = await runsOf(d.documentVersionId);
+        expect(run).toMatchObject({ status: 'FAILED', input_tokens: 15000, output_tokens: 16000, response_model: 'claude-sonnet-5-5-20261101', actual_cost: '0.010000' });
+        expect(run.reason).toMatch(/^Sağlayıcı hatası \((MAX_TOKENS|REFUSAL|INVALID_OUTPUT)\)/);
+      });
+    }
+  });
+
+  it('yanıt yok (5xx/bağlantı): kullanım bilinmez, tokenlar boş ve bütçede tahmin kalır', async () => {
+    const w = await fresh();
+    await ensureTestAiPolicy(h.owner, w.tenantA);
+    const Anthropic = (await import('@anthropic-ai/sdk')).default;
+    await withMock(async () => { throw new Anthropic.APIConnectionError({ message: 'x' }); }, async () => {
+      const d = await draft(w);
+      await runWorker();
+      const [run] = await runsOf(d.documentVersionId);
+      expect(run).toMatchObject({ status: 'FAILED', input_tokens: null, output_tokens: null, response_model: null, actual_cost: null });
+      expect(run.reason).toMatch(/CONNECTION/);
+      expect(Number(run.estimated_cost)).toBeGreaterThan(0);
+    });
+  });
+});
+
+describe('Final inceleme M4: karar satırı güncellenmezse denetim yazılmaz', () => {
+  it('UPDATE 0 satır (tetikleyiciyle zorlanır) → 409 extraction_not_saved; işlem geri alınır, karar ve denetim yok', async () => {
+    const w = await fresh();
+    await ensureTestAiPolicy(h.owner, w.tenantA);
+    const d = await draft(w);
+    await runWorker();
+    const ex = (await extractions(w, 'techEval', d.familyId)).body;
+    const amountId = fieldOf(ex, 'amount').id as string;
+    const fn = `test_noop_dec_${randomUUID().slice(0, 8).replace(/-/g, '')}`;
+    await h.owner.query(`CREATE FUNCTION ${fn}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$`);
+    await h.owner.query(`CREATE TRIGGER ${fn} BEFORE UPDATE ON contract_extractions FOR EACH ROW WHEN (OLD.tenant_id = '${w.tenantA}') EXECUTE FUNCTION ${fn}()`);
+    try {
+      const r = await call(w, 'techEval', 'PUT', `/api/v1/contracts/${d.familyId}/fields`, { ...pdfFields(w), aiDecisions: [{ extractionId: amountId, decision: 'REJECTED' }] });
+      expect(r.status, JSON.stringify(r.body)).toBe(409);
+      expect(r.body.error.code).toBe('extraction_not_saved');
+    } finally {
+      await h.owner.query(`DROP TRIGGER ${fn} ON contract_extractions`);
+      await h.owner.query(`DROP FUNCTION ${fn}()`);
+    }
+    expect((await h.owner.query(`SELECT decision FROM contract_extractions WHERE id = $1`, [amountId])).rows[0].decision).toBe('PENDING');
+    expect((await h.owner.query(`SELECT count(*)::int AS n FROM audit_events WHERE action = 'contract.extraction.decided' AND entity_id = $1`, [d.familyId])).rows[0].n).toBe(0);
+    expect((await h.owner.query(`SELECT count(*)::int AS n FROM contract_terms WHERE contract_version_id = $1`, [d.contractVersionId])).rows[0].n).toBe(0);
   });
 });

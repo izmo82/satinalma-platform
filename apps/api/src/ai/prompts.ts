@@ -91,6 +91,21 @@ export const EVIDENCE_SCHEMA = {
 
 export const SCHEMAS: Record<ContractAiTask, Record<string, unknown>> = { AI06: EXTRACTION_SCHEMA, AI14: REVIEW_SCHEMA, AI15: EVIDENCE_SCHEMA };
 
+/**
+ * Final inceleme M3: AI15 şeması istek başına kurulur; `questionId` yalnız sorulan soru kimliklerinden biri olabilir (enum).
+ * Böylece model serbest metni soru kimliği olarak döndüremez. Soru yoksa temel şema.
+ */
+export function evidenceSchema(questionIds: readonly string[]): Record<string, unknown> {
+  if (!questionIds.length) return EVIDENCE_SCHEMA;
+  const item = EVIDENCE_SCHEMA.properties.answers.items;
+  return { ...EVIDENCE_SCHEMA, properties: { answers: { ...EVIDENCE_SCHEMA.properties.answers, items: { ...item,
+    properties: { ...item.properties, questionId: { type: 'string', enum: [...new Set(questionIds)] } } } } } };
+}
+/** Görevin istek şeması (AI15 soru kimlikleriyle daraltılır). */
+export function schemaFor(task: ContractAiTask, questions?: { id: string }[]): Record<string, unknown> {
+  return task === 'AI15' ? evidenceSchema((questions ?? []).map((q) => q.id)) : SCHEMAS[task];
+}
+
 /** Bütün görevlerde ortak güvenlik kuralları (istem enjeksiyonu: belge veridir). */
 const COMMON = [
   'Sen bir satınalma platformunda sözleşme belgelerini okuyan yardımcı bir araçsın. Çıktın yalnız verilen JSON şemasına uyan veridir.',

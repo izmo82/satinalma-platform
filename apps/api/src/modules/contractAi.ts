@@ -179,6 +179,9 @@ function savedEquals(field: ContractAiField, suggestion: string | null, s: Saved
   }
 }
 
+/** M4: karar satırı yazılamadı (yetki ya da eşzamanlı değişiklik); işlem geri alınır, denetim yazılmaz. */
+const decisionNotSaved = () => new ApiError(409, 'extraction_not_saved', 'Öneri kararı kaydedilemedi; sayfayı yenileyip yeniden deneyin.');
+
 /**
  * R6: kararlar Faz 3 alan kaydıyla AYNI işlemde yazılır (çağıran: updateFields, kayıttan sonra). Yalnız güncel belge sürümünün en son okumasının
  * önerileri karara açıktır. `CONFIRMED` yalnız kaydedilen değer öneriye eşitse (aksi 422 decision_mismatch → işlem geri alınır, alan da kaydedilmez).
@@ -196,7 +199,7 @@ export async function applyAiDecisions(tx: Tx, ctx: TenantContext, familyId: str
   const mismatched = decisions.filter((d) => d.decision === 'CONFIRMED' && savedEquals(byId.get(d.extractionId)!.field, byId.get(d.extractionId)!.value, saved) === false)
     .map((d) => ({ extractionId: d.extractionId, field: byId.get(d.extractionId)!.field, label: AI_FIELD_TR[byId.get(d.extractionId)!.field] }));
   if (mismatched.length) {
-    throw unprocessable('decision_mismatch', `Kaydedilen değer öneriyle aynı değil: ${mismatched.map((m) => m.label).join(', ')}. Öneriyi kullanın ya da kararı "Düzeltildi" yapın.`,
+    throw unprocessable('decision_mismatch', `Kaydedilen değer öneriyle aynı değil: ${mismatched.map((m) => m.label).join(', ')}. Alanı öneriye eşitleyin ya da öneriyi yoksayın.`,
       { fields: mismatched });
   }
   // Görev 4 inceleme M4: "Düzeltildi" denen değer öneriye eşitse karar "Onaylandı" saklanır (karar kaydedilen değere uyar).
@@ -204,7 +207,9 @@ export async function applyAiDecisions(tx: Tx, ctx: TenantContext, familyId: str
     d.decision === 'CORRECTED' && savedEquals(byId.get(d.extractionId)!.field, byId.get(d.extractionId)!.value, saved) === true ? 'CONFIRMED' : d.decision;
   const out = decisions.map((d) => ({ extractionId: d.extractionId, field: byId.get(d.extractionId)!.field, decision: final(d) }));
   for (const d of out) {
-    await tx.query(`UPDATE contract_extractions SET decision = $2, decided_by = $3, decided_at = now() WHERE id = $1`, [d.extractionId, d.decision, ctx.userId]);
+    const u = await tx.query(`UPDATE contract_extractions SET decision = $2, decided_by = $3, decided_at = now() WHERE id = $1`, [d.extractionId, d.decision, ctx.userId]);
+    // Final inceleme M4: satır güncellenmediyse (ör. RLS süzdü) karar yazılmış sayılmaz; denetim kaydı da yazılmaz (işlem geri alınır).
+    if (u.rowCount !== 1) throw decisionNotSaved();
   }
   // Denetim kaydında değer yok (belge içeriği deftere/denetime kopyalanmaz); alan ve karar yeter.
   await audit(tx, ctx, 'contract.extraction.decided', 'contract_family', familyId, { runId: run!.id, documentVersionId, decisions: out });
@@ -223,7 +228,10 @@ export async function reconcileConfirmed(tx: Tx, ctx: TenantContext, familyId: s
     [run.id, familyId, exclude])).rows;
   const stale = rows.filter((r) => savedEquals(r.field, r.value, saved) === false);
   if (!stale.length) return [];
-  for (const r of stale) await tx.query(`UPDATE contract_extractions SET decision = 'CORRECTED', decided_by = $2, decided_at = now() WHERE id = $1`, [r.id, ctx.userId]);
+  for (const r of stale) {
+    const u = await tx.query(`UPDATE contract_extractions SET decision = 'CORRECTED', decided_by = $2, decided_at = now() WHERE id = $1`, [r.id, ctx.userId]);
+    if (u.rowCount !== 1) throw decisionNotSaved(); // M4: güncellenmeyen satır için denetim yok
+  }
   const out = stale.map((r) => ({ extractionId: r.id, field: r.field, decision: 'CORRECTED' as const }));
   await audit(tx, ctx, 'contract.extraction.decided', 'contract_family', familyId,
     { runId: run.id, documentVersionId, decisions: out, system: true, reason: 'Kaydedilen değer onaylanan öneriden farklı; karar "Düzeltildi" oldu.' });
@@ -251,6 +259,12 @@ const templateOfVariant = (variant: string | undefined): string | null | undefin
   const m = /^tpl-([0-9a-f-]{36}|none)$/.exec(variant ?? '');
   return m ? (m[1] === 'none' ? null : m[1]!) : undefined;
 };
+/**
+ * Final inceleme M5: güncel inceleme işinin anahtar öneki (sürüm + belge sürümü + GÜNCEL şablon sürümü). Şablon sürümü değişince eski
+ * şablonun işi "son iş" sayılmaz; 4. adım iş yok gördüğü için incelemeyi kendiliğinden ister (kural aynı: yalnız iş yok/bekliyorsa).
+ */
+const reviewKeyPrefix = (contractVersionId: string, documentVersionId: string, templateVersionId: string | null) =>
+  `AI14:contract_version:${contractVersionId}:${documentVersionId}:${templateVariant(templateVersionId)}`;
 export const NO_TEMPLATE_NOTE = 'Şablon yok; yalnız hukuk incelemesi';
 export const UNVERIFIED_FINDING_LABEL = 'kaynak doğrulanamadı';
 export const BELOW_THRESHOLD_ADVICE = 'Puan eşiğin altında; ek onaycı (ör. kurumun hukuk danışmanı) eklemeniz önerilir.';
@@ -389,8 +403,9 @@ export async function getContractReviews(tx: Tx, ctx: TenantContext, familyId: s
   const run = (await tx.query<{ id: string; status: string; reason: string | null; provider: string | null; prompt_version: string | null; response_model: string | null;
       created_at: Date; finished_at: Date | null }>(
     `SELECT r.id, r.status, r.reason, m.provider, r.prompt_version, r.response_model, r.created_at, r.finished_at
-     FROM ai_runs r LEFT JOIN ai_models m ON m.id = r.model_ref WHERE r.task = 'AI14' AND r.document_version_id = $1 ORDER BY r.created_at DESC, r.id DESC LIMIT 1`,
-    [v.document_version_id])).rows[0] ?? null;
+     FROM ai_runs r LEFT JOIN ai_models m ON m.id = r.model_ref WHERE r.task = 'AI14' AND r.document_version_id = $1
+       AND (r.idempotency_key = $2 OR starts_with(r.idempotency_key, $2 || ':')) ORDER BY r.created_at DESC, r.id DESC LIMIT 1`,
+    [v.document_version_id, reviewKeyPrefix(v.contract_version_id, v.document_version_id, tv)])).rows[0] ?? null;
   const runTest = isTestProvider(run?.provider);
   const below = !!current && !current.stale && belowThreshold(current.score, threshold);
   return {

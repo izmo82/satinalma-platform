@@ -373,6 +373,12 @@ enum Fmt {
         let f = NumberFormatter(); f.locale = Locale(identifier: "tr_TR"); f.numberStyle = .currency; f.currencyCode = currency
         return f.string(from: d as NSDecimalNumber) ?? "\(s) \(currency)"
     }
+    /// Para birimi bilinmeyen tutar: tr-TR, simgesiz, en az 2 ondalık (fazlası korunur; kayan noktaya çevrilmez).
+    static func amount(_ s: String) -> String {
+        guard let d = Decimal(string: s) else { return s }
+        let f = NumberFormatter(); f.locale = Locale(identifier: "tr_TR"); f.numberStyle = .decimal; f.minimumFractionDigits = 2; f.maximumFractionDigits = 6
+        return f.string(from: d as NSDecimalNumber) ?? s
+    }
     static func qty(_ s: String) -> String {
         guard let d = Decimal(string: s) else { return s }
         let f = NumberFormatter(); f.locale = Locale(identifier: "tr_TR"); f.numberStyle = .decimal; f.maximumFractionDigits = 6

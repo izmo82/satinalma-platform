@@ -226,8 +226,16 @@ export async function processAiRun(pool: pg.Pool, ctx: TenantContext, store: Obj
       // I2: ücretli çağrı gerçekleşmediyse (çağrı öncesi hata ya da sağlayıcının reddettiği istek) gerçekleşen ücret 0; ücretli başarısızlıkta
       // (ret, token sınırı, geçersiz çıktı, bağlantı belirsizliği) tahmin bütçede kalır. v1 (AI02) aynen: ücret alanına dokunulmaz.
       const free = contract && (!called || FREE_FAILURES.includes(providerCode(e) ?? ''));
-      await tx.query(`UPDATE ai_runs SET status = 'FAILED', reason = $2, finished_at = now(), actual_cost = CASE WHEN $3 THEN 0 ELSE actual_cost END WHERE id = $1`,
-        [run.id, failureReason(e), free]);
+      // Final inceleme I1: yanıt alınmış ücretli başarısızlıkta (ret, token sınırı, yarım yanıt, geçersiz çıktı) kullanım, yanıt modeli ve
+      // gerçekleşen ücret (kullanım × katalog tarifesi) yazılır. Yanıt yoksa (5xx, bağlantı) faturalama bilinmez: tahmin bütçede kalır.
+      const billed = contract && !free ? billedUsage(e) : null;
+      if (billed) {
+        await tx.query(`UPDATE ai_runs SET status = 'FAILED', reason = $2, finished_at = now(), actual_cost = $3, input_tokens = $4, output_tokens = $5, response_model = $6 WHERE id = $1`,
+          [run.id, failureReason(e), costFromPrice(run.price, billed.usage), billed.usage.inputTokens, billed.usage.outputTokens, billed.model]);
+      } else {
+        await tx.query(`UPDATE ai_runs SET status = 'FAILED', reason = $2, finished_at = now(), actual_cost = CASE WHEN $3 THEN 0 ELSE actual_cost END WHERE id = $1`,
+          [run.id, failureReason(e), free]);
+      }
       await finishJob(tx, 'FAILED', { reason: 'PROVIDER_ERROR', ...(providerCode(e) ? { code: providerCode(e) } : {}) });
     });
     return;
@@ -276,6 +284,14 @@ const FREE_FAILURES = ['DOCUMENT_LIMIT', 'UNSUPPORTED_DOCUMENT', 'UNSUPPORTED_TA
 function providerCode(e: unknown): string | null {
   const code = e instanceof Error && e.name === 'AiProviderError' ? (e as unknown as { code?: unknown }).code : undefined;
   return typeof code === 'string' ? code : null;
+}
+/** I1: sağlayıcı hatasının taşıdığı yanıt kullanımı (iki token sayısı da biliniyorsa); yoksa null (faturalama bilinmiyor). */
+function billedUsage(e: unknown): { usage: AiResult['usage']; model: string | null } | null {
+  if (!providerCode(e)) return null;
+  const x = e as { usage?: AiResult['usage']; model?: unknown };
+  const u = x.usage;
+  if (!u || typeof u.inputTokens !== 'number' || typeof u.outputTokens !== 'number') return null;
+  return { usage: u, model: typeof x.model === 'string' ? x.model : null };
 }
 function failureReason(e: unknown): string {
   const code = providerCode(e);

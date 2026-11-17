@@ -92,6 +92,8 @@ describe('v2 Faz 4: AI14/AI15 ve modelId süzgeci', () => {
     const u = { monthSpent: '0', todayCalls: 0 };
     expect(routeTask('AI14', models, policy(), u, w)).toMatchObject({ decision: 'RUN', model: { id: 'a' } });
     expect(routeTask('AI14', models, policy(), u, w, { modelId: 'claude-sonnet-5-5' })).toMatchObject({ decision: 'RUN', model: { id: 'b' } });
-    expect(routeTask('AI14', models, policy(), u, w, { modelId: 'yok' })).toMatchObject({ decision: 'NO_PROVIDER', reasons: ['yok için kayıtlı ve etkin model yok'] });
+    expect(routeTask('AI14', models, policy(), u, w, { modelId: 'yok' })).toMatchObject({ decision: 'NO_PROVIDER', reasons: ['Seçili yapay zekâ modeli bu ortamda etkin değil.'] });
+    // Final inceleme I2: tam cümle, ham model kimliği yok.
+    expect(JSON.stringify(routeTask('AI14', models, policy(), u, w, { modelId: 'yok' }))).not.toContain('yok için');
   });
 });

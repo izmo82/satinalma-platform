@@ -137,7 +137,14 @@ describe('Anthropic bağdaştırıcısı (R12) — taklit istemci, ağ yok', () 
     expect(JSON.stringify(r.calls[0]!.params.messages[0].content)).toContain('Madde 5 - Fesih');
     const e = mockClient(okReply({ answers: [] }));
     await anthropicProvider(cfg, { client: e.client }).run('claude-sonnet-5-5', input({ task: 'AI15', questions: [{ id: 'q1', text: 'Sigorta poliçesi var mı?' }], promptVersion: PROMPT_VERSIONS.AI15 }));
-    expect(e.calls[0]!.params.output_config.format.schema).toEqual(EVIDENCE_SCHEMA);
+    // Final inceleme M3: AI15 şeması istek başına; questionId yalnız sorulan kimlikler (enum), diğer her şey temel şemayla aynı.
+    const ev = e.calls[0]!.params.output_config.format.schema;
+    expect(ev.properties.answers.items.properties.questionId).toEqual({ type: 'string', enum: ['q1'] });
+    expect({ ...ev.properties.answers.items.properties, questionId: EVIDENCE_SCHEMA.properties.answers.items.properties.questionId })
+      .toEqual(EVIDENCE_SCHEMA.properties.answers.items.properties);
+    expect(ev.additionalProperties).toBe(false);
+    expect(ev.properties.answers.items.additionalProperties).toBe(false);
+    expect(EVIDENCE_SCHEMA.properties.answers.items.properties.questionId).toEqual({ type: 'string' }); // temel şema değişmez
     expect(JSON.stringify(e.calls[0]!.params.messages[0].content)).toContain('Sigorta poliçesi var mı?');
   });
   it('şemalar katı: additionalProperties false ve domain alan adları', () => {
@@ -155,6 +162,11 @@ describe('Anthropic bağdaştırıcısı (R12) — taklit istemci, ağ yok', () 
     await expect(anthropicProvider(cfg, { client: ref.client }).run('claude-sonnet-5-5', input())).rejects.toMatchObject({ code: 'REFUSAL', message: expect.stringMatching(/reddetti/) });
     const max = mockClient(okReply({}, { stop_reason: 'max_tokens' }));
     await expect(anthropicProvider(cfg, { client: max.client }).run('claude-sonnet-5-5', input())).rejects.toMatchObject({ code: 'MAX_TOKENS' });
+    // Final inceleme I1: yanıt alınmışsa hata kullanımı ve yanıt modelini taşır (ücretli çağrı).
+    const billed = await anthropicProvider(cfg, { client: mockClient(okReply({}, { stop_reason: 'max_tokens', usage: { input_tokens: 15000, output_tokens: 16000 } })).client })
+      .run('claude-sonnet-5-5', input()).catch((x) => x);
+    expect(billed).toMatchObject({ code: 'MAX_TOKENS', usage: { inputTokens: 15000, outputTokens: 16000, pages: 1 }, model: 'claude-sonnet-5-5' });
+    expect(costFromPrice(price, billed.usage)).toBe('0.190000');
     const bad = mockClient(okReply({}, { content: [{ type: 'text', text: 'json değil' }] }));
     await expect(anthropicProvider(cfg, { client: bad.client }).run('claude-sonnet-5-5', input())).rejects.toMatchObject({ code: 'INVALID_OUTPUT' });
   });
@@ -177,6 +189,7 @@ describe('Anthropic bağdaştırıcısı (R12) — taklit istemci, ağ yok', () 
     expect(e).toBeInstanceOf(AiProviderError);
     expect(e.code).toBe('RATE_LIMITED');
     expect(e.message).not.toContain('Sozlesme Bedeli');
+    expect(e.usage).toBeUndefined(); // yanıt yok: kullanım bilinmez
     expect(calls).toHaveLength(1);
   });
 });
