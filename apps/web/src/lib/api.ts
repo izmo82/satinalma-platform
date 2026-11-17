@@ -52,7 +52,10 @@ export async function api<T = any>(path: string, init: RequestInit & { json?: un
   if (res.status === 401) window.dispatchEvent(new Event('sp:unauthenticated'));
   checkIdentity(res);
   const etag = res.headers.get('ETag');
-  if (res.status === 204) return { data: undefined as T, etag };
+  if (res.status === 204) {
+    if ((init.method ?? 'GET').toUpperCase() !== 'GET') window.dispatchEvent(new Event('sp:tasks-changed'));
+    return { data: undefined as T, etag };
+  }
   const text = await res.text();
   const parsed = text ? safeParse(text) : null;
   if (!res.ok) {
@@ -60,6 +63,8 @@ export async function api<T = any>(path: string, init: RequestInit & { json?: un
     if (e?.code === 'identity_changed') window.dispatchEvent(new Event('sp:identity-changed'));
     throw new ApiError(res.status, e?.code ?? 'error', e?.message ?? `İstek başarısız (${res.status}).`, e?.details);
   }
+  // Persona K4: başarılı her yazma isteğinden sonra menü sayaçları tazelenir (onay, red, yeniden gönderim vb. iş sayısını değiştirir).
+  if ((init.method ?? 'GET').toUpperCase() !== 'GET') window.dispatchEvent(new Event('sp:tasks-changed'));
   return { data: parsed as T, etag };
 }
 

@@ -259,6 +259,9 @@ struct ApprovalChainView: View {
                         Text("\(s.decidedBy?.displayName ?? "") \(ContractLabels.decision[d] ?? d)\(s.decidedAt.map { " · \(Fmt.date($0))" } ?? "")").font(.footnote)
                     } else if s.current, chain.status == "OPEN" {
                         Text("Karar bekleniyor").font(.footnote).foregroundStyle(.orange)
+                    } else if chain.status != "OPEN" {
+                        // Persona K4 (web ile aynı): kapanmış turda karar verilmemiş adım bu turda sorulmayacak.
+                        Text(chain.status == "CANCELLED" ? "İptal edildi" : "Yapılmadı").font(.footnote).foregroundStyle(.secondary)
                     }
                     if let r = s.reason, !r.isEmpty { Text("Gerekçe: \(r)").font(.footnote).foregroundStyle(s.decision == "REJECTED" ? .red : .primary) }
                 }

@@ -172,6 +172,8 @@ function stepTag(s: ChainStep, chainStatus: string) {
   if (s.decision === 'APPROVED') return <Tag label={{ text: 'Onayladı', tone: 'human', icon: 'stamp' }} />;
   if (s.decision === 'REJECTED') return <Tag label={{ text: 'Reddetti', tone: 'danger', icon: 'x' }} />;
   if (chainStatus === 'CANCELLED') return <Tag label={{ text: 'İptal edildi', tone: 'neutral', icon: 'minus' }} />;
+  // Persona K4: reddedilen (ya da başka biçimde kapanmış) turda karar verilmemiş adım bu turda hiç sorulmayacak; "Bekliyor" yanıltır.
+  if (chainStatus !== 'OPEN') return <Tag label={{ text: 'Yapılmadı', tone: 'neutral', icon: 'minus' }} />;
   if (s.current) return <Tag label={{ text: 'Sırada', tone: 'info', icon: 'info' }} />;
   return <Tag label={{ text: 'Bekliyor', tone: 'neutral', icon: 'clock' }} />;
 }

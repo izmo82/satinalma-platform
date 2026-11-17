@@ -180,6 +180,9 @@ test('Onaycılar: Yönetici öneriyle departman sorumlusu ve vekil atar; yeniley
     expect(await page.evaluate(() => (window as unknown as { __seen: string[] }).__seen)).toEqual([]);
     await expect(page.getByText('Her sözleşme sırayla üç onaydan geçer: departman sorumlusu, satınalma sorumlusu, satınalma direktörü.')).toBeVisible();
     for (const l of ['Satınalma sorumlusu', 'Sorumlu vekili', 'Satınalma direktörü', 'Direktör vekili']) await expect(page.getByLabel(l, { exact: true })).toBeVisible();
+    // Persona K4: seçicilerin erişilebilir adı unvandır (seçili değer "Atanmadı" değil).
+    for (const l of ['Satınalma sorumlusu', 'Sorumlu vekili', 'Satınalma direktörü', 'Direktör vekili']) await expect(page.getByRole('combobox', { name: l, exact: true })).toBeVisible();
+    await expect(page.getByRole('combobox', { name: 'Atanmadı' })).toHaveCount(0);
     const row = page.getByTestId('approver-row-Tıbbi Cihaz');
     await expect(row).toContainText('Atanmadı');
     await row.getByRole('button', { name: `Entra yöneticisi: ${tc.suggestion.displayName}` }).click();

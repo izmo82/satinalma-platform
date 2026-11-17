@@ -137,7 +137,7 @@ function ContractsList({ dep, status }: { dep: string; status: string }) {
           <TableBody>
             {rows.map((c) => (
               <TableRow key={c.id}>
-                <TableCell className="min-w-[200px]"><Link className="font-semibold text-ink no-underline hover:underline" to={`/sozlesmeler/${c.id}`}>{c.title}</Link>
+                <TableCell className="min-w-[200px] max-[1100px]:min-w-[170px]"><Link className="font-semibold text-ink no-underline hover:underline" to={`/sozlesmeler/${c.id}`}>{c.title}</Link>
                   {c.code && <div className="tabular text-sm text-ink-subtle">{c.code}</div>}
                   <div className="text-sm text-ink-subtle">Sürüm {c.versionNo} · {stageLabel[c.stage]} · {methodLabel[c.signatureMethod]}</div>
                   {!!supplierText(c) && <div className="hidden text-sm text-ink-muted max-[1100px]:block">Tedarikçi: {supplierText(c)}</div>}</TableCell>
@@ -146,10 +146,11 @@ function ContractsList({ dep, status }: { dep: string; status: string }) {
                 <TableCell className="whitespace-nowrap"><DepartmentName name={c.departmentName} /></TableCell>
                 <TableCell className="tabular whitespace-nowrap">{c.indefinite ? 'Süresiz' : c.endDate ? fmtDate(c.endDate) : <span className="text-ink-subtle">—</span>}</TableCell>
                 <TableCell className="tabular whitespace-nowrap text-right max-[900px]:hidden">{c.amount ? fmtMoney(c.amount, c.currency) : <span className="text-ink-subtle">—</span>}</TableCell>
-                <TableCell className="min-w-[210px]">
-                  {c.status ? <div className="mb-1.5"><Tag label={statusTag(c.status, c.statusLabel)} /></div> : null}
+                <TableCell className="min-w-[210px] max-[1100px]:min-w-[180px]">
+                  {/* Persona K4: uzun durum ("Departman sorumlusu onayında") dar ekranda kesilmesin, satır kırar. */}
+                  {c.status ? <div className="mb-1.5"><Tag className="whitespace-normal items-start [&>svg]:mt-[3px]" label={statusTag(c.status, c.statusLabel)} /></div> : null}
                   {/* İmza kontrolünün bütün katmanları tek hücrede (önceki ayrı sütunlar: eksik taraf, otomatik tarama, fiziksel asıl, son inceleme). */}
-                  <Tag label={overallLabel[c.signature.overall]} />{c.finalizedAt && <span className="ml-2 text-sm text-ink-subtle">Kesinleşti</span>}
+                  <Tag className="whitespace-normal items-start [&>svg]:mt-[3px]" label={overallLabel[c.signature.overall]} />{c.finalizedAt && <span className="ml-2 text-sm text-ink-subtle">Kesinleşti</span>}
                   {c.signature.missingParties.length > 0 && <div className="mt-1 flex gap-1.5 text-sm"><Icon name="x" size={16} className="mt-0.5 shrink-0 text-danger" /><span>{c.signature.missingParties.join(', ')} <span className="text-danger">eksik</span></span></div>}
                   <div className="mt-1 flex flex-wrap gap-x-2 text-sm text-ink-subtle">
                     {quiet(c.signature.automaticCheck) ? <span>Tarama: {detectionLabel[c.signature.automaticCheck]?.text ?? '—'}</span>

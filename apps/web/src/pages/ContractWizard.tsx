@@ -4,7 +4,7 @@ import { api, ApiError } from '../lib/api.ts';
 import { useResource } from '../lib/useApi.ts';
 import { hasRole, useSession } from '../lib/session.tsx';
 import { fmtDate, fmtMoney } from '../lib/format.ts';
-import { supplierPickHint, type SupplierOption } from '../lib/labels.ts';
+import { supplierPickHint, supplierStatus, type SupplierOption } from '../lib/labels.ts';
 import { CONTRACT_TYPES, statusTag, type ApprovalPreview, type ContractType, type ContractV2, type Template } from '../lib/contractsV2.ts';
 import { Banner, ErrorState, Field, Loading, PageHeader, Tag } from '../ui/kit.tsx';
 import { Icon } from '../ui/icons.tsx';
@@ -211,7 +211,7 @@ function bodyOf(before: Form, f: Form): Record<string, unknown> {
     contractNo: nul, governingCourt: nul, kvkkClause: (v) => (v === '' ? null : v === 'yes'), priceEscalation: nul,
     currency: (v) => v, valueType: (v) => v, amount: (v) => (f.valueType === 'UNPRICED' || (typeof v === 'string' && v.trim() === '') ? null : parseTrAmount(String(v))),
     limitBasis: (v) => v, startDate: nul, endDate: (v) => (f.indefinite ? null : nul(v)), autoRenewal: (v) => v,
-    renewalMonths: (v) => (f.autoRenewal ? int(v) : null), noticeAmount: int, noticeUnit: (v) => (f.noticeAmount === '' ? null : v), paymentDays: int,
+    renewalMonths: (v) => (f.autoRenewal ? int(v) : null), noticeAmount: int, noticeUnit: (v) => (int(f.noticeAmount!) === null ? null : v), paymentDays: int,
     paymentTerms: (v) => v, sourceRef: (v) => v, fxDifference: nul,
   };
   for (const k of Object.keys(conv)) if (!TERMS_KEYS.includes(k) && changed(k)) {
@@ -397,7 +397,9 @@ export function Facts({ items }: { items: [string, ReactNode][] }) {
 export function contractFacts(d: ContractV2): [string, ReactNode][] {
   const f = d.fields;
   return [
-    ['Tedarikçi', d.supplier?.legalName ?? '—'],
+    // Persona K4: aday (doğrulanmamış) tedarikçi özetlerde işaretli; diğer durumlar (Aktif hariç) etiketle gösterilir.
+    ['Tedarikçi', d.supplier ? (d.supplier.status === 'ACTIVE' ? d.supplier.legalName : <span>{d.supplier.legalName}{' '}
+      <Tag className="ml-1 align-middle" label={d.supplier.status === 'CANDIDATE' ? { text: 'Aday — doğrulanmadı', tone: 'warn', icon: 'clock' } : supplierStatus[d.supplier.status] ?? { text: 'Durum bilinmiyor', tone: 'neutral', icon: 'info' }} /></span>) : '—'],
     ['Proje', d.project ? (d.project.visible ? `${d.project.code} · ${d.project.title}` : 'Görme yetkiniz olmayan proje') : '—'],
     ['İlgili departman', d.family.departmentName ?? 'Departmansız'],
     ['Başlangıç', <span className="tabular">{fmtDate(f.startDate)}</span>],

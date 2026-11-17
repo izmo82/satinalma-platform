@@ -112,8 +112,23 @@ function Shell() {
   };
   useEffect(() => { mainRef.current?.focus({ preventScroll: true }); }, [loc.pathname]);
   // Menüde her modülün bekleyen iş yükü; yalnız kullanıcının rolüne atanmış işler sayılır.
-  const tasks = useResource<{ items: { entityType: string }[] }>(me?.activeTenantId && !me.supplierPortal ? `/api/v1/tasks?view=mine&t=${me.activeTenantId}` : null);
-  const load = (types: string[] | null) => tasks.data ? tasks.data.items.filter((t) => !types || types.includes(t.entityType)).length : undefined;
+  // Sayılar sunucu sayımından (persona K2/K4): liste 200 ile sınırlıyken menü sayacı da 200'de kalıyordu. Liste satırı gerekmez (limit=1).
+  const tasks = useResource<{ items: { entityType: string }[]; counts?: { mine: number }; mineByType?: Record<string, number> }>(
+    me?.activeTenantId && !me.supplierPortal ? `/api/v1/tasks?view=mine&limit=1&t=${me.activeTenantId}` : null);
+  const reloadTasks = tasks.reload;
+  // Yazma işleminden sonra (onay, red, yeniden gönderim, kayıt) sayaçlar tazelenir; art arda istekler tek yüklemede birleşir.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const onChange = () => { clearTimeout(timer); timer = setTimeout(() => void reloadTasks(), 300); };
+    window.addEventListener('sp:tasks-changed', onChange);
+    return () => { clearTimeout(timer); window.removeEventListener('sp:tasks-changed', onChange); };
+  }, [reloadTasks]);
+  const load = (types: string[] | null) => {
+    const d = tasks.data;
+    if (!d) return undefined;
+    if (d.counts && d.mineByType) return types ? types.reduce((n, t) => n + (d.mineByType![t] ?? 0), 0) : d.counts.mine;
+    return d.items.filter((t) => !types || types.includes(t.entityType)).length;
+  };
   if (!me) return null;
   const nav: { to: string; label: string; icon: string; count?: number; later?: string }[] = me.supplierPortal ? [
     { to: '/portal', label: 'Teklif davetleri', icon: 'inbox' },

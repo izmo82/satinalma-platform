@@ -30,7 +30,12 @@ struct TaskItem: Decodable, Identifiable, Sendable, Hashable {
     let dueAt: String?
     let refNo: String?
 }
-struct TaskList: Decodable, Sendable { let items: [TaskItem] }
+struct TaskList: Decodable, Sendable {
+    let items: [TaskItem]
+    /// Persona K2: sayfalama (sunucu 200'lük sayfalar). Eski sunucu yanıtında yoksa nil (tek sayfa).
+    let total: Int?
+    let nextOffset: Int?
+}
 
 // MARK: İmza
 

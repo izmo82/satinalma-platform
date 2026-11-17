@@ -38,7 +38,8 @@ export function ContractPage() {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <ContractHeader v2={v2} withTitle={isNew} />
-      <div role="tablist" aria-label="Sözleşme" className="flex shrink-0 gap-6 overflow-x-auto border-b border-border bg-surface px-8 max-[900px]:px-4">
+      {/* Persona K4: 901 px ve üstünde sekmeler sığmazsa alt satıra iner (1024'te Hatırlatıcılar/Geçmiş görünür kalır); dar ekranda yatay kayar. */}
+      <div role="tablist" aria-label="Sözleşme" className="flex shrink-0 gap-x-6 overflow-x-auto border-b border-border bg-surface px-8 max-[900px]:px-4 min-[901px]:flex-wrap">
         {TABS.map(([k, l]) => (
           <button key={k} role="tab" aria-selected={tab === k} onClick={() => { const p = new URLSearchParams(params); k === 'imza' ? p.delete('sekme') : p.set('sekme', k); p.delete('gonderildi'); p.delete('taslak'); setParams(p, { replace: true }); }}
             className={cn('-mb-px min-h-10 whitespace-nowrap border-b-2 font-semibold transition-colors duration-150', tab === k ? 'border-ink text-ink' : 'border-transparent text-ink-muted hover:text-ink')}>{l}</button>

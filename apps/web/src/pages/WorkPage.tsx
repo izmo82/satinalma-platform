@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { api, type ApiError } from '../lib/api.ts';
 import { Link, useNavigate } from 'react-router-dom';
 import { useResource } from '../lib/useApi.ts';
 import { fmtDate, relative } from '../lib/format.ts';
@@ -26,12 +27,34 @@ export const entityHref = (t: { entityType: string; entityId: string; kind?: str
 
 const VIEWS = [['mine', 'Benden beklenen'], ['overdue', 'Geciken'], ['all', 'Rolümdeki tüm işler']] as const;
 
+interface TaskPage { items: Task[]; counts: Record<string, number>; total?: number; nextOffset?: number | null }
+
 export function WorkPage() {
   const [view, setView] = useState<(typeof VIEWS)[number][0]>('mine');
   const [cursor, setCursor] = useState(0);
   const navigate = useNavigate();
-  const r = useResource<{ items: Task[]; counts: Record<string, number> }>(`/api/v1/tasks?view=${view}`);
-  const items = r.data?.items ?? [];
+  const r = useResource<TaskPage>(`/api/v1/tasks?view=${view}`);
+  // Persona K2: ilk sayfa (200) üstüne "Daha fazla yükle" ile sonraki sayfalar eklenir; görünüm değişince ya da yenilenince sıfırlanır.
+  const [more, setMore] = useState<{ items: Task[]; nextOffset: number | null; error: string | null; loading: boolean } | null>(null);
+  useEffect(() => setMore(null), [r.data]);
+  const items = useMemo(() => {
+    const first = r.data?.items ?? [];
+    if (!more) return first;
+    const ids = new Set(first.map((t) => t.id));
+    return [...first, ...more.items.filter((t) => !ids.has(t.id))];
+  }, [r.data, more]);
+  const nextOffset = more ? more.nextOffset : r.data?.nextOffset ?? null;
+  const total = r.data?.total ?? r.data?.counts?.[view];
+  const loadMore = async () => {
+    if (nextOffset == null) return;
+    setMore((m) => ({ items: m?.items ?? [], nextOffset, error: null, loading: true }));
+    try {
+      const res = await api<TaskPage>(`/api/v1/tasks?view=${view}&offset=${nextOffset}`);
+      setMore((m) => ({ items: [...(m?.items ?? []), ...res.data.items], nextOffset: res.data.nextOffset ?? null, error: null, loading: false }));
+    } catch (e) {
+      setMore((m) => ({ items: m?.items ?? [], nextOffset, error: (e as ApiError).message, loading: false }));
+    }
+  };
 
   // Sıradaki iş bir tuş uzakta: j/k satır seçer, Enter işi açar. Yazı alanındayken devre dışı.
   useEffect(() => {
@@ -87,17 +110,22 @@ export function WorkPage() {
           <div className="max-[900px]:hidden"><Table>
             <TableCaption className="sr-only">Açık işler, öneme ve tarihe göre sıralı</TableCaption>
             <TableHeader><TableRow className="hover:bg-transparent">
-              <TableHead scope="col">Kayıt no</TableHead><TableHead scope="col">Önem</TableHead><TableHead scope="col">İş</TableHead><TableHead scope="col">Neden bekliyor</TableHead>
-              <TableHead scope="col">Sonraki adım</TableHead><TableHead scope="col" className="max-[1600px]:hidden">Sorumlu rol</TableHead><TableHead scope="col">Son tarih</TableHead><TableHead scope="col"><span className="sr-only">Eylem</span></TableHead>
+              <TableHead scope="col">Kayıt no</TableHead><TableHead scope="col">Önem</TableHead><TableHead scope="col">İş</TableHead><TableHead scope="col" className="max-[1279px]:hidden">Neden bekliyor</TableHead>
+              <TableHead scope="col" className="max-[1279px]:hidden">Sonraki adım</TableHead><TableHead scope="col" className="max-[1600px]:hidden">Sorumlu rol</TableHead><TableHead scope="col">Son tarih</TableHead><TableHead scope="col"><span className="sr-only">Eylem</span></TableHead>
             </TableRow></TableHeader>
             <TableBody>
               {items.map((t, i) => (
                 <TableRow key={t.id} data-state={i === cursor ? 'selected' : undefined} className={cn(i === cursor && 'outline-2 -outline-offset-2 outline-focus')}>
                   <TableCell className="whitespace-nowrap">{t.refNo ?? <span className="text-ink-subtle">—</span>}</TableCell>
                   <TableCell><Tag label={severityLabel[t.severity]} /></TableCell>
-                  <TableCell className="min-w-[200px]"><Link className="font-semibold text-ink no-underline hover:underline" to={entityHref(t)}>{t.title}</Link></TableCell>
-                  <TableCell className="min-w-[220px] max-w-[44ch] text-ink-muted">{t.reason}</TableCell>
-                  <TableCell className="min-w-[200px]">{t.nextAction}</TableCell>
+                  <TableCell className="min-w-[200px]"><Link className="font-semibold text-ink no-underline hover:underline" to={entityHref(t)}>{t.title}</Link>
+                    {/* 1280 px altında neden ve sonraki adım İş hücresinde alt alta (sütunlar kesilmesin, persona K4); bilgi kaybolmaz. */}
+                    <div className="hidden max-[1279px]:block">
+                      <p className="mt-1 text-ink-muted"><span className="sr-only">Neden bekliyor: </span>{t.reason}</p>
+                      <p className="mt-1 flex gap-1.5"><Icon name="arrow" size={16} className="mt-0.5 shrink-0 text-ink-subtle" /><span><span className="sr-only">Sonraki adım: </span>{t.nextAction}</span></p>
+                    </div></TableCell>
+                  <TableCell className="min-w-[220px] max-w-[44ch] text-ink-muted max-[1279px]:hidden">{t.reason}</TableCell>
+                  <TableCell className="min-w-[200px] max-[1279px]:hidden">{t.nextAction}</TableCell>
                   <TableCell className="whitespace-nowrap max-[1600px]:hidden">{roleLabel[t.assigneeRole] ?? t.assigneeRole}</TableCell>
                   <TableCell className="tabular whitespace-nowrap"><Due at={t.dueAt} /><div className="text-sm text-ink-subtle" title={t.createdAt}>Açıldı {relative(t.createdAt)}</div></TableCell>
                   <TableCell><Button asChild size="sm" variant={i === cursor ? 'default' : 'outline'}><Link to={entityHref(t)} aria-label={`İşi aç: ${t.title}`}>İşi aç</Link></Button></TableCell>
@@ -105,6 +133,14 @@ export function WorkPage() {
               ))}
             </TableBody>
           </Table></div>
+          {(nextOffset != null || (total != null && total > items.length) || more?.error) && (
+            <div className="mt-3 flex flex-wrap items-center gap-3" role="status" aria-live="polite">
+              <span className="tabular text-sm text-ink-muted">{items.length} / {total ?? items.length} iş gösteriliyor</span>
+              {nextOffset != null && <Button variant="outline" size="sm" disabled={!!more?.loading} onClick={() => void loadMore()}>
+                {more?.loading ? 'Yükleniyor…' : 'Daha fazla yükle'}</Button>}
+              {more?.error && <span className="text-sm text-danger">{more.error}</span>}
+            </div>
+          )}
           <p className="mt-3 text-sm text-ink-subtle max-[900px]:hidden">
             Klavye: <kbd className="rounded-sm border border-input bg-surface px-1 font-sans">j</kbd> / <kbd className="rounded-sm border border-input bg-surface px-1 font-sans">k</kbd> satır seçer,
             {' '}<kbd className="rounded-sm border border-input bg-surface px-1 font-sans">Enter</kbd> seçili işi açar.

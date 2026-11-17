@@ -190,6 +190,8 @@ test.describe('v2 sözleşmeler: veri değiştiren akışlar', () => {
     const selinTask = (await (await request.get('/api/v1/tasks?view=mine', { headers: await bearer(request, 'selin.guvenlik@example.test') })).json())
       .items.find((t: { entityType: string; title: string }) => t.entityType === 'contract_approval_step' && t.title.includes(code));
     expect(selinTask, 'Selin için onay görevi').toBeTruthy();
+    // Persona K4: onay görevinde Kayıt no sözleşme kodudur.
+    expect(selinTask.refNo).toBe(code);
     await page.getByRole('link', { name: `İşi aç: ${selinTask.title}` }).first().click();
     await expect(page).toHaveURL(/sekme=onaylar/);
     await expect(page.getByText('Gönderim notu:')).toBeVisible();
@@ -258,6 +260,9 @@ test.describe('v2 sözleşmeler: veri değiştiren akışlar', () => {
     await page.goto(`/sozlesmeler/aile/${c.familyId}?sekme=onaylar`);
     await expect(page).toHaveURL(/sekme=onaylar/);
     await expect(page.getByText('Red gerekçesi: Bedel teklifle uyuşmuyor; sentetik e2e reddi.')).toBeVisible();
+    // Persona K4: reddedilen turda sorulmayan adımlar "Bekliyor" değil "Yapılmadı".
+    await expect(page.getByText('Yapılmadı', { exact: true })).toHaveCount(2);
+    await expect(page.getByText('Bekliyor', { exact: true })).toHaveCount(0);
     await page.getByRole('link', { name: 'Düzenle ve yeniden gönder' }).click();
     await expect(page).toHaveURL(/adim=3/);
     await page.getByLabel('Tutar', { exact: true }).fill('45000');
@@ -268,7 +273,58 @@ test.describe('v2 sözleşmeler: veri değiştiren akışlar', () => {
     await expect(page).toHaveURL(/sekme=onaylar/);
     await expect(page.getByText(/2\. onay turu/)).toBeVisible();
     expect(await openCount(), 'yeniden gönderimde red görevi kapanır').toBe(before);
+    // Persona K4: menü sayacı yeniden gönderimden sonra sunucu sayısını gösterir (yenilemeden).
+    await expect(page.getByRole('navigation', { name: 'Ana menü' }).getByRole('link', { name: /İşlerim/ })).toContainText(String(before));
     await expect(page.getByText('Departman sorumlusu onayında').first()).toBeVisible();
+  });
+
+  test('persona K1/K3: .docx yol gösterir; boş ihbar ve ödeme vadesi boş kaydedilir (0 olmaz)', async ({ page, request }) => {
+    test.setTimeout(90_000);
+    const tag = `${Date.now()}`;
+    const { project, h } = await btProject(request);
+    await login(page, 'alper.satinalma@example.test');
+    await page.goto(`/sozlesmeler/ekle?proje=${project.id}`);
+    await expect(page.getByLabel('Proje')).toHaveValue(project.id);
+    await expect(page.getByText(".docx taslaklar Şablonlar'da tutulur.").first()).toBeVisible();
+    await page.getByLabel('Dosya').setInputFiles({ name: `e2e-taslak-${tag}.docx`, mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', buffer: docx(`E2E ${tag}`) });
+    await expect(page.getByText("Sözleşme ekleme imzalı belgenin PDF'i ya da taraması içindir. .docx taslaklar Şablonlar'da tutulur.")).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Yükle' })).toBeDisabled();
+    await expect(page.getByRole('link', { name: 'Şablonlar' }).first()).toBeVisible();
+    // Sunucu da aynı iletiyi verir (başka istemciler için).
+    const up = await request.post('/api/v1/documents', { headers: h, multipart: { companyId: (await (await request.get('/api/v1/me', { headers: h })).json()).companies[0].id, kind: 'CONTRACT',
+      title: 'x.docx', file: { name: `e2e-taslak-${tag}.docx`, mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', buffer: docx(`E2E ${tag}`) } } });
+    expect(up.status()).toBe(415);
+    expect((await up.json()).error.message).toBe("Sözleşme ekleme imzalı belgenin PDF'i ya da taraması içindir. .docx taslaklar Şablonlar'da tutulur.");
+
+    await page.getByLabel('Dosya').setInputFiles({ name: `e2e-bos-ihbar-${tag}.pdf`, mimeType: 'application/pdf', buffer: pdf(`E2E bos ihbar ${tag}`) });
+    await page.getByRole('button', { name: 'Yükle' }).click();
+    await expect(page).toHaveURL(/taslak=[0-9a-f-]{36}&adim=3/);
+    await page.getByLabel('Tedarikçi', { exact: true }).selectOption({ index: 1 });
+    await page.getByLabel('Sözleşme türü').selectOption('SERVICE');
+    await page.getByLabel('Sözleşme sorumlusu').selectOption({ label: 'Alper Yıldız' });
+    await page.getByLabel('İmza tarihi').fill('2026-11-15');
+    await page.getByLabel('Bedel türü').selectOption('FIXED');
+    await page.getByLabel('Tutar', { exact: true }).fill('10.000,00');
+    await page.getByLabel('KDV').selectOption('NET');
+    await page.getByLabel('Başlangıç').fill('2027-01-01');
+    await page.getByLabel('Bitiş').fill('2027-12-31');
+    // Fesih ihbar süresi ve ödeme vadesi bilerek boş ("Boşsa ihbar şartı yok.").
+    await expect(page.getByLabel('Fesih ihbar süresi')).toHaveValue('');
+    await expect(page.getByLabel('Ödeme vadesi (gün)')).toHaveValue('');
+    await page.getByLabel('Kaynak madde ve sayfa').fill('Madde 1, s. 1');
+    await page.getByLabel("Tutar, tarih ve VKN'yi belgeyle karşılaştırdım.").check();
+    await page.getByRole('button', { name: 'Devam: İncele ve gönder' }).click();
+    await expect(page).toHaveURL(/adim=4/);
+    await expect(page.getByText('İhbar süresi ve birimi birlikte girilir.')).toHaveCount(0);
+    const familyId = new URL(page.url()).searchParams.get('taslak')!;
+    const v2 = await (await request.get(`/api/v1/contracts/${familyId}/v2`, { headers: h })).json();
+    expect(v2.fields).toMatchObject({ noticeAmount: null, noticeUnit: null, noticePeriod: null, paymentDays: null });
+    await expect(page.getByText('Tanımlı değil').first()).toBeVisible();
+    // 3. adıma dönünce alanlar boş kalır (0 görünmez).
+    await page.getByRole('button', { name: 'Geri' }).click();
+    await expect(page).toHaveURL(/adim=3/);
+    await expect(page.getByLabel('Ödeme vadesi (gün)')).toHaveValue('');
+    await expect(page.getByLabel('Fesih ihbar süresi')).toHaveValue('');
   });
 
   test('şablon yükle, listede gör, indir ve yeni sözleşmede kullan', async ({ page }) => {
@@ -381,4 +437,66 @@ test('mevcut taslakta sihirbaz 3–4 ve onay karar formu: taşma ve erişilebili
   await page.waitForLoadState('networkidle');
   expect(await fits(page)).toBe(true);
   await axe(page, 'Sihirbaz 4 (mevcut taslak)');
+});
+
+test('persona K2: İşlerim 200 satırdan sonra "Daha fazla yükle" ile 201. işe ulaşır; sayılar aynı; j/k sürer', async ({ page, request }) => {
+  test.setTimeout(90_000);
+  const hk = await bearer(request, 'kerem.hukuk@example.test');
+  const first = await (await request.get('/api/v1/tasks?view=mine', { headers: hk })).json();
+  test.skip(first.total <= 200, 'Kerem\'in 200\'den fazla açık işi yok (geliştirme verisi).');
+  const second = await (await request.get('/api/v1/tasks?view=mine&offset=200', { headers: hk })).json();
+  const t201 = second.items[0] as { title: string };
+  await login(page, 'kerem.hukuk@example.test');
+  const wide = (page.viewportSize()?.width ?? 0) > 900;
+  const rows = wide ? page.getByRole('region', { name: 'Tablo' }).getByRole('row') : page.getByRole('list', { name: 'Açık işler' }).getByRole('listitem');
+  await expect(page.getByRole('tab', { name: /Benden beklenen/ })).toContainText(String(first.counts.mine));
+  await expect(rows).toHaveCount(wide ? 201 : 200);
+  await expect(page.getByText(`200 / ${first.total} iş gösteriliyor`)).toBeVisible();
+  await page.getByRole('button', { name: 'Daha fazla yükle' }).click();
+  await expect(rows).toHaveCount((wide ? 1 : 0) + first.total);
+  await expect(page.getByRole('link', { name: `İşi aç: ${t201.title}` }).first()).toBeAttached();
+  await expect(page.getByRole('button', { name: 'Daha fazla yükle' })).toHaveCount(0);
+  // Kişiye atanmış onay adımları listenin başında (kayıt no = sözleşme kodu).
+  const approvals = first.items.filter((t: { entityType: string }) => t.entityType === 'contract_approval_step');
+  for (const [i, t] of approvals.entries()) expect(first.items[i].id).toBe(t.id);
+  for (const t of approvals) expect(t.refNo).toMatch(/^SZL-/);
+  // Menü sayacı sunucu sayımı (200 ile sınırlı değil).
+  await expect(page.getByRole('navigation', { name: 'Ana menü' }).getByRole('link', { name: /İşlerim/ })).toContainText(String(first.counts.mine));
+  if (wide) {
+    await page.locator('body').click({ position: { x: 1, y: 1 } });
+    await page.keyboard.press('j');
+    await expect(page.getByRole('region', { name: 'Tablo' }).getByRole('row').nth(2)).toHaveAttribute('data-state', 'selected');
+  }
+  await axe(page, 'İşlerim sayfalama');
+});
+
+test('persona K4: 1024 px genişlikte sözleşme sekmeleri, İşlerim sütunları, şablon eylemleri ve liste durum rozeti kesilmez', async ({ page }, info) => {
+  test.skip(info.project.name !== 'desktop-1440', 'genişlik testin içinde ayarlanır');
+  await page.setViewportSize({ width: 1024, height: 800 });
+  // Tablo kapsayıcısı yatay kaymaz: bütün sütunlar (Sonraki adım, İşi aç, Yeni sürüm, durum rozeti) görünür alanda.
+  const noHScroll = async (name: string) => {
+    const t = page.getByRole('region', { name: 'Tablo' }).first();
+    await expect(t.getByRole('row').nth(1)).toBeVisible();
+    await page.waitForLoadState('networkidle');
+    const [sw, cw] = await t.evaluate((el) => [el.scrollWidth, el.clientWidth]);
+    expect(sw, `${name}: tablo ${sw} > ${cw}`).toBeLessThanOrEqual(cw + 1);
+  };
+  for (const email of ['leyla.hukuk@example.test', 'tolga.teknik@example.test']) {
+    await login(page, email);
+    await noHScroll(`İşlerim (${email})`);
+    await page.goto('/sozlesmeler');
+    await noHScroll(`Sözleşmeler (${email})`);
+    await page.goto('/sozlesmeler/sablonlar');
+    await noHScroll(`Şablonlar (${email})`);
+    if (email.startsWith('leyla')) await expect(page.getByRole('button', { name: 'Yeni sürüm' }).first()).toBeInViewport();
+    await logout(page);
+  }
+  // Sözleşme detayı: bütün sekmeler kaydırmadan görünür (alt satıra iner).
+  await login(page, 'leyla.hukuk@example.test');
+  await page.goto('/sozlesmeler');
+  await page.getByRole('link', { name: 'Nakliye Hizmet Sözleşmesi' }).first().click();
+  const bar = page.getByRole('tablist', { name: 'Sözleşme' });
+  const [sw, cw] = await bar.evaluate((el) => [el.scrollWidth, el.clientWidth]);
+  expect(sw).toBeLessThanOrEqual(cw + 1);
+  for (const t of ['Hatırlatıcılar', 'Geçmiş']) await expect(bar.getByRole('tab', { name: t })).toBeInViewport();
 });

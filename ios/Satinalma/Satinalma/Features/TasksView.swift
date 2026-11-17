@@ -4,6 +4,10 @@ struct TasksView: View {
     @Environment(SessionStore.self) private var session
     @State private var tasks: [TaskItem]?
     @State private var error: Notice?
+    @State private var total: Int?
+    @State private var nextOffset: Int?
+    @State private var loadingMore = false
+    @State private var moreError: Notice?
 
     var body: some View {
         List {
@@ -21,6 +25,16 @@ struct TasksView: View {
                         }.accessibilityElement(children: .combine)
                     }
                 }
+                // Persona K2: 200'den fazla işte sonraki sayfalar; sayı sunucu sayacıyla aynı.
+                if let total, total > items.count || nextOffset != nil {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("\(items.count) / \(total) iş gösteriliyor").font(.footnote).foregroundStyle(.secondary)
+                        if nextOffset != nil {
+                            Button(loadingMore ? "Yükleniyor…" : "Daha fazla yükle") { Task { await loadMore() } }.disabled(loadingMore)
+                        }
+                        if let moreError { Text(moreError.text).font(.footnote).foregroundStyle(.red) }
+                    }
+                }
             }
         }
         .navigationTitle("İşlerim")
@@ -30,8 +44,22 @@ struct TasksView: View {
     }
 
     private func load() async {
-        do { let (list, _): (TaskList, String?) = try await session.get("/api/v1/tasks?view=mine"); tasks = list.items; error = nil }
+        do {
+            let (list, _): (TaskList, String?) = try await session.get("/api/v1/tasks?view=mine")
+            tasks = list.items; total = list.total; nextOffset = list.nextOffset; moreError = nil; error = nil
+        }
         catch { self.error = Notice.from(error) }
+    }
+
+    private func loadMore() async {
+        guard let offset = nextOffset, !loadingMore else { return }
+        loadingMore = true; defer { loadingMore = false }
+        do {
+            let (list, _): (TaskList, String?) = try await session.get("/api/v1/tasks?view=mine&offset=\(offset)")
+            let known = Set((tasks ?? []).map(\.id))
+            tasks = (tasks ?? []) + list.items.filter { !known.contains($0.id) }
+            nextOffset = list.nextOffset; total = list.total ?? total; moreError = nil
+        } catch { moreError = Notice.from(error) }
     }
 }
 

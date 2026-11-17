@@ -7,6 +7,9 @@ import { Button } from '@/components/ui/button';
 import { Icon } from '../ui/icons.tsx';
 import { UblFindings, ublTitle, type UblCheck } from '../ui/UblCheck.tsx';
 
+/** Sunucunun sözleşme .docx iletisiyle aynı (apps/api/src/modules/documents.ts). */
+export const CONTRACT_DOCX_MESSAGE = "Sözleşme ekleme imzalı belgenin PDF'i ya da taraması içindir. .docx taslaklar Şablonlar'da tutulur.";
+
 export interface Result {
   documentVersionId: string; duplicate: boolean; basicCheckStatus: string; basicCheckReason: string | null; avScanStatus: string;
   processing: { stage: string; message: string };
@@ -55,7 +58,9 @@ export function IntakeForm({ initialKind, extra, onResult, submitBlocked }: {
   const [error, setError] = useState<ApiError | null>(null);
   const [result, setResult] = useState<Result | null>(null);
   const inFlight = useRef(false);
-  const blocked = submitBlocked?.(kind) ?? null;
+  // Persona K3: sözleşme imzalı belgenin PDF'i ya da taramasıdır (spec). Şablondan hazırlanan .docx seçilince yüklenmez, yol gösterilir.
+  const contractDocx = kind === 'CONTRACT' && !!file && /\.(docx?|dotx)$/i.test(file.name);
+  const blocked = (contractDocx ? CONTRACT_DOCX_MESSAGE : null) ?? submitBlocked?.(kind) ?? null;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -82,7 +87,9 @@ export function IntakeForm({ initialKind, extra, onResult, submitBlocked }: {
         <Field label="Belge türü">{(p) => <select className="input" {...p} value={kind} onChange={(e) => setKind(e.target.value)}>
           {!invoiceBlocked && <option value="INVOICE">Fatura</option>}<option value="CONTRACT">Sözleşme</option><option value="QUOTE">Teklif</option><option value="OTHER">Diğer</option></select>}</Field>
         {extra?.(kind, company)}
-        <Field label="Dosya" hint="PDF, PNG, JPEG veya XML · en fazla 25 MB. Aynı dosya tekrar yüklenirse yeni kayıt açılmaz.">
+        <Field label="Dosya" hint={kind === 'CONTRACT'
+          ? "İmzalı sözleşmenin PDF'i ya da taraması (PDF, PNG, JPEG) · en fazla 25 MB. .docx taslaklar Şablonlar'da tutulur. Aynı dosya tekrar yüklenirse yeni kayıt açılmaz."
+          : 'PDF, PNG, JPEG veya XML · en fazla 25 MB. Aynı dosya tekrar yüklenirse yeni kayıt açılmaz.'}>
           {(p) => (
             <div className="flex flex-wrap items-center gap-3">
               <input className="peer sr-only" type="file" accept=".pdf,.png,.jpg,.jpeg,.xml" {...p} onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
@@ -93,8 +100,11 @@ export function IntakeForm({ initialKind, extra, onResult, submitBlocked }: {
         </Field>
         <div className="flex flex-wrap items-center gap-3">
           <Button type="submit" disabled={!file || busy || !!blocked}><Icon name="upload" />{busy ? 'Yükleniyor…' : 'Yükle'}</Button>
-          {blocked && <span className="text-sm text-ink-muted">{blocked}</span>}
+          {blocked && !contractDocx && <span className="text-sm text-ink-muted">{blocked}</span>}
         </div>
+        {contractDocx && <div className="mt-3"><Banner tone="warn" title={CONTRACT_DOCX_MESSAGE}
+          action={<Link className="btn btn-sm" to="/sozlesmeler/sablonlar">Şablonlar</Link>}>
+          Belgeyi imzalandıktan sonra PDF'e çevirip ya da tarayıp yükleyin.</Banner></div>}
       </form>
       <div style={{ marginTop: 16 }} aria-live="polite">
         {error && <Banner tone="danger" title={error.message} />}

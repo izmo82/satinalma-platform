@@ -243,7 +243,8 @@ struct ContractFieldsView: View {
         // Süresizde ihbar aileye yazılır; süreli sözleşmede koşul revizyonuna (tutar gerekir).
         if needsNotice && (indefinite || amount != nil) {
             put("noticeAmount", noticeAmount.map(JSONValue.int) ?? .null, f?.noticeAmount.map(JSONValue.int) ?? .null)
-            if noticeAmount != nil { put("noticeUnit", .str(noticeUnit), .opt(f?.noticeUnit)) }
+            // Persona K1: ihbar boşsa birim de null gider (ikisi birlikte boş = ihbar şartı yok); 0 ya da eski birim kalmaz.
+            put("noticeUnit", noticeAmount != nil ? .str(noticeUnit) : .null, .opt(f?.noticeUnit))
         }
         return b
     }
@@ -291,7 +292,7 @@ struct ContractSubmitView: View {
             if let notice { NoticeView(notice: notice) }
             Loadable(value: contract, error: error, retry: load) { c in
                 ContractHeaderCard(c: c)
-                if let s = c.supplier { Section("Tedarikçi") { LabeledContent(s.legalName, value: Labels.supplierStatus[s.status] ?? "Durum bilinmiyor") } }
+                if let s = c.supplier { Section("Tedarikçi") { LabeledContent(s.legalName, value: s.status == "CANDIDATE" ? "Aday — doğrulanmadı" : (Labels.supplierStatus[s.status] ?? "Durum bilinmiyor")) } }
                 if !c.missing.isEmpty {
                     Section("Eksik alanlar") {
                         Text(c.missing.map(\.label).joined(separator: ", ")).foregroundStyle(.red)

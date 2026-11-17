@@ -137,7 +137,7 @@ export function ApproversPage() {
                 <div key={f.key} className="grid content-start gap-1">
                   {admin ? <>
                     <label htmlFor={fid} className="text-sm font-semibold">{f.label}</label>
-                    <PersonSelect id={fid} value={draft.org[f.key]} onChange={(v) => setOrg(f.key, v)} candidates={data.candidates} assigned={assigned} disabled={busy} />
+                    <PersonSelect id={fid} label={f.label} value={draft.org[f.key]} onChange={(v) => setOrg(f.key, v)} candidates={data.candidates} assigned={assigned} disabled={busy} />
                   </> : <>
                     <span className="text-sm font-semibold">{f.label}</span>{name(assigned)}
                   </>}

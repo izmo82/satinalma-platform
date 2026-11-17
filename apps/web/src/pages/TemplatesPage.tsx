@@ -56,19 +56,23 @@ export function TemplatesPage({ admin = false }: { admin?: boolean }) {
           </ul>
           <div className="max-[760px]:hidden"><Table>
             <TableHeader><TableRow className="hover:bg-transparent">
-              <TableHead scope="col">Kod</TableHead><TableHead scope="col">Taslak</TableHead><TableHead scope="col">Tür</TableHead><TableHead scope="col">Sürüm</TableHead>
-              <TableHead scope="col">Güncelleme</TableHead><TableHead scope="col" className="text-right">Kullanım</TableHead><TableHead scope="col"><span className="sr-only">Eylemler</span></TableHead>
+              <TableHead scope="col" className="max-[1279px]:hidden">Kod</TableHead><TableHead scope="col">Taslak</TableHead><TableHead scope="col">Tür</TableHead><TableHead scope="col">Sürüm</TableHead>
+              <TableHead scope="col" className="max-[1279px]:hidden">Güncelleme</TableHead><TableHead scope="col" className="text-right">Kullanım</TableHead><TableHead scope="col"><span className="sr-only">Eylemler</span></TableHead>
             </TableRow></TableHeader>
             <TableBody>
               {items.map((t) => (
                 <TableRow key={t.id}>
-                  <TableCell className="tabular whitespace-nowrap">{t.code}</TableCell>
-                  <TableCell className="min-w-[200px]">{t.name}<Versions t={t} onError={(e) => setMsg({ tone: 'danger', text: e })} /></TableCell>
+                  <TableCell className="tabular whitespace-nowrap max-[1279px]:hidden">{t.code}</TableCell>
+                  {/* Persona K4: 1280 px altında kod adın altında (Kod sütunu gizlenir; bilgi kaybolmaz, eylemler kesilmez). */}
+                  <TableCell className="min-w-[200px] max-[1279px]:min-w-[160px]">{t.name}
+                    <div className="tabular hidden text-sm text-ink-subtle max-[1279px]:block"><span className="sr-only">Kod: </span>{t.code}</div><Versions t={t} onError={(e) => setMsg({ tone: 'danger', text: e })} /></TableCell>
                   <TableCell className="whitespace-nowrap">{CONTRACT_TYPES[t.contractType]}</TableCell>
-                  <TableCell className="tabular">{t.currentVersion ? `v${t.currentVersion.versionNo}` : '—'}</TableCell>
-                  <TableCell className="tabular whitespace-nowrap">{t.currentVersion ? fmtDate(t.currentVersion.uploadedAt) : '—'}</TableCell>
+                  <TableCell className="tabular">{t.currentVersion ? `v${t.currentVersion.versionNo}` : '—'}
+                    {/* Persona K4: 1280 px altında güncelleme tarihi sürümün altında (sütun sayısı azalır, "Yeni sürüm" kesilmez). */}
+                    {t.currentVersion && <div className="hidden whitespace-nowrap text-sm text-ink-subtle max-[1279px]:block"><span className="sr-only">Güncelleme: </span>{fmtDate(t.currentVersion.uploadedAt)}</div>}</TableCell>
+                  <TableCell className="tabular whitespace-nowrap max-[1279px]:hidden">{t.currentVersion ? fmtDate(t.currentVersion.uploadedAt) : '—'}</TableCell>
                   <TableCell className="tabular text-right">{t.usageCount}</TableCell>
-                  <TableCell><RowActions t={t} canUse={canUse} canManage={canManage} onPick={(f) => pick(f, t.id)} onError={(e) => setMsg({ tone: 'danger', text: e })} /></TableCell>
+                  <TableCell><RowActions t={t} canUse={canUse} canManage={canManage} stack onPick={(f) => pick(f, t.id)} onError={(e) => setMsg({ tone: 'danger', text: e })} /></TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -92,10 +96,10 @@ function FilePick({ label, onPick, primary, small }: { label: string; onPick: (f
   </>;
 }
 
-function RowActions({ t, canUse, canManage, onPick, onError }: { t: Template; canUse: boolean; canManage: boolean; onPick: (f: File | undefined) => void; onError: (e: string) => void }) {
+function RowActions({ t, canUse, canManage, stack, onPick, onError }: { t: Template; canUse: boolean; canManage: boolean; stack?: boolean; onPick: (f: File | undefined) => void; onError: (e: string) => void }) {
   const v = t.currentVersion;
   return (
-    <div className="flex flex-wrap gap-2">
+    <div className={cn('flex flex-wrap gap-2', stack && 'max-[1279px]:flex-col max-[1279px]:items-start')}>
       {v && <Button size="sm" variant="outline" aria-label={`${t.code} indir`} onClick={() => void downloadBlob(`/api/v1/contract-template-versions/${v.id}/download`, v.filename).catch((e) => onError((e as ApiError).message))}><Icon name="download" />İndir</Button>}
       {v && canUse && <Button size="sm" variant="outline" asChild><Link to={`/sozlesmeler/ekle?sablon=${v.id}`} aria-label={`${t.code} ile yeni sözleşme`}>Yeni sözleşmede kullan</Link></Button>}
       {canManage && <FilePick label="Yeni sürüm" small onPick={onPick} />}
