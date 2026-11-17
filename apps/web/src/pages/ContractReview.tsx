@@ -66,11 +66,30 @@ export function runLabel(run: AiRun | null, kind: 'read' | 'review'): Label {
 }
 
 /** Sunucu sebebi yoksa durumdan Türkçe açıklama (ham kod gösterilmez). */
-export function runReason(run: AiRun | null): string | null {
+export function runReason(run: AiRun | null, kind: 'read' | 'review' = 'read'): string | null {
   if (!run) return null;
   if (run.reason) return run.reason;
   return ({ WAITING_QUOTA: 'Aylık yapay zekâ bütçesi doldu.', NO_PROVIDER: 'Etkin yapay zekâ sağlayıcısı yok.', NOT_ALLOWED: 'Kiracı politikası bu sağlayıcıya izin vermiyor.',
-    FAILED: 'Okuma tamamlanamadı.' } as Partial<Record<AiRunStatus, string>>)[run.status] ?? null;
+    FAILED: kind === 'review' ? 'İnceleme tamamlanamadı.' : 'Okuma tamamlanamadı.' } as Partial<Record<AiRunStatus, string>>)[run.status] ?? null;
+}
+
+/** Decimal string → tr-TR ("1250000.5" → "1.250.000,50"); kayan noktaya çevrilmez. En az 2 ondalık, fazlası korunur. */
+export function trDecimal(v: string | null | undefined): string {
+  if (v == null || v === '') return '—';
+  const m = /^(-?)(\d+)(?:\.(\d+))?$/.exec(v.trim());
+  if (!m) return v;
+  const int = m[2]!.replace(/^0+(?=\d)/, '').replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  return `${m[1]}${int},${(m[3] ?? '').padEnd(2, '0')}`;
+}
+/** Tutarları normalize decimal string olarak karşılaştırır ("48000" = "48000.00"); sayı dönüşümü yok. */
+export function sameDecimal(a: string | null | undefined, b: string | null | undefined): boolean {
+  const n = (v: string | null | undefined) => {
+    const m = v == null ? null : /^(-?)(\d+)(?:\.(\d+))?$/.exec(v.trim());
+    if (!m) return null;
+    return `${m[1]}${m[2]!.replace(/^0+(?=\d)/, '')}.${(m[3] ?? '').replace(/0+$/, '')}`;
+  };
+  const x = n(a); const y = n(b);
+  return x !== null && x === y;
 }
 
 export function TestProviderTag({ show = true, className }: { show?: boolean; className?: string }) {
@@ -102,7 +121,7 @@ const BOOL = (v: string) => (v === 'true' ? 'Evet' : v === 'false' ? 'Hayır' : 
 export function formatAiValue(field: string, value: string | null, currency?: string | null): string {
   if (value === null) return '—';
   switch (field) {
-    case 'amount': return fmtMoney(value, currency ?? null);
+    case 'amount': return currency ? fmtMoney(value, currency) : trDecimal(value);
     case 'signedOn': case 'startDate': case 'endDate': return fmtDate(value);
     case 'indefinite': case 'autoRenewal': return BOOL(value);
     case 'contractType': return CONTRACT_TYPES[value as ContractType] ?? value;
@@ -157,7 +176,7 @@ function RunState({ data, kind, timedOut }: { data: { run: AiRun | null }; kind:
   if (!run) return <p className="text-ink-muted">{kind === 'review' ? 'Bu belge sürümü için ön inceleme yapılmadı. Onaycılar belgeyi kendileri inceler.' : 'Okuma istenmedi.'}</p>;
   if (ACTIVE.includes(run.status)) return <p className="text-ink-muted" role="status">{timedOut ? (kind === 'review' ? 'İnceleme sürüyor; gönderim için beklemeniz gerekmez.' : 'Okuma sürüyor, alanları elle girebilirsiniz.') : kind === 'review' ? 'İnceleniyor… Sonuç birkaç saniye içinde burada görünür.' : 'Okunuyor…'}</p>;
   if (run.status === 'SUCCEEDED') return null;
-  return <p className="text-ink-muted"><span className="font-semibold text-ink">{run.status === 'FAILED' ? 'İnceleme tamamlanamadı.' : 'İnceleme yapılmadı.'}</span> {runReason(run)} Gönderim yine açık; onaycılar belgeyi kendileri inceler.</p>;
+  return <p className="text-ink-muted"><span className="font-semibold text-ink">{run.status === 'FAILED' ? 'İnceleme tamamlanamadı.' : 'İnceleme yapılmadı.'}</span> {run.reason ?? (run.status === 'FAILED' ? '' : runReason(run, 'review'))} Gönderim yine açık; onaycılar belgeyi kendileri inceler.</p>;
 }
 
 // --- Sihirbaz 4. adım: inceleme kartı (Figma 09) --------------------------------------------------------------------------
@@ -189,12 +208,12 @@ export function ReviewCard({ familyId, onAddApprover }: { familyId: string; onAd
   return (
     <section className="panel" aria-labelledby="review-card-h">
       <div className="panel-head"><h2 id="review-card-h" className="flex-1">Ön inceleme</h2>
-        {d && <><TestProviderTag show={!!(cur?.isTestProvider ?? d.run?.isTestProvider)} />{cur ? <Tag label={AI_TAG} /> : <Tag label={runLabel(d.run, 'review')} />}</>}</div>
+        {d && <><TestProviderTag show={cur ? cur.isTestProvider : !!d.run?.isTestProvider} />{cur ? <Tag label={AI_TAG} /> : <Tag label={runLabel(d.run, 'review')} />}</>}</div>
       <div className="panel-body grid gap-3">
         {r.loading && !d ? <Loading rows={2} /> : r.error && !d ? <ErrorState error={r.error} onRetry={r.reload} /> : d && <>
           {cur ? <>
             {d.belowThreshold && d.advice && <Banner tone="warn" title={d.advice}
-              action={<Button size="sm" variant="outline" onClick={onAddApprover}><Icon name="arrow" />Onaycı ekle</Button>}>
+              action={<Button size="sm" variant="outline" aria-label="Onaycı ekle alanına git" onClick={onAddApprover}><Icon name="arrow" />Onaycı ekle</Button>}>
               Puan {cur.score}, eşik {d.threshold}. Öneri zorunlu değildir; gönderim açık kalır.</Banner>}
             <div className="flex flex-wrap items-start gap-x-6 gap-y-3">
               <ScoreValue score={cur.score} />
@@ -216,7 +235,7 @@ export function ReviewCard({ familyId, onAddApprover }: { familyId: string; onAd
             <Provenance r={cur} />
             <p className="m-0 text-sm text-ink-muted">Ayrıntılar sözleşmenin İnceleme sekmesinde. Puan onay vermez ve gönderimi engellemez.</p>
           </> : <>
-            {d.current?.stale && <p className="m-0 text-sm text-ink-muted">Önceki inceleme (puan {d.current.score}) güncel değil: belge ya da şablon sürümü değişti.</p>}
+            {d.current?.stale && <p className="m-0 text-sm text-ink-muted">Önceki inceleme (puan {d.current.score}{d.current.isTestProvider ? ` · ${TEST_PROVIDER_LABEL}` : ''}) güncel değil: belge ya da şablon sürümü değişti.</p>}
             <RunState data={d} kind="review" timedOut={r.timedOut} />
           </>}
           {d.can.request && !r.active && !cur && !busy && (
@@ -265,7 +284,7 @@ export function ReviewDetail({ familyId, documentHref }: { familyId: string; doc
     <div className="page grid gap-5">
       <div className="flex flex-wrap items-center gap-2">
         <p className="m-0 min-w-[min(100%,20rem)] flex-1 text-ink-muted">{d.disclaimer} Puan onay vermez, onayı engellemez; onaycılar bilgi olarak görür.</p>
-        <TestProviderTag show={!!(cur?.isTestProvider ?? d.run?.isTestProvider)} />
+        <TestProviderTag show={cur ? cur.isTestProvider : !!d.run?.isTestProvider} />
         {canAsk && <Button size="sm" variant="outline" disabled={busy} onClick={() => void request()}><Icon name="refresh" />{cur ? 'Yeniden incele' : 'İncele'}</Button>}
       </div>
       {msg && <Banner tone={msg.tone} title={msg.text} />}
@@ -274,7 +293,7 @@ export function ReviewDetail({ familyId, documentHref }: { familyId: string; doc
         <div className="rounded-md border border-border bg-surface"><Empty icon="sparkles" title={d.run && ACTIVE.includes(d.run.status) ? 'İnceleniyor' : 'Ön inceleme yok'}>
           <RunState data={d} kind="review" timedOut={r.timedOut} /></Empty></div>
       ) : <>
-        {!cur.stale && d.run && d.run.status !== 'SUCCEEDED' && <Banner tone="neutral" title={`Son istek: ${runLabel(d.run, 'review').text}`}>{runReason(d.run)}</Banner>}
+        {!cur.stale && d.run && d.run.status !== 'SUCCEEDED' && <Banner tone="neutral" title={`Son istek: ${runLabel(d.run, 'review').text}`}>{runReason(d.run, 'review')}</Banner>}
         <div className="grid grid-cols-[360px_minmax(0,1fr)] gap-5 max-[1100px]:grid-cols-1">
           <section className="panel self-start" aria-labelledby="score-h">
             <div className="panel-head"><h2 id="score-h" className="flex-1">Ön inceleme puanı</h2><Tag label={AI_TAG} /></div>
@@ -289,7 +308,6 @@ export function ReviewDetail({ familyId, documentHref }: { familyId: string; doc
                 <thead><tr className="text-ink-muted"><th scope="col" className="py-1 font-semibold">Başlık</th><th scope="col" className="py-1 text-right font-semibold">Puan</th></tr></thead>
                 <tbody>{cur.subScoreList.map((s) => <tr key={s.category} className="border-t border-border"><td className="py-1">{s.label}</td><td className="tabular py-1 text-right">{s.score ?? '—'}</td></tr>)}</tbody>
               </table>
-              <Banner tone="warn" title={AI_DISCLAIMER} />
               <Provenance r={cur} />
             </div>
           </section>
@@ -310,7 +328,7 @@ export function ReviewDetail({ familyId, documentHref }: { familyId: string; doc
                       {f.quote && <blockquote className="m-0 border-l-2 border-dashed border-ai pl-3 text-sm [overflow-wrap:anywhere]">“{f.quote}”</blockquote>}
                       {f.templateRef && f.kind === 'MISSING_CLAUSE' && <p className="m-0 text-sm text-ink-muted">Şablonda: {f.templateRef}</p>}
                       {f.suggestion && <p className="m-0 text-sm"><span className="font-semibold">Öneri:</span> {f.suggestion}</p>}
-                      {f.page ? <Link className="justify-self-start text-sm font-semibold" to={documentHref(f.page)}>Belgede s. {f.page}'yı aç</Link> : null}
+                      {f.page ? <Link className="justify-self-start text-sm font-semibold" aria-label={`Belgeyi ${f.page}. sayfada aç`} to={documentHref(f.page)}>{f.page}. sayfa</Link> : null}
                     </li>))}</ul>
                 )}
               </div>

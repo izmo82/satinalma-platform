@@ -139,7 +139,7 @@ test.describe('v2 sözleşme yapay zekâ: veri değiştiren akışlar (test sağ
     await expect(list).toContainText('Tutar· siz onaylarsınız');
     await expect(list).toContainText('48.000,00');
     await expect(list.getByText('Okunamadı').first()).toBeVisible(); // VKN belgede yok → MISSING
-    await page.getByRole('button', { name: "Tutar: belgede sayfa 1'yı aç ve alıntıyı göster" }).click();
+    await page.getByRole('button', { name: 'Tutar: belgeyi 1. sayfada aç ve alıntıyı göster' }).click();
     await expect(page.getByText('Tutar · s. 1 alıntısı:')).toBeVisible();
     await expect(page.getByRole('group', { name: 'Sayfa 1' })).toBeVisible();
     await axe(page, 'Oku');
@@ -179,8 +179,8 @@ test.describe('v2 sözleşme yapay zekâ: veri değiştiren akışlar (test sağ
     await expect(card.getByText('Sınırsız sorumluluk')).toBeVisible();
     await expect(card.getByText('sozlesme-inceleme-2026-11-v1')).toBeVisible();
     await expect(card.getByText('Puan eşiğin altında; ek onaycı (ör. kurumun hukuk danışmanı) eklemeniz önerilir.')).toBeVisible();
-    await card.getByRole('button', { name: 'Onaycı ekle' }).click();
-    await expect(page.getByLabel('Onaycı ekle')).toBeFocused();
+    await card.getByRole('button', { name: 'Onaycı ekle alanına git' }).click();
+    await expect(page.getByLabel('Eklenecek onaycı')).toBeFocused();
     const send = page.getByRole('button', { name: 'Onaya gönder' });
     await expect(send).toBeEnabled();
     await axe(page, 'İncele ve gönder');
@@ -199,7 +199,7 @@ test.describe('v2 sözleşme yapay zekâ: veri değiştiren akışlar (test sağ
     await expect(page.getByText('Sınırsız sorumluluk')).toBeVisible();
     await expect(page.getByText('Tek taraflı değişiklik hakkı')).toHaveCount(0);
     await axe(page, 'İnceleme sekmesi');
-    await page.getByRole('link', { name: "Belgede s. 1'yı aç" }).first().click();
+    await page.getByRole('link', { name: 'Belgeyi 1. sayfada aç' }).first().click();
     await expect(page).toHaveURL(/sekme=belge&sayfa=1/);
     await expect(page.getByRole('group', { name: 'Sayfa 1' })).toBeVisible();
     await logout(page);

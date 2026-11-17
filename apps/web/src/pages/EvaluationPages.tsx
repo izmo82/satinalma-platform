@@ -12,6 +12,7 @@ import { Icon } from '../ui/icons.tsx';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { cn } from '@/lib/utils';
+import { trDecimal } from './ContractReview.tsx';
 import { CATEGORY, DEFAULT_W, DIMS, FACTORS, INCIDENT_STATUS, IncidentTable, LEVEL, OUTCOME, weightText, type WeightPolicy } from './SupplierEvaluation.tsx';
 
 function useAct(reload: () => Promise<void>) {
@@ -505,8 +506,14 @@ const RUN_STATUS: Record<string, string> = { QUEUED: 'Kuyrukta', RUNNING: 'Çal�
 const TEST_LABEL = 'Test sağlayıcısı — gerçek değil';
 /** Sözleşme görevlerini (AI06 okuma, AI14 inceleme) yeniden yönlendirmek okuma/inceleme istemektir (contract.ai.request). AI15'i isteyen kural yeniden ister. */
 const CONTRACT_TASKS = new Set(['AI06', 'AI14']);
-const FLAG_TR: Record<string, string> = { IGNORED_KEY: 'modelin karar/puan anahtarı yok sayıldı', UNVERIFIED_SCAN: 'taranmış sayfa', SOURCE_NOT_FOUND: 'kaynak bulunamadı', UNDERIVABLE: 'değer türetilemedi' };
-const flagTr = (f: string) => FLAG_TR[f.split(':')[0]!] ?? f;
+const FLAG_TR: Record<string, string> = {
+  IGNORED_KEY: 'modelin karar/puan anahtarı yok sayıldı', UNVERIFIED_SCAN: 'taranmış sayfa', SOURCE_NOT_FOUND: 'kaynak bulunamadı', UNDERIVABLE: 'değer türetilemedi',
+  MISSING: 'alan okunamadı', NO_SOURCE: 'kaynak gösterilmedi', SHORT_QUOTE: 'alıntı çok kısa', VALUE_NOT_IN_SOURCE: 'değer alıntıda yok', INVALID_TAX_ID: 'VKN kontrol basamağı tutmuyor',
+  INVALID_VALUE: 'değer biçimi geçersiz', INVALID_FORMAT: 'değer biçimi geçersiz', SOURCE_NOT_VERIFIED: 'kaynak doğrulanamadı', TEMPLATE_UNAVAILABLE: 'şablon metni okunamadı',
+  DROPPED_FINDING: 'geçersiz bulgu atıldı', UNCLEAR: 'cevap belirsiz',
+};
+/** Ham kod gösterilmez: bilinmeyen işaret genel Türkçe metinle. */
+const flagTr = (f: string) => FLAG_TR[f.split(':')[0]!] ?? 'diğer denetim işareti';
 
 export function AiPage() {
   const { me } = useSession();
@@ -528,7 +535,9 @@ export function AiPage() {
   return (
     <div className="page">
       <PageHeader title="Yapay zekâ">Önce kural ve yapılandırılmış veri; model yalnız izinli sağlayıcı, bölge ve bütçe kapısından geçerse çalışır. Para, vergi, VKN eşleme, limit, puan ve onay modele verilmez.</PageHeader>
-      {!realEnabled.length && <Banner tone="neutral" icon="info" title="Etkin AI sağlayıcısı yok">{enabled.length ? 'Yalnız test sağlayıcısı etkin (gerçek değil, ücretsiz). ' : ''}Tüm AI görevleri manuel akışla sürer. Sağlayıcı seçimi ve ücretli kullanım kurum onayı ister.</Banner>}
+      {!realEnabled.length && (enabled.length
+        ? <Banner tone="neutral" icon="info" title="Yalnız test sağlayıcısı etkin (gerçek değil)">Kayıtlı görevleri ({[...new Set(enabled.flatMap((m) => m.tasks))].join(', ')}) ücretsiz test sağlayıcısı çalıştırır; çıktısı gerçek okuma ya da gerçek inceleme değildir. Diğer görevler manuel akışla sürer. Gerçek sağlayıcı ve ücretli kullanım kurum onayı ister.</Banner>
+        : <Banner tone="neutral" icon="info" title="Etkin AI sağlayıcısı yok">Tüm AI görevleri manuel akışla sürer. Sağlayıcı seçimi ve ücretli kullanım kurum onayı ister.</Banner>)}
       <Banner tone="warn" icon="alert" title="Kalite ölçümü yapılamadı: gerçek sözleşmelerle ölçülmedi (NOT_RUN)">{d.quality.reason}</Banner>
       {d.provider && (
         <section className="panel mb-5" aria-labelledby="ai-provider-h">
@@ -539,8 +548,8 @@ export function AiPage() {
               <p className="m-0 text-sm text-ink-subtle">Salt okunur. Tek ayar: <span className="mono">AI_MODEL_ID</span> (sunucu yapılandırması).</p></div>
             <div><p className="m-0 text-sm text-ink-muted">Sağlayıcı</p><p className="m-0">{d.provider.label}</p>
               <p className="m-0 text-sm text-ink-subtle">{d.provider.external ? 'Sözleşme metni kurum dışına çıkar (KVKK onayı gerekir).' : d.provider.kind === 'test' ? 'Ağ yok, ücret yok; çıktısı gerçek okuma ya da gerçek inceleme değildir.' : 'Yapay zekâ çağrısı yapılmaz; elle akış sürer.'}</p></div>
-            <div><p className="m-0 text-sm text-ink-muted">Bu ay harcanan</p><p className="m-0 tabular">{d.usage.monthSpent} {d.policy?.budgetCurrency ?? ''}</p>
-              <p className="m-0 text-sm text-ink-subtle">Bütçe: {d.policy?.monthlyBudget ? `${d.policy.monthlyBudget} ${d.policy.budgetCurrency}` : d.policy ? 'sınırsız' : 'politika yok (ücretli AI kapalı)'}</p></div>
+            <div><p className="m-0 text-sm text-ink-muted">Bu ay harcanan</p><p className="m-0 tabular">{trDecimal(d.usage.monthSpent)} {d.policy?.budgetCurrency ?? ''}</p>
+              <p className="m-0 text-sm text-ink-subtle">Bütçe: {d.policy?.monthlyBudget ? `${trDecimal(d.policy.monthlyBudget)} ${d.policy.budgetCurrency}` : d.policy ? 'sınırsız' : 'politika yok (ücretli AI kapalı)'}</p></div>
           </div>
         </section>
       )}
@@ -566,7 +575,7 @@ export function AiPage() {
                         {x.isTestProvider && <span className="mt-0.5 block"><Tag label={{ text: x.providerLabel ?? TEST_LABEL, tone: 'warn', icon: 'alert' }} /></span>}</td>
                       <td className="px-3 py-2"><span className="mono">{x.promptVersion ?? '—'}</span></td>
                       <td className="tabular whitespace-nowrap px-3 py-2 text-right">{x.inputTokens != null || x.outputTokens != null ? `${x.inputTokens?.toLocaleString('tr-TR') ?? '—'} / ${x.outputTokens?.toLocaleString('tr-TR') ?? '—'}` : '—'}</td>
-                      <td className="tabular whitespace-nowrap px-3 py-2 text-right">{x.actualCost ? `${x.actualCost} ${x.costCurrency ?? ''}` : x.estimatedCost ? `tahmini ${x.estimatedCost} ${x.costCurrency ?? ''}` : '—'}</td>
+                      <td className="tabular whitespace-nowrap px-3 py-2 text-right">{x.actualCost ? `${trDecimal(x.actualCost)} ${x.costCurrency ?? ''}` : x.estimatedCost ? `tahmini ${trDecimal(x.estimatedCost)} ${x.costCurrency ?? ''}` : '—'}</td>
                       <td className="px-3 py-2"><strong>{RUN_STATUS[x.status] ?? 'Bilinmeyen durum'}</strong>
                         {x.reason && <span className="block text-ink-muted">{x.reason}</span>}
                         {x.flags.length > 0 && <span className="block text-warn">Denetim: {x.flags.map(flagTr).join(', ')}</span>}

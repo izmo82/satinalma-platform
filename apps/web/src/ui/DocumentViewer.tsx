@@ -13,8 +13,10 @@ export interface Region { id: string; page: number; bbox: { x: number; y: number
  * Kaynak belge görüntüleyici: orijinal baytlar yetkili uçtan alınır, yalnız istemcide çizilir (orijinal değişmez).
  * Bölgeler normalize koordinatla (0..1) sayfa üstüne yerleşir; klavye ile seçilebilir düğmelerdir.
  */
-export function DocumentViewer({ versionId, mimeType, regions = [], targetPage, selectedRegion, onSelectRegion }: {
+export function DocumentViewer({ versionId, mimeType, regions = [], targetPage, scrollNonce, selectedRegion, onSelectRegion }: {
   versionId: string; mimeType: string; regions?: Region[]; targetPage?: number | null; selectedRegion?: string | null; onSelectRegion?: (id: string) => void;
+  /** v2 Faz 4: aynı sayfaya yeniden gidildiğinde (ör. ikinci "s. N" tıklaması) yeniden kaydırmak için artan sayaç. */
+  scrollNonce?: number;
 }) {
   const [doc, setDoc] = useState<pdfjs.PDFDocumentProxy | null>(null);
   const [text, setText] = useState<string | null>(null);
@@ -57,7 +59,7 @@ export function DocumentViewer({ versionId, mimeType, regions = [], targetPage, 
     if (!targetPage || !pagesRef.current) return;
     const el = pagesRef.current.querySelector<HTMLElement>(`[data-page="${targetPage}"]`);
     el?.scrollIntoView({ block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
-  }, [targetPage, doc]);
+  }, [targetPage, doc, scrollNonce]);
 
   return (
     <div className="viewer" aria-label="Kaynak belge">

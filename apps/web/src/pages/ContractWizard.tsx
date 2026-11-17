@@ -13,7 +13,7 @@ import { DocumentViewer } from '../ui/DocumentViewer.tsx';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { IntakeForm } from './IntakePage.tsx';
-import { CONFIDENCE, flagTexts, formatAiValue, ReviewCard, runLabel, runReason, TestProviderTag, usePolled, WAITING,
+import { CONFIDENCE, flagTexts, formatAiValue, ReviewCard, runLabel, runReason, sameDecimal, TestProviderTag, usePolled, WAITING,
   type AiRunStatus, type Decision, type ExtractionField, type ExtractionsRes } from './ContractReview.tsx';
 
 /**
@@ -185,6 +185,7 @@ const currencyOf = (fields: ExtractionField[]) => fields.find((x) => x.field ===
 
 function ReadStep({ d, ex, onNext }: { d: ContractV2; ex: Polled; onNext: () => void }) {
   const [sel, setSel] = useState<ExtractionField | null>(null);
+  const [nonce, setNonce] = useState(0);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const data = ex.data;
@@ -208,7 +209,7 @@ function ReadStep({ d, ex, onNext }: { d: ContractV2; ex: Polled; onNext: () => 
             <q className="[overflow-wrap:anywhere]">{sel.evidence}</q>
           </div>
         )}
-        <div className="min-h-0 flex-1">{d.document ? <DocumentViewer versionId={d.document.documentVersionId} mimeType={d.document.mimeType} targetPage={sel?.page ?? null} /> : <p className="p-4 text-ink-muted">Belge bulunamadı.</p>}</div>
+        <div className="min-h-0 flex-1">{d.document ? <DocumentViewer versionId={d.document.documentVersionId} mimeType={d.document.mimeType} targetPage={sel?.page ?? null} scrollNonce={nonce} /> : <p className="p-4 text-ink-muted">Belge bulunamadı.</p>}</div>
       </section>
       <section className="panel self-start" aria-labelledby="read-h">
         <div className="panel-head flex-wrap"><h2 id="read-h" className="flex-1 whitespace-nowrap">Okunan alanlar</h2>
@@ -229,8 +230,8 @@ function ReadStep({ d, ex, onNext }: { d: ContractV2; ex: Polled; onNext: () => 
                     </div>
                     <div className="flex flex-wrap items-baseline gap-x-2">
                       <span className={cn('tabular [overflow-wrap:anywhere]', x.value === null && 'text-ink-muted')}>{x.value === null ? 'Okunamadı' : formatAiValue(x.field, x.value, currencyOf(fields))}</span>
-                      {x.page ? <button type="button" className="text-sm font-semibold underline" aria-label={`${x.label}: belgede sayfa ${x.page}'yı aç ve alıntıyı göster`}
-                        aria-pressed={sel?.id === x.id} onClick={() => setSel(x)}>s. {x.page}</button> : null}
+                      {x.page ? <button type="button" className="text-sm font-semibold underline" aria-label={`${x.label}: belgeyi ${x.page}. sayfada aç ve alıntıyı göster`}
+                        aria-pressed={sel?.id === x.id} onClick={() => { setSel(x); setNonce((n) => n + 1); }}>{x.page}. sayfa</button> : null}
                     </div>
                     {x.evidence && <p className="m-0 text-sm text-ink-muted [overflow-wrap:anywhere]">“{x.evidence}”</p>}
                     {flagTexts(x.flags).map((t) => <p key={t} className="m-0 text-sm text-warn">{t}</p>)}
@@ -324,7 +325,7 @@ const AI_FORM: Record<string, AiMap> = {
   indefinite: eqBool('indefinite'), autoRenewal: eqBool('autoRenewal'), limitBasis: eqStr('limitBasis'), contractNo: eqStr('contractNo'),
   governingCourt: eqStr('governingCourt'), priceEscalation: eqStr('priceEscalation'), paymentTermDays: eqStr('paymentDays'),
   noticePeriodDays: { key: 'noticeAmount', toForm: (v) => v, same: (f, v) => String(f.noticeAmount).trim() === v && f.noticeUnit === 'DAY' },
-  amount: { key: 'amount', toForm: (v) => trAmount(v), same: (f, v) => { const x = parseTrAmount(String(f.amount)); return x !== null && Number(x) === Number(v); } },
+  amount: { key: 'amount', toForm: (v) => trAmount(v), same: (f, v) => sameDecimal(parseTrAmount(String(f.amount)), v) },
   currency: { key: 'currency', toForm: (v) => v, same: (f, v) => String(f.currency).trim().toUpperCase() === v },
   // KVKK önerisi madde metnidir; kullanmak "Var" demektir (kayıtta beyan; değer yazılmaz).
   kvkkClause: { key: 'kvkkClause', toForm: () => 'yes', same: (f) => f.kvkkClause === 'yes' },
@@ -343,7 +344,9 @@ function CompleteStep({ d, ex, reload, onNext, onBack }: { d: ContractV2; ex: Po
   const [used, setUsed] = useState<Set<string>>(new Set());
   const [rejected, setRejected] = useState<Set<string>>(new Set());
   const [prefilled, setPrefilled] = useState<Record<string, string>>({});
-  const [page, setPage] = useState<number | null>(null);
+  const [page, setPageState] = useState<number | null>(null);
+  const [nonce, setNonce] = useState(0);
+  const setPage = (n: number | null) => { setPageState(n); setNonce((x) => x + 1); };
   // R5: kritik olmayan HIGH/MEDIUM (prefill=true) öneriler yalnız boş alana "Yapay zekâ" etiketiyle yazılır; kayıt yine kullanıcının "Kaydet"iyle olur.
   useEffect(() => {
     const pf: Record<string, string> = {};
@@ -475,7 +478,7 @@ function CompleteStep({ d, ex, reload, onNext, onBack }: { d: ContractV2; ex: Po
     if (!x) return null;
     const m = AI_FORM[field];
     const empty = m ? f[m.key] === '' : !f.supplierId;
-    const src = x.page ? <button type="button" className="underline" aria-label={`${x.label} önerisinin kaynağı: belgede sayfa ${x.page}`} onClick={() => setPage(x.page)}>s. {x.page}</button> : null;
+    const src = x.page ? <button type="button" className="underline" aria-label={`${x.label} önerisinin kaynağı: belgeyi ${x.page}. sayfada aç`} onClick={() => setPage(x.page)}>{x.page}. sayfa</button> : null;
     if (x.value === null || x.confidence === 'MISSING') {
       return empty ? <p className="-mt-3 mb-3 flex flex-wrap items-center gap-x-2 text-sm text-ink-muted"><Tag label={{ text: 'Sorulan alan', tone: 'warn', icon: 'help' }} />Belgede okunamadı; belgeden siz girin.</p> : null;
     }
@@ -511,7 +514,7 @@ function CompleteStep({ d, ex, reload, onNext, onBack }: { d: ContractV2; ex: Po
     <div className="grid grid-cols-[minmax(0,1fr)_440px] gap-6 max-[1100px]:grid-cols-1">
       <section className="panel flex min-h-[520px] flex-col overflow-hidden max-[1100px]:min-h-[420px]" aria-label="Belge önizlemesi">
         <div className="panel-head"><h2 className="min-w-0 flex-1 truncate">{d.document?.filename ?? 'Belge'}</h2>{d.document?.pageCount ? <span className="text-sm text-ink-subtle">{d.document.pageCount} sayfa</span> : null}</div>
-        <div className="min-h-0 flex-1">{d.document ? <DocumentViewer versionId={d.document.documentVersionId} mimeType={d.document.mimeType} targetPage={page} /> : <p className="p-4 text-ink-muted">Belge bulunamadı.</p>}</div>
+        <div className="min-h-0 flex-1">{d.document ? <DocumentViewer versionId={d.document.documentVersionId} mimeType={d.document.mimeType} targetPage={page} scrollNonce={nonce} /> : <p className="p-4 text-ink-muted">Belge bulunamadı.</p>}</div>
       </section>
       <section className="panel self-start" aria-labelledby="fields-h">
         <div className="panel-head"><h2 id="fields-h" className="flex-1">Sözleşme alanları</h2>
@@ -594,7 +597,7 @@ function CompleteStep({ d, ex, reload, onNext, onBack }: { d: ContractV2; ex: Po
             {infoOnly.length > 0 && (
               <div className="col-span-full mb-3 grid gap-1 rounded-sm border border-dashed border-ai px-3 py-2 text-sm">
                 <span className="font-semibold">Belgeden okunan diğer bilgiler (yalnız bilgi; kaydedilmez)</span>
-                {infoOnly.map((x) => <span key={x.id} className="[overflow-wrap:anywhere]"><span className="text-ink-muted">{x.label}:</span> {x.value}{x.page ? <> (<button type="button" className="underline" onClick={() => setPage(x.page)}>s. {x.page}</button>)</> : null}</span>)}
+                {infoOnly.map((x) => <span key={x.id} className="[overflow-wrap:anywhere]"><span className="text-ink-muted">{x.label}:</span> {x.value}{x.page ? <> (<button type="button" className="underline" aria-label={`${x.label}: belgeyi ${x.page}. sayfada aç`} onClick={() => setPage(x.page)}>{x.page}. sayfa</button>)</> : null}</span>)}
               </div>
             )}
           </div>
@@ -736,10 +739,10 @@ function ReviewStep({ d, ex, reload, onBack }: { d: ContractV2; ex: ExtractionsR
               <label className="flex items-start gap-2"><input type="checkbox" className="mt-1 accent-[var(--ink)]" checked={useDeputy} onChange={(e) => setUseDeputy(e.target.checked)} />
                 <span>Departman sorumlusu yerine vekili onaylasın</span></label>
               <div className="flex flex-wrap items-end gap-2">
-                <div className="min-w-[200px] flex-1"><Field id="add-approver" label="Onaycı ekle" hint="Zincirin sonuna, sırayla eklenir. Satınalma ya da departman kullanıcısı.">{(p) =>
+                <div className="min-w-[200px] flex-1"><Field id="add-approver" label="Eklenecek onaycı" hint="Zincirin sonuna, sırayla eklenir. Satınalma ya da departman kullanıcısı.">{(p) =>
                   <select className="input" {...p} value={adding} onChange={(e) => setAdding(e.target.value)}><option value="">Seçin</option>
                     {eligible.map((m) => <option key={m.id} value={m.id}>{m.displayName}</option>)}</select>}</Field></div>
-                <Button variant="outline" className="mb-4" disabled={!adding} onClick={() => { setExtra((x) => [...x, adding]); setAdding(''); }}><Icon name="arrow" />Onaycı ekle</Button>
+                <Button variant="outline" className="mb-4" aria-label="Onaycı ekle: seçileni zincire ekle" disabled={!adding} onClick={() => { setExtra((x) => [...x, adding]); setAdding(''); }}><Icon name="arrow" />Onaycı ekle</Button>
               </div>
               <p className="text-sm text-ink-muted">Onay sırayla ilerler. Zorunlu üç onaycı çıkarılamaz. Kendi eklediğiniz ya da gönderdiğiniz sözleşmeyi onaylayamazsınız; sizin adımınız vekile gider.</p>
             </div>
