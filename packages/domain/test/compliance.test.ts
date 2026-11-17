@@ -146,6 +146,7 @@ describe('validateComplianceRule', () => {
   });
   it('kapsam: tutar eşiği ondalık ve para birimi ile birlikte; yöntem bilinen', () => {
     expect(validateComplianceRule(rule({ amountThreshold: 'abc', currency: 'TRY' })).length).toBeGreaterThan(0);
+    expect(validateComplianceRule(rule({ amountThreshold: '-5', currency: 'TRY' })).length).toBeGreaterThan(0);
     expect(validateComplianceRule(rule({ amountThreshold: '5', currency: null })).length).toBeGreaterThan(0);
     expect(validateComplianceRule(rule({ amountThreshold: '5', currency: 'TRY' }))).toEqual([]);
     expect(validateComplianceRule(rule({ methods: ['UCUNCU'] })).length).toBeGreaterThan(0);

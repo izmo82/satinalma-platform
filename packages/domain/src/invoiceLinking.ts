@@ -9,13 +9,14 @@ export interface LinkContract {
   start: string | null; end: string | null; indefinite: boolean; status: 'APPROVED' | 'LEGACY' | string;
   projectId: string | null; departmentId: string | null;
 }
-export type UnmatchedReason = 'ref_not_found' | 'ref_supplier_mismatch' | 'no_active_contract' | 'multiple_active_contracts';
+export type UnmatchedReason = 'ref_not_found' | 'ref_conflict' | 'ref_supplier_mismatch' | 'no_active_contract' | 'multiple_active_contracts';
 export type MatchResult =
   | { method: 'ERP_REF' | 'SUPPLIER_DATE'; familyId: string }
   | { method: 'UNMATCHED'; reason: UnmatchedReason };
 
 export const MATCH_REASON_TR: Record<UnmatchedReason, string> = {
   ref_not_found: 'ERP referansı hiçbir sözleşme ya da siparişle eşleşmedi',
+  ref_conflict: 'Sipariş ve sözleşme referansları farklı sözleşmeleri gösteriyor',
   ref_supplier_mismatch: 'ERP referansı başka tedarikçinin sözleşmesini gösteriyor',
   no_active_contract: 'Tedarikçinin fatura tarihinde geçerli onaylı sözleşmesi yok',
   multiple_active_contracts: 'Tedarikçinin fatura tarihinde birden çok geçerli sözleşmesi var',
@@ -49,31 +50,29 @@ export function matchInvoice(input: {
   orders: { code: string; familyId: string | null }[];
 }): MatchResult {
   const { invoice, contracts, orders } = input;
-  const supplierOk = (familyId: string): boolean | null => {
-    const rows = contracts.filter((c) => c.familyId === familyId);
-    if (rows.length === 0) return null; // aile bilinmiyor: doğrulanamaz
-    return rows.every((c) => c.supplierRootId === invoice.supplierRootId);
-  };
 
-  // (1) ERP referansı: önce sipariş, sonra sözleşme kodu / numarası.
+  // (1) ERP referansı verildiyse yalnız referans konuşur: çözülemezse ya da çelişirse tarih eşleşmesine düşülmez.
   const orderRef = norm(invoice.erpOrderRef);
   const contractRef = norm(invoice.erpContractRef);
-  const hadRef = orderRef !== '' || contractRef !== '';
-  const candidates: string[] = [];
-  if (orderRef) {
-    const o = orders.find((x) => norm(x.code) === orderRef);
-    if (o?.familyId) candidates.push(o.familyId);
+  if (orderRef !== '' || contractRef !== '') {
+    const resolved: Set<string>[] = [];
+    if (orderRef) {
+      const o = orders.find((x) => norm(x.code) === orderRef);
+      const f = o?.familyId && contracts.some((c) => c.familyId === o.familyId) ? o.familyId : null;
+      if (!f) return { method: 'UNMATCHED', reason: 'ref_not_found' };
+      resolved.push(new Set([f]));
+    }
+    if (contractRef) {
+      const fams = new Set(contracts.filter((c) => norm(c.code) === contractRef || (c.contractNo && norm(c.contractNo) === contractRef)).map((c) => c.familyId));
+      if (fams.size === 0) return { method: 'UNMATCHED', reason: 'ref_not_found' };
+      resolved.push(fams);
+    }
+    const all = new Set(resolved.flatMap((x) => [...x]));
+    if (all.size > 1) return { method: 'UNMATCHED', reason: 'ref_conflict' };
+    const familyId = [...all][0]!;
+    const ok = contracts.filter((c) => c.familyId === familyId).every((c) => c.supplierRootId === invoice.supplierRootId);
+    return ok ? { method: 'ERP_REF', familyId } : { method: 'UNMATCHED', reason: 'ref_supplier_mismatch' };
   }
-  if (contractRef) {
-    for (const c of contracts) if (norm(c.code) === contractRef || (c.contractNo && norm(c.contractNo) === contractRef)) candidates.push(c.familyId);
-  }
-  let mismatch = false;
-  for (const f of candidates) {
-    const ok = supplierOk(f);
-    if (ok === true) return { method: 'ERP_REF', familyId: f };
-    if (ok === false) mismatch = true;
-  }
-  if (mismatch) return { method: 'UNMATCHED', reason: 'ref_supplier_mismatch' };
 
   // (2) Aynı tedarikçi + fatura tarihi + onaylı/eski kayıt tam bir aile.
   const families = new Set(
@@ -83,7 +82,7 @@ export function matchInvoice(input: {
   );
   if (families.size === 1) return { method: 'SUPPLIER_DATE', familyId: [...families][0]! };
   if (families.size > 1) return { method: 'UNMATCHED', reason: 'multiple_active_contracts' };
-  return { method: 'UNMATCHED', reason: hadRef ? 'ref_not_found' : 'no_active_contract' };
+  return { method: 'UNMATCHED', reason: 'no_active_contract' };
 }
 
 /** Eşleşme durumu türetilir (saklanmaz): saklı bağ > tek aileye tahsis > çok aileye tahsis > yok. */

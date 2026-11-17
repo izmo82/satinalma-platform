@@ -42,12 +42,24 @@ describe('matchInvoice (R2)', () => {
   it('başka tedarikçinin sözleşmesi tarihle eşleşmez', () => {
     expect(matchInvoice({ invoice: inv(), contracts: [C({ supplierRootId: 'S2' })], orders: [] })).toEqual({ method: 'UNMATCHED', reason: 'no_active_contract' });
   });
-  it('bulunamayan referans tarih eşleşmesine düşer; o da yoksa ref_not_found', () => {
-    expect(matchInvoice({ invoice: inv({ erpContractRef: 'YOK' }), contracts: [C()], orders: [] })).toEqual({ method: 'SUPPLIER_DATE', familyId: 'F1' });
-    expect(matchInvoice({ invoice: inv({ erpContractRef: 'YOK' }), contracts: [], orders: [] })).toEqual({ method: 'UNMATCHED', reason: 'ref_not_found' });
+  it('çözülemeyen referans tarih eşleşmesine düşmez: ref_not_found', () => {
+    expect(matchInvoice({ invoice: inv({ erpContractRef: 'YOK' }), contracts: [C()], orders: [] })).toEqual({ method: 'UNMATCHED', reason: 'ref_not_found' });
+    expect(matchInvoice({ invoice: inv({ erpOrderRef: 'PO-X' }), contracts: [C()], orders: [] })).toEqual({ method: 'UNMATCHED', reason: 'ref_not_found' });
+    expect(matchInvoice({ invoice: inv({ erpOrderRef: 'PO-9' }), contracts: [C()], orders: [{ code: 'PO-9', familyId: null }] })).toEqual({ method: 'UNMATCHED', reason: 'ref_not_found' });
+    expect(matchInvoice({ invoice: inv({ erpOrderRef: 'PO-9', erpContractRef: 'SOZ-001' }), contracts: [C()], orders: [] })).toEqual({ method: 'UNMATCHED', reason: 'ref_not_found' });
+  });
+  it('sipariş ve sözleşme referansı farklı aileleri gösterirse ref_conflict', () => {
+    const r = matchInvoice({
+      invoice: inv({ erpOrderRef: 'PO-9', erpContractRef: 'SOZ-002' }),
+      contracts: [C(), C({ familyId: 'F2', code: 'SOZ-002', contractNo: null })], orders: [{ code: 'PO-9', familyId: 'F1' }],
+    });
+    expect(r).toEqual({ method: 'UNMATCHED', reason: 'ref_conflict' });
+    expect(MATCH_REASON_TR.ref_conflict).toBeTruthy();
+    const ok = matchInvoice({ invoice: inv({ erpOrderRef: 'PO-9', erpContractRef: 'SOZ-001' }), contracts: [C()], orders: [{ code: 'PO-9', familyId: 'F1' }] });
+    expect(ok).toEqual({ method: 'ERP_REF', familyId: 'F1' });
   });
   it('Türkçe etiketler eksiksiz', () => {
-    for (const k of ['ref_not_found', 'ref_supplier_mismatch', 'no_active_contract', 'multiple_active_contracts'] as const) expect(MATCH_REASON_TR[k]).toBeTruthy();
+    for (const k of ['ref_not_found', 'ref_conflict', 'ref_supplier_mismatch', 'no_active_contract', 'multiple_active_contracts'] as const) expect(MATCH_REASON_TR[k]).toBeTruthy();
     for (const k of ['ERP_REF', 'SUPPLIER_DATE', 'MANUAL'] as const) expect(MATCH_METHOD_TR[k]).toBeTruthy();
     expect(MATCH_STATE_TR.ALLOCATED).toBe('Tahsisle (eski kayıt)');
     expect(MATCH_STATE_TR.MATCHED).toBe('Eşleşti');

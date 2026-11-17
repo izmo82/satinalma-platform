@@ -84,7 +84,7 @@ export function validateComplianceRule(r: ComplianceRule): string[] {
   if (!Number.isInteger(r.weight) || r.weight < 1 || r.weight > 100) e.push('Ağırlık 1 ile 100 arasında tam sayı olmalı');
   for (const m of r.methods) if (!(PROJECT_METHODS as readonly string[]).includes(m)) e.push(`Bilinmeyen yöntem: ${m}`);
   if (r.amountThreshold !== null) {
-    if (!isDecimal(r.amountThreshold)) e.push('Tutar eşiği ondalık sayı olmalı');
+    if (!isDecimal(r.amountThreshold) || r.amountThreshold.startsWith('-')) e.push('Tutar eşiği sıfır ya da pozitif ondalık sayı olmalı');
     if (!r.currency) e.push('Tutar eşiği için para birimi gerekli');
   }
   if (r.checkType === 'MANUAL') {
