@@ -4,7 +4,7 @@ import { createPool, withoutTenant, withTenant, type TenantContext } from './db.
 import { S3ObjectStore, type ObjectStore } from './storage.ts';
 import { processSignatureJob } from './modules/contracts.ts';
 import { processNoticeReminder, processObligationDue } from './modules/contractTerms.ts';
-import { enqueueReminderBackfills, processEndReminder, processReminderBackfill, systemContext } from './modules/contractReminders.ts';
+import { dailyReminderBackfill, processEndReminder, processReminderBackfill, systemContext } from './modules/contractReminders.ts';
 import { processErpExport } from './modules/invoices.ts';
 import { processAiRun } from './modules/ai.ts';
 import { processPurge, processTenantExport } from './modules/governance.ts';
@@ -88,7 +88,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   process.on('SIGTERM', () => { stopping = true; });
   const directory = directoryProvider(config.directory);
   let lastNightly = 0;
-  let lastReminderBackfill = 0;
+  const reminderBackfill = dailyReminderBackfill();
   const loop = async (lane: 'short' | 'export') => {
     while (!stopping) {
       // R8: gece eşitlemesi en fazla dakikada bir denetlenir (İstanbul 06:00 sonrası, kiracı başına günde bir iş).
@@ -96,10 +96,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         lastNightly = Date.now();
         await enqueueNightlySyncs(pool, new Date(), directory).catch((e) => console.error('directory nightly enqueue failed', (e as Error).message));
       }
-      // R7 geri doldurma: başlangıçta ve en fazla dakikada bir denetlenir; kiracı başına günde bir iş.
-      if (lane === 'short' && Date.now() - lastReminderBackfill >= 60_000) {
-        lastReminderBackfill = Date.now();
-        await enqueueReminderBackfills(pool, new Date()).catch((e) => console.error('reminder backfill enqueue failed', (e as Error).message));
+      // R7 geri doldurma: başlangıçta ve sonra İstanbul gününde bir kez taranır (final inceleme, ertelenen #3); kiracı başına günde bir iş.
+      if (lane === 'short') {
+        await reminderBackfill(pool, new Date()).catch((e) => console.error('reminder backfill enqueue failed', (e as Error).message));
       }
       const n = await processJobs(pool, store, config.signatureDetectorProvider, 10, config.erpAdapter ?? null, lane, { directoryProvider: directory });
       if (n === 0) await new Promise((r) => setTimeout(r, 2000));

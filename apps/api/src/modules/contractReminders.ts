@@ -36,7 +36,9 @@ export const DECISION_TR: Record<string, string> = {
 /** Bu fazda gerçek e-posta kanalı (Graph) bağlı değil; gönderici uydurulmaz. */
 export const emailChannelConfigured = () => false;
 
-const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' }).format(new Date());
+/** İstanbul takvim günü (YYYY-MM-DD). */
+export const istanbulDay = (d: Date) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' }).format(d);
+const today = () => istanbulDay(new Date());
 const trDate = (d: string) => d.split('-').reverse().join('.');
 const daysBetween = (from: string, to: string) => Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000);
 export const SYSTEM_USER = '00000000-0000-0000-0000-000000000000';
@@ -376,16 +378,26 @@ export async function getReminders(tx: Tx, ctx: TenantContext, familyId: string)
 export const systemContext = (tenantId: string, companyIds: string[], jobId: string): TenantContext =>
   ({ tenantId, userId: SYSTEM_USER, roles: [], companyIds, departmentIds: [], allDepartments: true, correlationId: `job-${jobId}` });
 
-/** Geri doldurma: eski kayıt, onay zinciri yok, güncel sürümün son koşulu doğrulanmış ve hiç hatırlatıcısı olmayan aileler. İdempotent. */
+/**
+ * Geri doldurma koşulu (051b; 051d ile aynı): eski kayıt (intake_flow false); onaylı ya da açık zinciri yok (yalnız iptal/ret
+ * zinciri olabilir: final inceleme M1); güncel sürümün son koşulu doğrulanmış ve o koşul için hatırlatıcı yok; süresi dolmamış
+ * (süreli: bitiş bugün ya da sonra; süresiz: ihbar süresi ve başlangıç var). Süresi dolmuş sözleşmeye hatırlatıcı kurulmaz
+ * (final inceleme I1); bu yüzden her gün yeniden seçilmez. `$1` İstanbul günü.
+ */
+export const BACKFILL_FAMILY_WHERE = `NOT f.intake_flow
+      AND NOT EXISTS (SELECT 1 FROM contract_approval_chains c WHERE c.family_id = f.id AND (c.outcome IS NULL OR c.outcome NOT IN ('CANCELLED','REJECTED')))
+      AND EXISTS (SELECT 1 FROM contract_versions v
+        JOIN LATERAL (SELECT t.id, t.verified_at, t.start_date, t.end_date FROM contract_terms t WHERE t.contract_version_id = v.id ORDER BY t.revision DESC LIMIT 1) lt ON true
+        WHERE v.family_id = f.id AND v.superseded_by_id IS NULL AND lt.verified_at IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM contract_reminders r WHERE r.terms_id = lt.id)
+          AND CASE WHEN f.indefinite THEN f.termination_notice_amount IS NOT NULL AND lt.start_date IS NOT NULL
+                   ELSE lt.end_date IS NOT NULL AND lt.end_date >= $1::date END)`;
+
+/** Geri doldurma: `BACKFILL_FAMILY_WHERE` koşulundaki aileler. İdempotent. */
 export async function backfillLegacyReminders(tx: Tx, ctx: TenantContext) {
   const fams = (await tx.query<{ id: string }>(`SELECT f.id FROM contract_families f
-    WHERE NOT f.intake_flow
-      AND NOT EXISTS (SELECT 1 FROM contract_approval_chains c WHERE c.family_id = f.id)
-      AND NOT EXISTS (SELECT 1 FROM contract_reminders r WHERE r.family_id = f.id)
-      AND EXISTS (SELECT 1 FROM contract_versions v
-        JOIN LATERAL (SELECT t.verified_at FROM contract_terms t WHERE t.contract_version_id = v.id ORDER BY t.revision DESC LIMIT 1) lt ON true
-        WHERE v.family_id = f.id AND v.superseded_by_id IS NULL AND lt.verified_at IS NOT NULL)
-    ORDER BY f.created_at, f.id`)).rows;
+    WHERE ${BACKFILL_FAMILY_WHERE}
+    ORDER BY f.created_at, f.id`, [today()])).rows;
   let scheduled = 0;
   for (const f of fams) if ((await scheduleContractReminders(tx, ctx, f.id)).created) scheduled++;
   return { candidates: fams.length, scheduled };
@@ -393,7 +405,7 @@ export async function backfillLegacyReminders(tx: Tx, ctx: TenantContext) {
 
 /** Gece/başlangıç: geri doldurulacak ailesi olan her kiracıya günde bir `contract.reminder_backfill` işi (İstanbul günü anahtarlı). */
 export async function enqueueReminderBackfills(pool: pg.Pool, now: Date): Promise<number> {
-  const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' }).format(now);
+  const day = istanbulDay(now);
   const tenants = await withoutTenant(pool, async (c) =>
     (await c.query<{ tenant_id: string }>(`SELECT t AS tenant_id FROM contract_reminder_backfill_tenants() t`)).rows);
   let n = 0;
@@ -404,6 +416,23 @@ export async function enqueueReminderBackfills(pool: pg.Pool, now: Date): Promis
       [tenant_id, `reminder-backfill:${day}`, { day }])).rowCount ?? 0);
   }
   return n;
+}
+
+/**
+ * İşçi kapısı (final inceleme, ertelenen #3): tarama İstanbul gününde bir kez (bellekte son gün) yapılır, her dakika değil.
+ * Tarama hata verirse gün işaretlenmez; en erken bir dakika sonra yeniden denenir. Yeni gün başlayınca yeniden tarar.
+ */
+export function dailyReminderBackfill(enqueue: (pool: pg.Pool, now: Date) => Promise<number> = enqueueReminderBackfills) {
+  let lastDay = '';
+  let lastTry = Number.NEGATIVE_INFINITY;
+  return async (pool: pg.Pool, now: Date): Promise<number | null> => {
+    const day = istanbulDay(now);
+    if (day === lastDay || now.getTime() - lastTry < 60_000) return null;
+    lastTry = now.getTime();
+    const n = await enqueue(pool, now);
+    lastDay = day;
+    return n;
+  };
 }
 
 export async function processReminderBackfill(pool: pg.Pool, tenantId: string, jobId: string) {

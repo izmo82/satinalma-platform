@@ -170,6 +170,22 @@ describe('reminderDates', () => {
       { offset: 7, date: '2027-01-24', kind: 'END', includeProcurement: true },
     ]);
   });
+  it('süresi dolmuş sözleşmeye hatırlatıcı planlanmaz (D108 I1)', () => {
+    expect(reminderDates({ ...base, endDate: '2024-01-01', today: '2026-11-17' })).toEqual([]);
+    expect(reminderDates({ ...base, endDate: '2026-11-16', today: '2026-11-17' })).toEqual([]);
+  });
+  it('bitiş bugünse en yakın geçmiş bugüne taşınır', () => {
+    expect(reminderDates({ ...base, endDate: '2026-11-17', today: '2026-11-17' })).toEqual([
+      { offset: 7, date: '2026-11-17', kind: 'END', includeProcurement: true },
+    ]);
+  });
+  it('ihbar son günü geçmişse ihbar düşer, bitiş hatırlatıcıları kalır', () => {
+    const r = reminderDates({ endDate: '2027-06-30', indefinite: false, autoRenewal: true, noticeDeadline: '2026-11-10', offsets: [30], today: '2026-11-17' });
+    expect(r).toEqual([{ offset: 30, date: '2027-05-31', kind: 'END', includeProcurement: true }]);
+  });
+  it('süresizde ihbar son günü geçmişse hiçbir şey yok', () => {
+    expect(reminderDates({ ...base, endDate: null, indefinite: true, noticeDeadline: '2026-01-01', today: '2026-11-17' })).toEqual([]);
+  });
   it('bugünkü tarih geçmiş sayılmaz', () => {
     const r = reminderDates({ ...base, endDate: '2026-12-17', offsets: [30], today: '2026-11-17' });
     expect(r).toEqual([{ offset: 30, date: '2026-11-17', kind: 'END', includeProcurement: true }]);

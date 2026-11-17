@@ -470,3 +470,90 @@ describe('inceleme düzeltmeleri (Görev 6, tur 1)', () => {
     expect(fired.status).toBe('SUCCEEDED');
   });
 });
+
+// v2 Faz 3 (D108): final inceleme düzeltmeleri — I1 (süresi dolmuş sözleşmeye hatırlatıcı yok), M1 (iptal/ret zinciri olan eski kayıt), ertelenen #3 (günlük kapı).
+describe('final inceleme düzeltmeleri', () => {
+  const lastYear = () => addDays(today(), -365);
+  const expiredFields = () => ({ signedOn: addDays(today(), -800), startDate: addDays(today(), -790), endDate: lastYear() });
+  const cancelledChain = async (w: SyntheticWorld, c: { familyId: string; cv: string; termsId: string }, outcome: 'CANCELLED' | 'REJECTED') => {
+    const id = (await h.owner.query(`INSERT INTO contract_approval_chains (tenant_id, family_id, version_id, terms_id, submitted_by) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+      [w.tenantA, c.familyId, c.cv, c.termsId, w.users.techEval.id])).rows[0].id;
+    await h.owner.query(`UPDATE contract_approval_chains SET closed_at = now(), outcome = $2, cancel_reason = $3 WHERE id = $1`,
+      [id, outcome, outcome === 'CANCELLED' ? 'İçerik değişti (test)' : null]);
+  };
+
+  it('I1: süresi geçen yıl dolmuş eski kayıt — doğrulama ve geri doldurma hatırlatıcı/görev açmaz; kiracı kapıdan seçilmez', async () => {
+    const { backfillLegacyReminders, systemContext } = await import('../src/modules/contractReminders.ts');
+    const w = await fresh();
+    await approvers(w);
+    const c = await contract(w, expiredFields(), { approved: false });
+    await h.owner.query(`UPDATE contract_families SET intake_flow = false WHERE id = $1`, [c.familyId]);
+    const v = await call(w, 'legal2', 'POST', `/api/v1/contract-terms/${c.termsId}/verify`);
+    expect(v.status, JSON.stringify(v.body)).toBe(200);
+    expect(v.body.contractReminders).toEqual([]);
+    expect((await h.owner.query(`SELECT t FROM contract_reminder_backfill_tenants() t`)).rows.map((r: any) => r.t)).not.toContain(w.tenantA);
+    const ctx = systemContext(w.tenantA, [w.companyA1.id, w.companyA2.id], 'test');
+    expect(await withTenant(h.pool, ctx, (tx) => backfillLegacyReminders(tx, ctx))).toEqual({ candidates: 0, scheduled: 0 });
+    expect((await reminderRows(c.familyId)).rowCount).toBe(0);
+    expect((await reminderTasks(c.familyId)).rowCount).toBe(0);
+  });
+
+  it('I1: süresi dolmuş sözleşme onaylansa da kurulum boş; bitiş bugünse yalnız bugünkü hatırlatıcı', async () => {
+    const w = await fresh();
+    await approvers(w);
+    const old = await contract(w, expiredFields());
+    expect(await schedule(w, old.familyId)).toMatchObject({ created: false, reminders: [] });
+    expect((await reminderRows(old.familyId)).rowCount).toBe(0);
+    const t = await contract(w, { signedOn: addDays(today(), -400), startDate: addDays(today(), -390), endDate: today() });
+    const r = await schedule(w, t.familyId);
+    expect(r.reminders.map((x) => [x.kind, x.offset, x.dueOn])).toEqual([['END', 7, today()]]);
+  });
+
+  it('M1: iptal edilmiş zinciri olan eski kayıtta yeni koşul doğrulanınca hatırlatıcı kurulur; reddedilmiş zincirli eski kayıt geri doldurulur', async () => {
+    const { backfillLegacyReminders, systemContext } = await import('../src/modules/contractReminders.ts');
+    const w = await fresh();
+    await approvers(w);
+    const a = await contract(w, {}, { approved: false });
+    await h.owner.query(`UPDATE contract_families SET intake_flow = false WHERE id = $1`, [a.familyId]);
+    await cancelledChain(w, a, 'CANCELLED');
+    const f2 = await call(w, 'techEval', 'PUT', `/api/v1/contracts/${a.familyId}/fields`, fields(w, { endDate: '2029-06-30' }));
+    expect(f2.status, JSON.stringify(f2.body)).toBe(200);
+    const newTerms = f2.body.fields.termsId as string;
+    expect(newTerms).not.toBe(a.termsId);
+    const v = await call(w, 'legal2', 'POST', `/api/v1/contract-terms/${newTerms}/verify`);
+    expect(v.status, JSON.stringify(v.body)).toBe(200);
+    expect(v.body.contractReminders.map((x: any) => x.offset)).toEqual([90, 60, 30, 7]);
+    expect((await reminderRows(a.familyId)).rows.every((x) => x.terms_id === newTerms)).toBe(true);
+
+    // Doğrulanmış, reddedilmiş zinciri olan eski kayıt (hatırlatıcısı yok) geri doldurmaya girer.
+    const b = await contract(w, {}, { approved: false });
+    expect((await call(w, 'legal2', 'POST', `/api/v1/contract-terms/${b.termsId}/verify`)).status).toBe(200);
+    await h.owner.query(`UPDATE contract_families SET intake_flow = false WHERE id = $1`, [b.familyId]);
+    await cancelledChain(w, b, 'REJECTED');
+    expect((await reminderRows(b.familyId)).rowCount).toBe(0);
+    expect((await h.owner.query(`SELECT t FROM contract_reminder_backfill_tenants() t`)).rows.map((r: any) => r.t)).toContain(w.tenantA);
+    const ctx = systemContext(w.tenantA, [w.companyA1.id, w.companyA2.id], 'test');
+    expect(await withTenant(h.pool, ctx, (tx) => backfillLegacyReminders(tx, ctx))).toEqual({ candidates: 1, scheduled: 1 });
+    expect((await reminderRows(b.familyId)).rows.map((x) => x.offset_days)).toEqual([90, 60, 30, 7]);
+    expect((await h.owner.query(`SELECT t FROM contract_reminder_backfill_tenants() t`)).rows.map((r: any) => r.t)).not.toContain(w.tenantA);
+  });
+
+  it('ertelenen #3: işçi geri doldurma taramasını İstanbul gününde bir kez yapar; hata olursa gün işaretlenmez', async () => {
+    const { dailyReminderBackfill } = await import('../src/modules/contractReminders.ts');
+    let calls = 0;
+    let fail = false;
+    const gate = dailyReminderBackfill(async () => { calls++; if (fail) throw new Error('db'); return 1; });
+    const pool = h.pool;
+    expect(await gate(pool, new Date('2026-11-17T06:00:00Z'))).toBe(1);
+    expect(await gate(pool, new Date('2026-11-17T06:05:00Z'))).toBeNull();
+    expect(await gate(pool, new Date('2026-11-17T20:59:00Z'))).toBeNull(); // İstanbul 23:59
+    expect(calls).toBe(1);
+    fail = true;
+    await expect(gate(pool, new Date('2026-11-17T21:00:00Z'))).rejects.toThrow('db'); // İstanbul 18.11 00:00
+    expect(await gate(pool, new Date('2026-11-17T21:00:30Z'))).toBeNull(); // bir dakika dolmadan yeniden denemez
+    fail = false;
+    expect(await gate(pool, new Date('2026-11-17T21:01:00Z'))).toBe(1);
+    expect(await gate(pool, new Date('2026-11-18T10:00:00Z'))).toBeNull();
+    expect(calls).toBe(3);
+  });
+});

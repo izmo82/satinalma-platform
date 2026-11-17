@@ -201,9 +201,14 @@ export function reminderDates(input: {
   out.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   const today = input.today;
   if (!today) return out;
-  const future = out.filter((r) => r.date >= today);
-  const past = out.filter((r) => r.date < today);
-  if (past.length === 0) return out;
+  // D108 (I1): hedef tarihi (bitiş ya da ihbar son günü) bugünden önce olan türün
+  // hatırlatıcısı hiç planlanmaz; süresi dolmuş sözleşme için "bugüne taşıma" yapılmaz.
+  const endPassed = input.endDate != null && input.endDate < today;
+  const noticePassed = input.noticeDeadline != null && input.noticeDeadline < today;
+  const live = out.filter((r) => (r.kind === 'END' ? !endPassed : !noticePassed));
+  const future = live.filter((r) => r.date >= today);
+  const past = live.filter((r) => r.date < today);
+  if (past.length === 0) return live;
   // Geçmişte kalanlardan yalnız en yakın olan hemen (bugün) tetiklenir; diğerleri düşer.
   const last = past[past.length - 1]!;
   const moved: Reminder = { ...last, date: today };

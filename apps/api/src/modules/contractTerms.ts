@@ -6,7 +6,7 @@ import type { TenantContext, Tx } from '../db.ts';
 import { audit } from '../audit.ts';
 import { closeTasks, openTask, v2Role } from '../tasks.ts';
 import { ApiError, conflict, notFound, unprocessable } from '../errors.ts';
-import { scheduleContractReminders, taskPrefix as reminderTaskPrefix } from './contractReminders.ts';
+import { effectiveTermsId, scheduleContractReminders, taskPrefix as reminderTaskPrefix } from './contractReminders.ts';
 import { cancelOpenChain, CONTENT_CHANGED_REASON, familyWritable, lockFamily } from './contractChain.ts';
 
 /**
@@ -113,11 +113,13 @@ export async function verifyTerms(tx: Tx, ctx: TenantContext, termsId: string) {
   await tx.query(`UPDATE contract_terms SET verified_by = $2, verified_at = now() WHERE id = $1`, [termsId, ctx.userId]);
   await closeTasks(tx, `terms-verify:${t.contract_version_id}`);
   const scheduled = await scheduleNotice(tx, ctx, t);
-  // v2 Faz 3 (R7): eski kayıtta (Faz 3 öncesi, onay zinciri yok) onay olmayacağından bitiş hatırlatıcıları doğrulamayla kurulur.
+  // v2 Faz 3 (R7): eski kayıtta (Faz 3 öncesi, intake_flow false) bitiş hatırlatıcıları doğrulamayla kurulur. Final inceleme M1: iptal
+  // edilmiş/reddedilmiş zinciri olan eski kayıt da dahil; yürürlükteki koşul (`effectiveTermsId`: onaylı zincir yoksa en yeni doğrulanmış
+  // koşul) bu revizyonsa kurulur. Onaylı zincir başka koşulu kapsıyorsa hatırlatıcılar o onaylı koşulla sürer.
   const cv = await loadCv(tx, t.contract_version_id);
-  const legacy = (await tx.query(`SELECT 1 FROM contract_families f WHERE f.id = $1 AND NOT f.intake_flow
-    AND NOT EXISTS (SELECT 1 FROM contract_approval_chains c WHERE c.family_id = f.id)`, [cv.family_id])).rowCount;
-  const contractReminders = legacy ? (await scheduleContractReminders(tx, ctx, cv.family_id)).reminders : [];
+  const legacy = (await tx.query(`SELECT 1 FROM contract_families f WHERE f.id = $1 AND NOT f.intake_flow`, [cv.family_id])).rowCount;
+  const contractReminders = legacy && (await effectiveTermsId(tx, cv.family_id)) === t.id
+    ? (await scheduleContractReminders(tx, ctx, cv.family_id)).reminders : [];
   await audit(tx, ctx, 'contract.terms_verified', 'contract_version', t.contract_version_id, { termsId, revision: t.revision, reminders: scheduled });
   return { verified: true, reminders: scheduled, contractReminders };
 }
