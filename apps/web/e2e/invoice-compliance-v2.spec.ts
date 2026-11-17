@@ -241,7 +241,8 @@ test.describe('v2 Faz 7: fatura eşleştirme ve uyum denetimi (veri değiştiren
     await link.click();
     await expect(page.getByText(`${invNo} faturası ${p.contractCode} sözleşmesine bağlandı.`)).toBeVisible();
     // Detay: v2 durumu birincil, eski tahsis kontrolü ikincil; eşleşme kartı yöntem ve kullanım.
-    await page.goto('/faturalar?durum=ESLESTI');
+    // v2 Faz 7 (D112, Ruling 17): v2 "eşleşti" kümesi durum=BAGLI'ye taşındı; durum=ESLESTI eski anlamında (tahsis kontrolü geçti) kalır.
+    await page.goto('/faturalar?durum=BAGLI');
     await page.getByRole('link', { name: invNo }).click();
     const card = page.locator('section[aria-labelledby="match-h"]');
     await expect(card.getByText('Elle', { exact: true })).toBeVisible();

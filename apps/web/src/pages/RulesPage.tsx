@@ -8,6 +8,7 @@ import { Banner, Empty, ErrorState, Field, Loading, Modal, PageHeader, Tag } fro
 import { Icon } from '../ui/icons.tsx';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { trDecimal } from './ContractReview.tsx';
 
 // v2 Faz 7 (D112, R6–R7, Figma 19): sürümlü satınalma kuralı seti. Taslak → yayım (yürürlük tarihi ≥ bugün); yayımlı set değişmez, değişiklik
 // yeni sürüm taslağıyla yapılır. Düzenleme yalnız Yönetici (rule.manage); Satınalma ve Denetçi salt okur. Taslak silinmez (veritabanı kuralı).
@@ -160,13 +161,15 @@ function SetView({ d, today, manage, scheduled, onChanged, setMsg, fail }: { d: 
 
 /** tr-TR ya da nokta ondalıklı sayı metnini API biçimine çevirir: "1.000,50" → "1000.50", "70,5" → "70.5", "1000.50" aynen. */
 const toDecimalString = (v: string) => { const t = v.trim().replace(/\s/g, ''); return t.includes(',') ? t.replace(/\./g, '').replace(',', '.') : t; };
+/** v2 Faz 7 izleme: tutar eşiği tr-TR yazılır ("1.000,50"); virgülsüz ve noktaları üçlü grup olan değer ("1.000", "12.500.000") binlik ayraçlı tam sayıdır. */
+const toAmountString = (v: string) => { const t = v.trim().replace(/\s/g, ''); return !t.includes(',') && /^\d{1,3}(\.\d{3})+$/.test(t) ? t.replace(/\./g, '') : toDecimalString(t); };
 
 interface FormState { code: string; name: string; description: string; checkType: 'DATA' | 'EVIDENCE_AI' | 'MANUAL'; checkKey: string; params: Record<string, string>;
   methods: string[]; amountThreshold: string; currency: string; weight: string; mandatory: boolean }
 
 function RuleForm({ setId, rule, checks, onCancel, onSaved }: { setId: string; rule: Rule | null; checks: Checks; onCancel: () => void; onSaved: (msg: string) => Promise<void> }) {
   const [f, setF] = useState<FormState>(() => rule ? { code: rule.code, name: rule.name, description: rule.description ?? '', checkType: rule.checkType, checkKey: rule.checkKey ?? '',
-    params: Object.fromEntries(Object.entries(rule.params ?? {}).map(([k, v]) => [k, String(v)])), methods: rule.methods, amountThreshold: rule.amountThreshold ?? '', currency: rule.currency ?? '',
+    params: Object.fromEntries(Object.entries(rule.params ?? {}).map(([k, v]) => [k, String(v)])), methods: rule.methods, amountThreshold: rule.amountThreshold ? trDecimal(rule.amountThreshold) : '', currency: rule.currency ?? '',
     weight: String(rule.weight), mandatory: rule.mandatory }
     : { code: '', name: '', description: '', checkType: 'DATA', checkKey: '', params: {}, methods: [], amountThreshold: '', currency: '', weight: '5', mandatory: false });
   const [busy, setBusy] = useState(false);
@@ -182,7 +185,7 @@ function RuleForm({ setId, rule, checks, onCancel, onSaved }: { setId: string; r
     // Ondalık parametreler metin olarak gönderilir (para/oran hassasiyeti); tam sayı parametreler sayı.
     const params = f.checkType === 'MANUAL' ? {} : Object.fromEntries((check?.params ?? []).map((p) => [p.key, p.kind === 'int' ? Number(f.params[p.key]) : toDecimalString(f.params[p.key] ?? '')]));
     const body = { code: f.code.trim(), name: f.name.trim(), description: f.description.trim() || null, checkType: f.checkType, checkKey: f.checkType === 'MANUAL' ? null : f.checkKey || null,
-      params, methods: f.methods, amountThreshold: f.amountThreshold.trim() ? toDecimalString(f.amountThreshold) : null, currency: f.amountThreshold.trim() ? (f.currency.trim() || 'TRY').toUpperCase() : null,
+      params, methods: f.methods, amountThreshold: f.amountThreshold.trim() ? toAmountString(f.amountThreshold) : null, currency: f.amountThreshold.trim() ? (f.currency.trim() || 'TRY').toUpperCase() : null,
       weight: Number(f.weight), mandatory: f.mandatory };
     try {
       if (rule) await api(`/api/v1/procurement-rule-sets/${setId}/rules/${rule.id}`, { method: 'PUT', json: { ...body, sortOrder: rule.sortOrder } });
@@ -208,7 +211,7 @@ function RuleForm({ setId, rule, checks, onCancel, onSaved }: { setId: string; r
           <div className="flex flex-wrap gap-4 text-sm">{checks.methods.map((m) => <label key={m.key} className="flex items-center gap-1.5"><input type="checkbox" checked={f.methods.includes(m.key)}
             onChange={(e) => setF({ ...f, methods: e.target.checked ? [...f.methods, m.key] : f.methods.filter((x) => x !== m.key) })} />{m.label}</label>)}</div>
           <span className="hint">Hiçbiri seçilmezse kural tüm yöntemlerde uygulanır.</span></fieldset>
-        <Field label="Tutar eşiği (isteğe bağlı)" hint="Bu tutar ve üstündeki projelere uygulanır; en çok 2 ondalık.">{(p) => <input className="input tabular" inputMode="decimal" {...p} value={f.amountThreshold} onChange={(e) => setF({ ...f, amountThreshold: e.target.value })} />}</Field>
+        <Field label="Tutar eşiği (isteğe bağlı)" hint="Bu tutar ve üstündeki projelere uygulanır. Binlik ayracı nokta, ondalık ayracı virgül: 1.000,50 (en çok 2 ondalık). 1.000 bin olarak okunur.">{(p) => <input className="input tabular" inputMode="decimal" {...p} value={f.amountThreshold} onChange={(e) => setF({ ...f, amountThreshold: e.target.value })} />}</Field>
         <Field label="Para birimi">{(p) => <input className="input" maxLength={3} placeholder="TRY" {...p} value={f.currency} onChange={(e) => setF({ ...f, currency: e.target.value.toUpperCase() })} />}</Field>
         <Field label="Ağırlık" hint="1–100 arası tam sayı.">{(p) => <input className="input tabular" type="number" min={1} max={100} step={1} required {...p} value={f.weight} onChange={(e) => setF({ ...f, weight: e.target.value })} />}</Field>
         <label className="flex items-center gap-2 self-center text-sm font-semibold"><input type="checkbox" checked={f.mandatory} onChange={(e) => setF({ ...f, mandatory: e.target.checked })} />Zorunlu (karşılanmazsa proje uyumsuz)</label>

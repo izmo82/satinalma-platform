@@ -38,8 +38,13 @@ const ERP: Record<string, string> = { PENDING: 'ERP: aktarım bekliyor', UNKNOWN
 // v2 Faz 7 (D112, Figma 17): "Eşleşmedi kuyruğu" (yeni URL değeri KUYRUK) ve "Eşleşti" sunucunun eşleşme durumuyla (R1) süzer ve sunucu
 // sayaçlarını gösterir. Eski tahsis tabanlı "Eşleşmedi" süzgeci "Tahsis kontrolü eksik" adıyla aynı URL değeriyle (ESLESMEDI) kalır;
 // eski bağlantılar ve kayıtlı görünümler aynı anlamı açar. Hukuken iptal/ret aynen.
-const MATCH_FILTERS = [['', 'Tümü'], ['KUYRUK', 'Eşleşmedi kuyruğu'], ['ESLESTI', 'Eşleşti'], ['ESLESMEDI', 'Tahsis kontrolü eksik'], ['IPTAL', 'Hukuken iptal/ret']] as const;
-const SERVER_MATCH: Record<string, string> = { KUYRUK: 'UNMATCHED', ESLESTI: 'MATCHED' };
+// v2 Faz 7 izleme (Ruling 17): durum=ESLESTI de eski anlamını korur (tahsis kontrolü geçti, istemcide, Faz 7 öncesi gibi); sunucunun v2
+// "eşleşti" kümesi yeni URL değeri BAGLI ile "Eşleşti (sözleşmeye bağlı)" çipinde.
+const MATCH_FILTERS = [['', 'Tümü'], ['KUYRUK', 'Eşleşmedi kuyruğu'], ['BAGLI', 'Eşleşti (sözleşmeye bağlı)'], ['ESLESTI', 'Tahsis kontrolü geçti'], ['ESLESMEDI', 'Tahsis kontrolü eksik'], ['IPTAL', 'Hukuken iptal/ret']] as const;
+const SERVER_MATCH: Record<string, string> = { KUYRUK: 'UNMATCHED', BAGLI: 'MATCHED' };
+const CLIENT_MATCH = new Set(['IPTAL', 'ESLESMEDI', 'ESLESTI']);
+/** Sunucu listesi en çok bu kadar fatura döndürür; aşınca istemci süzgeçleri yalnız yüklenen kısmı görür. */
+const LIST_LIMIT = 300;
 
 interface InvoiceRow { id: string; kind: keyof typeof KIND; invoiceNo: string; issueDate: string; currency: string; supplierName: string; supplierStatus: string; supplierIdentityVerified: boolean;
   netAmount: string; legalStatus: string; paymentStatus: string; decision: string | null; erpStatus: string | null; duplicateCount: number; matched: boolean; departmentId: string | null; departmentName: string | null;
@@ -78,11 +83,13 @@ export function InvoicesPage() {
   const toggleCol = (c: string) => { const n = new Set(hidden); n.has(c) ? n.delete(c) : n.add(c); setParam('gizle', [...n].sort().join(',')); };
   const all = r.data?.items ?? [];
   // v2 eşleşme süzgeçleri sunucuda (R1 türetimi); eski tahsis kontrolü ve hukuken iptal/ret istemcide (yüklenen liste üzerinde).
-  const matches = (x: InvoiceRow, k: string) => k === 'IPTAL' || k === 'ESLESMEDI' ? matchOf(x) === k : true;
+  const matches = (x: InvoiceRow, k: string) => CLIENT_MATCH.has(k) ? matchOf(x) === k : true;
   const items = all.filter((x) => matches(x, durum) && (!para || x.currency === para));
   const counts = r.data?.counts;
   const clientSide = !SERVER_MATCH[durum];
-  const chipCount = (k: string) => k === 'IPTAL' || k === 'ESLESMEDI' ? (clientSide ? all.filter((x) => matchOf(x) === k).length : undefined)
+  // v2 Faz 7 izleme (F1): liste 300'de kesilir; kesildiyse istemci çip sayıları (eksik veriyle) gösterilmez ve not düşülür.
+  const truncated = !!r.data && (all.length >= LIST_LIMIT || (counts !== undefined && clientSide && all.length < counts.all));
+  const chipCount = (k: string) => CLIENT_MATCH.has(k) ? (clientSide && !truncated ? all.filter((x) => matchOf(x) === k).length : undefined)
     : counts ? (k === '' ? counts.all : k === 'KUYRUK' ? counts.unmatched : counts.matched) : undefined;
   const canMatch = !!r.data?.can?.match;
   const currencies = [...new Set(all.map((x) => x.currency))].sort();
@@ -113,6 +120,8 @@ export function InvoicesPage() {
           {COLS.map(([k, l]) => <label key={k} className="flex items-center gap-1.5"><input type="checkbox" className="accent-[var(--ink)]" aria-label={`${l} kolonunu göster`} checked={show(k)} onChange={() => toggleCol(k)} />{l}</label>)}
         </fieldset>
       </div>
+      {truncated && <p role="status" className="mb-3 text-sm text-ink-muted">İlk {all.length.toLocaleString('tr-TR')} fatura gösteriliyor{counts && clientSide ? ` (toplam ${counts.all.toLocaleString('tr-TR')})` : ''}.
+        {' '}Tahsis kontrolü ve iptal/ret süzgeçleri yalnız gösterilen faturalarda çalışır; departman ya da eşleşme süzgeciyle daraltın.</p>}
       {r.loading && !r.data ? <Loading /> : r.error ? <ErrorState error={r.error} onRetry={r.reload} /> : !items.length ? (
         <div className="rounded-md border border-border bg-surface"><Empty icon="receipt" title={all.length || dep || durum ? 'Süzgece uyan fatura yok' : 'Fatura yok'}>{all.length || dep || durum ? 'Süzgeci değiştirin veya “Tümü”nü seçin.' : 'e-Fatura girişi veya elle giriş sonrası burada görünür.'}</Empty></div>
       ) : (
