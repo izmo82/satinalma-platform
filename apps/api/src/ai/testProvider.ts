@@ -1,6 +1,5 @@
 import type { ContractAiField, FindingSeverity, ReviewCategory } from '@sp/domain';
 import type { AiInput, AiProvider, AiResult } from './provider.ts';
-import { costFromPrice } from './anthropic.ts';
 
 /**
  * v2 Faz 4 (R1, R13) test sağlayıcısı `test-fixture`: ağ yok, ücret yok (tarife "test tarifesi"), deterministik.
@@ -175,7 +174,7 @@ export function testFixtureProvider(): AiProvider {
       else if (input.task === 'AI15') output = evidence(pages, input.questions ?? []);
       else throw new Error(`${input.task} görevi test sağlayıcısında desteklenmiyor`);
       const usage = { inputTokens: TOKENS.input, outputTokens: TOKENS.output, pages: input.document?.pageCount ?? pages.length };
-      return { output, usage, actualCost: costFromPrice(input.price, usage), model: TEST_PROVIDER_NAME };
+      return { output, usage, actualCost: null, model: TEST_PROVIDER_NAME };
     },
   };
 }

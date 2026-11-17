@@ -1,5 +1,4 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { estimateCost, type AiModel } from '@sp/domain';
 import type { Config } from '../config.ts';
 import type { AiInput, AiProvider, AiResult } from './provider.ts';
 import { isContractAiTask, SCHEMAS, SYSTEM_PROMPTS, taskInstruction, templateBlockText } from './prompts.ts';
@@ -36,11 +35,8 @@ export interface AnthropicDeps {
 
 const defaultClient = (opts: { apiKey: string; maxRetries: 0 }): AnthropicLike => new Anthropic(opts) as unknown as AnthropicLike;
 
-/** Tarife × token; tarife verilmediyse null (sıfır değil). */
-export function costFromPrice(price: AiModel['price'] | undefined, usage: AiResult['usage']): string | null {
-  if (!price) return null;
-  return estimateCost({ price } as AiModel, { inputTokens: usage.inputTokens ?? 0, outputTokens: usage.outputTokens ?? 0, pages: usage.pages ?? 1 });
-}
+/** Ücret hesabı yönlendiricidedir (karar 6); geriye dönük ad için yeniden dışa aktarılır. */
+export { costFromPrice } from './provider.ts';
 
 function classify(e: unknown): AiProviderError {
   if (e instanceof AiProviderError) return e;
@@ -95,7 +91,7 @@ export function anthropicProvider(cfg: NonNullable<Config['ai']>, deps: Anthropi
       let output: unknown;
       try { output = JSON.parse(text); } catch { throw new AiProviderError('INVALID_OUTPUT', 'Model yanıtı geçerli JSON değil.'); }
       const usage = { inputTokens: msg.usage.input_tokens, outputTokens: msg.usage.output_tokens, pages: d.pageCount };
-      return { output, usage, actualCost: costFromPrice(input.price, usage), model: msg.model };
+      return { output, usage, actualCost: null, model: msg.model };
     },
   };
 }

@@ -1,4 +1,4 @@
-import type { AiModel } from '@sp/domain';
+import { estimateCost, type AiModel } from '@sp/domain';
 
 /**
  * AI sağlayıcı bağdaştırıcısı. Gerçek sağlayıcı (Anthropic) yalnız yapılandırmayla (`AI_PROVIDER=anthropic` + anahtar) kurulur.
@@ -19,16 +19,24 @@ export interface AiInput {
   /** AI15: kanıt soruları. */
   questions?: { id: string; text: string }[];
   promptVersion?: string;
-  /** Katalog tarifesi: gerçekleşen ücret = yanıt token'ları × tarife. Yoksa ücret bilinmez (null). */
-  price?: AiModel['price'];
 }
 export interface AiResult {
   output: unknown;
   usage: { inputTokens?: number; outputTokens?: number; pages?: number };
+  /**
+   * v1 (AI02) bağdaştırıcıları kendi ücretini döner. v2 Faz 4 sözleşme görevlerinde (AI06/AI14/AI15) sağlayıcı yalnız kullanımı döner
+   * (`null`); gerçekleşen ücreti yönlendirici defterdeki katalog satırının tarifesiyle hesaplar (`costFromPrice`, karar 6).
+   */
   actualCost: string | null;
   /** Yanıttaki model kimliği (defterde `response_model`). */
   model?: string;
 }
+/** Tarife × yanıt kullanımı (token/sayfa/çağrı); tarife yoksa ya da gerekli kalemi bilinmiyorsa null (sıfır değil). */
+export function costFromPrice(price: AiModel['price'] | null | undefined, usage: AiResult['usage']): string | null {
+  if (!price) return null;
+  return estimateCost({ price } as AiModel, { inputTokens: usage.inputTokens ?? 0, outputTokens: usage.outputTokens ?? 0, pages: usage.pages ?? 1 });
+}
+
 export interface AiProvider { name: string; run(modelId: string, input: AiInput): Promise<AiResult> }
 
 const providers = new Map<string, AiProvider>();

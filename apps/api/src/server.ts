@@ -32,6 +32,7 @@ import * as directory from './modules/directory.ts';
 import * as approvers from './modules/approvers.ts';
 import * as templates from './modules/templates.ts';
 import * as intake from './modules/contractIntake.ts';
+import * as contractAi from './modules/contractAi.ts';
 import * as reminders from './modules/contractReminders.ts';
 import * as contractApprovals from './modules/contractApprovals.ts';
 import { directoryProvider, type DirectoryProvider } from './directory/provider.ts';
@@ -633,7 +634,7 @@ export async function buildApp(deps: AppDeps) {
   const nullNum = (schema: { type: 'integer'; minimum: number; maximum: number }) => ({ ...schema, type: ['integer', 'null'] });
   app.post('/api/v1/contract-drafts', { schema: { tags: ['contracts'], body: { type: 'object', required: ['documentVersionId'], additionalProperties: false,
     properties: { documentVersionId: uuid, projectId: nullable(uuid), templateVersionId: nullable(uuid), departmentId: optDepartment } } } }, async (req, reply) =>
-    reply.status(201).send(await scoped(req, 'contract.manage', (tx, ctx) => intake.createDraft(tx, ctx, req.body as any))));
+    reply.status(201).send(await scoped(req, 'contract.manage', (tx, ctx) => intake.createDraft(tx, ctx, req.body as any, { aiModelId: contractAi.contractAiModelId(deps.config.ai) }))));
   app.put('/api/v1/contracts/:id/fields', { schema: { tags: ['contracts'], params: idParams, body: { type: 'object', additionalProperties: false, minProperties: 1, properties: {
     projectId: uuid, departmentId: uuid, supplierId: nullable(uuid), contractType: nullable({ type: 'string', enum: ['SERVICE', 'HARDWARE', 'MAINTENANCE', 'NDA', 'CONSULTING', 'OTHER'] }),
     ownerUserId: nullable(uuid), signedOn: nullable(intakeDate), indefinite: { type: 'boolean' }, templateVersionId: nullable(uuid),
@@ -645,9 +646,19 @@ export async function buildApp(deps: AppDeps) {
     noticeAmount: nullNum({ type: 'integer', minimum: 0, maximum: 3650 }), noticeUnit: nullable({ type: 'string', enum: ['DAY', 'MONTH'] }),
     paymentDays: nullNum({ type: 'integer', minimum: 0, maximum: 365 }), paymentTerms: { type: 'string', maxLength: 2000 }, sourceRef: { type: 'string', minLength: 3, maxLength: 300 },
     fxDifference: nullable({ type: 'string', enum: ['ALLOWED', 'NOT_ALLOWED'] }), nonWorkingDay: { type: 'string', enum: ['PREVIOUS_WORKING_DAY', 'AS_IS'] },
+    // v2 Faz 4 (R6): yapay zekâ önerilerine kararlar (aynı işlemde).
+    aiDecisions: { type: 'array', maxItems: 40, items: { type: 'object', required: ['extractionId', 'decision'], additionalProperties: false,
+      properties: { extractionId: uuid, decision: { type: 'string', enum: ['CONFIRMED', 'CORRECTED', 'REJECTED'] } } } },
   } } } }, async (req) => scoped(req, 'contract.manage', (tx, ctx) => intake.updateFields(tx, ctx, (req.params as { id: string }).id, req.body as intake.FieldsInput)));
   app.get('/api/v1/contracts/:id/v2', { schema: { tags: ['contracts'], params: idParams } }, async (req) =>
     scoped(req, 'contract.read', (tx, ctx) => intake.getContractV2(tx, ctx, (req.params as { id: string }).id)));
+  // --- Sözleşme alan okuması (v2 Faz 4, Görev 4: R3–R6, R11) ---------------------------------------------------------------
+  app.get('/api/v1/contracts/:id/extractions', { schema: { tags: ['contracts'], params: idParams } }, async (req) =>
+    scoped(req, 'contract.read', (tx, ctx) => contractAi.getExtractions(tx, ctx, (req.params as { id: string }).id)));
+  // "Yeniden oku": bekleyen işi yeniden yönlendirir, başarısız işe yeni deneme açar; çalışmış/kuyruktaki iş yeni ücret yaratmaz.
+  app.post('/api/v1/contracts/:id/extractions', { schema: { tags: ['contracts'], params: idParams } }, async (req) =>
+    scoped(req, 'contract.ai.request', (tx, ctx) => contractAi.requestContractExtraction(tx, ctx, (req.params as { id: string }).id,
+      { force: true, modelId: contractAi.contractAiModelId(deps.config.ai) })));
   // --- Sözleşme hatırlatıcıları (v2 Faz 3, Görev 6: R7) -------------------------------------------------------------------
   app.get('/api/v1/contracts/:id/reminders', { schema: { tags: ['contracts'], params: idParams } }, async (req) =>
     scoped(req, 'contract.read', (tx, ctx) => reminders.getReminders(tx, ctx, (req.params as { id: string }).id)));
@@ -707,7 +718,7 @@ export async function buildApp(deps: AppDeps) {
     schema: { tags: ['contracts'], params: idParams, body: { type: 'object', required: ['documentVersionId', 'kind', 'stage'], additionalProperties: false,
       properties: { documentVersionId: uuid, kind: { type: 'string', enum: ['MAIN', 'AMENDMENT', 'ANNEX', 'SOW'] }, stage, addSupplierId: uuid } } },
   }, async (req, reply) => reply.status(201).send(await scoped(req, 'contract.manage', (tx, ctx) =>
-    contracts.addContractVersion(tx, ctx, (req.params as any).id, ifMatch(req), req.body as any))));
+    contracts.addContractVersion(tx, ctx, (req.params as any).id, ifMatch(req), req.body as any, { aiModelId: contractAi.contractAiModelId(deps.config.ai) }))));
 
   app.post('/api/v1/contract-versions/:id/signature-requirements', {
     schema: { tags: ['signatures'], params: idParams, body: { type: 'object', required: ['partyId', 'signerRole', 'acceptableMethods'], additionalProperties: false,
@@ -1146,7 +1157,8 @@ export async function buildApp(deps: AppDeps) {
       monthlyBudget: { anyOf: [{ type: 'null' }, { type: 'string' }] }, budgetCurrency: { type: 'string', pattern: '^[A-Z]{3}$' }, dailyCallLimit: { anyOf: [{ type: 'null' }, { type: 'integer', minimum: 0 }] },
       allowUpgrade: { type: 'boolean' } } } } }, async (req) => scoped(req, 'ai.policy.manage', (tx, ctx) => ai.setPolicy(tx, ctx, req.body as any)));
   app.delete('/api/v1/ai/policy', { schema: { tags: ['ai'] } }, async (req) => scoped(req, 'ai.policy.manage', (tx, ctx) => ai.deletePolicy(tx, ctx)));
-  app.post('/api/v1/ai/runs/:id/retry', { schema: { tags: ['ai'], params: idParams } }, async (req) => scoped(req, 'ai.read', (tx, ctx) => ai.retryRun(tx, ctx, (req.params as any).id)));
+  app.post('/api/v1/ai/runs/:id/retry', { schema: { tags: ['ai'], params: idParams } }, async (req) => scoped(req, 'ai.read', (tx, ctx) =>
+    ai.retryRun(tx, ctx, (req.params as any).id, { modelId: contractAi.contractAiModelId(deps.config.ai) })));
   app.get('/api/v1/document-versions/:id/ai-fields', { schema: { tags: ['ai'], params: idParams } }, async (req) => scoped(req, 'document.read', async (tx) => ({ items: await ai.documentAiFields(tx, (req.params as any).id) })));
 
   // --- Faz 5: raporlar (UX13). Dışa aktarma ekranla aynı yetki ve kapsamı uygular. ---

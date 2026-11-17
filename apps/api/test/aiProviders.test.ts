@@ -1,3 +1,4 @@
+// v2 Faz 4 (D109): Görev 4 karar 6 — sağlayıcı yalnız kullanımı döner (actualCost null); ücret yönlendiricide costFromPrice ile hesaplanır.
 // v2 Faz 4 Görev 3: sağlayıcı katmanı (R1, R12). Gerçek Anthropic sağlayıcısı ÇAĞRILMAZ: istemci taklittir, ağ yoktur, anahtar sahtedir.
 // Test sağlayıcısı (test-fixture) deterministik ve etiketlidir; çıktısı gerçek okuma değildir.
 import { describe, expect, it } from 'vitest';
@@ -6,7 +7,7 @@ import { anthropicProvider, AiProviderError } from '../src/ai/anthropic.ts';
 import { testFixtureProvider, TEST_PROVIDER_LABEL, isTestProvider } from '../src/ai/testProvider.ts';
 import { EVIDENCE_SCHEMA, EXTRACTION_SCHEMA, PROMPT_VERSIONS, REVIEW_SCHEMA } from '../src/ai/prompts.ts';
 import { registerConfiguredAiProvider } from '../src/ai/register.ts';
-import { aiProvider, registerAiProvider, type AiInput } from '../src/ai/provider.ts';
+import { aiProvider, costFromPrice, registerAiProvider, type AiInput } from '../src/ai/provider.ts';
 import { docxText, pageTexts } from '../src/ai/text.ts';
 import { syntheticContractPdf, syntheticDocx, syntheticPdf } from '../src/devdata.ts';
 import { ZipStreamWriter } from '../src/zip.ts';
@@ -93,7 +94,7 @@ const doc = (over: Partial<NonNullable<AiInput['document']>> = {}) => ({ bytes: 
 const price = { unit: 'TOKEN_1M' as const, input: '2.00', output: '10.00', currency: 'USD' };
 const cfg = { provider: 'anthropic' as const, modelId: 'claude-sonnet-5-5', apiKey: FAKE_KEY, externalTransferApproved: false };
 const input = (over: Partial<AiInput> = {}): AiInput => ({ task: 'AI06', pages: ['Sozlesme Bedeli: 1.000,00 TRY'], mimeType: 'application/pdf', allowedFields: [],
-  document: doc(), promptVersion: PROMPT_VERSIONS.AI06, price, ...over });
+  document: doc(), promptVersion: PROMPT_VERSIONS.AI06, ...over });
 
 describe('Anthropic bağdaştırıcısı (R12) — taklit istemci, ağ yok', () => {
   it('istek biçimi: AI_MODEL_ID, base64 PDF belge bloğu, output_config.format, temperature/fallbacks yok, max_tokens 16000', async () => {
@@ -120,7 +121,8 @@ describe('Anthropic bağdaştırıcısı (R12) — taklit istemci, ağ yok', () 
     expect(res.output).toEqual({ fields: [] });
     expect(res.usage).toMatchObject({ inputTokens: 12000, outputTokens: 800, pages: 1 });
     expect(res.model).toBe('claude-sonnet-5-5');
-    expect(res.actualCost).toBe('0.032000'); // 12000×2/1M + 800×10/1M
+    expect(res.actualCost).toBeNull(); // karar 6: ücret yönlendiricide
+    expect(costFromPrice(price, res.usage)).toBe('0.032000'); // 12000×2/1M + 800×10/1M
   });
   it('istemci yalnız anahtarla ve maxRetries 0 ile kurulur; anahtarsız kurulmaz', () => {
     const made: unknown[] = [];
@@ -199,12 +201,13 @@ describe('Test sağlayıcısı (test-fixture) — deterministik, etiketli', () =
     const bytes = contract();
     const pages = await pageTexts(bytes, 'application/pdf');
     const inp: AiInput = { task: 'AI06', pages, mimeType: 'application/pdf', allowedFields: [], document: { bytes, mimeType: 'application/pdf', pageCount: pages.length },
-      promptVersion: PROMPT_VERSIONS.AI06, price: { unit: 'CALL', call: '0.010000', currency: 'USD' } };
+      promptVersion: PROMPT_VERSIONS.AI06 };
     const p = testFixtureProvider();
     const a = await p.run('claude-sonnet-5-5', inp);
     const b = await p.run('claude-sonnet-5-5', inp);
     expect(a).toEqual(b);
-    expect(a.actualCost).toBe('0.010000');
+    expect(a.actualCost).toBeNull();
+    expect(costFromPrice({ unit: 'CALL', call: '0.010000', currency: 'USD' }, a.usage)).toBe('0.010000');
     expect(a.usage).toMatchObject({ inputTokens: expect.any(Number), outputTokens: expect.any(Number), pages: pages.length });
     expect(a.model).toBe('test-fixture');
     const checked = checkContractExtraction(a.output, pages);

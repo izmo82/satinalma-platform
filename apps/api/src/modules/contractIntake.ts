@@ -13,6 +13,7 @@ import { currentApprovers } from './approvers.ts';
 import { resolveDepartment } from './departments.ts';
 import { noticeBasis } from './contractReminders.ts';
 import { cancelOpenChain, CONTENT_CHANGED_REASON, membershipCoversSql, roleOf } from './contractChain.ts';
+import { applyAiDecisions, assertNoPendingCriticalSuggestions, requestExtractionForVersion, type AiDecisionInput } from './contractAi.ts';
 
 /**
  * v2 Faz 3 (D108+, R1–R5, R9, R10) Görev 4: sözleşme ekleme akışı. Taslak (aile + MAIN sürüm, proje zorunlu), zorunlu alanlar
@@ -195,7 +196,8 @@ async function activeMembers(tx: Tx, ctx: TenantContext, ids: string[], approver
 
 // --- Taslak ----------------------------------------------------------------------------------------------------------------
 
-export async function createDraft(tx: Tx, ctx: TenantContext, body: { documentVersionId: string; projectId?: string | null; templateVersionId?: string | null; departmentId?: string | null }) {
+export async function createDraft(tx: Tx, ctx: TenantContext, body: { documentVersionId: string; projectId?: string | null; templateVersionId?: string | null; departmentId?: string | null },
+  opts: { aiModelId?: string } = {}) {
   if (!body.projectId) throw unprocessable('project_required', 'Sözleşme bir projeye bağlanmalı; önce projeyi seçin.');
   const project = (await tx.query<{ id: string; company_id: string; department_id: string | null }>(
     `SELECT id, company_id, department_id FROM projects WHERE id = $1`, [body.projectId])).rows[0];
@@ -223,7 +225,9 @@ export async function createDraft(tx: Tx, ctx: TenantContext, body: { documentVe
   });
   await audit(tx, ctx, 'contract.draft.created', 'contract_family', r.familyId,
     { projectId: project.id, templateVersionId: body.templateVersionId ?? null, duplicateOf: dup?.id ?? null });
-  return { ...r, duplicateOf: dup ? { familyId: dup.id, code: dup.code, title: dup.title } : null };
+  // v2 Faz 4 (R11): taslakla birlikte alan okuması istenir (defterde; kapı kapalıysa sebebiyle). Elle akış her durumda sürer.
+  const extraction = await requestExtractionForVersion(tx, ctx, r.contractVersionId, { modelId: opts.aiModelId });
+  return { ...r, duplicateOf: dup ? { familyId: dup.id, code: dup.code, title: dup.title } : null, extraction };
 }
 
 // --- Alanlar -------------------------------------------------------------------------------------------------------------
@@ -236,6 +240,8 @@ export interface FieldsInput {
   currency?: string; valueType?: CommercialTerms['valueType']; amount?: string | null; limitBasis?: 'NET' | 'GROSS'; startDate?: string | null; endDate?: string | null;
   autoRenewal?: boolean; renewalMonths?: number | null; noticeAmount?: number | null; noticeUnit?: NoticeUnit | null; paymentDays?: number | null;
   paymentTerms?: string; sourceRef?: string; fxDifference?: 'ALLOWED' | 'NOT_ALLOWED' | null; nonWorkingDay?: CommercialTerms['nonWorkingDay'];
+  /** v2 Faz 4 (R6): yapay zekâ önerilerine insan kararları; alan kaydıyla aynı işlemde yazılır. */
+  aiDecisions?: AiDecisionInput[];
 }
 const TERMS_KEYS = ['currency', 'valueType', 'amount', 'limitBasis', 'startDate', 'endDate', 'autoRenewal', 'renewalMonths', 'noticeAmount', 'noticeUnit',
   'paymentDays', 'paymentTerms', 'sourceRef', 'fxDifference', 'nonWorkingDay'] as const;
@@ -351,6 +357,19 @@ export async function updateFields(tx: Tx, ctx: TenantContext, familyId: string,
     cancelled = await cancelOpenChain(tx, ctx, familyId, CONTENT_CHANGED_REASON);
     await audit(tx, ctx, 'contract.fields.updated', 'contract_family', familyId, { fields: cols, terms: termsSaved, cancelledChainId: cancelled });
   }
+  // v2 Faz 4 (R6): kararlar kaydedilen (güncel) değerlerle karşılaştırılır; uyuşmazlıkta 422 ve bütün işlem (alanlar dahil) geri alınır.
+  if (body.aiDecisions?.length) {
+    const g = await loadFamily(tx, familyId);
+    const sup = g.supplier_id ? (await tx.query<{ legal_name: string; tax_id: string | null }>(`SELECT legal_name, tax_id FROM suppliers WHERE id = $1`, [g.supplier_id])).rows[0] : undefined;
+    const dv = (await tx.query<{ document_version_id: string }>(`SELECT document_version_id FROM contract_versions WHERE id = $1`, [g.version_id])).rows[0]!.document_version_id;
+    await applyAiDecisions(tx, ctx, familyId, dv, {
+      title: g.title, contractType: g.contract_type, supplierName: sup?.legal_name ?? null, supplierVkn: sup?.tax_id ?? null, signedOn: g.signed_on,
+      startDate: g.start_date, endDate: g.end_date, indefinite: g.indefinite,
+      noticeAmount: g.indefinite ? g.termination_notice_amount : g.notice_amount, noticeUnit: g.indefinite ? g.termination_notice_unit : g.notice_unit,
+      amount: g.amount, currency: g.currency, limitBasis: g.terms_id ? g.limit_basis : null, autoRenewal: g.terms_id ? g.auto_renewal : null,
+      contractNo: g.contract_no, paymentDays: g.payment_days, governingCourt: g.governing_court, priceEscalation: g.price_escalation,
+    }, body.aiDecisions);
+  }
   return { ...(await getContractV2(tx, ctx, familyId)), changed, cancelledChainId: cancelled };
 }
 
@@ -447,6 +466,9 @@ export async function submitContract(tx: Tx, ctx: TenantContext, familyId: strin
       { missing: missing.map((m) => ({ field: m, label: REQUIRED_FIELD_TR[m] })) });
   }
   if (!f.version_id || !f.terms_id) throw unprocessable('missing_fields', 'Koşullar girilmemiş.', { missing: [] });
+  // v2 Faz 4 (R6): güncel belge sürümünün kritik yapay zekâ önerisi karar bekliyorsa gönderilmez (okuma yoksa/çalışmadıysa engel yok).
+  const dv = (await tx.query<{ document_version_id: string }>(`SELECT document_version_id FROM contract_versions WHERE id = $1`, [f.version_id])).rows[0]!.document_version_id;
+  await assertNoPendingCriticalSuggestions(tx, dv);
   const r = await plan(tx, ctx, f, body);
   if (!r.ok) throw conflict(r.error, r.message, { kind: r.kind, kindLabel: r.kindLabel });
   const blocked = await companyAccessBlock(tx, ctx, f, r.steps);
