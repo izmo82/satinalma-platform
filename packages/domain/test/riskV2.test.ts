@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   RISK_CRITERIA, RISK_CRITERIA_LEVELS, RISK_CRITERIA_TR, RISK_LEVEL_TR, RISK_MATRIX, RISK_METHOD_VERSION,
-  changedFields, completionBlockers, criticality, excelRiskToScore, normalizeSupplierName, procedureAcceptable,
+  changedFields, completionBlockers, criticality, criticalityDisplay, excelRiskToScore, normalizeSupplierName, procedureAcceptable,
   quarterStart, riskBand, riskLevel, riskPeriod, riskScore, scoreToExcelFraction, can,
   type CriteriaValues, type MatrixColumn,
 } from '../src/index.js';
@@ -26,7 +26,8 @@ describe('riskV2 › Excel örnekleri', () => {
   for (const [row, crit, cache, j, col, lvl] of ROWS) {
     it(`Excel satır ${row}`, () => {
       const c = criticality(cv(crit));
-      expect(Math.abs(Number(c.value) - cache)).toBeLessThan(1e-4);
+      expect(Math.abs(Number(c.value) - cache)).toBeLessThan(1e-6);
+      expect(c.display).toBe((Math.round(cache * 100) / 100).toFixed(2).replace('.', ','));
       expect(c.column).toBe(col);
       const score = excelRiskToScore(j, true);
       expect(riskLevel(score, c.column).level).toBe(lvl);
@@ -35,7 +36,20 @@ describe('riskV2 › Excel örnekleri', () => {
   it('GEOMEAN 3,5,1,3,5,5 → "3,22"; saklanan değer 4 hane', () => {
     const c = criticality(cv([3, 5, 1, 3, 5, 5]));
     expect(c.display).toBe('3,22');
-    expect(c.value).toBe('3.2250');
+    expect(c.value).toBe('3.224968');
+  });
+  it('729 kombinasyon: display === yuvarlanmış saklanan === Excel biçimi', () => {
+    const vals = [1, 3, 5];
+    let n = 0;
+    for (const a of vals) for (const b of vals) for (const c of vals) for (const d of vals) for (const e of vals) for (const f of vals) {
+      const r = criticality(cv([a, b, c, d, e, f]));
+      const raw = Math.exp([a, b, c, d, e, f].reduce((s, x) => s + Math.log(x), 0) / 6);
+      const excel = (Math.round(raw * 100) / 100).toFixed(2).replace('.', ',');
+      expect(r.display, `${a}${b}${c}${d}${e}${f}`).toBe(excel);
+      expect(r.display).toBe(criticalityDisplay(r.value));
+      n++;
+    }
+    expect(n).toBe(729);
   });
   it('satır 54: 4,59 beşe yuvarlanır; satır 56: 2,498 ikiye', () => {
     expect(criticality(cv([5, 5, 5, 3, 5, 5])).column).toBe(5);
@@ -83,6 +97,8 @@ describe('riskV2 › matris ve bantlar', () => {
   });
   it('seviye etiketleri', () => {
     expect(RISK_LEVEL_TR[1]).toBe('Seviye 1 — Kabul edilebilir');
+    expect(RISK_LEVEL_TR[2]).toBe('Seviye 2');
+    expect(RISK_LEVEL_TR[3]).toBe('Seviye 3');
     expect(RISK_LEVEL_TR[4]).toBe('Seviye 4 — Turuncu');
     expect(RISK_LEVEL_TR[5]).toBe('Seviye 5 — Kırmızı');
   });
@@ -132,6 +148,11 @@ describe('riskV2 › completionBlockers', () => {
     ] });
     expect(codes(r)).toEqual(['action_owner_required', 'action_due_required', 'action_due_past']);
   });
+  it('kapalı (DONE/VERIFIED) satır geçmiş tarihli olsa da engel değil ve gereksinime sayılır; CANCELLED yok sayılır', () => {
+    const done = { ownerUserId: null, dueOn: '2026-01-01' };
+    expect(completionBlockers({ ...base, actions: [{ kind: 'MITIGATION', status: 'DONE', ...done }, { kind: 'CONTROL', status: 'VERIFIED', ...done }] })).toEqual([]);
+    expect(codes(completionBlockers({ ...base, actions: [{ kind: 'MITIGATION', status: 'DONE', ...done }, { kind: 'CONTROL', ...ok, status: 'CANCELLED' }] }))).toEqual(['control_required']);
+  });
   it('tam plan → []; seviye 3 → []', () => {
     expect(completionBlockers({ ...base, level: 5, actions: [{ kind: 'MITIGATION', ...ok }, { kind: 'CONTROL', ...ok }] })).toEqual([]);
     expect(completionBlockers({ ...base, level: 3, actions: [] })).toEqual([]);
@@ -163,6 +184,7 @@ describe('riskV2 › yardımcılar', () => {
     expect(excelRiskToScore(0.29, true)).toBe('29.00');
     expect(excelRiskToScore(0.07, true)).toBe('7.00');
     expect(excelRiskToScore(65, false)).toBe('65.00');
+    expect(excelRiskToScore(0.145, true)).toBe('14.50');
     for (let i = 0; i <= 100; i++) {
       const f = i / 100;
       expect(scoreToExcelFraction(excelRiskToScore(f, true))).toBe(f);

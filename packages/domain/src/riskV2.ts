@@ -34,8 +34,10 @@ export const RISK_CRITERIA_LEVELS: Record<RiskCriterion, Record<CriterionValue, 
 export type MatrixColumn = 1 | 2 | 3 | 4 | 5;
 export type RiskLevelNo = 1 | 2 | 3 | 4 | 5;
 
-/** `display` yuvarlanmamış değerden (Excel `0.00` biçimi gibi) üretilir: 3,224968 → "3,22"; saklanan 4 hane (3.2250) ekranda 3,23 olurdu, bu yüzden ekran metni her zaman ölçütlerden yeniden hesaplanır. */
-/** Kritiklik = altı ölçütün geometrik ortalaması (Excel GEOMEAN); sütun en yakın tam sayı (yarım yukarı), yuvarlanmamış değerden (R1). */
+/**
+ * Kritiklik = altı ölçütün geometrik ortalaması (Excel GEOMEAN). `value` 6 hane saklanır; `display` saklanan dizgiden
+ * ondalık yarım yukarı 2 haneye yuvarlanır (tr-TR virgül); `column` en yakın tam sayı (yarım yukarı), yuvarlanmamış değerden (R1).
+ */
 export function criticality(v: CriteriaValues): { value: string; display: string; column: MatrixColumn } {
   let sumLn = 0;
   for (const k of RISK_CRITERIA) {
@@ -45,8 +47,15 @@ export function criticality(v: CriteriaValues): { value: string; display: string
   }
   const raw = Math.exp(sumLn / RISK_CRITERIA.length);
   const column = Math.min(5, Math.max(1, Math.round(raw))) as MatrixColumn;
-  const value = raw.toFixed(4);
-  return { value, display: raw.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }), column };
+  const value = raw.toFixed(6);
+  return { value, display: criticalityDisplay(value), column };
+}
+
+/** Saklanan kritiklik dizgisini (örn. "3.224968") ekran için 2 haneye yarım yukarı yuvarlar: "3,22". */
+export function criticalityDisplay(stored: string): string {
+  const n = parseDec(stored, 6);
+  const h = (n + 5000n) / 10000n;
+  return fmtDec(h, 2).replace('.', ',');
 }
 
 // ---- decimal yardımcıları (BigInt; kayan nokta yok) ----
@@ -115,8 +124,8 @@ export function riskLevel(score: string, column: MatrixColumn): { level: RiskLev
 
 export const RISK_LEVEL_TR: Record<RiskLevelNo, string> = {
   1: 'Seviye 1 — Kabul edilebilir',
-  2: 'Seviye 2 — Yeşil',
-  3: 'Seviye 3 — Sarı',
+  2: 'Seviye 2',
+  3: 'Seviye 3',
   4: 'Seviye 4 — Turuncu',
   5: 'Seviye 5 — Kırmızı',
 };
@@ -131,7 +140,7 @@ export function procedureAcceptable(score: string, column: MatrixColumn): boolea
 
 export interface RiskActionInput { kind: 'MITIGATION' | 'CONTROL'; ownerUserId: string | null; dueOn: string | null; status: string }
 
-/** R9: seviye 4–5 aksiyon + kontrol satırı, her birinde sahip ve gelecek tarih olmadan tamamlanamaz. */
+/** R9: seviye 4–5 aksiyon + kontrol satırı, her birinde sahip ve gelecek tarih olmadan tamamlanamaz (kapalı DONE/VERIFIED satırlar gereksinime sayılır, sahip/tarih aranmaz; CANCELLED yok sayılır). */
 export function completionBlockers(input: {
   criteria: Partial<CriteriaValues>; score: string | null; level: number | null; actions: readonly RiskActionInput[]; today: string;
 }): { code: string; message: string }[] {
@@ -141,9 +150,11 @@ export function completionBlockers(input: {
   if (input.score === null) out.push({ code: 'score_missing', message: 'Risk skoru yok; tüm soruları cevaplayın.' });
   if (input.level === null || input.level < 4) return out;
   const live = input.actions.filter((a) => a.status !== 'CANCELLED');
+  const closed = (a: RiskActionInput) => a.status === 'DONE' || a.status === 'VERIFIED';
   if (!live.some((a) => a.kind === 'MITIGATION')) out.push({ code: 'action_plan_required', message: 'Seviye 4–5 için en az bir aksiyon (azaltım) satırı gerekir.' });
   if (!live.some((a) => a.kind === 'CONTROL')) out.push({ code: 'control_required', message: 'Seviye 4–5 için en az bir denetim/kontrol satırı gerekir.' });
   live.forEach((a, i) => {
+    if (closed(a)) return;
     const row = `${i + 1}. satır`;
     if (!a.ownerUserId) out.push({ code: 'action_owner_required', message: `${row}: sorumlu kişi seçilmeli.` });
     if (!a.dueOn) out.push({ code: 'action_due_required', message: `${row}: tarih girilmeli.` });

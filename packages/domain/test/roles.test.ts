@@ -4,6 +4,8 @@
 import { describe, expect, it } from 'vitest';
 import { can, normalizeRoles, PERMISSIONS, REMOVED_PERMISSIONS, SEES_ALL_DEPARTMENTS, V2_ROLES, type Permission } from '../src/roles.js';
 
+// Salt okunur ama ".read" sonekli olmayan izinler (bilinçli istisna listesi).
+const SALT_OKUMA_ISTISNALARI = ['integration.reconcile', 'risk.export'];
 const tumIzinler = Object.keys(PERMISSIONS) as Permission[];
 
 describe('normalizeRoles (D93)', () => {
@@ -29,9 +31,9 @@ describe('v2 izin tablosu', () => {
     }
   });
   it('AUDITOR yalnız okuma izinlerinde true', () => {
-    const okuma = /\.read$|^integration\.reconcile$|^risk\.export$/;
+    const okuma = (p: string) => p.endsWith('.read') || SALT_OKUMA_ISTISNALARI.includes(p);
     for (const p of tumIzinler) {
-      expect(can(['AUDITOR'], p), p).toBe(!REMOVED_PERMISSIONS.includes(p) && okuma.test(p) && p !== 'email.outbox.read');
+      expect(can(['AUDITOR'], p), p).toBe(!REMOVED_PERMISSIONS.includes(p) && okuma(p) && p !== 'email.outbox.read');
     }
     expect(can(['AUDITOR'], 'ai.read')).toBe(true);
   });
