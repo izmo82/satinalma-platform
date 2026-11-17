@@ -38,6 +38,7 @@ import * as riskAssessments from './modules/riskAssessments.ts';
 import * as portal from './modules/portal.ts';
 import * as riskCycle from './modules/riskCycle.ts';
 import * as riskImport from './modules/riskImport.ts';
+import { parseRiskTable } from './riskExcel.ts';
 import * as intake from './modules/contractIntake.ts';
 import * as contractAi from './modules/contractAi.ts';
 import * as reminders from './modules/contractReminders.ts';
@@ -600,7 +601,7 @@ export async function buildApp(deps: AppDeps) {
   app.post('/api/v1/suppliers/:id/documents', { schema: { tags: ['suppliers'], params: idParams, consumes: ['multipart/form-data'] } }, async (req, reply) => {
     const id = (req.params as { id: string }).id;
     // İzin dosya okunmadan önce denetlenir (yetkisiz istekte gövde işlenmez).
-    await scoped(req, 'supplier.documents.manage', async () => undefined);
+    const tenantId = await scoped(req, 'supplier.documents.manage', async (_tx, ctx) => ctx.tenantId);
     const fields: Record<string, string> = {};
     let file: { filename: string; mimetype: string; body: Buffer } | null = null;
     try {
@@ -614,7 +615,7 @@ export async function buildApp(deps: AppDeps) {
     }
     if (!file) throw unprocessable('file_required', 'Dosya seçin.');
     const upload = { ...file, fields };
-    const prepared = await scoped(req, 'supplier.documents.manage', async (_tx, ctx) => supplierCard.prepareInternalUpload(upload, ctx.tenantId, scanner));
+    const prepared = await supplierCard.prepareInternalUpload(upload, tenantId, scanner); // tarama işlem dışında (bağlantı tutulmaz)
     await deps.store.put(prepared.storageKey, file.body, prepared.mimeType);
     try {
       return reply.status(201).send(await scoped(req, 'supplier.documents.manage', (tx, ctx) => supplierCard.addInternalDocument(tx, ctx, id, upload, prepared)));
@@ -876,10 +877,13 @@ export async function buildApp(deps: AppDeps) {
       scoped(req, 'risk.cycle.manage', (tx, ctx) => riskCycle.openRiskYearTenantWide(tx, ctx, (req.params as { year: number }).year, riskAssessments.istanbulToday())));
     // v2 Faz 6 Görev 6 (R11/R12): Excel içe aktarımı (yükle → önizleme → uygula/vazgeç) ve kaynak düzende dışa aktarım.
     app.post('/api/v1/risk/imports', { schema: { tags: ['risk'], consumes: ['multipart/form-data'] } }, async (req, reply) => {
+      await scoped(req, 'risk.import', async () => undefined); // izin ayrıştırmadan önce
       const file = await req.file();
       if (!file) throw new ApiError(400, 'file_required', 'Dosya gerekli.');
       const body = await file.toBuffer();
-      return reply.status(201).send(await scoped(req, 'risk.import', (tx, ctx) => riskImport.createImport(tx, ctx, { fileName: file.filename, body })));
+      // Excel ayrıştırma işlem dışında (bağlantı tutulmaz); ad/biçim denetimi ve tekrar kontrolü createImport'ta işlem içinde.
+      const parsed = /\.xlsx$/i.test(file.filename || '') ? await parseRiskTable(body) : undefined;
+      return reply.status(201).send(await scoped(req, 'risk.import', (tx, ctx) => riskImport.createImport(tx, ctx, { fileName: file.filename, body }, parsed)));
     });
     app.get('/api/v1/risk/imports/:id', { schema: { tags: ['risk'], params: idParams } }, async (req) =>
       scoped(req, 'risk.import', (tx, ctx) => riskImport.getImport(tx, ctx, id(req))));
@@ -1676,7 +1680,7 @@ export async function buildApp(deps: AppDeps) {
   app.get('/api/v1/portal/documents', { schema: { tags: ['portal'] } }, async (req) => scoped(req, 'portal.documents', (tx, ctx) => portal.documents(tx, ctx)));
   app.post('/api/v1/portal/documents', { schema: { tags: ['portal'], consumes: ['multipart/form-data'] } }, async (req, reply) => {
     // İzin dosya okunmadan önce denetlenir; dosya denetimi ve tarama işlem dışında, depoya yazma işlemden önce (Görev 4 I1), hata olursa silinir.
-    await scoped(req, 'portal.documents', async () => undefined);
+    const tenantId = await scoped(req, 'portal.documents', async (_tx, ctx) => ctx.tenantId);
     const fields: Record<string, string> = {};
     let file: { filename: string; mimetype: string; body: Buffer } | null = null;
     try {
@@ -1690,7 +1694,7 @@ export async function buildApp(deps: AppDeps) {
     }
     if (!file) throw unprocessable('file_required', 'Dosya seçin.');
     const upload = { ...file, fields };
-    const prepared = await scoped(req, 'portal.documents', async (_tx, ctx) => portal.preparePortalUpload(upload, ctx.tenantId, scanner));
+    const prepared = await portal.preparePortalUpload(upload, tenantId, scanner); // tarama işlem dışında (bağlantı tutulmaz)
     await deps.store.put(prepared.storageKey, file.body, prepared.mimeType);
     try {
       return reply.status(201).send(await scoped(req, 'portal.documents', (tx, ctx) => portal.addPortalDocument(tx, ctx, upload, prepared)));
@@ -1701,9 +1705,9 @@ export async function buildApp(deps: AppDeps) {
   });
   app.get('/api/v1/portal/standing', { schema: { tags: ['portal'] } }, async (req) => scoped(req, 'portal.standing', (tx, ctx) => portal.standing(tx, ctx)));
   app.get('/api/v1/portal/profile', { schema: { tags: ['portal'] } }, async (req) => scoped(req, 'portal.profile', (tx, ctx) => portal.profile(tx, ctx)));
-  app.put('/api/v1/portal/profile', { schema: { tags: ['portal'], body: { type: 'object', required: ['contactName'], additionalProperties: false, properties: {
+  app.put('/api/v1/portal/profile', { schema: { tags: ['portal'], body: { type: 'object', additionalProperties: false, properties: {
     contactName: { type: 'string', maxLength: 200 }, contactPhone: { type: ['string', 'null'], maxLength: 40 }, address: { type: ['string', 'null'], maxLength: 1000 } } } } }, async (req) =>
-    scoped(req, 'portal.profile', (tx, ctx) => portal.updateProfile(tx, ctx, req.body as { contactName: string; contactPhone?: string | null; address?: string | null })));
+    scoped(req, 'portal.profile', (tx, ctx) => portal.updateProfile(tx, ctx, req.body as { contactName?: string; contactPhone?: string | null; address?: string | null }, ifMatch(req))));
   app.post('/api/v1/portal/profile/change-request', { schema: { tags: ['portal'], body: { type: 'object', required: ['field', 'note'], additionalProperties: false, properties: {
     field: { type: 'string', enum: ['LEGAL_NAME', 'TAX_ID', 'OTHER'] }, note: { type: 'string', maxLength: 1000 } } } } }, async (req, reply) =>
     reply.status(201).send(await scoped(req, 'portal.profile', (tx, ctx) => portal.requestChange(tx, ctx, req.body as { field: portal.ChangeField; note: string }))));

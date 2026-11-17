@@ -43,8 +43,8 @@ async function portalUser(supplierId: string, status: 'ACTIVE' | 'SUSPENDED' = '
   await h.owner.query(`INSERT INTO memberships (tenant_id, user_id, roles, company_ids, supplier_id, status) VALUES ($1,$2,ARRAY['SUPPLIER'],'{}',$3,$4)`, [h.world.tenantA, id, supplierId, status]);
   return { id, email, token: await auth.issue(`dev|${email}`) };
 }
-async function as(token: string, method: string, url: string, body?: unknown) {
-  const r = await h.app.inject({ method: method as any, url, headers: { authorization: `Bearer ${token}`, 'x-tenant-id': h.world.tenantA }, ...(body !== undefined ? { payload: body as any } : {}) });
+async function as(token: string, method: string, url: string, body?: unknown, extra: Record<string, string> = {}) {
+  const r = await h.app.inject({ method: method as any, url, headers: { authorization: `Bearer ${token}`, 'x-tenant-id': h.world.tenantA, ...extra }, ...(body !== undefined ? { payload: body as any } : {}) });
   return { status: r.statusCode, body: JSON.parse(r.body || 'null') };
 }
 async function portalUpload(token: string, fields: Record<string, string>, data = pdf()) {
@@ -326,6 +326,22 @@ describe('İnceleme turu 1', () => {
     // HTTP: telefon gönderilmezse korunur.
     const put = await as(ua.token, 'PUT', '/api/v1/portal/profile', { contactName: 'Ali Örnek' });
     expect(put.body).toMatchObject({ contactPhone: '0212 555 11 22', address: 'Yeni adres 2', changed: [] });
+  });
+
+  it('M2_route_if_match_and_optional_contact_name', async () => {
+    const a = await newSupplier();
+    const ua = await portalUser(a);
+    expect((await as(ua.token, 'PUT', '/api/v1/portal/profile', { contactName: 'Veli Örnek', address: 'Adres 1' })).status).toBe(200);
+    const rv = (await as(ua.token, 'GET', '/api/v1/portal/profile')).body.rowVersion as number;
+    // contactName verilmeden güncel If-Match: ad korunur.
+    const ok = await as(ua.token, 'PUT', '/api/v1/portal/profile', { address: 'Adres 2' }, { 'if-match': `"${rv}"` });
+    expect(ok.status).toBe(200);
+    expect(ok.body).toMatchObject({ contactName: 'Veli Örnek', address: 'Adres 2' });
+    // Eski sürüm: 409, veri değişmez.
+    const stale = await as(ua.token, 'PUT', '/api/v1/portal/profile', { address: 'Adres 3' }, { 'if-match': `"${rv}"` });
+    expect(stale.status).toBe(409);
+    expect(stale.body.error.code).toBe('version_conflict');
+    expect((await h.owner.query(`SELECT address, contact_name FROM suppliers WHERE id = $1`, [a])).rows[0]).toEqual({ address: 'Adres 2', contact_name: 'Veli Örnek' });
   });
 
   it('M6_annual_risk_standing_with_key_list', async () => {

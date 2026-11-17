@@ -187,10 +187,10 @@ export async function getImport(tx: Tx, ctx: TenantContext, id: string) {
 
 // ---- yükleme ------------------------------------------------------------------------------------------------------------------------
 
-export async function createImport(tx: Tx, ctx: TenantContext, file: { fileName: string; body: Buffer }) {
+export async function createImport(tx: Tx, ctx: TenantContext, file: { fileName: string; body: Buffer }, preParsed?: Awaited<ReturnType<typeof parseRiskTable>>) {
   const fileName = (file.fileName || 'risk.xlsx').slice(0, 255);
   if (!/\.xlsx$/i.test(fileName)) throw unprocessable('risk_import_format', 'Yalnız Excel (.xlsx) dosyası içe aktarılır.');
-  const parsed = await parseRiskTable(file.body);
+  const parsed = preParsed ?? await parseRiskTable(file.body);
   if (parsed.rows.length === 0) throw unprocessable('risk_import_format', '"Risk Tablosu" sayfasında 5. satırdan sonra veri yok.');
   const sha = createHash('sha256').update(file.body).digest('hex');
   const year = parsed.period ? Number(parsed.period.slice(0, 4)) : Number(istanbulToday().slice(0, 4));
