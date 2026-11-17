@@ -18,6 +18,9 @@ struct InvoicesList: View {
                         VStack(alignment: .leading, spacing: 2) {
                             AdaptiveStack { Text(x.invoiceNo).font(.body.weight(.semibold)); Text(x.matchText).font(.caption).foregroundStyle(x.matched == true ? Color.secondary : Color.orange) }
                             Text(x.supplierName).font(.subheadline)
+                            if let name = x.contract?.displayName {
+                                Text("Sözleşme: \(name)").font(.caption).foregroundStyle(.secondary)
+                            }
                             if let note = Labels.supplierNote(x.supplierStatus, verified: x.supplierIdentityVerified) { Text(note).font(.caption).foregroundStyle(.orange) }
                             Text("Departman: \(x.departmentName ?? "Departmansız")").font(.caption).foregroundStyle(.secondary)
                             Text("\(Fmt.money(x.netAmount, x.currency)) · \(Fmt.date(x.issueDate))").font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
@@ -71,6 +74,7 @@ struct InvoiceView: View {
                         NavigationLink("Kaynak belgeyi aç") { DocumentPreview(documentVersionId: doc, expectedSha256: d.invoice.documentSha256, title: d.invoice.invoiceNo) }
                     }
                 }
+                if let m = d.match { InvoiceMatchSection(match: m, currency: d.invoice.currency) }
                 Section("Satırlar ve eşleştirme") {
                     ForEach(d.lines) { l in
                         VStack(alignment: .leading, spacing: 4) {
@@ -112,5 +116,28 @@ struct InvoiceView: View {
 
     private func load() async {
         do { (data, _) = try await session.get("/api/v1/invoices/\(invoiceId)"); error = nil } catch { self.error = Notice.from(error) }
+    }
+}
+
+/// Fatura ayrıntısında "Eşleşme" bölümü (v2 Faz 7, R11): sözleşme, proje, yöntem, kullanım. Salt okunur; elle bağlama web'de.
+struct InvoiceMatchSection: View {
+    let match: MatchInfo
+    let currency: String
+    var body: some View {
+        Section {
+            if let s = match.stateLabel { LabeledContent("Durum", value: s) }
+            if let c = match.contract?.displayName { LabeledContent("Sözleşme", value: c) }
+            if let p = match.project?.displayName { LabeledContent("Proje", value: p) }
+            if let m = match.methodLabel { LabeledContent("Yöntem", value: m) }
+            if let note = match.note, !note.isEmpty { LabeledContent("Not", value: note) }
+            if match.contract == nil, let f = match.lastAutoFailure?.reasonLabel { Text(f).font(.footnote).foregroundStyle(.orange) }
+            if let u = match.usage {
+                let cur = u.currency ?? currency
+                VStack(alignment: .leading, spacing: 2) {
+                    LabeledContent("Kullanım", value: u.amount == nil ? "\(Fmt.money(u.used, cur)) (sözleşme tutarı yok)" : "\(Fmt.money(u.used, cur)) / \(Fmt.money(u.amount, cur))")
+                    if let w = u.warning ?? (u.levelLabel == "Aşım" ? u.levelLabel : nil) { Text(w).font(.footnote.weight(.semibold)).foregroundStyle(.orange) }
+                }.accessibilityElement(children: .combine)
+            }
+        } header: { Text("Eşleşme") } footer: { Text("Elle bağlama web uygulamasında yapılır.") }
     }
 }

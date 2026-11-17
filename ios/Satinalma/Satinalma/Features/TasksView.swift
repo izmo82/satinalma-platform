@@ -41,6 +41,7 @@ struct TasksView: View {
         .navigationDestination(for: TaskItem.self) { TaskDestination(task: $0) }
         .refreshable { await load() }
         .task { await load() }
+        .onReceive(NotificationCenter.default.publisher(for: .tasksChanged)) { _ in Task { await load() } }
     }
 
     private func load() async {
@@ -74,6 +75,7 @@ struct TaskRow: View {
         "supplier_profile_change_request": "Tedarikçi değişiklik isteği",
         "risk_assessment_due": "Yıllık risk", "risk_assessment_department": "Yıllık risk", "risk_assessment_escalated": "Yıllık risk",
         "risk_quarterly_review": "Çeyreklik risk gözden geçirme", "risk_high_level": "Yıllık risk",
+        "coi_declaration": "Çıkar çatışması beyanı",
     ]
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -103,12 +105,14 @@ struct TaskDestination: View {
         "supplier_application_review", "supplier_document_expired", "supplier_document_av_error", "supplier_document_renewed",
         "supplier_offboarding", "supplier_no_portal_user", "supplier_profile_change_request",
     ]
-    static func opensOnMobile(_ task: TaskItem) -> Bool { webOnlySupplierKinds.contains(task.kind) || opensOnMobile(task.entityType) }
+    static func opensOnMobile(_ task: TaskItem) -> Bool { webOnlySupplierKinds.contains(task.kind) || task.kind == "coi_declaration" || opensOnMobile(task.entityType) }
     static func opensOnMobile(_ entityType: String) -> Bool {
         ["contract_version", "invoice", "incident", "document_version", "contract_approval_step", "contract_rejection", "contract_family", "contract_reminder", "risk_assessment"].contains(entityType)
     }
     var body: some View {
-        if Self.webOnlySupplierKinds.contains(task.kind) { webOnly } else { mobile }
+        if Self.webOnlySupplierKinds.contains(task.kind) { webOnly }
+        else if task.kind == "coi_declaration" { CoiDeclarationView(projectId: task.entityId, title: task.title) }
+        else { mobile }
     }
     /// Başvuru incelemesi, belge yenileme, ayrılış ve portal kullanıcısı işleri web'de; kayıt tedarikçiyse salt okunur özet açılabilir.
     private var webOnly: some View {

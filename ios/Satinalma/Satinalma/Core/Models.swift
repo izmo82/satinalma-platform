@@ -85,6 +85,10 @@ struct InvoiceDetail: Decodable, Sendable {
         }
     }
     let invoice: Invoice; let lines: [Line]; let allocations: [Allocation]; let check: Check; let decisions: [Decision]
+    /// v2 Faz 7 (R11): otomatik eşleşme bölümü. Eski sunucuda ya da bozuk alanda yok (nil); hiçbir alan ekranı bozmaz.
+    var match: MatchInfo? { lossyMatch?.value }
+    private let lossyMatch: Lossy<MatchInfo>?
+    enum CodingKeys: String, CodingKey { case invoice, lines, allocations, check, decisions; case lossyMatch = "match" }
 
     /// Web ile aynı eşleşme durumu: hukuken iptal/ret ayrı; satırı olan ve tahsisi engelleyen bulgusu (eksik, fazla, başka
     /// tedarikçi ya da şirkete tahsis) olmayan fatura "Eşleşti" (alan adı paketi `MATCH_BLOCKING_CODES` ile aynı liste).
@@ -97,11 +101,46 @@ struct InvoiceDetail: Decodable, Sendable {
     var visibleIssues: [Issue] { check.issues.filter { !Labels.removedIssueCodes.contains($0.code) } }
 }
 
+/// Çözülemezse nil olan sarmalayıcı: tek bir bozuk alan listeyi ya da ayrıntıyı düşürmez.
+struct Lossy<T: Decodable & Sendable & Hashable>: Decodable, Sendable, Hashable {
+    let value: T?
+    init(from decoder: Decoder) throws { value = try? T(from: decoder) }
+}
+
+/// Fatura-sözleşme eşleşmesi (v2 Faz 7). Tüm alanlar isteğe bağlı.
+struct MatchInfo: Decodable, Sendable, Hashable {
+    struct Ref: Decodable, Sendable, Hashable {
+        let id: String?; let code: String?; let title: String?
+        /// "Kod · Ad"; ikisi de yoksa nil.
+        var displayName: String? { let t = [code, title].compactMap { $0 }.joined(separator: " · "); return t.isEmpty ? nil : t }
+    }
+    struct Usage: Decodable, Sendable, Hashable {
+        let amount: String?; let currency: String?; let used: String?; let levelLabel: String?; let warning: String?
+    }
+    struct Failure: Decodable, Sendable, Hashable { let reasonLabel: String? }
+    let state: String?; let stateLabel: String?; let methodLabel: String?; let note: String?
+    let contract: Ref?; let project: Ref?; let lastAutoFailure: Failure?; let usage: Usage?
+    let erpContractRef: String?; let erpOrderRef: String?
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: K.self)
+        state = try? c.decode(String?.self, forKey: .state); stateLabel = try? c.decode(String?.self, forKey: .stateLabel)
+        methodLabel = try? c.decode(String?.self, forKey: .methodLabel); note = try? c.decode(String?.self, forKey: .note)
+        contract = try? c.decode(Ref?.self, forKey: .contract); project = try? c.decode(Ref?.self, forKey: .project)
+        lastAutoFailure = try? c.decode(Failure?.self, forKey: .lastAutoFailure); usage = try? c.decode(Usage?.self, forKey: .usage)
+        erpContractRef = try? c.decode(String?.self, forKey: .erpContractRef); erpOrderRef = try? c.decode(String?.self, forKey: .erpOrderRef)
+    }
+    enum K: String, CodingKey { case state, stateLabel, methodLabel, note, contract, project, lastAutoFailure, usage, erpContractRef, erpOrderRef }
+}
+
 struct InvoiceRow: Decodable, Identifiable, Sendable, Hashable {
     let id: String; let kind: String; let invoiceNo: String; let issueDate: String; let currency: String; let supplierName: String; let netAmount: String?
     let legalStatus: String
     let supplierStatus: String?; let supplierIdentityVerified: Bool?
     let matched: Bool?; let departmentName: String?
+    /// v2 Faz 7: bağlı sözleşme (kod ve ad); eski sunucuda ya da bozuk alanda nil.
+    private let lossyContract: Lossy<MatchInfo.Ref>?
+    var contract: MatchInfo.Ref? { lossyContract?.value }
+    enum CodingKeys: String, CodingKey { case id, kind, invoiceNo, issueDate, currency, supplierName, netAmount, legalStatus, supplierStatus, supplierIdentityVerified, matched, departmentName; case lossyContract = "contract" }
     var matchText: String { legalStatus != "RECEIVED" ? "Hukuken iptal/ret" : matched == true ? "Eşleşti" : "Eşleşmedi" }
 }
 struct InvoiceList: Decodable, Sendable { let items: [InvoiceRow] }
