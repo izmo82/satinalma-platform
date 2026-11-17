@@ -74,7 +74,7 @@ struct TaskRow: View {
         "supplier_document_av_error": "Tedarikçi belgesi", "supplier_offboarding": "Tedarikçi ayrılışı", "supplier_no_portal_user": "Portal kullanıcısı yok",
         "supplier_profile_change_request": "Tedarikçi değişiklik isteği",
         "risk_assessment_due": "Yıllık risk", "risk_assessment_department": "Yıllık risk", "risk_assessment_escalated": "Yıllık risk",
-        "risk_quarterly_review": "Çeyreklik risk gözden geçirme", "risk_high_level": "Yıllık risk",
+        "risk_quarterly_review": "Çeyreklik risk gözden geçirme", "risk_high_level": "Yıllık risk", "risk_action_owner": "Risk aksiyonu",
         "coi_declaration": "Çıkar çatışması beyanı",
         "invoice_unmatched": "Eşleşmeyen fatura", "contract_overrun": "Sözleşme tutarı aşıldı",
         "compliance_noncompliant": "Uyum denetimi: uyumsuz", "compliance_no_ruleset": "Uyum denetimi: kural seti yok",
@@ -109,7 +109,7 @@ struct TaskDestination: View {
     ]
     static func opensOnMobile(_ task: TaskItem) -> Bool { webOnlySupplierKinds.contains(task.kind) || task.kind == "coi_declaration" || opensOnMobile(task.entityType) }
     static func opensOnMobile(_ entityType: String) -> Bool {
-        ["contract_version", "invoice", "incident", "document_version", "contract_approval_step", "contract_rejection", "contract_family", "contract_reminder", "risk_assessment"].contains(entityType)
+        ["contract_version", "invoice", "incident", "document_version", "contract_approval_step", "contract_rejection", "contract_family", "contract_reminder", "risk_assessment", "risk_action"].contains(entityType)
     }
     var body: some View {
         if Self.webOnlySupplierKinds.contains(task.kind) { webOnly }
@@ -143,6 +143,8 @@ struct TaskDestination: View {
         case "contract_rejection", "contract_family", "contract_reminder": ContractSummaryView(familyId: task.entityId)
         // v2 Faz 6 (R15): risk görevi salt okunur özet açar; form web'de.
         case "risk_assessment": RiskAssessmentView(assessmentId: task.entityId, title: task.title, taskKind: task.kind)
+        // v2 Faz 6 (I2): aksiyon sahibinin görevi (kimlik = aksiyon) → aksiyon ekranı, tamamlama notuyla kapatma.
+        case "risk_action": RiskActionView(actionId: task.entityId, titleHint: task.title)
         default:
             ContentUnavailableView("Bu iş webde yapılır", systemImage: "desktopcomputer",
                                    description: Text("\(task.title)\n\nBu kayıt türü için mobil ekran yok; aynı görev web uygulamasında açıktır."))

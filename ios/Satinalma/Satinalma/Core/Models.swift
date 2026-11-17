@@ -504,6 +504,8 @@ struct RiskDetail: Decodable, Sendable {
     struct Assessment: Decodable, Sendable {
         let id: String; let year: Int?; let status: String?; let dueOn: String?; let overdue: Bool?
         let supplier: Ref?; let department: Ref?; let access: String?
+        /// Faz 6 M6: ilk gözden geçirilebilir dönem "YYYY-Ç" (ilk revizyonun çeyreği); eski sunucuda yok.
+        let firstReviewablePeriod: String?
     }
     struct Criticality: Decodable, Sendable { let value: String?; let display: String?; let column: Int? }
     struct Score: Decodable, Sendable { let value: String?; let source: String?; let sourceLabel: String? }

@@ -104,7 +104,7 @@ struct RiskAssessmentView: View {
     /// varsayılan en eski eksik dönem (ya da görevin dönemi). Eksik dönem yoksa düğme görünmez. "Güncelle" web'de.
     @ViewBuilder private func review(_ d: RiskDetail) -> some View {
         if d.assessment.status == "COMPLETED", d.can?.review != false {
-            let missing = RiskFmt.missingPeriods(year: d.assessment.year, reviews: d.reviews ?? [])
+            let missing = RiskFmt.missingPeriods(year: d.assessment.year, reviews: d.reviews ?? [], floor: d.assessment.firstReviewablePeriod)
             let period = (chosenPeriod.flatMap { missing.contains($0) ? $0 : nil }) ?? preferredPeriod.flatMap { missing.contains($0) ? $0 : nil } ?? missing.first
             Section {
                 if let period {
@@ -159,8 +159,9 @@ struct RiskAssessmentView: View {
             let d: RiskDetail = try await session.post("/api/v1/risk/assessments/\(assessmentId)/reviews", body: ReviewBody(period: period, outcome: "NO_CHANGE"))
             detail = d; actionNotice = Notice(tone: .info, text: "\(period) dönemi \"Değişiklik yok\" olarak kaydedildi.")
         } catch let e as APIError {
+            // 422 period_before_assessment: sunucu iletisi (ilk dönem dahil) olduğu gibi; kayıt yenilenerek seçenekler güncellenir.
             actionNotice = Notice(tone: e.isOffline || e.outcomeUnknown ? .warn : .error, text: e.message)
-            if e.isConflict || e.outcomeUnknown { await load() }
+            if e.isConflict || e.outcomeUnknown || e.code == "period_before_assessment" { await load() }
         } catch { actionNotice = Notice.from(error) }
     }
 }
@@ -208,7 +209,7 @@ enum RiskLabels {
     static let status = ["OPEN": "Açık", "COMPLETED": "Tamamlandı", "CANCELLED": "İptal edildi"]
     static let scoreSource = ["QUESTIONS": "Soru seti", "MANUAL_RESULT": "Elle girilen şablon sonucu", "IMPORT": "Excel içe aktarımı"]
     static let actionKind = ["MITIGATION": "Aksiyon", "CONTROL": "Denetim / kontrol"]
-    static let actionStatus = ["OPEN": "Açık", "DONE": "Tamamlandı", "VERIFIED": "Doğrulandı", "CANCELLED": "İptal edildi"]
+    static let actionStatus = ["OPEN": "Açık", "DONE": "Tamamlandı", "VERIFIED": "Doğrulandı", "CANCELLED": "İptal"]
     static let criteria = [
         "businessImpact": "Hizmetin iş süreçlerine etkisi", "dataSensitivity": "Veri hassasiyeti", "continuity": "Süreklilik ve bağımlılık düzeyi",
         "integration": "Entegrasyon derinliği", "regulation": "Regülasyon uyumu gerekliliği", "serviceType": "Hizmet tipi ve süresi",
@@ -234,13 +235,15 @@ enum RiskFmt {
         return f.string(from: dec as NSDecimalNumber) ?? v
     }
     /// Kaydı olmayan dönemler `YYYY-Ç`: değerlendirme yılının çeyrekleri, cari İstanbul çeyreğine kadar (geçmiş yılda 4'ü); en eski başta.
-    static func missingPeriods(year: Int?, reviews: [RiskDetail.Review], now: Date = Date()) -> [String] {
+    static func missingPeriods(year: Int?, reviews: [RiskDetail.Review], floor: String? = nil, now: Date = Date()) -> [String] {
         var cal = Calendar(identifier: .gregorian); cal.timeZone = TimeZone(identifier: "Europe/Istanbul")!
         let y = cal.component(.year, from: now), q = (cal.component(.month, from: now) - 1) / 3 + 1
         guard let year, year <= y else { return [] }
         let last = year == y ? q : 4
         let done = Set(reviews.compactMap(\.period))
-        return (1...last).map { "\(year)-\($0)" }.filter { !done.contains($0) }
+        // Faz 6 M6: ilk revizyonun çeyreğinden önceki dönem seçilemez (sunucu 422 period_before_assessment verir).
+        let low = floor.flatMap { f -> (Int, Int)? in let p = f.split(separator: "-"); guard p.count == 2, let a = Int(p[0]), let b = Int(p[1]) else { return nil }; return (a, b) }
+        return (1...last).filter { q in low.map { (year, q) >= $0 } ?? true }.map { "\(year)-\($0)" }.filter { !done.contains($0) }
     }
     /// Görev başlığındaki dönem (`risk_quarterly_review` başlığı: "… gözden geçirmesi 2026-2: Tedarikçi").
     static func period(inTitle title: String) -> String? {
