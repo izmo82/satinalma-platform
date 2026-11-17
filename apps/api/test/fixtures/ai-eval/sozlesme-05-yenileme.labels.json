@@ -1,0 +1,29 @@
+{
+  "synthetic": {
+    "title": "Yazilim Lisans Sozlesmesi (SENTETIK)",
+    "contractType": "Diger",
+    "contractNo": "SNT-2026-0105",
+    "supplierVkn": "4234567836",
+    "amount": "15000.00",
+    "currency": "TRY",
+    "signedOn": "2026-01-20",
+    "startDate": "2026-02-01",
+    "endDate": "2027-01-31",
+    "noticePeriodDays": 90,
+    "autoRenewal": true,
+    "guarantee": "Teminat mektubu alinmaz"
+  },
+  "fields": {
+    "title": "Yazilim Lisans Sozlesmesi (SENTETIK)",
+    "contractType": "OTHER",
+    "contractNo": "SNT-2026-0105",
+    "supplierVkn": "4234567836",
+    "signedOn": "2026-01-20",
+    "startDate": "2026-02-01",
+    "endDate": "2027-01-31",
+    "amount": "15000.00",
+    "currency": "TRY",
+    "noticePeriodDays": "90",
+    "autoRenewal": "true"
+  }
+}

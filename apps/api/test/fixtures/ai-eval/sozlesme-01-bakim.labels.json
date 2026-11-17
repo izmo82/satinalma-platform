@@ -1,0 +1,19 @@
+{
+  "synthetic": {
+    "supplierVkn": "1234567808",
+    "contractNo": "SNT-2026-0101"
+  },
+  "fields": {
+    "title": "Yillik Bakim Hizmet Sozlesmesi (SENTETIK)",
+    "contractType": "SERVICE",
+    "contractNo": "SNT-2026-0101",
+    "supplierName": "Anadolu Endustriyel Bakim Ltd. Sti. (SENTETIK)",
+    "supplierVkn": "1234567808",
+    "signedOn": "2026-12-15",
+    "startDate": "2027-01-01",
+    "endDate": "2027-12-31",
+    "amount": "1250000.00",
+    "currency": "TRY",
+    "noticePeriodDays": "30"
+  }
+}

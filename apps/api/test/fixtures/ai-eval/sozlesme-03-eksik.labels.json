@@ -1,0 +1,24 @@
+{
+  "synthetic": {
+    "title": "Danismanlik Sozlesmesi (SENTETIK)",
+    "contractType": "Danismanlik",
+    "contractNo": null,
+    "supplierVkn": null,
+    "endDate": null,
+    "amount": "4999999.99",
+    "currency": "EUR",
+    "noticePeriodDays": null
+  },
+  "fields": {
+    "title": "Danismanlik Sozlesmesi (SENTETIK)",
+    "contractType": "CONSULTING",
+    "contractNo": null,
+    "supplierVkn": null,
+    "signedOn": "2026-12-15",
+    "startDate": "2027-01-01",
+    "endDate": null,
+    "amount": "4999999.99",
+    "currency": "EUR",
+    "noticePeriodDays": null
+  }
+}

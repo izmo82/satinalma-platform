@@ -13,7 +13,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "build": "node build.mjs",
-    "provision": "tsx --env-file-if-exists=../../.env src/provision.ts"
+    "provision": "tsx --env-file-if-exists=../../.env src/provision.ts",
+    "ai:eval": "tsx --env-file-if-exists=../../.env scripts/ai-eval.ts"
   },
   "devDependencies": {
     "@types/node": "^24.0.10",

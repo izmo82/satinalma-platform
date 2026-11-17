@@ -1,0 +1,28 @@
+{
+  "synthetic": {
+    "title": "Karsilikli Gizlilik Sozlesmesi (SENTETIK)",
+    "contractType": "Gizlilik",
+    "contractNo": "SNT-2026-0104",
+    "supplierVkn": "3234567827",
+    "amount": null,
+    "currency": null,
+    "signedOn": "2026-06-30",
+    "startDate": "2026-07-01",
+    "endDate": "2031-06-30",
+    "noticePeriodDays": 15,
+    "governingCourt": "Ankara Mahkemeleri"
+  },
+  "fields": {
+    "title": "Karsilikli Gizlilik Sozlesmesi (SENTETIK)",
+    "contractType": "NDA",
+    "contractNo": "SNT-2026-0104",
+    "supplierVkn": "3234567827",
+    "signedOn": "2026-06-30",
+    "startDate": "2026-07-01",
+    "endDate": "2031-06-30",
+    "amount": null,
+    "currency": null,
+    "noticePeriodDays": "15",
+    "governingCourt": "Ankara Mahkemeleri"
+  }
+}
