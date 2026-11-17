@@ -69,6 +69,17 @@ struct InvoiceDetail: Decodable, Sendable {
         let supplierStatus: String?; let supplierIdentityVerified: Bool?
         let departmentName: String?
     }
+    /// v2 Faz 8 (R6, R11): kaynak ve ERP ödeme durumu. Tüm alanlar isteğe bağlı; etiketler sunucudan olduğu gibi gösterilir.
+    struct ErpSource: Decodable, Sendable, Hashable {
+        struct Payment: Decodable, Sendable, Hashable { let statusLabel: String?; let status: String? }
+        let label: String?; let payment: Payment?
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: K.self)
+            label = try? c.decode(String?.self, forKey: .label); payment = try? c.decode(Payment?.self, forKey: .payment)
+        }
+        enum K: String, CodingKey { case label, payment }
+        var paymentText: String? { payment?.statusLabel ?? payment?.status }
+    }
     struct Line: Decodable, Identifiable, Sendable { let lineNo: Int; let description: String; let quantity: String; let unit: String; let netAmount: String; var id: Int { lineNo } }
     struct Issue: Decodable, Identifiable, Sendable { let code: String; let severity: String; let message: String; let ownerRole: String; var id: String { "\(code)-\(message)" } }
     struct Check: Decodable, Sendable { let issues: [Issue]; let netAmount: String; let taxTotal: String; let grossAmount: String; let payable: String }
@@ -88,7 +99,10 @@ struct InvoiceDetail: Decodable, Sendable {
     /// v2 Faz 7 (R11): otomatik eşleşme bölümü. Eski sunucuda ya da bozuk alanda yok (nil); hiçbir alan ekranı bozmaz.
     var match: MatchInfo? { lossyMatch?.value }
     private let lossyMatch: Lossy<MatchInfo>?
-    enum CodingKeys: String, CodingKey { case invoice, lines, allocations, check, decisions; case lossyMatch = "match" }
+    /// v2 Faz 8: kaynak ve ERP ödeme durumu; eski sunucuda ya da bozuk alanda yok (nil).
+    var erpSource: ErpSource? { lossyErp?.value }
+    private let lossyErp: Lossy<ErpSource>?
+    enum CodingKeys: String, CodingKey { case invoice, lines, allocations, check, decisions; case lossyMatch = "match"; case lossyErp = "erpSource" }
 
     /// Web ile aynı eşleşme durumu: hukuken iptal/ret ayrı; satırı olan ve tahsisi engelleyen bulgusu (eksik, fazla, başka
     /// tedarikçi ya da şirkete tahsis) olmayan fatura "Eşleşti" (alan adı paketi `MATCH_BLOCKING_CODES` ile aynı liste).

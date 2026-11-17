@@ -78,6 +78,9 @@ struct InvoiceView: View {
                     if let note = Labels.supplierNote(d.invoice.supplierStatus, verified: d.invoice.supplierIdentityVerified) { LabeledContent("Tedarikçi durumu") { Text(note).foregroundStyle(.orange) } }
                     LabeledContent("Departman", value: d.invoice.departmentName ?? "Departmansız")
                     LabeledContent("Tarih", value: Fmt.date(d.invoice.issueDate))
+                    // v2 Faz 8: kaynak (ör. taklit sağlayıcı etiketi olduğu gibi) ve ERP ödeme durumu; sunucuda yoksa satır yok.
+                    if let src = d.erpSource?.label, !src.isEmpty { LabeledContent("Kaynak", value: src) }
+                    if let pay = d.erpSource?.paymentText, !pay.isEmpty { LabeledContent("ERP ödeme durumu", value: pay) }
                     LabeledContent(d.match == nil ? "Eşleşme" : "Tahsis kontrolü", value: d.matchText)
                     LabeledContent("Net", value: Fmt.money(d.check.netAmount, d.invoice.currency))
                     LabeledContent("KDV", value: Fmt.money(d.check.taxTotal, d.invoice.currency))
