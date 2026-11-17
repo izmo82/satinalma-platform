@@ -297,7 +297,8 @@ describe('R3 sağlanınca taklitle yazma (gerçek Oracle değil)', () => {
     expect(after).toMatchObject({ status: 'SENT', external_ref: 'EBS-SUP-500', provider_kind: 'TAKLIT' });
     expect(after.last_error).toMatch(/^ERP'de zaten kayıtlı/);
     const g = await h.call('buyer', 'GET', `/api/v1/erp/outbound?entityType=SUPPLIER&entityId=${s.id}`);
-    expect(g.body.items[0]).toMatchObject({ status: 'SENT', alreadyInErp: true, statusLabel: 'ERP\'de zaten kayıtlı (yeni kayıt yazılmadı)' });
+    expect(g.body.items[0]).toMatchObject({ status: 'SENT', alreadyInErp: true, mock: true,
+      statusLabel: 'ERP\'de zaten kayıtlı (yeni kayıt yazılmadı) (taklit sağlayıcıyla denendi — gerçek Oracle değil)' });
     expect(g.body.supplierCode).toMatchObject({ source: 'ERP', sourceLabel: 'ERP', mock: false, verified: true });
     const retry = await h.call('tenantAdmin', 'POST', url('SUPPLIER', '/run'), { body: { target: 'WRITE_RETRY' } });
     expect(retry.status).toBe(202);

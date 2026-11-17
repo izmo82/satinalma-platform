@@ -382,7 +382,7 @@ const supplierHandler: Handler = async (tx, ctx, v, h) => {
   const other = (await tx.query(`SELECT 1 FROM suppliers WHERE erp_supplier_code = $1 AND id <> $2 AND status <> 'MERGED' LIMIT 1`, [code, cur.id])).rowCount;
   if (other) return failed('supplier_code_duplicate', `ERP tedarikçi kodu ${code} başka bir tedarikçi kartında kayıtlı; ikinci karta yazılmadı.`);
   await tx.query(`UPDATE suppliers SET erp_supplier_code = $2, erp_supplier_code_source = 'ERP' WHERE id = $1`, [cur.id, code]);
-  await audit(tx, ctx, 'supplier.erp_code_set', 'supplier', cur.id, { from: cur.erp_supplier_code, to: code, source: 'ERP', runId: h.runId, mock: h.mock });
+  await audit(tx, ctx, 'supplier.erp_code_set', 'supplier', cur.id, { from: cur.erp_supplier_code, to: code, source: 'ERP', runId: h.runId, mock: h.mock, providerKind: h.providerKind });
   return { outcome: 'updated' };
 };
 
@@ -480,7 +480,7 @@ const paymentHandler: Handler = async (tx, ctx, v, h) => {
   // Bilgi alanı: uygulama ödeme yapmaz; v1 payment_status değişmez.
   await tx.query(`UPDATE invoices SET erp_payment_status = $2, erp_payment_status_at = $3, erp_payment_source = 'ERP' WHERE id = $1`, [inv.id, status, date]);
   await audit(tx, ctx, 'invoice.erp_payment_status', 'invoice', inv.id,
-    { from: inv.erp_payment_status, fromAt: inv.at, to: status, at: date, source: 'ERP', runId: h.runId, mock: h.mock });
+    { from: inv.erp_payment_status, fromAt: inv.at, to: status, at: date, source: 'ERP', runId: h.runId, mock: h.mock, providerKind: h.providerKind });
   return { outcome: 'updated' };
 };
 

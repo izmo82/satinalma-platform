@@ -290,7 +290,31 @@ describe('PAYMENT_STATUS okuma (taklitle denendi)', () => {
     expect(r.errors.map((e) => e.code).sort()).toEqual(['CONFLICT_MANUAL', 'demo_invoice_protected']);
     expect((await one(`SELECT row_to_json(i)::text AS j FROM invoices i WHERE id = $1`, [demoInvoice])).j).toBe(demoBefore);
     const det = await h.call('finance', 'GET', `/api/v1/invoices/${i3.id}`);
-    expect(det.body.erpSource.payment).toEqual({ status: 'PAID', statusLabel: 'Ödendi', at: '2026-11-12', source: 'MANUAL', sourceLabel: 'Elle' });
+    expect(det.body.erpSource.payment).toEqual({ status: 'PAID', statusLabel: 'Ödendi', at: '2026-11-12', source: 'MANUAL', sourceLabel: 'Elle', mock: null, provider: null });
+  });
+
+  it('taklit ERP ödeme durumu gerçek gibi görünmez: detay "ERP (taklit)" + mock/sağlayıcı, liste "(taklit ERP)"; denetim olayı yoksa "kaynağı doğrulanamadı"; gerçek sağlayıcı olayı "ERP"', async () => {
+    await configure('PAYMENT_STATUS');
+    await runRead('PAYMENT_STATUS');
+    const [i1] = await invByNo('TKL2026000001');
+    const [i2] = await invByNo('TKL2026000002');
+    const det = await h.call('finance', 'GET', `/api/v1/invoices/${i1.id}`);
+    expect(det.body.erpSource.payment).toEqual({ status: 'PAID', statusLabel: 'Ödendi', at: '2026-11-04', source: 'ERP', sourceLabel: 'ERP (taklit)', mock: true, provider: 'TAKLIT' });
+    const list = await h.call('finance', 'GET', '/api/v1/invoices');
+    const row = (id: string) => ((list.body.items ?? list.body) as { id: string }[]).find((x) => x.id === id);
+    expect(row(i1.id)).toMatchObject({ erpPaymentStatusLabel: 'Ödendi (taklit ERP)', erpPaymentMock: true, erpPaymentProvider: 'TAKLIT' });
+    // Eşleşen denetim olayı olmayan ERP kaynaklı değer gerçek sayılmaz (denetim kaydı silinemez; durum olayla uyuşmaz hale getirilir).
+    await h.owner.query(`UPDATE invoices SET erp_payment_status = 'UNKNOWN' WHERE id = $1`, [i2.id]);
+    const det2 = await h.call('finance', 'GET', `/api/v1/invoices/${i2.id}`);
+    expect(det2.body.erpSource.payment).toMatchObject({ status: 'UNKNOWN', sourceLabel: 'ERP (kaynağı doğrulanamadı)', mock: null });
+    expect(row(i2.id)).toBeDefined();
+    const list2 = await h.call('finance', 'GET', '/api/v1/invoices');
+    expect(((list2.body.items ?? list2.body) as { id: string }[]).find((x) => x.id === i2.id)).toMatchObject({ erpPaymentStatusLabel: 'Bilinmiyor (ERP kaynağı doğrulanamadı)', erpPaymentMock: null });
+    // Gerçek sağlayıcıdan yazılmış olay: "ERP".
+    await h.owner.query(`INSERT INTO audit_events (tenant_id, action, entity_type, entity_id, data) VALUES ($1, 'invoice.erp_payment_status', 'invoice', $2,
+      '{"to":"PAID","source":"ERP","mock":false,"providerKind":"ORACLE_EBS"}')`, [h.world.tenantA, i1.id]);
+    const det3 = await h.call('finance', 'GET', `/api/v1/invoices/${i1.id}`);
+    expect(det3.body.erpSource.payment).toMatchObject({ sourceLabel: 'ERP', mock: false, provider: 'ORACLE_EBS' });
   });
 });
 

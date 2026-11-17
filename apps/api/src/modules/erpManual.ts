@@ -145,7 +145,7 @@ function outView(r: OutRow) {
     : cardCodeUnverified ? `Kartta ERP kodu var (${how ?? 'kaynağı doğrulanamadı'}; ERP'de doğrulanmadı)` : OUTBOUND_STATUS_TR[r.status] ?? r.status;
   return {
     id: r.id, feature: r.feature, featureLabel: ERP_FEATURE_CATALOG[r.feature].label, entityType: r.entity_type, entityId: r.entity_id,
-    status: r.status, statusLabel: mock && r.status !== 'MANUAL' && !alreadyInErp ? `${base} (${MOCK_NOTE})` : base, alreadyInErp, cardCodeUnverified,
+    status: r.status, statusLabel: mock && r.status !== 'MANUAL' ? `${base} (${MOCK_NOTE})` : base, alreadyInErp, cardCodeUnverified,
     provider: r.provider_kind ? { kind: r.provider_kind, label: PROVIDER_TR[r.provider_kind], real: r.provider_kind === 'ORACLE_EBS' } : null,
     mock, externalRef: r.external_ref, attempts: r.attempts, lastError: r.last_error,
     manual: r.status === 'MANUAL' ? { by: r.manual_by ? { id: r.manual_by, name: r.manual_by_name } : null, at: r.manual_at?.toISOString() ?? null, note: r.manual_note } : null,
