@@ -67,11 +67,12 @@ export function anthropicProvider(cfg: NonNullable<Config['ai']>, deps: Anthropi
       const d = input.document;
       if (!d || d.mimeType !== 'application/pdf') throw new AiProviderError('UNSUPPORTED_DOCUMENT', 'Yalnız PDF desteklenir: desteklenmeyen belge türü.');
       if (d.pageCount > MAX_PDF_PAGES) throw new AiProviderError('DOCUMENT_LIMIT', `Belge ${MAX_PDF_PAGES} sayfadan uzun: belge sınırı aşıldı.`);
-      const data = d.bytes.toString('base64');
       const template = task === 'AI14' && input.templateText ? input.templateText : null;
-      if (Buffer.byteLength(data) + Buffer.byteLength(template ?? '') > MAX_REQUEST_BYTES) {
+      // Base64 boyutu (4/3) dönüştürmeden önce hesaplanır: büyük belge için gereksiz bellek ayrılmaz.
+      if (Math.ceil(d.bytes.length / 3) * 4 + Buffer.byteLength(template ?? '') > MAX_REQUEST_BYTES) {
         throw new AiProviderError('DOCUMENT_LIMIT', 'Belge 32 MB istek sınırını aşıyor: belge sınırı aşıldı.');
       }
+      const data = d.bytes.toString('base64');
       const content: Anthropic.ContentBlockParam[] = [
         { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data } },
         ...(template ? [{ type: 'text' as const, text: templateBlockText(template) }] : []),

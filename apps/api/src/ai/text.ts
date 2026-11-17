@@ -1,7 +1,7 @@
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
-import { readZip } from '../zip.ts';
+import { readZip, ZipEntryTooLargeError } from '../zip.ts';
 
 // Gömülü olmayan standart yazı tipleri (Helvetica vb.) için pdf.js veri dizini; metin çıkarımında uyarı/eksik glif olmaz.
 const standardFontDataUrl = `${dirname(fileURLToPath(import.meta.resolve('pdfjs-dist/package.json')))}/standard_fonts/`;
@@ -35,8 +35,11 @@ const decodeXml = (s: string) => s.replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|ap
  * v2 Faz 4 (R7): .docx şablonunun düz metni (`word/document.xml`). Paragraf sonları `\n`, sekme `\t`, satır kırılımı `\n` olarak korunur;
  * silinmiş izli değişiklik (`w:delText`) ve alan kodu (`w:instrText`) metne girmez. ZIP ya da belge yoksa hata atar. Metin loglanmaz.
  */
+export const MAX_DOCX_XML_BYTES = 20 * 1024 * 1024;
 export function docxText(buf: Buffer): string {
-  const xml = readZip(buf).get('word/document.xml');
+  let xml: Buffer | undefined;
+  try { xml = readZip(buf, { only: 'word/document.xml', maxOutputLength: MAX_DOCX_XML_BYTES }).get('word/document.xml'); }
+  catch (e) { if (e instanceof ZipEntryTooLargeError) throw new Error('Şablon metni çok büyük'); throw e; }
   if (!xml) throw new Error('word/document.xml yok');
   // Ham satır sonları XML biçimlemesidir (Word metni w:t içinde tutar); belge metnine girmez.
   return decodeXml(xml.toString('utf8').replace(/[\r\n]+/g, '')

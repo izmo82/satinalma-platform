@@ -161,8 +161,13 @@ function dosDateTime(d: Date) {
   };
 }
 
-/** Testler ve geri yükleme tatbikatı için: merkezi dizinden dosyaları okur (ZIP64 konumu dahil). */
-export function readZip(buf: Buffer): Map<string, Buffer> {
+/**
+ * Testler ve geri yükleme tatbikatı için: merkezi dizinden dosyaları okur (ZIP64 konumu dahil).
+ * `opts` (v2 Faz 4, docxText): `only` yalnız o girdiyi açar (diğerleri hiç açılmaz); `maxOutputLength` açılmış boyutu sınırlar
+ * (sıkıştırma bombası). Sınır aşılırsa `ZipEntryTooLargeError`. Seçeneksiz çağrı eski davranıştır.
+ */
+export class ZipEntryTooLargeError extends Error { constructor(readonly entry: string) { super(`zip entry too large: ${entry}`); this.name = 'ZipEntryTooLargeError'; } }
+export function readZip(buf: Buffer, opts: { only?: string; maxOutputLength?: number } = {}): Map<string, Buffer> {
   const endAt = buf.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
   if (endAt < 0) throw new Error('not a zip');
   let count = buf.readUInt16LE(endAt + 10);
@@ -188,10 +193,21 @@ export function readZip(buf: Buffer): Map<string, Buffer> {
     if (csize === U32) { csize = Number(buf.readBigUInt64LE(x)); x += 8; }
     if (off === U32) off = Number(buf.readBigUInt64LE(x));
     const name = buf.subarray(p + 46, p + 46 + nlen).toString('utf8');
+    if (opts.only !== undefined && name !== opts.only) { p += 46 + nlen + elen + clen; continue; }
+    const max = opts.maxOutputLength;
+    if (max !== undefined && usize > max) throw new ZipEntryTooLargeError(name);
     const lnlen = buf.readUInt16LE(off + 26);
     const lelen = buf.readUInt16LE(off + 28);
     const raw = buf.subarray(off + 30 + lnlen + lelen, off + 30 + lnlen + lelen + csize);
-    const data = method === 8 ? inflateRawSync(raw) : Buffer.from(raw);
+    let data: Buffer;
+    try {
+      // Bildirilen boyut yalan olabilir: açma da sınırla yapılır.
+      data = method === 8 ? inflateRawSync(raw, max !== undefined ? { maxOutputLength: max } : {}) : Buffer.from(raw);
+    } catch (e) {
+      if (max !== undefined && (e as NodeJS.ErrnoException).code === 'ERR_BUFFER_TOO_LARGE') throw new ZipEntryTooLargeError(name);
+      throw e;
+    }
+    if (max !== undefined && data.length > max) throw new ZipEntryTooLargeError(name);
     if ((crc32(data) >>> 0) !== crc || data.length !== usize) throw new Error(`crc/size mismatch: ${name}`);
     out.set(name, data);
     p += 46 + nlen + elen + clen;

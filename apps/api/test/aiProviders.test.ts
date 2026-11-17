@@ -269,6 +269,26 @@ describe('docxText', () => {
     await z.finish();
     expect(docxText(Buffer.concat(chunks))).toBe('Madde 1 - Konu & Kapsam\nBedel\t1.000 TL\nKDV hariç\n\nĞ <özel> ı');
   });
+  it('sıkıştırma bombası: 20 MB üstü document.xml açılmaz ("Şablon metni çok büyük"), boyutu yalan söyleyen girdi de', async () => {
+    const chunks: Buffer[] = [];
+    const z = new ZipStreamWriter({ write: async (c) => { chunks.push(c); } });
+    const e = await z.entry('word/document.xml');
+    const mb = Buffer.alloc(1024 * 1024, 0x61);
+    for (let i = 0; i < 21; i++) await e.write(mb);
+    await e.close();
+    await z.finish();
+    const bomb = Buffer.concat(chunks);
+    expect(bomb.length).toBeLessThan(1024 * 1024); // yüksek sıkıştırma oranı
+    expect(() => docxText(bomb)).toThrow('Şablon metni çok büyük');
+    // Merkezi dizindeki açılmış boyutu küçük gösteren girdi: sınır açma sırasında da uygulanır.
+    const liar = Buffer.from(bomb);
+    const cd = liar.lastIndexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+    liar.writeUInt32LE(100, cd + 24);
+    expect(() => docxText(liar)).toThrow('Şablon metni çok büyük');
+    // Seçeneksiz readZip eski davranışı korur (dışa aktarım ve testler).
+    const { readZip } = await import('../src/zip.ts');
+    expect(readZip(bomb).get('word/document.xml')!.length).toBe(21 * 1024 * 1024);
+  });
   it('syntheticDocx ile üretilen şablon geri okunur; .docx olmayan hata verir', async () => {
     expect(docxText(await syntheticDocx(['Birinci', 'İkinci paragraf']))).toBe('Birinci\nİkinci paragraf');
     expect(() => docxText(Buffer.from('zip değil'))).toThrow();
