@@ -19,3 +19,5 @@ export * from './contractV2.ts';
 export * from './contractAi.ts';
 export * from './supplierPortal.ts';
 export * from './riskV2.ts';
+export * from './invoiceLinking.ts';
+export * from './compliance.ts';

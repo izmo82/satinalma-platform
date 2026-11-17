@@ -180,6 +180,15 @@ export const PERMISSIONS = {
   'risk.cycle.manage': ['ADMIN', 'PROCUREMENT'],
   'risk.import': ['ADMIN', 'PROCUREMENT'],
   'risk.export': ['ADMIN', 'PROCUREMENT', 'AUDITOR'],
+  // v2 Faz 7 (T1): fatura eşleştirme, proje tamamlama, kural seti, uyum denetimi, çıkar çatışması beyanı.
+  'invoice.match': ['PROCUREMENT', 'DEPARTMENT_USER'],
+  'project.complete': ['PROCUREMENT'],
+  'rule.read': ['ADMIN', 'PROCUREMENT', 'DEPARTMENT_USER', 'AUDITOR'],
+  'rule.manage': ['ADMIN'],
+  'compliance.read': ['ADMIN', 'PROCUREMENT', 'DEPARTMENT_USER', 'AUDITOR'],
+  'compliance.run': ['ADMIN', 'PROCUREMENT'],
+  'compliance.mark': ['PROCUREMENT'],
+  'coi.declare': ['PROCUREMENT', 'DEPARTMENT_USER'],
 } as const satisfies Record<string, readonly Role[]>;
 
 export type Permission = keyof typeof PERMISSIONS;
