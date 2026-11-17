@@ -32,6 +32,7 @@ import * as directory from './modules/directory.ts';
 import * as approvers from './modules/approvers.ts';
 import * as templates from './modules/templates.ts';
 import * as riskQuestions from './modules/riskQuestions.ts';
+import * as riskAssessments from './modules/riskAssessments.ts';
 import * as intake from './modules/contractIntake.ts';
 import * as contractAi from './modules/contractAi.ts';
 import * as reminders from './modules/contractReminders.ts';
@@ -716,6 +717,53 @@ export async function buildApp(deps: AppDeps) {
   app.get('/api/v1/settings/risk', { schema: { tags: ['settings'] } }, async (req) => scoped(req, 'risk.cycle.manage', (tx) => riskQuestions.getRiskSettings(tx)));
   app.put('/api/v1/settings/risk', { schema: { tags: ['settings'], body: { type: 'object', required: ['dueDays'], additionalProperties: false, properties: { dueDays: { type: 'number' } } } } }, async (req) =>
     scoped(req, 'risk.cycle.manage', (tx, ctx) => riskQuestions.putRiskSettings(tx, ctx, req.body as { dueDays: unknown })));
+  // --- v2 Faz 6 Görev 4: yıllık risk değerlendirmesi ---------------------------------------------------------------------
+  {
+    const year = { type: 'integer', minimum: 2000, maximum: 2100 } as const;
+    const crit = { anyOf: [{ type: 'integer', enum: [1, 3, 5] }, { type: 'null' }] } as const;
+    const method = { type: 'string', enum: ['ON_SITE', 'ONLINE', 'DESK'] } as const;
+    const id = (req: FastifyRequest) => (req.params as { id: string }).id;
+    app.get('/api/v1/risk/assessments', { schema: { tags: ['risk'], querystring: { type: 'object', additionalProperties: false, properties: {
+      year, status: { type: 'string', enum: ['OPEN', 'COMPLETED', 'CANCELLED'] }, level: { type: 'integer', minimum: 1, maximum: 5 }, departmentId: uuid,
+      overdue: { type: 'boolean' } } } } }, async (req) =>
+      scoped(req, 'risk.read', (tx, ctx) => riskAssessments.listAssessments(tx, ctx, req.query as any)));
+    app.get('/api/v1/risk/matrix', { schema: { tags: ['risk'], querystring: { type: 'object', additionalProperties: false, properties: { year } } } }, async (req) =>
+      scoped(req, 'risk.read', (tx) => riskAssessments.matrix(tx, (req.query as { year?: number }).year ?? Number(riskAssessments.istanbulToday().slice(0, 4)))));
+    app.get('/api/v1/risk/assessments/:id', { schema: { tags: ['risk'], params: idParams } }, async (req) =>
+      scoped(req, 'risk.read', (tx, ctx) => riskAssessments.getAssessment(tx, ctx, id(req))));
+    app.put('/api/v1/risk/assessments/:id/draft', { schema: { tags: ['risk'], params: idParams, body: { type: 'object', additionalProperties: false, properties: {
+      criteria: { type: 'object', maxProperties: 6, additionalProperties: crit },
+      questionSetId: { anyOf: [uuid, { type: 'null' }] },
+      answers: { type: 'object', maxProperties: 500, additionalProperties: { anyOf: [{ type: 'string', enum: ['YES', 'NO'] }, { type: 'null' }] } },
+      manualScore: { anyOf: [{ type: 'string', maxLength: 10 }, { type: 'number' }, { type: 'null' }] },
+      manualNote: nullable({ type: 'string', maxLength: 5000 }) } } } }, async (req) =>
+      scoped(req, 'risk.assess', (tx, ctx) => riskAssessments.saveDraft(tx, ctx, id(req), req.body as riskAssessments.DraftInput)));
+    app.post('/api/v1/risk/assessments/:id/complete', { schema: { tags: ['risk'], params: idParams } }, async (req) =>
+      scoped(req, 'risk.assess', (tx, ctx) => riskAssessments.complete(tx, ctx, id(req))));
+    app.post('/api/v1/risk/assessments/:id/actions', { schema: { tags: ['risk'], params: idParams, body: { type: 'object', required: ['kind', 'title'], additionalProperties: false, properties: {
+      kind: { type: 'string', enum: ['MITIGATION', 'CONTROL'] }, title: { type: 'string', maxLength: 1000 }, description: nullable({ type: 'string', maxLength: 4000 }),
+      ownerUserId: { anyOf: [uuid, { type: 'null' }] }, ownerText: nullable({ type: 'string', maxLength: 200 }), dueOn: nullable({ type: 'string', maxLength: 10 }),
+      controlMethod: { anyOf: [method, { type: 'null' }] }, supplierVisible: { type: 'boolean' } } } } }, async (req, reply) =>
+      reply.status(201).send(await scoped(req, 'risk.assess', (tx, ctx) => riskAssessments.addAction(tx, ctx, id(req), req.body as riskAssessments.ActionInput))));
+    // Aksiyon sahibi başka departmanda olabilir (054a): okuma izniyle girer, modül sahibi yalnız durum/not ile sınırlar.
+    app.patch('/api/v1/risk/actions/:id', { schema: { tags: ['risk'], params: idParams, body: { type: 'object', minProperties: 1, additionalProperties: false, properties: {
+      title: { type: 'string', maxLength: 1000 }, description: nullable({ type: 'string', maxLength: 4000 }), ownerUserId: { anyOf: [uuid, { type: 'null' }] },
+      ownerText: nullable({ type: 'string', maxLength: 200 }), dueOn: nullable({ type: 'string', maxLength: 10 }), controlMethod: method, supplierVisible: { type: 'boolean' },
+      status: { type: 'string', enum: ['DONE', 'VERIFIED', 'CANCELLED'] }, completionNote: nullable({ type: 'string', maxLength: 2000 }) } } } }, async (req) =>
+      scoped(req, 'risk.read', (tx, ctx) => riskAssessments.patchAction(tx, ctx, id(req), req.body as riskAssessments.ActionPatch)));
+    app.post('/api/v1/risk/assessments/:id/opinions', { schema: { tags: ['risk'], params: idParams, body: { type: 'object', required: ['body'], additionalProperties: false, properties: {
+      body: { type: 'string', maxLength: 4000 } } } } }, async (req, reply) =>
+      reply.status(201).send(await scoped(req, 'risk.opinion', (tx, ctx) => riskAssessments.addOpinion(tx, ctx, id(req), (req.body as { body: string }).body))));
+    app.put('/api/v1/risk/assessments/:id/department', { schema: { tags: ['risk'], params: idParams, body: { type: 'object', required: ['departmentId'], additionalProperties: false, properties: {
+      departmentId: uuid } } } }, async (req) =>
+      scoped(req, 'risk.cycle.manage', (tx, ctx) => riskAssessments.setDepartment(tx, ctx, id(req), (req.body as { departmentId: string }).departmentId)));
+    app.post('/api/v1/risk/assessments/:id/reviews', { schema: { tags: ['risk'], params: idParams, body: { type: 'object', required: ['period', 'outcome'], additionalProperties: false, properties: {
+      period: { type: 'string', maxLength: 10 }, outcome: { type: 'string', enum: ['NO_CHANGE', 'UPDATE'] } } } } }, async (req, reply) =>
+      reply.status(201).send(await scoped(req, 'risk.assess', (tx, ctx) => riskAssessments.review(tx, ctx, id(req), req.body as { period: string; outcome: 'NO_CHANGE' | 'UPDATE' }))));
+    app.get('/api/v1/suppliers/:id/risk-history', { schema: { tags: ['risk'], params: idParams } }, async (req) =>
+      scoped(req, 'risk.read', (tx, ctx) => riskAssessments.supplierHistory(tx, ctx, id(req))));
+    app.get('/api/v1/portal/risk', { schema: { tags: ['portal'] } }, async (req) => scoped(req, 'portal.standing', (tx, ctx) => riskAssessments.portalRisk(tx, ctx)));
+  }
   app.get('/api/v1/settings/contract-reminders', { schema: { tags: ['settings'] } }, async (req) =>
     scoped(req, 'reminder.settings', (tx) => reminders.getSettings(tx)));
   app.put('/api/v1/settings/contract-reminders', { schema: { tags: ['settings'], body: { type: 'object', required: ['offsets'], additionalProperties: false, properties: {
@@ -1378,9 +1426,10 @@ export async function buildApp(deps: AppDeps) {
 
   // --- v2 Faz 5 (D110): girişsiz tedarikçi başvurusu (R2–R5) -------------------------------------------------
   // Oturum gerekmez; yalnız 052 SECURITY DEFINER işlevleri çağrılır, yanıtta kiracı kimliği (`internal`) yoktur.
-  const publicDeps = (): applications.SubmitDeps => ({ pool: deps.pool, store: deps.store, scanner, channel: mail, webOrigin: deps.config.webOrigin });
+  const publicDeps = (): applications.SubmitDeps => ({ pool: deps.pool, store: deps.store, scanner, channel: mail, webOrigin: deps.config.webOrigin,
+    tenantPerHour: deps.config.publicRateLimit?.tenantPerHour });
   const slugParams = { type: 'object', required: ['slug'], properties: { slug: { type: 'string', maxLength: 64 } } } as const;
-  app.get('/api/v1/public/applications/:slug/config', { schema: { tags: ['public'], security: [], params: slugParams } }, async (req) =>
+  app.get('/api/v1/public/applications/:slug/config', { onRequest: publicLimiter.hook('read'), schema: { tags: ['public'], security: [], params: slugParams } }, async (req) =>
     (await applications.loadPublicConfig(deps.pool, (req.params as { slug: string }).slug)).config);
   app.post('/api/v1/public/applications/verify', { onRequest: publicLimiter.hook('token'), schema: { tags: ['public'], security: [],
     body: { type: 'object', required: ['token'], additionalProperties: false, properties: { token: { type: 'string', maxLength: 200 } } } } },
@@ -1397,7 +1446,7 @@ export async function buildApp(deps: AppDeps) {
       if (!config.enabled || !tenantId) throw new ApiError(404, 'applications_closed', 'Başvuru şu an kabul edilmiyor.');
       const form = await applications.readApplicationForm(req.parts({ limits: applications.MULTIPART_LIMITS }));
       // R4d: tuzak alanı doluysa kayıt açılmaz, dosya yazılmaz; yanıt aynı.
-      if (applications.isHoneypot(form)) return reply.status(202).send(applications.submitResponse(mail));
+      if (applications.isHoneypot(form)) return reply.status(202).send(await applications.honeypotResponse(mail));
       const input = applications.validateApplication(form, config);
       const docs = await applications.prepareDocuments(form, tenantId, scanner);
       return reply.status(202).send(await applications.submitApplication(publicDeps(), slug, tenantId, req.ip, input, docs));

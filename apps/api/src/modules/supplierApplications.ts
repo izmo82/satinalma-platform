@@ -9,6 +9,7 @@ import type { ObjectStore } from '../storage.ts';
 import { scanStatus, type AvScanner, type AvScanStatus } from '../av/index.ts';
 import { enqueueEmailDispatch, type MailChannel } from '../mail/index.ts';
 import { audit } from '../audit.ts';
+import { clientAddressKey, DEFAULT_PUBLIC_RATE_LIMIT } from '../publicRateLimit.ts';
 import { openTask } from '../tasks.ts';
 
 /**
@@ -85,6 +86,7 @@ export async function readApplicationForm(parts: AsyncIterableIterator<Multipart
         if (total > APPLICATION_LIMITS.maxTotalBytes) throw unprocessable('total_size', 'Dosyaların toplamı 40 MB sınırını aşıyor.');
         form.files.push({ typeCode: m[1]!, filename: part.filename, mimetype: part.mimetype, body });
       } else {
+        if (part.valueTruncated || part.fieldnameTruncated) throw unprocessable('field_too_long', 'Bir form alanı çok uzun.', { field: part.fieldname.slice(0, 80) });
         const value = typeof part.value === 'string' ? part.value : String(part.value ?? '');
         const v = VALID_FIELD.exec(part.fieldname);
         if (v) { if (value.trim()) form.validUntil.set(v[1]!, value.trim()); continue; }
@@ -237,7 +239,8 @@ export function tokenHash(token: unknown): Buffer | null {
   return raw.length === 32 ? createHash('sha256').update(raw).digest() : null;
 }
 export const tokenInvalid = () => new ApiError(410, 'token_invalid', 'Bağlantı geçersiz, kullanılmış ya da süresi dolmuş. Gerekirse yeniden başvurun.');
-export const ipHash = (ip: string, tenantId: string) => createHash('sha256').update(`${ip}${tenantId}`).digest();
+/** R4: `sha256(adres + kiracı)`; IPv6 /64 önekine indirgenir (sınırlayıcıyla aynı anahtar). */
+export const ipHash = (ip: string, tenantId: string) => createHash('sha256').update(`${clientAddressKey(ip)}${tenantId}`).digest();
 
 export interface SubmitResult { message: string; mailChannel: 'NOT_CONFIGURED' | 'QUEUED'; note: string | null }
 /** R4e: yanıt girdiden bağımsız, yalnız kanala göre değişir (tuzak alanı, var olan tedarikçi, yeni firma aynı yanıtı alır). */
@@ -248,7 +251,31 @@ export function submitResponse(channel: MailChannel): SubmitResult {
         note: 'E-posta kanalı yapılandırılmadı; kurum yöneticisi başvurunuzu e-posta kutusundan görebilir.' };
 }
 
-export interface SubmitDeps { pool: pg.Pool; store: ObjectStore; scanner: AvScanner | null; channel: MailChannel; webOrigin: string }
+/** Tuzak alanı yanıtı: veritabanı adımı yok; kısa rastgele bekleme gerçek başvurunun süresini kabaca taklit eder. */
+export async function honeypotResponse(channel: MailChannel): Promise<SubmitResult> {
+  await new Promise((r) => setTimeout(r, 40 + Math.floor(Math.random() * 160)));
+  return submitResponse(channel);
+}
+
+/** Depo yazımı veritabanı işleminden önce (rastgele anahtar); işlem başarısız olursa yazılanlar en iyi çabayla silinir. */
+async function putObjects(store: ObjectStore, docs: PreparedDocument[]): Promise<string[]> {
+  const written: string[] = [];
+  try {
+    for (const d of docs) { await store.put(d.storageKey, d.body, d.mimeType); written.push(d.storageKey); }
+  } catch (err) {
+    await removeObjects(store, written);
+    throw err;
+  }
+  return written;
+}
+async function removeObjects(store: ObjectStore, keys: string[]) {
+  for (const k of keys) {
+    // Yalnız anahtar günlüğe yazılır (içerik, kişi verisi yok).
+    await store.delete(k).catch(() => console.warn('supplier application object cleanup failed', k));
+  }
+}
+
+export interface SubmitDeps { pool: pg.Pool; store: ObjectStore; scanner: AvScanner | null; channel: MailChannel; webOrigin: string; tenantPerHour?: number }
 
 export async function submitApplication(deps: SubmitDeps, slug: string, tenantId: string, ip: string, input: ApplicationInput, docs: PreparedDocument[]): Promise<SubmitResult> {
   const { token, hash } = newToken();
@@ -256,20 +283,33 @@ export async function submitApplication(deps: SubmitDeps, slug: string, tenantId
   const mail = verificationEmail({ legalName: input.legalName, link });
   const status = deps.channel.kind === 'graph' ? 'QUEUED' : 'NOT_CONFIGURED';
   const ctx = applicationSystemContext(tenantId, `public-apply-${randomUUID().slice(0, 8)}`);
-  await withTenant(deps.pool, ctx, async (tx) => {
-    const id = (await tx.query<{ id: string }>(`SELECT public_application_create($1, $2, $3, $4, $5, $6) AS id`,
-      [slug, input, docJson(docs), hash, ipHash(ip, tenantId), { subject: mail.subject, body: mail.body, status }])).rows[0]!.id;
-    if (status === 'QUEUED') {
-      const outbox = (await tx.query<{ id: string }>(`SELECT id FROM email_outbox WHERE related_type = 'supplier_application' AND related_id = $1 AND status = 'QUEUED'`, [id])).rows;
-      for (const o of outbox) await enqueueEmailDispatch(tx, tenantId, o.id);
-    }
-    // Süre dolumu: doğrulanmayan başvuru 24 saat sonra işçide EXPIRED olur (iş kiracının bütün süresi geçmişlerini işaretler).
-    await tx.query(`INSERT INTO jobs (tenant_id, kind, idempotency_key, payload, requested_by, run_after)
-      VALUES ($1, $2, $3, $4, NULL, now() + interval '24 hours 1 minute') ON CONFLICT (tenant_id, kind, idempotency_key) DO NOTHING`,
-      [tenantId, EXPIRE_JOB, `expire:${id}`, { applicationId: id }]);
-    // Dosyalar yalnız işlev kabul ettikten sonra yazılır; depo hatasında işlem geri alınır (kayıtsız dosya kalmaz, dosyasız kayıt olmaz).
-    for (const d of docs) await deps.store.put(d.storageKey, d.body, d.mimeType);
-  });
+  const cap = deps.tenantPerHour ?? DEFAULT_PUBLIC_RATE_LIMIT.tenantPerHour;
+  const written = await putObjects(deps.store, docs);
+  try {
+    await withTenant(deps.pool, ctx, async (tx) => {
+      // Kiracı başına toplam saatlik sınır (adres değiştiren dağıtık deneme; kopyalar arası geçerli).
+      const recent = (await tx.query<{ n: number }>(`SELECT count(*)::int AS n FROM supplier_applications WHERE created_at > now() - interval '1 hour'`)).rows[0]!.n;
+      // İşlevin SP429'u ile aynı yanıt (Retry-After dahil) hata eşlemesinden gelir.
+      if (recent >= cap) throw Object.assign(new Error('rate_limited: tenant'), { code: 'SP429' });
+      const id = (await tx.query<{ id: string }>(`SELECT public_application_create($1, $2, $3, $4, $5, $6) AS id`,
+        [slug, input, docJson(docs), hash, ipHash(ip, tenantId), { subject: mail.subject, body: mail.body, status }])).rows[0]!.id;
+      // İşlev kiracıyı kısaltmadan yeniden çözer; araya kısaltma değişikliği girdiyse satır bu bağlamda görünmez → geri alınır.
+      if ((await tx.query(`SELECT 1 FROM supplier_applications WHERE id = $1`, [id])).rowCount !== 1) {
+        throw new ApiError(404, 'applications_closed', 'Başvuru şu an kabul edilmiyor.');
+      }
+      if (status === 'QUEUED') {
+        const outbox = (await tx.query<{ id: string }>(`SELECT id FROM email_outbox WHERE related_type = 'supplier_application' AND related_id = $1 AND status = 'QUEUED'`, [id])).rows;
+        for (const o of outbox) await enqueueEmailDispatch(tx, tenantId, o.id);
+      }
+      // Süre dolumu: doğrulanmayan başvuru 24 saat sonra işçide EXPIRED olur (iş kiracının bütün süresi geçmişlerini işaretler).
+      await tx.query(`INSERT INTO jobs (tenant_id, kind, idempotency_key, payload, requested_by, run_after)
+        VALUES ($1, $2, $3, $4, NULL, now() + interval '24 hours 1 minute') ON CONFLICT (tenant_id, kind, idempotency_key) DO NOTHING`,
+        [tenantId, EXPIRE_JOB, `expire:${id}`, { applicationId: id }]);
+    });
+  } catch (err) {
+    await removeObjects(deps.store, written);
+    throw err;
+  }
   return submitResponse(deps.channel);
 }
 
@@ -299,11 +339,20 @@ export async function completeApplication(deps: SubmitDeps, token: unknown, read
   const tenantId = info.internal.tenantId;
   const docs = await prepareDocuments(form, tenantId, deps.scanner);
   const ctx = applicationSystemContext(tenantId, `public-complete-${randomUUID().slice(0, 8)}`);
-  const r = await withTenant(deps.pool, ctx, async (tx) => {
-    const out = (await tx.query<{ r: { status: 'SUBMITTED' } }>(`SELECT public_application_complete($1, $2) AS r`, [tokenHash(token), docJson(docs)])).rows[0]!.r;
-    for (const d of docs) await deps.store.put(d.storageKey, d.body, d.mimeType);
-    return out;
-  });
+  const written = await putObjects(deps.store, docs);
+  let r: { status: 'SUBMITTED'; internal?: { tenantId: string } };
+  try {
+    r = await withTenant(deps.pool, ctx, async (tx) => {
+      const out = (await tx.query<{ r: { status: 'SUBMITTED'; internal?: { tenantId: string } } }>(`SELECT public_application_complete($1, $2) AS r`,
+        [tokenHash(token), docJson(docs)])).rows[0]!.r;
+      // Belirteç başka kiracının başvurusuna çözülmüşse (anahtar önekiyle uyuşmaz) işlem geri alınır.
+      if (out.internal?.tenantId !== tenantId) throw tokenInvalid();
+      return out;
+    });
+  } catch (err) {
+    await removeObjects(deps.store, written);
+    throw err;
+  }
   return { status: r.status };
 }
 
@@ -358,6 +407,10 @@ export const RECOMMENDED_DOCUMENT_TYPES = [
   { code: 'ISO27001', name: 'ISO 27001', required: false, requiredCategories: ['Bilgi teknolojileri'], expiryRequired: true },
 ] as const;
 
+/** Uç ve ekran yollarıyla karışabilecek kısaltmalar (`/basvuru/<slug>`, `/api/v1/public/applications/<slug>`). */
+export const RESERVED_SLUGS = new Set(['verify', 'complete', 'complete-info', 'config', 'dogrula', 'tamamla', 'basvuru', 'admin', 'api', 'public',
+  'portal', 'login', 'logout', 'auth', 'settings', 'static', 'assets', 'www', 'health', 'yonetim']);
+
 export interface ApplicationSettings { enabled: boolean; publicSlug: string | null; publicPath: string | null; categories: string[]; updatedAt: string | null }
 
 export async function getSettings(tx: Tx): Promise<ApplicationSettings> {
@@ -382,15 +435,14 @@ export async function putSettings(tx: Tx, ctx: TenantContext, body: { enabled: b
   if (slug !== null && !/^[a-z0-9-]{3,40}$/.test(slug)) {
     throw unprocessable('invalid_slug', 'Adres kısaltması 3–40 karakter olmalı; yalnız küçük harf (a–z), rakam ve tire kullanılabilir.');
   }
+  if (slug !== null && RESERVED_SLUGS.has(slug)) throw unprocessable('slug_reserved', 'Bu adres kısaltması sistemce ayrılmış; başka bir kısaltma seçin.');
   if (body.enabled && !slug) throw unprocessable('slug_required', 'Başvuruyu açmak için adres kısaltması gerekli.');
   const categories = body.categories === undefined ? before.categories : cleanCategories(body.categories);
   try {
-    await tx.query('SAVEPOINT settings_upsert');
     await tx.query(`INSERT INTO supplier_application_settings (tenant_id, enabled, public_slug, categories, updated_by, updated_at)
       VALUES ($1, $2, $3, $4, $5, now())
       ON CONFLICT (tenant_id) DO UPDATE SET enabled = EXCLUDED.enabled, public_slug = EXCLUDED.public_slug, categories = EXCLUDED.categories,
         updated_by = EXCLUDED.updated_by, updated_at = now()`, [ctx.tenantId, body.enabled, slug, categories, ctx.userId]);
-    await tx.query('RELEASE SAVEPOINT settings_upsert');
   } catch (err: any) {
     if (err?.code === '23505') throw new ApiError(409, 'slug_taken', 'Bu adres kısaltması kullanılıyor; başka bir kısaltma seçin.');
     throw err;
@@ -434,11 +486,9 @@ export async function createDocumentType(tx: Tx, ctx: TenantContext, body: { cod
   const requiredCategories = cleanCategories(body.requiredCategories ?? [], 'requiredCategories');
   let row: DocumentTypeRow;
   try {
-    await tx.query('SAVEPOINT doc_type_insert');
     row = (await tx.query<DocumentTypeRow>(`INSERT INTO supplier_document_types (tenant_id, code, name, required, required_categories, expiry_required, created_by)
       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING ${DOC_TYPE_COLS}`,
       [ctx.tenantId, code, name, body.required ?? false, requiredCategories, body.expiryRequired ?? false, ctx.userId])).rows[0]!;
-    await tx.query('RELEASE SAVEPOINT doc_type_insert');
   } catch (err: any) {
     if (err?.code === '23505') throw new ApiError(409, 'code_taken', 'Bu kodla bir belge türü zaten var; var olan türü düzenleyin.');
     throw err;

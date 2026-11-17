@@ -6,13 +6,16 @@ import { createHash, randomUUID } from 'node:crypto';
 import net from 'node:net';
 import { withTenant, type TenantContext } from '../src/db.ts';
 import { processJobs } from '../src/worker.ts';
-import { PublicRateLimiter, loadPublicRateLimit } from '../src/publicRateLimit.ts';
+import { PublicRateLimiter, clientAddressKey, loadPublicRateLimit } from '../src/publicRateLimit.ts';
+import { ipHash } from '../src/modules/supplierApplications.ts';
 import { makeHarness } from './harness.ts';
 
 type H = Awaited<ReturnType<typeof makeHarness>>;
 let h: H;
 let g: H; // graph kanalı + sahte clamd
-let slugA: string; let slugB: string; let slugG: string; let slugClosed: string;
+let c: H; // düşük sınırlar: kiracı başına saatlik toplam ve yapılandırma okuma
+let slugA: string; let slugB: string; let slugG: string; let slugClosed: string; let slugC: string;
+const putKeys: string[] = [];
 const rand = () => randomUUID().slice(0, 8);
 let ipSeq = 1;
 const nextIp = () => `10.77.${Math.floor(ipSeq / 250)}.${(ipSeq++ % 250) + 1}`;
@@ -116,12 +119,18 @@ beforeAll(async () => {
   h = await makeHarness();
   g = await makeHarness({ mail: { kind: 'graph', sender: 'satinalma@example.test', tenantId: 't-guid', clientId: 'c-guid', clientSecret: 'sentetik-sir' },
     av: { kind: 'clamav', host: '127.0.0.1', port } });
-  slugA = `ta-${rand()}`; slugB = `tb-${rand()}`; slugG = `tg-${rand()}`; slugClosed = `tc-${rand()}`;
+  c = await makeHarness({ publicRateLimit: { applyPerHour: 100, tokenPerHour: 100, readPerHour: 2, tenantPerHour: 2 } });
+  // Depoya yazılan anahtarlar izlenir (geri alma temizliği sınanır).
+  const put = c.store.put.bind(c.store);
+  c.store.put = async (key, body, type) => { putKeys.push(key); return put(key, body, type); };
+  slugA = `ta-${rand()}`; slugB = `tb-${rand()}`; slugG = `tg-${rand()}`; slugClosed = `tc-${rand()}`; slugC = `tk-${rand()}`;
+  await c.owner.query(`INSERT INTO supplier_application_settings (tenant_id, enabled, public_slug) VALUES ($1, true, $2)`, [c.world.tenantA, slugC]);
+  await c.owner.query(`INSERT INTO supplier_document_types (tenant_id, code, name, required) VALUES ($1, 'VERGI_LEVHASI', 'Vergi levhası', true)`, [c.world.tenantA]);
 
   // A: Yönetici API'den açar → R3 önerilen set yazılır.
-  const put = await h.call('tenantAdmin', 'PUT', '/api/v1/settings/supplier-applications',
+  const putA = await h.call('tenantAdmin', 'PUT', '/api/v1/settings/supplier-applications',
     { body: { enabled: true, publicSlug: slugA, categories: ['Bilgi teknolojileri', 'Temizlik'] } });
-  expect(put.status, JSON.stringify(put.body)).toBe(200);
+  expect(putA.status, JSON.stringify(putA.body)).toBe(200);
   const putG = await g.call('tenantAdmin', 'PUT', '/api/v1/settings/supplier-applications', { body: { enabled: true, publicSlug: slugG, categories: [] } });
   expect(putG.status, JSON.stringify(putG.body)).toBe(200);
   // B kiracısında Yönetici yok: ayar ve belge türü doğrudan yazılır. Kapalı kısaltma g'nin B kiracısında.
@@ -130,7 +139,7 @@ beforeAll(async () => {
   await h.owner.query(`INSERT INTO supplier_application_settings (tenant_id, enabled, public_slug) VALUES ($1, false, $2)`, [g.world.tenantB, slugClosed]);
 });
 afterAll(async () => {
-  await h?.close(); await g?.close();
+  await h?.close(); await g?.close(); await c?.close();
   await new Promise((r) => clamd?.close(r));
 });
 
@@ -163,6 +172,9 @@ describe('Başvuru ayarları (R3)', () => {
     }
     expect((await h.call('tenantAdmin', 'PUT', '/api/v1/settings/supplier-applications', { body: { enabled: true, publicSlug: 'AB' } })).body.error.code).toBe('invalid_slug');
     expect((await h.call('tenantAdmin', 'PUT', '/api/v1/settings/supplier-applications', { body: { enabled: true, publicSlug: null } })).body.error.code).toBe('slug_required');
+    for (const reserved of ['verify', 'complete', 'complete-info', 'dogrula', 'config', 'admin', 'api']) {
+      expect((await h.call('tenantAdmin', 'PUT', '/api/v1/settings/supplier-applications', { body: { enabled: true, publicSlug: reserved } })).body.error.code, reserved).toBe('slug_reserved');
+    }
     const taken = await h.call('tenantAdmin', 'PUT', '/api/v1/settings/supplier-applications', { body: { enabled: true, publicSlug: slugB } });
     expect(taken.status).toBe(409);
     expect(taken.body.error.code).toBe('slug_taken');
@@ -500,8 +512,82 @@ describe('PublicRateLimiter', () => {
     expect(l.check('apply', 'POST /a', '1.1.1.1')).toBeNull();
   });
   it('config_from_env', () => {
-    expect(loadPublicRateLimit({})).toEqual({ applyPerHour: 5, tokenPerHour: 20 });
-    expect(loadPublicRateLimit({ PUBLIC_APPLY_PER_HOUR: '50', PUBLIC_TOKEN_PER_HOUR: '100' })).toEqual({ applyPerHour: 50, tokenPerHour: 100 });
+    expect(loadPublicRateLimit({})).toEqual({ applyPerHour: 5, tokenPerHour: 20, readPerHour: 120, tenantPerHour: 200 });
+    expect(loadPublicRateLimit({ PUBLIC_APPLY_PER_HOUR: '50', PUBLIC_TOKEN_PER_HOUR: '100', PUBLIC_READ_PER_HOUR: '30', PUBLIC_TENANT_PER_HOUR: '9' }))
+      .toEqual({ applyPerHour: 50, tokenPerHour: 100, readPerHour: 30, tenantPerHour: 9 });
     expect(() => loadPublicRateLimit({ PUBLIC_APPLY_PER_HOUR: '0' })).toThrow(/PUBLIC_APPLY_PER_HOUR/);
+  });
+});
+
+describe('İnceleme düzeltmeleri (tur 1)', () => {
+  it('ipv6_reduced_to_64_for_limiter_and_hash', async () => {
+    expect(clientAddressKey('2001:DB8:1:2:3:4:5:6')).toBe('2001:db8:1:2::/64');
+    expect(clientAddressKey('2001:db8:1:2::9')).toBe('2001:db8:1:2::/64');
+    expect(clientAddressKey('2001:db8::1')).toBe('2001:db8:0:0::/64');
+    expect(clientAddressKey('::ffff:10.0.0.1')).toBe('10.0.0.1');
+    expect(clientAddressKey('10.0.0.1')).toBe('10.0.0.1');
+    expect(ipHash('2001:db8:1:2::1', 't').equals(ipHash('2001:db8:1:2:ffff::2', 't'))).toBe(true);
+    expect(ipHash('2001:db8:1:3::1', 't').equals(ipHash('2001:db8:1:2::1', 't'))).toBe(false);
+    // Aynı /64 içinde adres değiştirmek sınırı aşmaz.
+    const statuses: number[] = [];
+    for (let i = 1; i <= 6; i++) statuses.push((await apply(h, slugA, fields({ website: 'x' }), BASE_DOCS(), `2001:db8:77:${(ipSeq++ % 9000) + 1}::${i}`)).status);
+    const prefix = `2001:db8:abcd:${(ipSeq++ % 9000) + 1}`;
+    const same: number[] = [];
+    for (let i = 1; i <= 6; i++) same.push((await apply(h, slugA, fields({ website: 'x' }), BASE_DOCS(), `${prefix}::${i.toString(16)}`)).status);
+    expect(same).toEqual([202, 202, 202, 202, 202, 429]);
+    expect(statuses.every((x) => x === 202)).toBe(true); // ayrı /64 önekleri ayrı kova
+  });
+
+  it('tenant_hourly_cap_429_and_written_objects_removed', async () => {
+    const before = putKeys.length;
+    for (let i = 0; i < 2; i++) expect((await apply(c, slugC, fields(), [doc('VERGI_LEVHASI')])).status).toBe(202);
+    const f = fields();
+    const r = await apply(c, slugC, f, [doc('VERGI_LEVHASI')]);
+    expect(r.status).toBe(429);
+    expect(r.body.error.code).toBe('rate_limited');
+    expect(r.headers['retry-after']).toBe('3600');
+    expect(await appByEmail(c, f.find(([k]) => k === 'contactEmail')![1])).toHaveLength(0);
+    const keys = putKeys.slice(before);
+    expect(keys).toHaveLength(3);
+    expect(await c.store.exists(keys[0]!)).toBe(true);
+    expect(await c.store.exists(keys[2]!)).toBe(false); // reddedilen başvurunun dosyası silindi
+  });
+
+  it('db_rejection_removes_objects_written_before_transaction', async () => {
+    // Aynı kimlikle açık başvuru (SP409): dosya önce yazılır, işlev reddedince silinir.
+    const tax = validVkn();
+    const a1 = await apply(h, slugA, fields({ taxId: tax }));
+    expect(a1.status).toBe(202);
+    const store = h.store;
+    const seen: string[] = [];
+    const put = store.put.bind(store);
+    store.put = async (key, body, type) => { seen.push(key); return put(key, body, type); };
+    try {
+      const dup = await apply(h, slugA, fields({ taxId: tax }));
+      expect(dup.status).toBe(409);
+    } finally { store.put = put; }
+    expect(seen).toHaveLength(4);
+    for (const k of seen) expect(await store.exists(k)).toBe(false);
+  });
+
+  it('config_get_rate_limited', async () => {
+    const ip = nextIp();
+    const s = [];
+    for (let i = 0; i < 3; i++) s.push((await pub(c, 'GET', `/api/v1/public/applications/${slugC}/config`, { ip })).status);
+    expect(s).toEqual([200, 200, 429]);
+  });
+
+  it('multipart_limits_files_total_fields_and_truncated_field', async () => {
+    const many = Array.from({ length: 11 }, () => doc('IMZA_SIRKULERI'));
+    expect((await apply(h, slugA, fields(), many)).body.error.code).toBe('too_many_files');
+    const big = Array.from({ length: 5 }, () => doc('IMZA_SIRKULERI', pdf(9 * 1024 * 1024)));
+    const t = await apply(h, slugA, fields(), big);
+    expect(t.status).toBe(422);
+    expect(t.body.error.code).toBe('total_size');
+    const lots = fields({}, Array.from({ length: 70 }, (_, i) => [`x${i}`, 'y'] as [string, string]));
+    expect((await apply(h, slugA, lots)).body.error.code).toBe('too_many_fields');
+    const long = await apply(h, slugA, fields({ address: 'a'.repeat(9000) }));
+    expect(long.status).toBe(422);
+    expect(long.body.error).toMatchObject({ code: 'field_too_long', details: { field: 'address' } });
   });
 });
