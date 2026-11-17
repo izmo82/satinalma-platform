@@ -157,17 +157,34 @@ function handler(req: IncomingMessage, res: ServerResponse) {
     if (u.pathname === '/redirect/items') return send(302, '', { location: `${base}/elsewhere` });
     if (u.pathname === '/elsewhere') return send(200, { items: [] });
     if (u.pathname === '/slow/items') { setTimeout(() => send(200, { items: [] }), 1500); return; }
+    if (u.pathname === '/leak/items') return send(500, `${' '.repeat(40)}${'x'.repeat(282)}\n\n  sifre=${SECRET} son`);
+    if (u.pathname === '/big/items') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.on('error', () => {});
+      const chunk = Buffer.alloc(1024 * 1024, 0x20);
+      let sent = 0;
+      const pump = () => { while (sent < 12 && !res.destroyed) { sent++; if (!res.write(chunk)) { res.once('drain', pump); return; } } if (!res.destroyed) res.end(); };
+      pump();
+      return;
+    }
+    if (u.pathname === '/bigtoken/token') { tokenCount++; return send(200, { access_token: 't'.repeat(70 * 1024), expires_in: 3600 }); }
     if (u.pathname === '/unauth/items') return send(401, `{"error":"denied","echo":"${req.headers.authorization}","password":"${SECRET}"}`);
     const auth = req.headers.authorization;
     if (auth !== basicOk && !(auth ?? '').startsWith('Bearer tok-')) return send(401, { error: 'unauthorized' });
     if (u.pathname === '/rest/items' && req.method === 'GET') {
       const key = u.searchParams.get('idempotency_key');
-      if (key) return key === 'known-key' ? send(200, { items: [{ externalRef: 'EBS-REF-77' }] }) : send(200, { items: [] });
+      if (key) return key === 'known-key' ? send(200, { items: [{ idempotencyKey: 'known-key', externalRef: 'EBS-REF-77' }] }) : send(200, { items: [] });
       const offset = Number(u.searchParams.get('offset'));
       const limit = Number(u.searchParams.get('limit'));
       const items = PAGE.slice(offset, offset + limit);
       return send(200, { items, hasMore: offset + limit < PAGE.length, offset, limit, count: items.length });
     }
+    // ERP sorguyu yok sayar: anahtardan bağımsız kayıt(lar) döner.
+    if (u.pathname === '/ignore/items') return send(200, { items: [{ externalRef: 'EBS-X1' }, { externalRef: 'EBS-X2' }] });
+    if (u.pathname === '/ignore1/items') return send(200, { items: [{ externalRef: 'EBS-X1', idempotencyKey: 'baska-anahtar' }] });
+    if (u.pathname === '/ignore0/items') return send(200, { items: [{ externalRef: 'EBS-X1' }] });
+    // offset'i yok sayan ERP: her sayfa aynı.
+    if (u.pathname === '/loop/items') return send(200, { items: PAGE.slice(0, 2), hasMore: true });
     if (u.pathname === '/rest/items' && req.method === 'POST') {
       if (!req.headers['idempotency-key']) return send(400, { error: 'idempotency' });
       return send(201, { externalRef: `EBS-${req.headers['idempotency-key']}` });
@@ -279,6 +296,37 @@ describe('Oracle EBS bağdaştırıcısı (yerel test sunucusu)', () => {
     expect(JSON.parse(post.body)).toEqual({ taxId: syntheticVkn('930000001'), legalName: null });
     expect(await p.find(ebs({ feature: 'SUPPLIER' }), 'SUPPLIER', 'known-key')).toEqual({ externalRef: 'EBS-REF-77' });
     expect(await p.find(ebs({ feature: 'SUPPLIER' }), 'SUPPLIER', 'unknown-key')).toBeNull();
+  });
+
+  it('find kapalı kalır: ERP sorguyu yok sayarsa (çok kayıt) ambiguous_find; anahtarı yansıtmayan tek kayıt eşleşme değil', async () => {
+    const p = o();
+    const e = (path: string) => ebs({ feature: 'SUPPLIER', resourcePath: path });
+    expect(((await errOf(p.find(e('/ignore/items'), 'SUPPLIER', 'erp:SUPPLIER:z:v1'))) as ErpProviderError).code).toBe('ambiguous_find');
+    expect(await p.find(e('/ignore1/items'), 'SUPPLIER', 'erp:SUPPLIER:z:v1')).toBeNull();
+    expect(await p.find(e('/ignore0/items'), 'SUPPLIER', 'erp:SUPPLIER:z:v1')).toBeNull();
+  });
+
+  it('hata iletisi: önce tam metin arındırılır, sonra kesilir (kesim noktasındaki sır parçası sızmaz)', async () => {
+    const err = await errOf(o().read(ebs({ resourcePath: '/leak/items' }), 'INVOICE', null));
+    expect((err as ErpProviderError).code).toBe('http_500');
+    // Sır, daraltılmış metinde 300. karakterin üstüne denk gelir; hiçbir öneki iletide yok.
+    for (let n = 4; n <= SECRET.length; n++) expect(err!.message).not.toContain(SECRET.slice(0, n));
+  });
+
+  it('yanıt boyutu sınırı: kaynak 10 MB, token 64 KB aşılınca response_too_large', async () => {
+    const err = await errOf(o().read(ebs({ resourcePath: '/big/items', timeoutMs: 10_000 }), 'INVOICE', null));
+    expect((err as ErpProviderError).code).toBe('response_too_large');
+    const err2 = await errOf(o().read(oauth({ tokenUrl: `${base}/bigtoken/token` }), 'INVOICE', null));
+    expect((err2 as ErpProviderError).code).toBe('response_too_large');
+  });
+
+  it('sayfalama döngü koruması: ilk sayfa yinelenirse ya da sayfa sınırı aşılırsa paging_loop', async () => {
+    const p = o();
+    const e = ebs({ resourcePath: '/loop/items' });
+    const first = await p.read(e, 'INVOICE', null);
+    expect(first.nextCursor).toBe('2');
+    expect(((await errOf(p.read(e, 'INVOICE', first.nextCursor))) as ErpProviderError).code).toBe('paging_loop');
+    expect(((await errOf(p.read(ebs(), 'INVOICE', String(1000 * 2)))) as ErpProviderError).code).toBe('paging_loop');
   });
 
   it('izinli olmayan host, üretimde http ve kullanıcı bilgili adres: istek atılmaz', async () => {
