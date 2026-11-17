@@ -44,7 +44,7 @@ export function LifecycleBanner({ s }: { s: CardV2 }) {
   return <>
     {s.deactivation && (s.status === 'SUSPENDED' || s.status === 'ARCHIVED') && (
       <Banner tone="neutral" icon="archive" title={`Pasife alındı · ${fmtDateTime(s.deactivation.at)}`}>
-        {s.deactivation.byName ?? 'Bilinmeyen kullanıcı'}: {s.deactivation.reason}. Yeni teklif turuna davet edilemez; portal erişimi askıda. Veri silinmedi.</Banner>
+        {s.deactivation.byName ?? 'Bilinmeyen kullanıcı'}: {s.deactivation.reason.replace(/[.!?。\s]+$/u, '')}. Yeni teklif turuna davet edilemez; portal erişimi askıda. Veri silinmedi.</Banner>
     )}
     {s.reactivation && s.status !== 'SUSPENDED' && s.status !== 'ARCHIVED' && (
       <Banner tone="info" icon="refresh" title={`Yeniden açıldı · ${fmtDateTime(s.reactivation.at)}`}>{s.reactivation.byName ?? 'Bilinmeyen kullanıcı'}: {s.reactivation.reason}</Banner>

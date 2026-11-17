@@ -11,7 +11,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 interface Row { id: string; status: string; taxIdType: string | null; taxId: string | null; legalName: string; identityReviewRequired: boolean;
   createdAt: string; documentCount: number; pendingBankChanges: number;
   // v2 Faz 5 (R1): türetilmiş aşama, belge uyarısı ve sorumlu ekip.
-  stage?: string; stageLabel?: string; documentAlert?: 'EXPIRED' | 'EXPIRING' | null; responsibleDepartment?: { id: string; name: string } | null }
+  stage?: string; stageLabel?: string; documentAlert?: 'EXPIRED' | 'EXPIRING' | null; responsibleDepartment?: { id: string; name: string } | null;
+  // v2 Faz 5 izleme (D2): kartın güncel tedarikçi belgesi sayısı (yenilenmişler sayılmaz); documentCount bağlı fatura/sözleşme belgesidir.
+  supplierDocumentCount?: number }
 interface ListResponse { items: Row[]; counts?: Record<'CANDIDATE' | 'APPROVED' | 'PASSIVE' | 'REJECTED', number>; applicationsOpen?: number }
 interface AppRow { id: string; status: string; statusLabel: string; legalName: string; taxIdType: string; taxId: string; categories: string[]; documentCount: number;
   createdAt: string; submittedAt: string | null; supplier: { id: string; legalName: string } | null }
@@ -95,25 +97,33 @@ export function SuppliersPage() {
       ) : (
         <Table>
           <TableHeader><TableRow className="hover:bg-transparent">
-            <TableHead scope="col">Tedarikçi</TableHead><TableHead scope="col">VKN</TableHead><TableHead scope="col">Aşama</TableHead>
-            <TableHead scope="col" className="max-[1100px]:hidden">Sorumlu ekip</TableHead><TableHead scope="col">Belgeler</TableHead><TableHead scope="col">Dikkat</TableHead>
+            {/* v2 Faz 5 izleme: 640 px altında VKN ve aşama firma hücresinde alt satırda (yatay kaydırmadan görünür); sütunlar geniş ekranda aynen. */}
+            <TableHead scope="col">Tedarikçi</TableHead><TableHead scope="col" className="max-[640px]:hidden">VKN</TableHead><TableHead scope="col" className="max-[640px]:hidden">Aşama</TableHead>
+            <TableHead scope="col" className="max-[1100px]:hidden">Sorumlu ekip</TableHead>
+            <TableHead scope="col"><abbr title="Kartın güncel tedarikçi belgeleri (vergi levhası, faaliyet belgesi…); yenilenen eski belgeler sayılmaz" className="no-underline">Kart belgeleri</abbr></TableHead>
+            <TableHead scope="col"><abbr title="Tedarikçiye bağlı fatura ve sözleşme belgeleri" className="no-underline">Bağlı belgeler</abbr></TableHead><TableHead scope="col">Dikkat</TableHead>
             <TableHead scope="col" className="max-[900px]:hidden">Kayıt tarihi</TableHead>
           </TableRow></TableHeader>
           <TableBody>
             {r.data.items.map((s) => (
               <TableRow key={s.id}>
                 <TableCell className="min-w-[220px]"><Link className="font-semibold text-ink no-underline hover:underline" to={`/tedarikciler/${s.id}`}>{s.legalName}
-                  {(s.identityReviewRequired || !s.taxId) && <span className="sr-only">, vergi kimliği doğrulanmadı</span>}</Link></TableCell>
-                <TableCell className="whitespace-nowrap">{s.taxId ? <span className="mono">{s.taxIdType} {s.taxId}</span> : <span className="text-ink-muted">Doğrulanmadı</span>}</TableCell>
-                <TableCell><StageWithStatus stage={s.stage} stageLabel={s.stageLabel} status={s.status} /></TableCell>
+                  {(s.identityReviewRequired || !s.taxId) && <span className="sr-only">, vergi kimliği doğrulanmadı</span>}</Link>
+                  <div className="mt-1 hidden gap-1 text-sm max-[640px]:grid">
+                    <span>{s.taxId ? <span className="mono">{s.taxIdType} {s.taxId}</span> : <span className="text-ink-muted">VKN doğrulanmadı</span>}</span>
+                    <span><StageWithStatus stage={s.stage} stageLabel={s.stageLabel} status={s.status} /></span>
+                  </div></TableCell>
+                <TableCell className="whitespace-nowrap max-[640px]:hidden">{s.taxId ? <span className="mono">{s.taxIdType} {s.taxId}</span> : <span className="text-ink-muted">Doğrulanmadı</span>}</TableCell>
+                <TableCell className="max-[640px]:hidden"><StageWithStatus stage={s.stage} stageLabel={s.stageLabel} status={s.status} /></TableCell>
                 <TableCell className="max-[1100px]:hidden">{s.responsibleDepartment?.name ?? <span className="text-ink-subtle">—</span>}</TableCell>
                 <TableCell>
                   <div className="flex flex-wrap items-center gap-1.5">
-                    <span className="tabular" title="Bağlı fatura ve sözleşme belgesi">{s.documentCount}</span>
+                    <span className="tabular" title="Kartın güncel tedarikçi belgesi">{s.supplierDocumentCount ?? '—'}</span>
                     {s.documentAlert === 'EXPIRED' && <Tag label={{ text: 'Süresi dolmuş belge', tone: 'danger', icon: 'x' }} />}
                     {s.documentAlert === 'EXPIRING' && <Tag label={{ text: 'Süresi yaklaşan belge', tone: 'warn', icon: 'clock' }} />}
                   </div>
                 </TableCell>
+                <TableCell><span className="tabular" title="Bağlı fatura ve sözleşme belgesi">{s.documentCount}</span></TableCell>
                 <TableCell>
                   <div className="flex flex-wrap gap-1.5">
                     {s.identityReviewRequired && <Tag label={{ text: 'Kimlik incelemesi', tone: 'warn', icon: 'help' }} />}

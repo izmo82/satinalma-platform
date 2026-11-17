@@ -20,6 +20,13 @@ export const stageTag = (stage: string | null | undefined, label?: string | null
   if (!base) return label ? { text: label, tone: 'neutral', icon: 'info' } : undefined;
   return { ...base, text: label ?? base.text };
 };
+/** Eski kayıt durumundan v2 aşaması (domain supplierStage ile aynı; web domain'i içe aktarmaz). Sunucu stage göndermeyen ekranlar için. */
+const STATUS_STAGE: Record<string, [string, string]> = { CANDIDATE: ['CANDIDATE', 'Aday'], ACTIVE: ['APPROVED', 'Onaylı'], CONDITIONAL: ['APPROVED', 'Onaylı (koşullu)'],
+  SUSPENDED: ['PASSIVE', 'Pasif'], ARCHIVED: ['PASSIVE', 'Pasif'], REJECTED: ['REJECTED', 'Reddedildi'], MERGED: ['MERGED', 'Birleştirildi'] };
+export const stageOfStatus = (status: string): { stage?: string; stageLabel?: string } => {
+  const x = STATUS_STAGE[status];
+  return x ? { stage: x[0], stageLabel: x[1] } : {};
+};
 export const STAGE_FILTERS = [['', 'Tümü'], ['basvuru', 'Başvuru (açık)'], ['CANDIDATE', 'Aday'], ['APPROVED', 'Onaylı'], ['PASSIVE', 'Pasif'], ['REJECTED', 'Reddedildi']] as const;
 
 /** R2 başvuru durumu. */

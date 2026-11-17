@@ -21,7 +21,7 @@ import { TemplatesPage as ContractTemplatesPage } from './pages/TemplatesPage.ts
 import { ProjectsPage } from './pages/ProjectsPage.tsx';
 import { ProjectWizard } from './pages/ProjectWizard.tsx';
 import { ProjectWorkspace } from './pages/ProjectWorkspace.tsx';
-import { PortalAssessment, PortalAssessments, PortalHome, PortalRound } from './pages/PortalPages.tsx';
+import { PortalAssessment, PortalAssessments, PortalHome, PortalRoundRoute } from './pages/PortalPages.tsx';
 import { PortalBids, PortalDocuments, PortalProfile, PortalStanding } from './pages/PortalV2Pages.tsx';
 import { PublicApplication } from './pages/PublicApplication.tsx';
 import { GlobalSearch, NotificationBell } from './ui/TopBar.tsx';
@@ -224,7 +224,7 @@ function Shell() {
           <Route path="/portal/belgeler" element={<PortalDocuments />} />
           <Route path="/portal/firma" element={<PortalProfile />} />
           <Route path="/portal/anketler/:id" element={<PortalAssessment />} />
-          <Route path="/portal/:id" element={<PortalRound />} />
+          <Route path="/portal/:id" element={<PortalRoundRoute />} />
           <Route path="*" element={<Navigate to="/portal" replace />} />
         </Routes> : <Routes>
           <Route path="/" element={<Navigate to="/islerim" replace />} />

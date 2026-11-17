@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { cn } from '@/lib/utils';
 import { ExpiredDocumentsBand, PortalSummaryCards } from './PortalV2Pages.tsx';
+import { NotYetPage } from './NotYetPage.tsx';
 
 // UX04 Tedarikçi portalı: yalnız davetli turlar ve kendi teklifi. Kapanış ve alındı zamanı sunucudan.
 interface RoundRow { projectId: string; code: string; title: string; currency: string; buyerName: string; roundId: string; roundNo: number; closesAt: string; open: boolean;
@@ -69,6 +70,13 @@ function useServerCountdown(closesAt: string | undefined, serverTime: string | u
 function fmtLeft(ms: number) {
   const s = Math.floor(ms / 1000), d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
   return d ? `${d} gün ${h} sa` : h ? `${h} sa ${m} dk` : `${m} dk ${s % 60} sn`;
+}
+
+/** v2 Faz 5 izleme: tanınmayan portal yolu (ör. /portal/belgelerim) teklif turu kimliği değilse "Sayfa bulunamadı"; API'ye istek gitmez. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export function PortalRoundRoute() {
+  const { id } = useParams();
+  return id && UUID_RE.test(id) ? <PortalRound /> : <NotYetPage title="Sayfa bulunamadı" />;
 }
 
 export function PortalRound() {

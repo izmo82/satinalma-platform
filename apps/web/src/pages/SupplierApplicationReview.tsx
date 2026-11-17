@@ -17,6 +17,7 @@ interface Application {
   requestedDocuments: string[] | null; requestedNote: string | null; completionTokenExpiresAt: string | null; completionLinkExpired?: boolean;
   decidedAt: string | null; decisionReason: string | null; supplierId: string | null;
   existingSupplier: { id: string; legalName: string; stage: string; stageLabel: string; contactEmail: string | null; portalUserCount: number; blocksApproval: boolean; blockReason: string | null } | null;
+  supplierStage?: string | null; supplierStageLabel?: string | null; supplierStateMessage?: string | null;
   documents: SupplierDoc[]; missingRequired: { code: string; name: string; reasonLabel: string }[];
   history: { code: string; label: string; at: string; actor: string | null; note: string | null }[];
   can: { decide: boolean; approve: boolean; requestDocuments: boolean; resendLink?: boolean };
@@ -47,6 +48,7 @@ export function SupplierApplicationReview() {
       setResult(res.data); setDialog(null); await r.reload();
     } catch (e) { setError(e as ApiError); setDialog(null); if ((e as ApiError).status === 409) await r.reload(); }
   }
+  const decided = a.status === 'APPROVED' || a.status === 'REJECTED' || a.status === 'EXPIRED';
   const unsent = result?.emails?.some((e) => e.status === 'NOT_CONFIGURED');
   const resendNow = () => decide({ action: 'REQUEST_DOCUMENTS' });
 
@@ -67,8 +69,10 @@ export function SupplierApplicationReview() {
           {result.supplier && <span className="block">{result.supplier.linkedToExisting ? 'Başvuru mevcut tedarikçi kartına bağlandı; kartın durumu değişmedi.' : `Tedarikçi kartı açıldı (${result.supplier.stageLabel}).`}{' '}
             <Link to={`/tedarikciler/${result.supplier.id}`}>Tedarikçi kartını aç</Link></span>}
           {result.portalUser?.message && <span className="block">{result.portalUser.message}</span>}
-          {result.emails?.map((e, i) => <span key={i} className="block">{EMAIL_KIND[e.kind] ?? 'E-posta'}: {emailTag(e.status).text}</span>)}
-          {unsent && <strong className="block">{result?.resent ? 'Gönderilmedi — e-posta kanalı yapılandırılmadı.' : 'Başvurana e-posta gönderilemedi — kanal yapılandırılmadı.'} İleti Yönetim &gt; E-posta kutusunda görünür.</strong>}
+          {/* v2 Faz 5 izleme: gönderilmeyen e-postalar tek satırda (tür adlarıyla); durum iki kez yazılmaz. */}
+          {result.emails?.filter((e) => e.status !== 'NOT_CONFIGURED').map((e, i) => <span key={i} className="block">{EMAIL_KIND[e.kind] ?? 'E-posta'}: {emailTag(e.status).text}</span>)}
+          {unsent && <strong className="block">{result?.resent ? 'Gönderilmedi — e-posta kanalı yapılandırılmadı' : 'Başvurana e-posta gönderilemedi — kanal yapılandırılmadı'}
+            {` (${result.emails!.filter((e) => e.status === 'NOT_CONFIGURED').map((e) => EMAIL_KIND[e.kind] ?? 'E-posta').join(', ')}).`} İleti Yönetim &gt; E-posta kutusunda görünür.</strong>}
           {result.portalAccessNote && <span className="block text-sm">{result.portalAccessNote}</span>}
         </Banner>
       )}
@@ -91,13 +95,19 @@ export function SupplierApplicationReview() {
                 <dt>Hizmetler</dt><dd>{a.services ?? '—'}</dd>
               </dl>
               <p className="text-sm text-ink-subtle">Denetim basamağının doğru olması firmanın gerçekliğini veya mükellefiyetini kanıtlamaz.</p>
-              {a.existingSupplier && (
-                <Banner tone={a.existingSupplier.blocksApproval ? 'danger' : 'warn'} title="Bu vergi kimliğiyle kayıtlı tedarikçi kartı var">
+              {a.existingSupplier && (decided ? (
+                // v2 Faz 5 izleme (D1): karara bağlanmış başvuruda "bağlanamaz… yeniden açın" engeli gösterilmez; kartın güncel durumu bilgi olarak yazılır.
+                <Banner tone={a.supplierStateMessage ? 'warn' : 'info'} title="Bağlı tedarikçi kartı">
+                  <Link to={`/tedarikciler/${a.existingSupplier.id}`}>{a.existingSupplier.legalName}</Link> · {a.supplierStageLabel ?? a.existingSupplier.stageLabel}
+                  {a.supplierStateMessage && <span className="block">{a.supplierStateMessage}</span>}
+                </Banner>
+              ) : (
+                <Banner tone={a.existingSupplier.blockReason ? 'danger' : 'warn'} title="Bu vergi kimliğiyle kayıtlı tedarikçi kartı var">
                   <Link to={`/tedarikciler/${a.existingSupplier.id}`}>{a.existingSupplier.legalName}</Link> · {a.existingSupplier.stageLabel}
-                  {a.existingSupplier.blocksApproval ? <span className="block">{a.existingSupplier.blockReason}</span>
+                  {a.existingSupplier.blockReason ? <span className="block">{a.existingSupplier.blockReason}</span>
                     : <span className="block">Onaylarsanız yeni kart açılmaz; başvuru bu karta bağlanır ve kartın durumu değişmez. Başvurunun belgeleri o karta taşınır ve kartın portal kullanıcıları bu belgeleri görebilir. Portal kullanıcısı kart doğrulandıktan sonra karttan eklenir.</span>}
                 </Banner>
-              )}
+              ))}
             </div>
           </section>
 
