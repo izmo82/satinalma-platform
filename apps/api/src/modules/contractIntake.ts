@@ -27,7 +27,7 @@ const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbu
 const UNIT_TR: Record<NoticeUnit, string> = { DAY: 'gün', MONTH: 'ay' };
 const noticeLabel = (amount: number | null, unit: NoticeUnit | null) => (amount != null && unit ? `${amount} ${UNIT_TR[unit]}` : null);
 const INTAKE_REASON = 'Sözleşme ekleme akışı';
-/** D107: onaycı yalnız etkin, Satınalma ya da Departman kullanıcısı rolündeki iç kişidir. */
+/** D107: onaycı yalnız etkin, Satınalma ya da Departman kullanıcısı rolündeki iç kişidir. Aynı liste: contractChain.ts APPROVER_ROLE_CODES_SQL notu. */
 const APPROVER_ROLES = ['PROCUREMENT', 'DEPARTMENT_USER'];
 
 interface FamilyRow {
@@ -427,6 +427,17 @@ export async function submitContract(tx: Tx, ctx: TenantContext, familyId: strin
   if (!f.version_id || !f.terms_id) throw unprocessable('missing_fields', 'Koşullar girilmemiş.', { missing: [] });
   const r = await plan(tx, ctx, f, body);
   if (!r.ok) throw conflict(r.error, r.message, { kind: r.kind, kindLabel: r.kindLabel });
+  // Görev 5 inceleme I3: adıma atanan her kişi (vekil kullanıldıysa vekil) sözleşmenin şirketini görmeli; yoksa sözleşmeyi açamaz,
+  // karar veremez ve zincir kilitlenir. Şirket kapsamı üyelikteki company_ids'tir (tüm şirketler = hepsi listede).
+  const ids = [...new Set(r.steps.map((s) => s.userId))];
+  const covered = new Set((await tx.query<{ user_id: string }>(`SELECT user_id FROM memberships WHERE tenant_id = $1 AND user_id = ANY($2::uuid[])
+    AND supplier_id IS NULL AND $3::uuid = ANY (company_ids)`, [ctx.tenantId, ids, f.company_id])).rows.map((x) => x.user_id));
+  const blocked = r.steps.find((s) => !covered.has(s.userId));
+  if (blocked) {
+    throw conflict('approver_no_company_access',
+      `${blocked.displayName || 'Onaycı'} (${blocked.kindLabel}) bu sözleşmenin şirketine erişemiyor; onaya gönderilemez. Yöneticinizden kişinin şirket erişimini ya da onaycı atamasını düzeltmesini isteyin.`,
+      { userId: blocked.userId, displayName: blocked.displayName, kind: blocked.kind, kindLabel: blocked.kindLabel });
+  }
   const note = body.note?.trim() || null;
   const chain = (await tx.query<{ id: string }>(`INSERT INTO contract_approval_chains (tenant_id, family_id, version_id, terms_id, submitted_by, note)
     VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`, [ctx.tenantId, familyId, f.version_id, f.terms_id, ctx.userId, note])).rows[0]!;

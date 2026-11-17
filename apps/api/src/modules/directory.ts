@@ -3,6 +3,7 @@ import type pg from 'pg';
 import { normalizeDepartmentName, normalizeRoles, planMembershipDepartments } from '@sp/domain';
 import { withoutTenant, withTenant, type TenantContext, type Tx } from '../db.ts';
 import { audit } from '../audit.ts';
+import { APPROVER_SUSPENDED_REASON, cancelOpenChain, eligibleStepDeputy, lockFamily, withTenantWideScope } from './contractChain.ts';
 import { ApiError, conflict } from '../errors.ts';
 import { DirectoryError, type DirectoryProvider, type DirectoryScope, type DirectoryUser } from '../directory/provider.ts';
 
@@ -324,6 +325,11 @@ async function suspend(tx: Tx, ctx: TenantContext, userId: string, runId: string
  */
 export async function handOffOpenTasks(tx: Tx, ctx: TenantContext, userId: string, reason: string, extra: Record<string, unknown> = {},
   keepRoles: string[] | null = null): Promise<number> {
+  // Onay adımı görevlerinin aileleri önce kilitlenir (karar ucuyla aynı sıra: aile kilidi → görev satırı; kilitlenme olmasın).
+  const families = await withTenantWideScope(tx, async () => (await tx.query<{ family_id: string }>(`SELECT DISTINCT c.family_id FROM tasks t
+      JOIN contract_approval_steps s ON s.id = t.entity_id JOIN contract_approval_chains c ON c.id = s.chain_id
+     WHERE t.status = 'OPEN' AND t.assignee_user_id = $1 AND t.entity_type = 'contract_approval_step' ORDER BY c.family_id`, [userId])).rows);
+  for (const f of families) await lockFamily(tx, f.family_id);
   const tasks = (await tx.query<{ id: string; entity_type: string; entity_id: string }>(`SELECT id, entity_type, entity_id FROM tasks WHERE status = 'OPEN' AND assignee_user_id = $1
       AND ($2::text[] IS NULL OR NOT (assignee_role = ANY ($2::text[]))) ORDER BY created_at, id FOR UPDATE`, [userId, keepRoles])).rows;
   if (!tasks.length) return 0;
@@ -333,24 +339,31 @@ export async function handOffOpenTasks(tx: Tx, ctx: TenantContext, userId: strin
       WHERE a.primary_user_id = $1 AND a.deputy_user_id IS NOT NULL
       ORDER BY a.kind, a.department_id NULLS FIRST LIMIT 1`, [userId])).rows[0]?.deputy_user_id ?? null;
   for (const t of tasks) {
-    // v2 Faz 3 (D108+, Görev 5): sözleşme onay adımı görevi o adımın unvanının (tür + departman) vekiline gider; kişi birden çok
-    // unvanın asıl kişisiyse genel seçim (ilk atama) yanlış vekili seçebilirdi. Etkin, D107 rollü vekil yoksa genel kurala düşer.
-    const to = t.entity_type === 'contract_approval_step' ? (await stepDeputy(tx, userId, t.entity_id)) ?? deputy : deputy;
-    await tx.query(`UPDATE tasks SET assignee_user_id = $2 WHERE id = $1`, [t.id, to]);
-    await audit(tx, ctx, 'task.reassigned', 'task', t.id, { from: userId, to, reason, ...extra });
+    if (t.entity_type === 'contract_approval_step') {
+      // v2 Faz 3 (D108+, Görev 5 inceleme I2): onay adımı görevi yalnız o adımda karar verebilecek kişiye geçer (unvanın etkin vekili;
+      // ekleyen ve gönderen değil; ek onaycının vekili yok). Kimse yoksa görev sahipsiz kalıp zinciri kilitlemesin: zincir iptal edilir,
+      // gönderene "Yeniden onaya gönderin" görevi açılır. Adım, aile ve zincir başlatanın kapsamında görünmeyebilir (Yönetici rol
+      // ekranı şirketsiz olabilir): bu bölüm dizin eşitlemesiyle aynı kiracı geneli kapsamda çalışır (withTenantWideScope).
+      const handled = await withTenantWideScope(tx, async () => {
+        const st = (await tx.query<{ family_id: string }>(`SELECT c.family_id FROM contract_approval_steps s JOIN contract_approval_chains c ON c.id = s.chain_id
+          WHERE s.id = $1 AND c.closed_at IS NULL AND s.decision IS NULL`, [t.entity_id])).rows[0];
+        if (!st) return false;
+        const to = await eligibleStepDeputy(tx, t.entity_id, userId);
+        if (to) {
+          await tx.query(`UPDATE tasks SET assignee_user_id = $2 WHERE id = $1`, [t.id, to]);
+          await audit(tx, ctx, 'task.reassigned', 'task', t.id, { from: userId, to, reason, ...extra });
+        } else {
+          await cancelOpenChain(tx, ctx, st.family_id, APPROVER_SUSPENDED_REASON);
+          await audit(tx, ctx, 'task.reassigned', 'task', t.id, { from: userId, to: null, reason, chainCancelled: true, ...extra });
+        }
+        return true;
+      });
+      if (handled) continue;
+    }
+    await tx.query(`UPDATE tasks SET assignee_user_id = $2 WHERE id = $1`, [t.id, deputy]);
+    await audit(tx, ctx, 'task.reassigned', 'task', t.id, { from: userId, to: deputy, reason, ...extra });
   }
   return tasks.length;
-}
-
-/** Onay adımının unvanındaki (tür + departman) etkin vekil; kişi o unvanın asıl kişisi değilse ya da vekil uygun değilse null. */
-async function stepDeputy(tx: Tx, userId: string, stepId: string): Promise<string | null> {
-  return (await tx.query<{ deputy_user_id: string }>(
-    `SELECT a.deputy_user_id FROM contract_approval_steps s
-       JOIN approver_assignments a ON a.kind = s.kind AND a.department_id IS NOT DISTINCT FROM s.department_id
-       JOIN memberships m ON m.tenant_id = a.tenant_id AND m.user_id = a.deputy_user_id AND m.status = 'ACTIVE' AND m.supplier_id IS NULL
-      WHERE s.id = $2 AND s.kind <> 'EXTRA' AND a.primary_user_id = $1 AND a.deputy_user_id IS NOT NULL
-        AND m.roles && ARRAY['PROCUREMENT','DEPARTMENT_USER','BUYER','PROCUREMENT_MANAGER','MASTER_DATA','LEGAL','FINANCE','REQUESTER','TECH_EVALUATOR','SECURITY']`,
-    [userId, stepId])).rows[0]?.deputy_user_id ?? null;
 }
 
 async function reactivate(tx: Tx, ctx: TenantContext, userId: string, runId: string): Promise<boolean> {

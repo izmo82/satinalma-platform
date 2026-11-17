@@ -10,7 +10,7 @@ import { unprocessable } from '../errors.ts';
 
 export type Person = { userId: string; displayName: string; email: string; active: boolean; wrongRole?: boolean };
 
-/** D107 (kullanıcı kararı 17.11.2026): onaycı yalnız Satınalma ya da Departman kullanıcısı rolündeki kişilerden seçilir. */
+/** D107 (kullanıcı kararı 17.11.2026): onaycı yalnız Satınalma ya da Departman kullanıcısı rolündeki kişilerden seçilir. Aynı liste başka yerlerde de var: contractChain.ts APPROVER_ROLE_CODES_SQL notu. */
 const APPROVER_ROLES = ['PROCUREMENT', 'DEPARTMENT_USER'];
 export type ApproverStatus = 'DEFINED' | 'NO_DEPUTY' | 'UNASSIGNED' | 'INACTIVE';
 export type OrgInput = { leadUserId?: string | null; leadDeputyUserId?: string | null; directorUserId?: string | null; directorDeputyUserId?: string | null };

@@ -5,7 +5,7 @@ import { closeTasks, openTask } from '../tasks.ts';
 import { ApiError, conflict, notFound, unprocessable } from '../errors.ts';
 import { currentApprovers } from './approvers.ts';
 import { getContractV2, listInfo, openStepTask } from './contractIntake.ts';
-import { roleOf } from './contractChain.ts';
+import { APPROVER_SUSPENDED_REASON, cancelOpenChain, eligibleStepDeputy, lockFamily, roleOf, withTenantWideScope } from './contractChain.ts';
 import { scheduleContractReminders } from './contractReminders.ts';
 
 /**
@@ -19,7 +19,7 @@ import { scheduleContractReminders } from './contractReminders.ts';
  */
 
 const ZERO = '00000000-0000-0000-0000-000000000000';
-/** D107 onaycı rolleri (eski kodlar normalizeRoles ile v2'ye çevrilir). */
+/** D107 onaycı rolleri (eski kodlar normalizeRoles ile v2'ye çevrilir). Aynı liste: contractChain.ts APPROVER_ROLE_CODES_SQL notu. */
 const APPROVER_ROLES = ['PROCUREMENT', 'DEPARTMENT_USER'];
 
 interface StepRow {
@@ -33,9 +33,12 @@ const STEP_SQL = `SELECT s.id, s.chain_id, s.step_order, s.kind, s.department_id
   FROM contract_approval_steps s JOIN contract_approval_chains c ON c.id = s.chain_id JOIN contract_families f ON f.id = c.family_id`;
 
 /** Adımın unvanındaki şu anki etkin vekil (etkin üyelik + D107 rolü; `currentApprovers`). Ek onaycının vekili yoktur. */
-async function activeDeputyId(tx: Tx, step: { kind: StepKind; department_id: string | null }): Promise<string | null> {
+async function activeDeputyId(tx: Tx, step: { kind: StepKind; department_id: string | null },
+  cache?: Map<string, Awaited<ReturnType<typeof currentApprovers>>>): Promise<string | null> {
   if (step.kind === 'EXTRA') return null;
-  const a = await currentApprovers(tx, step.department_id ?? ZERO);
+  const key = step.department_id ?? ZERO;
+  let a = cache?.get(key);
+  if (!a) { a = await currentApprovers(tx, key); cache?.set(key, a); }
   const dep = step.kind === 'DEPARTMENT_HEAD' ? a.deputy : step.kind === 'PROCUREMENT_LEAD' ? a.leadDeputy : a.directorDeputy;
   return dep?.userId ?? null;
 }
@@ -54,8 +57,8 @@ export async function decideStep(tx: Tx, ctx: TenantContext, stepId: string, bod
   const peek = (await tx.query<{ family_id: string }>(`SELECT c.family_id FROM contract_approval_steps s JOIN contract_approval_chains c ON c.id = s.chain_id WHERE s.id = $1`,
     [stepId])).rows[0];
   if (!peek) throw notFound();
-  // Gönderim, alan değişikliği ve kararlar aynı aile kilidinde sıralanır (eşzamanlı iki karar aynı adımı ya da zinciri iki kez kapatmaz).
-  await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`contract-family:${peek.family_id}`]);
+  // Gönderim, alan/koşul değişikliği, yeni sürüm ve kararlar aynı aile kilidinde sıralanır (eşzamanlı iki karar aynı adımı ya da zinciri iki kez kapatmaz).
+  await lockFamily(tx, peek.family_id);
   const s = (await tx.query<StepRow>(`${STEP_SQL} WHERE s.id = $1`, [stepId])).rows[0];
   if (!s) throw notFound();
 
@@ -87,11 +90,16 @@ export async function decideStep(tx: Tx, ctx: TenantContext, stepId: string, bod
   await audit(tx, ctx, 'contract.approval.decided', 'contract_family', s.family_id,
     { chainId: s.chain_id, stepId: s.id, order: s.step_order, kind: s.kind, decision: body.decision, assignedUserId: s.assigned_user_id, asDeputy }, reason ?? undefined);
 
-  let chainStatus: 'OPEN' | 'APPROVED' | 'REJECTED' = 'OPEN';
+  let chainStatus: 'OPEN' | 'APPROVED' | 'REJECTED' | 'CANCELLED' = 'OPEN';
   let next: { stepId: string; order: number; kind: StepKind; kindLabel: string; taskId: string; assigneeUserId: string } | null = null;
   const f = { id: s.family_id, code: s.code };
+  // Zincir yalnız hâlâ açıksa kapatılır; değilse (kilit dışı bir yol kapatmış) 409 ve işlem geri alınır, sonuç üzerine yazılmaz.
+  const closeChain = async (outcome: 'APPROVED' | 'REJECTED') => {
+    const u = await tx.query(`UPDATE contract_approval_chains SET closed_at = now(), outcome = $2 WHERE id = $1 AND closed_at IS NULL`, [s.chain_id, outcome]);
+    if (!u.rowCount) throw conflict('chain_closed', 'Bu onay zinciri kapandı; karar verilemez.');
+  };
   if (body.decision === 'REJECTED') {
-    await tx.query(`UPDATE contract_approval_chains SET closed_at = now(), outcome = 'REJECTED' WHERE id = $1`, [s.chain_id]);
+    await closeChain('REJECTED');
     chainStatus = 'REJECTED';
     // Gönderene döner. Karar veren başka departmandan olabilir (R6): görev departmansız, şirketsiz ve kişiye atanır; bağlı kayıt aile.
     await openTask(tx, ctx, {
@@ -105,22 +113,26 @@ export async function decideStep(tx: Tx, ctx: TenantContext, stepId: string, bod
     const n = steps.find((x) => !x.decision && x.id !== s.id);
     if (n) {
       // Sıradaki adımdaki kişi bu arada askıya alındıysa (Faz 2 R5) görev o unvanın etkin vekiline açılır (görev ayrılığı korunur).
-      let assignee = n.assigned_user_id;
-      if (!(await activeApprover(tx, ctx, assignee))) {
-        const dep = await activeDeputyId(tx, n);
-        if (dep && dep !== s.created_by && dep !== s.submitted_by) assignee = dep;
+      let assignee: string | null = n.assigned_user_id;
+      if (!(await activeApprover(tx, ctx, assignee))) assignee = await eligibleStepDeputy(tx, n.id, n.assigned_user_id);
+      if (assignee) {
+        const t = await openStepTask(tx, ctx, f, s.chain_id, { id: n.id, order: n.step_order, kind: n.kind, userId: assignee });
+        next = { stepId: n.id, order: n.step_order, kind: n.kind, kindLabel: STEP_KIND_TR[n.kind], taskId: t.id, assigneeUserId: assignee };
+      } else {
+        // Görev 5 inceleme I2: sıradaki adımda karar verebilecek kimse yok (kişi askıda, uygun vekil yok / ek onaycı): zincir sahipsiz
+        // kalmasın, iptal edilir ve gönderene yeniden gönderim görevi açılır. Karar veren başka departmandan olabilir: kiracı geneli kapsam.
+        await withTenantWideScope(tx, () => cancelOpenChain(tx, ctx, s.family_id, APPROVER_SUSPENDED_REASON));
+        chainStatus = 'CANCELLED';
       }
-      const t = await openStepTask(tx, ctx, f, s.chain_id, { id: n.id, order: n.step_order, kind: n.kind, userId: assignee });
-      next = { stepId: n.id, order: n.step_order, kind: n.kind, kindLabel: STEP_KIND_TR[n.kind], taskId: t.id, assigneeUserId: assignee };
     } else {
-      await tx.query(`UPDATE contract_approval_chains SET closed_at = now(), outcome = 'APPROVED' WHERE id = $1`, [s.chain_id]);
+      await closeChain('APPROVED');
       chainStatus = 'APPROVED';
       await audit(tx, ctx, 'contract.approval.approved', 'contract_family', s.family_id, { chainId: s.chain_id, steps: steps.length });
       // R7: hatırlatıcılar zincir APPROVED kapandıktan sonra (yürürlükteki koşulu onaylı zincirden okur), aynı işlemde.
       await scheduleContractReminders(tx, ctx, s.family_id);
     }
   }
-  if (chainStatus !== 'OPEN') await closeTasks(tx, `contract-approval:${s.chain_id}:`);
+  if (chainStatus === 'APPROVED' || chainStatus === 'REJECTED') await closeTasks(tx, `contract-approval:${s.chain_id}:`);
   return { stepId: s.id, decision: body.decision, chainId: s.chain_id, chainStatus, nextStep: next, contract: await getContractV2(tx, ctx, s.family_id) };
 }
 
@@ -141,9 +153,10 @@ export async function myApprovals(tx: Tx, ctx: TenantContext) {
       ORDER BY c.submitted_at, s.step_order, s.id`, [ctx.userId])).rows;
   const info = await listInfo(tx, [...new Set(rows.map((r) => r.family_id))]);
   const items = [];
+  const approvers = new Map<string, Awaited<ReturnType<typeof currentApprovers>>>();
   for (const r of rows) {
     const sod = ctx.userId === r.created_by || ctx.userId === r.submitted_by;
-    const decide = !sod && canDecide({ userId: r.assigned_user_id, decidedAt: null }, ctx.userId, await activeDeputyId(tx, r));
+    const decide = !sod && canDecide({ userId: r.assigned_user_id, decidedAt: null }, ctx.userId, await activeDeputyId(tx, r, approvers));
     const i = info.get(r.family_id);
     items.push({
       stepId: r.id, taskId: r.task_id, chainId: r.chain_id, order: r.step_order, stepCount: r.step_count, kind: r.kind, kindLabel: STEP_KIND_TR[r.kind],

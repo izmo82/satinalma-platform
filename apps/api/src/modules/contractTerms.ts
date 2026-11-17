@@ -7,7 +7,7 @@ import { audit } from '../audit.ts';
 import { closeTasks, openTask, v2Role } from '../tasks.ts';
 import { ApiError, conflict, notFound, unprocessable } from '../errors.ts';
 import { scheduleContractReminders, taskPrefix as reminderTaskPrefix } from './contractReminders.ts';
-import { cancelOpenChain, CONTENT_CHANGED_REASON, familyWritable } from './contractChain.ts';
+import { cancelOpenChain, CONTENT_CHANGED_REASON, familyWritable, lockFamily } from './contractChain.ts';
 
 /**
  * Faz 3 kalan: sözleşme koşulları (bedel/tavan, süre, ihbar), hukuk doğrulaması, ihbar son gününe göre uyarılar (T21),
@@ -63,7 +63,10 @@ async function assertRatedOpenLines(tx: Tx, cvId: string) {
  * iptali kendisi yaptığı için false geçer.
  */
 export async function saveTerms(tx: Tx, ctx: TenantContext, cvId: string, body: TermsInput, opts: { cancelChain?: boolean } = {}) {
-  const cv = await loadCv(tx, cvId);
+  let cv = await loadCv(tx, cvId);
+  // v2 Faz 3 (Görev 5 inceleme I1): zincir iptali onay kararlarıyla aynı aile kilidinde (ekleme akışı kilidi zaten tutar);
+  // kilitten sonra yeniden okunur (bu arada yeni sürüm eklenmiş olabilir).
+  if (opts.cancelChain !== false) { await lockFamily(tx, cv.family_id); cv = await loadCv(tx, cvId); }
   if (cv.superseded_by_id) throw conflict('version_superseded', 'Bu sürümün yerine yeni sürüm geldi; koşullar güncel sürüme girilir.');
   const prev = await latestTerms(tx, cvId);
   // Gönderilmezse önceki revizyonun yöntemi korunur (alan unutulunca vergi dahil limit sessizce net'e dönmesin).

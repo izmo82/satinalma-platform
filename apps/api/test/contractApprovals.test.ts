@@ -354,6 +354,9 @@ describe('Review Focus 3: içerik değişince onaylar düşer (R5)', () => {
     const late = await decide(w, 'legal', s2!.id, 'APPROVED');
     expect(late.status).toBe(409);
     expect(late.body.error.code).toBe('chain_closed');
+    // İnceleme I1: kapalı zincirin sonucu ve adımı değişmez.
+    expect((await h.owner.query(`SELECT outcome FROM contract_approval_chains WHERE id = $1`, [c.chainId])).rows[0].outcome).toBe('CANCELLED');
+    expect((await h.owner.query(`SELECT decision, decided_by FROM contract_approval_steps WHERE id = $1`, [s2!.id])).rows[0]).toEqual({ decision: null, decided_by: null });
     expect((await audits(c.familyId)).map((a) => a.action)).toContain('contract.approval.cancelled');
   });
 
@@ -398,5 +401,80 @@ describe('Review Focus 3: içerik değişince onaylar düşer (R5)', () => {
     const re = await call(w, 'techEval', 'POST', `/api/v1/contracts/${c.familyId}/submit`, {});
     expect(re.status, JSON.stringify(re.body)).toBe(200);
     expect(re.body.contract.chain.termsId).toBe(t.body.id);
+  });
+});
+
+describe('inceleme düzeltmeleri: sahipsiz adım yok (I2), şirket erişimi (I3)', () => {
+  const sysCtx = (w: SyntheticWorld): TenantContext => ({ tenantId: w.tenantA, userId: w.users.tenantAdmin.id, roles: ['ADMIN'], companyIds: [], departmentIds: [],
+    allDepartments: true, correlationId: `test-${randomUUID()}` });
+  /** Askıya alma + devir. Bağlam bilerek şirketsiz (Yönetici rol ekranı gibi): adım araması kiracı geneli kapsamda çalışmalı. */
+  async function suspend(w: SyntheticWorld, userId: string) {
+    await h.owner.query(`UPDATE memberships SET status = 'SUSPENDED', suspended_by_directory = true WHERE tenant_id = $1 AND user_id = $2`, [w.tenantA, userId]);
+    const ctx = sysCtx(w);
+    return withTenant(h.pool, ctx, (tx) => handOffOpenTasks(tx, ctx, userId, 'directory_suspended', { runId: 'test' }));
+  }
+
+  it('askıya alınan ek onaycı (vekili yok): zincir iptal edilir, gönderene yeniden gönderim görevi; görev sahipsiz kalmaz', async () => {
+    const w = await fresh();
+    await approvers(w);
+    const ik = await ikUser(w);
+    const c = await contract(w, 'techEval', { extraApproverIds: [ik.id] });
+    const [s1, s2, s3, s4] = await steps(w, c.familyId);
+    for (const [who, s] of [['security', s1], ['legal', s2], ['masterData', s3]] as const) expect((await decide(w, who, s!.id, 'APPROVED')).status).toBe(200);
+    expect(await taskRow(`contract-approval:${c.chainId}:4`)).toMatchObject({ status: 'OPEN', assignee_user_id: ik.id });
+    await suspend(w, ik.id);
+    expect(await taskRow(`contract-approval:${c.chainId}:4`)).toMatchObject({ status: 'DONE' });
+    const ch = (await h.owner.query(`SELECT outcome, cancel_reason FROM contract_approval_chains WHERE id = $1`, [c.chainId])).rows[0];
+    expect(ch).toEqual({ outcome: 'CANCELLED', cancel_reason: 'Onaycı askıya alındı; uygun vekil yok. Yeniden onaya gönderin.' });
+    expect(await taskRow(`contract-resubmit:${c.familyId}`)).toMatchObject({ status: 'OPEN', assignee_user_id: w.users.techEval.id });
+    expect((await h.owner.query(`SELECT count(*)::int AS n FROM tasks WHERE status = 'OPEN' AND entity_type = 'contract_approval_step' AND assignee_user_id IS NULL
+      AND tenant_id = $1`, [w.tenantA])).rows[0].n).toBe(0);
+    expect((await v2(w, 'techEval', c.familyId)).body.status.code).toBe('DRAFT');
+    expect(s4).toBeTruthy();
+  });
+
+  it('vekil üzerinden atanmış adımın kişisi askıya alınırsa (başka uygun vekil yok) zincir iptal edilir', async () => {
+    const w = await fresh();
+    // buyer hem ekleyen hem BT sorumlusu: 1. adım vekile (security) gider; security askıya alınınca uygun kimse kalmaz.
+    const r = await call(w, 'tenantAdmin', 'PUT', '/api/v1/approver-assignments', {
+      organization: { leadUserId: w.users.legal.id, leadDeputyUserId: w.users.legal2.id, directorUserId: w.users.masterData.id, directorDeputyUserId: w.users.finance.id },
+      departments: [{ departmentId: w.departments.bt, headUserId: w.users.buyer.id, deputyUserId: w.users.security.id }],
+    });
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    const c = await contract(w, 'buyer');
+    const [s1] = await steps(w, c.familyId);
+    expect(await taskRow(`contract-approval:${c.chainId}:1`)).toMatchObject({ status: 'OPEN', assignee_user_id: w.users.security.id });
+    await suspend(w, w.users.security.id);
+    expect((await h.owner.query(`SELECT outcome FROM contract_approval_chains WHERE id = $1`, [c.chainId])).rows[0].outcome).toBe('CANCELLED');
+    expect(await taskRow(`contract-resubmit:${c.familyId}`)).toMatchObject({ status: 'OPEN', assignee_user_id: w.users.buyer.id });
+    expect((await decide(w, 'buyer', s1!.id, 'APPROVED')).status).toBe(403); // ekleyen hâlâ karar veremez
+  });
+
+  it('karar sonrası sıradaki ek onaycı askıdaysa (vekil yok) zincir iptal edilir ve yanıt CANCELLED döner', async () => {
+    const w = await fresh();
+    await approvers(w);
+    const ik = await ikUser(w);
+    const c = await contract(w, 'techEval', { extraApproverIds: [ik.id] });
+    const [s1, s2, s3] = await steps(w, c.familyId);
+    for (const [who, s] of [['security', s1], ['legal', s2]] as const) expect((await decide(w, who, s!.id, 'APPROVED')).status).toBe(200);
+    await h.owner.query(`UPDATE memberships SET status = 'SUSPENDED' WHERE tenant_id = $1 AND user_id = $2`, [w.tenantA, ik.id]);
+    const r = await decide(w, 'masterData', s3!.id, 'APPROVED');
+    expect(r.status, JSON.stringify(r.body)).toBe(200);
+    expect(r.body).toMatchObject({ chainStatus: 'CANCELLED', nextStep: null });
+    expect(r.body.contract.chain).toMatchObject({ status: 'CANCELLED', cancelReason: 'Onaycı askıya alındı; uygun vekil yok. Yeniden onaya gönderin.' });
+    expect((await h.owner.query(`SELECT decision FROM contract_approval_steps WHERE id = $1`, [s3!.id])).rows[0].decision).toBe('APPROVED');
+    expect(await taskRow(`contract-resubmit:${c.familyId}`)).toMatchObject({ status: 'OPEN', assignee_user_id: w.users.techEval.id });
+  });
+
+  it('onaycı sözleşmenin şirketine erişemiyorsa gönderim 409 approver_no_company_access (kişinin adıyla); zincir oluşmaz', async () => {
+    const w = await fresh();
+    await approvers(w, [], { directorUserId: w.users.multi.id }); // multi yalnız A2 şirketinde; sözleşme A1
+    const c = await contract(w, 'techEval', null);
+    const r = await call(w, 'techEval', 'POST', `/api/v1/contracts/${c.familyId}/submit`, {});
+    expect(r.status).toBe(409);
+    expect(r.body.error.code).toBe('approver_no_company_access');
+    expect(r.body.error.message).toContain('Ece Polat');
+    expect(r.body.error.details).toMatchObject({ userId: w.users.multi.id, kind: 'PROCUREMENT_DIRECTOR' });
+    expect((await h.owner.query(`SELECT count(*)::int AS n FROM contract_approval_chains WHERE family_id = $1`, [c.familyId])).rows[0].n).toBe(0);
   });
 });

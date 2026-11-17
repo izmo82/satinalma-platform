@@ -7,7 +7,7 @@ import { closeTasks, openTask } from '../tasks.ts';
 import { ApiError, conflict, notFound, unprocessable } from '../errors.ts';
 import { selectDetector } from '../signature/detector.ts';
 import { resolveDepartment } from './departments.ts';
-import { cancelOpenChain, CONTENT_CHANGED_REASON, familyWritable } from './contractChain.ts';
+import { cancelOpenChain, CONTENT_CHANGED_REASON, familyWritable, lockFamily } from './contractChain.ts';
 
 interface CvRow {
   id: string; company_id: string; family_id: string; version_no: number; document_version_id: string; stage: string;
@@ -86,6 +86,11 @@ export async function createContract(tx: Tx, ctx: TenantContext, body: {
 export async function addContractVersion(tx: Tx, ctx: TenantContext, prevId: string, ifMatch: string | undefined, body: {
   documentVersionId: string; kind: 'MAIN' | 'AMENDMENT' | 'ANNEX' | 'SOW'; stage: 'DRAFT' | 'EXECUTION' | 'ARCHIVE_IMPORT'; addSupplierId?: string;
 }) {
+  // v2 Faz 3 (Görev 5 inceleme I1): onay kararlarıyla aynı aile kilidi. Kilit satır kilidinden (FOR UPDATE) ÖNCE alınır: ekleme akışı
+  // aile kilidini tutarken koşul yazar (sürüm satırına FK kilidi); ters sıra kilitlenme yaratırdı.
+  const fam = (await tx.query<{ family_id: string }>(`SELECT family_id FROM contract_versions WHERE id = $1`, [prevId])).rows[0];
+  if (!fam) throw notFound();
+  await lockFamily(tx, fam.family_id);
   const prev = await loadCv(tx, prevId, true);
   // v2 Faz 3 (R6): başka departmandan onaycı sözleşmeyi görür ama sürüm ekleyemez (RLS hatası yerine 403).
   if (!familyWritable(ctx, prev.department_id)) throw new ApiError(403, 'department_forbidden', 'Bu sözleşmeyi görebilirsiniz ama düzenleyemezsiniz.');
