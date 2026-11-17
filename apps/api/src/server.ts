@@ -29,6 +29,7 @@ import * as search from './modules/search.ts';
 import * as recovery from './modules/recovery.ts';
 import * as departments from './modules/departments.ts';
 import * as directory from './modules/directory.ts';
+import * as approvers from './modules/approvers.ts';
 import { directoryProvider, type DirectoryProvider } from './directory/provider.ts';
 import { taskRoleSql, visibleTaskSql } from './tasks.ts';
 import { decisionSummaryPdf, evaluationWorkbook } from './reports.ts';
@@ -285,6 +286,16 @@ export async function buildApp(deps: AppDeps) {
   app.put('/api/v1/directory/users/:id/roles', { schema: { tags: ['directory'], params: idParams, body: { type: 'object', required: ['roles'], additionalProperties: false,
     properties: { roles: { type: 'array', maxItems: 10, items: { type: 'string', maxLength: 40 } } } } } }, async (req) =>
     scoped(req, 'role.assign', (tx, ctx) => directory.setDirectoryUserRoles(tx, ctx, (req.params as { id: string }).id, req.body as { roles: string[] })));
+
+  // --- Onaycı ataması (v2 Faz 2, D105, R2) ---------------------------------------------
+  const nullableUuid = { anyOf: [uuid, { type: 'null' }] };
+  app.get('/api/v1/approver-assignments', { schema: { tags: ['approvers'] } }, async (req) =>
+    scoped(req, 'approver.read', (tx) => approvers.listApprovers(tx)));
+  app.put('/api/v1/approver-assignments', { schema: { tags: ['approvers'], body: { type: 'object', additionalProperties: false, properties: {
+    organization: { type: 'object', additionalProperties: false, properties: { leadUserId: nullableUuid, leadDeputyUserId: nullableUuid, directorUserId: nullableUuid, directorDeputyUserId: nullableUuid } },
+    departments: { type: 'array', maxItems: 500, items: { type: 'object', required: ['departmentId'], additionalProperties: false,
+      properties: { departmentId: uuid, headUserId: nullableUuid, deputyUserId: nullableUuid } } } } } } }, async (req) =>
+    scoped(req, 'approver.manage', (tx, ctx) => approvers.setApprovers(tx, ctx, req.body as { organization?: approvers.OrgInput; departments?: approvers.DeptInput[] })));
 
   // --- İşlerim (UX01) -----------------------------------------------------------
   // --- Üst çubuk: arama, bildirim, kayıtlı görünümler (izin türe göre modül içinde) ---
