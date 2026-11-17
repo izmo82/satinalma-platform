@@ -3,6 +3,7 @@ import type { TenantContext, Tx } from '../db.ts';
 import { audit } from '../audit.ts';
 import { openTask, closeTasks, closeSupplierInvoiceTasks } from '../tasks.ts';
 import { ApiError, conflict, notFound, unprocessable } from '../errors.ts';
+import { enqueueErpOutbound } from './erpWrite.ts';
 
 export interface SellerClaim {
   country: string;
@@ -221,6 +222,8 @@ export async function activateSupplier(tx: Tx, ctx: TenantContext, supplierId: s
   await closeTasks(tx, `supplier:${supplierId}:`);
   await closeSupplierInvoiceTasks(tx, supplierId);
   await audit(tx, ctx, 'supplier.activated', 'supplier', supplierId);
+  // v2 Faz 8 Görev 6 (R3, R7): tedarikçi onaylandı → ERP tedarikçi kaydı; yazma kapalıyken hiçbir şey yazılmaz.
+  await enqueueErpOutbound(tx, ctx, 'SUPPLIER', 'SUPPLIER', supplierId);
 }
 
 /** Kimliği belirsiz adaya doğrulanmış kimlik ata. Kimlik başka kayıtta varsa birleştirir (izi korunur). */

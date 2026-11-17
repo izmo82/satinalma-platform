@@ -7,6 +7,7 @@ import { currentApprovers } from './approvers.ts';
 import { getContractV2, listInfo, openStepTask } from './contractIntake.ts';
 import { APPROVER_SUSPENDED_REASON, cancelOpenChain, eligibleStepAssignee, eligibleStepDeputy, lockFamily, roleOf, withTenantWideScope } from './contractChain.ts';
 import { scheduleContractReminders } from './contractReminders.ts';
+import { enqueueErpOutbound } from './erpWrite.ts';
 
 /**
  * v2 Faz 3 (D108+, R4–R6) Görev 5: onay kararı. Karar yalnız açık zincirin sıradaki (en küçük sıralı, kararsız) adımına verilir.
@@ -120,6 +121,8 @@ export async function decideStep(tx: Tx, ctx: TenantContext, stepId: string, bod
       await audit(tx, ctx, 'contract.approval.approved', 'contract_family', s.family_id, { chainId: s.chain_id, steps: steps.length });
       // R7: hatırlatıcılar zincir APPROVED kapandıktan sonra (yürürlükteki koşulu onaylı zincirden okur), aynı işlemde.
       await scheduleContractReminders(tx, ctx, s.family_id);
+      // v2 Faz 8 Görev 6 (R3, R7): zincir APPROVED → ERP sözleşme başlığı; yazma kapalıyken hiçbir şey yazılmaz.
+      await enqueueErpOutbound(tx, ctx, 'CONTRACT_HEADER', 'CONTRACT_FAMILY', s.family_id);
     }
   }
   if (chainStatus === 'APPROVED' || chainStatus === 'REJECTED') await closeTasks(tx, `contract-approval:${s.chain_id}:`);

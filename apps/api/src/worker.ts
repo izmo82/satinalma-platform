@@ -18,6 +18,7 @@ import { EXPIRE_JOB, processApplicationExpiry, processApplicationSubmitted, SUBM
 import { dailyRiskSchedules, processRiskJob, RISK_JOB_KINDS } from './modules/riskCycle.ts';
 import { dailyDocumentReminders, DOC_REMINDER_JOB, processDocumentReminderJob } from './modules/supplierDocReminders.ts';
 import { enqueueDueErpReads, ERP_READ_JOB, runErpReadJob, type ProviderResolver } from './modules/erpRead.ts';
+import { ERP_WRITE_JOB, reapAllStaleErpWrites, runErpWriteJob } from './modules/erpWrite.ts';
 import { AUDIT_JOB } from './modules/projectCompletion.ts';
 import { processComplianceAudit } from './modules/compliance.ts';
 import type { Config } from './config.ts';
@@ -30,7 +31,7 @@ export interface WorkerOptions {
   mailSender?: MailSender | null;
   /** v2 Faz 5 (R12): hatırlatma e-postasındaki portal bağlantısının kökü; verilmezse WEB_ORIGIN ortam değişkeni. */
   webOrigin?: string;
-  /** v2 Faz 8 (R7): ERP yapılandırması; verilirse `erp.read` işi çekilir (sağlayıcı yoksa çalışma istek atmadan kapanır). */
+  /** v2 Faz 8 (R7): ERP yapılandırması; verilirse `erp.read` ve `erp.write` işleri çekilir (sağlayıcı yoksa çalışma istek atmadan kapanır). */
   erp?: Pick<Config, 'env' | 'erp'> | null;
   /** YALNIZ TEST: sağlayıcı seçimi (casus sağlayıcı); verilmezse yapılandırmadan. */
   erpProvider?: ProviderResolver;
@@ -38,22 +39,37 @@ export interface WorkerOptions {
   aiModelId?: string;
 }
 
+export type WorkerLane = 'all' | 'short' | 'export' | 'erp';
+
+/**
+ * Şeritlerin iş türleri ve bir çekişte en fazla iş. Kiracı dışa aktarımı (saatler) ve ERP okuma/yazma (okuma 30 dakikaya kadar sürebilir)
+ * ayrı şeritlerde birer birer çalışır: kısa işleri ve dakikalık tıkı (zamanlama, bayat çalışma temizleyicileri) bekletmez.
+ */
+export function laneKinds(lane: WorkerLane, opts: WorkerOptions = {}, erpAdapterName: string | null = null, limit = 10): { kinds: string[]; limit: number } {
+  const directory = opts.directoryProvider ?? null;
+  const sender = opts.mailSender ?? null;
+  const short = ['signature.detect', 'contract.notice_reminder', 'contract.end_reminder', 'contract.reminder_backfill', 'contract.obligation_due', 'retention.purge', ...(erpAdapterName ? ['erp.export'] : []), ...(hasAiProviders() ? ['ai.run'] : []),
+    ...(directory ? ['directory.sync'] : []), ...(sender ? [DISPATCH_JOB] : []), SUBMITTED_JOB, EXPIRE_JOB, ...RISK_JOB_KINDS, DOC_REMINDER_JOB, AUDIT_JOB];
+  const erp = opts.erp ? [ERP_READ_JOB, ERP_WRITE_JOB] : [];
+  if (lane === 'export') return { kinds: ['tenant.export'], limit: 1 };
+  if (lane === 'erp') return { kinds: erp, limit: 1 };
+  if (lane === 'short') return { kinds: short, limit };
+  return { kinds: [...short, ...erp, 'tenant.export'], limit };
+}
+
 /**
  * Durumsuz worker: kuyruktan iş çeker (SKIP LOCKED), işi isteyen kullanıcının GÜNCEL üyeliğiyle kiracı bağlamı kurar.
  * Kiracı kimliği tek başına yetki sayılmaz; üyelik iptal edildiyse iş BLOCKED olur.
  */
 export async function processJobs(pool: pg.Pool, store: ObjectStore, detectorProvider: string | null, limit = 10, erpAdapterName: string | null = process.env.ERP_ADAPTER || null,
-  lane: 'all' | 'short' | 'export' = 'all', opts: WorkerOptions = {}): Promise<number> {
+  lane: WorkerLane = 'all', opts: WorkerOptions = {}): Promise<number> {
   const directory = opts.directoryProvider ?? null;
   const sender = opts.mailSender ?? null;
-  // Kiracı dışa aktarımı saatler sürebilir: ayrı şeritte tek tek çalışır, ihbar/imza/silme işlerini bekletmez.
-  const short = ['signature.detect', 'contract.notice_reminder', 'contract.end_reminder', 'contract.reminder_backfill', 'contract.obligation_due', 'retention.purge', ...(erpAdapterName ? ['erp.export'] : []), ...(hasAiProviders() ? ['ai.run'] : []),
-    ...(directory ? ['directory.sync'] : []), ...(sender ? [DISPATCH_JOB] : []), SUBMITTED_JOB, EXPIRE_JOB, ...RISK_JOB_KINDS, DOC_REMINDER_JOB,
-    ...(opts.erp ? [ERP_READ_JOB] : []), AUDIT_JOB];
-  const kinds = lane === 'export' ? ['tenant.export'] : lane === 'short' ? short : [...short, 'tenant.export'];
+  const plan = laneKinds(lane, opts, erpAdapterName, limit);
+  if (!plan.kinds.length) return 0;
   const claimed = await withoutTenant(pool, async (c) =>
     (await c.query<{ id: string; tenant_id: string; company_id: string | null; kind: string; requested_by: string | null }>(
-      'SELECT * FROM claim_jobs($1, $2)', [kinds, lane === 'export' ? 1 : limit])).rows);
+      'SELECT * FROM claim_jobs($1, $2)', [plan.kinds, plan.limit])).rows);
   for (const job of claimed) {
     const m = await withoutTenant(pool, async (c) => (await c.query<{ tenant_id: string; roles: string[]; company_ids: string[] }>(
       'SELECT * FROM auth_memberships($1)', [job.requested_by])).rows.find((r) => r.tenant_id === job.tenant_id));
@@ -92,6 +108,11 @@ export async function processJobs(pool: pg.Pool, store: ObjectStore, detectorPro
       // v2 Faz 8 (R7): ERP okuması isteyenin güncel üyeliğiyle, kiracının bütün şirketlerinde; üyelik/izin yoksa çalışma kapanır (BLOCKED).
       if (job.kind === ERP_READ_JOB && opts.erp) {
         await runErpReadJob(pool, job, m, { config: opts.erp, ...(opts.erpProvider ? { provider: opts.erpProvider } : {}) });
+        continue;
+      }
+      // v2 Faz 8 Görev 6 (R3, R7): ERP'ye yazma; olay işi sistem işidir (koşul R3), "Şimdi çalıştır" yeniden denemesi isteyenin izniyle.
+      if (job.kind === ERP_WRITE_JOB && opts.erp) {
+        await runErpWriteJob(pool, job, m, { config: opts.erp, ...(opts.erpProvider ? { provider: opts.erpProvider } : {}) });
         continue;
       }
       if (job.kind === 'retention.purge') { await withTenant(pool, { ...ctx, roles: [], companyIds: [] }, (tx) => processPurge(tx, store, job.id)); continue; }
@@ -138,7 +159,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const riskSchedules = dailyRiskSchedules();
   const docReminders = dailyDocumentReminders();
   let lastErpCheck = 0;
-  const loop = async (lane: 'short' | 'export') => {
+  const loop = async (lane: 'short' | 'export' | 'erp') => {
     while (!stopping) {
       // R8: gece eşitlemesi en fazla dakikada bir denetlenir (İstanbul 06:00 sonrası, kiracı başına günde bir iş).
       if (lane === 'short' && directory && Date.now() - lastNightly >= 60_000) {
@@ -156,6 +177,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         if (Date.now() - lastErpCheck >= 60_000) {
           lastErpCheck = Date.now();
           await enqueueDueErpReads(pool, new Date(), config).catch((e) => console.error('erp read enqueue failed', (e as { code?: string })?.code ?? 'error'));
+          // v2 Faz 8 Görev 6: bayat ERP yazma işleri/çalışmaları (işçi çöktü) kapanır ya da yeniden kuyruğa alınır (058e kiracı kapısı).
+          await reapAllStaleErpWrites(pool, new Date()).catch((e) => console.error('erp write reap failed', (e as { code?: string })?.code ?? 'error'));
         }
       }
       const n = await processJobs(pool, store, config.signatureDetectorProvider, 10, config.erpAdapter ?? null, lane, { directoryProvider: directory, mailSender: mail, webOrigin: config.webOrigin, erp: config,
@@ -163,6 +186,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       if (n === 0) await new Promise((r) => setTimeout(r, 2000));
     }
   };
-  await Promise.all([loop('short'), loop('export')]);
+  // ERP okuma/yazma kendi şeridinde birer birer (uzun okuma kısa işleri ve dakikalık tıkı bekletmez).
+  await Promise.all([loop('short'), loop('export'), loop('erp')]);
   await pool.end();
 }

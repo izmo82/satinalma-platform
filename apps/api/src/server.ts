@@ -26,6 +26,7 @@ import * as gov from './modules/governance.ts';
 import * as integration from './modules/integration.ts';
 import * as erpEndpoints from './modules/integrationEndpoints.ts';
 import * as erpRead from './modules/erpRead.ts';
+import * as erpManual from './modules/erpManual.ts';
 import * as commercial from './modules/commercial.ts';
 import * as approvals from './modules/approvals.ts';
 import * as search from './modules/search.ts';
@@ -1682,6 +1683,26 @@ export async function buildApp(deps: AppDeps) {
   app.get('/api/v1/integration/erp/purchase-orders', { schema: { tags: ['integration'],
     querystring: { type: 'object', additionalProperties: false, properties: { supplierId: { type: 'string', format: 'uuid' } } } } }, async (req) =>
     scoped(req, 'integration.endpoint.read', (tx) => erpRead.listErpPurchaseOrders(tx, { supplierId: (req.query as any).supplierId ?? null })));
+  // v2 Faz 8 Görev 6 (R6): elle ERP kayıtları — özellik kapalıyken de açıkken de açık yol; kaynak MANUAL, denetimli.
+  const codeBody = { type: 'object', required: ['code'], additionalProperties: false, properties: { code: { anyOf: [{ type: 'null' }, { type: 'string', maxLength: 200 }] } } } as const;
+  app.get('/api/v1/suppliers/:id/erp-code', { schema: { tags: ['integration'], params: idParams } }, async (req) =>
+    scoped(req, 'supplier.read', (tx, ctx) => erpManual.supplierErpCode(tx, ctx, (req.params as { id: string }).id)));
+  app.put('/api/v1/suppliers/:id/erp-code', { schema: { tags: ['integration'], params: idParams, body: codeBody } }, async (req) =>
+    scoped(req, 'erp.manual.record', (tx, ctx) => erpManual.setSupplierErpCode(tx, ctx, (req.params as { id: string }).id, req.body as { code: string | null })));
+  app.get('/api/v1/departments/cost-centers', { schema: { tags: ['integration'] } }, async (req) =>
+    scoped(req, 'department.cost_center', (tx) => erpManual.listDepartmentCostCenters(tx)));
+  app.put('/api/v1/departments/:id/cost-center', { schema: { tags: ['integration'], params: idParams, body: codeBody } }, async (req) =>
+    scoped(req, 'department.cost_center', (tx, ctx) => erpManual.setDepartmentCostCenter(tx, ctx, (req.params as { id: string }).id, req.body as { code: string | null })));
+  app.put('/api/v1/invoices/:id/erp-payment-status', { schema: { tags: ['integration'], params: idParams, body: { type: 'object', required: ['status'], additionalProperties: false,
+    properties: { status: { anyOf: [{ type: 'null' }, { type: 'string', enum: ['PAID', 'PARTIAL', 'UNPAID', 'UNKNOWN'] }] }, at: { anyOf: [{ type: 'null' }, { type: 'string', maxLength: 10 }] } } } } }, async (req) =>
+    scoped(req, 'erp.manual.record', (tx, ctx) => erpManual.setInvoiceErpPaymentStatus(tx, ctx, (req.params as { id: string }).id, req.body as { status: string | null; at?: string | null })));
+  app.get('/api/v1/erp/outbound', { schema: { tags: ['integration'], querystring: { type: 'object', required: ['entityType', 'entityId'], additionalProperties: false,
+    properties: { entityType: { type: 'string', enum: ['SUPPLIER', 'PROJECT', 'CONTRACT_FAMILY'] }, entityId: uuid } } } }, async (req) =>
+    scoped(req, 'integration.endpoint.read', (tx, ctx) => erpManual.listOutbound(tx, ctx, req.query as { entityType: string; entityId: string })));
+  app.post('/api/v1/erp/outbound/manual', { schema: { tags: ['integration'], body: { type: 'object', required: ['feature', 'entityType', 'entityId', 'externalRef'],
+    additionalProperties: false, properties: { feature: { type: 'string', enum: ['SUPPLIER', 'REQUISITION', 'CONTRACT_HEADER'] },
+      entityType: { type: 'string', enum: ['SUPPLIER', 'PROJECT', 'CONTRACT_FAMILY'] }, entityId: uuid, externalRef: text(120), note: nullableText(1000) } } } }, async (req, reply) =>
+    reply.status(201).send(await scoped(req, 'erp.manual.record', (tx, ctx) => erpManual.recordManualOutbound(tx, ctx, req.body as any))));
 
   app.get('/api/v1/supplier-options', { schema: { tags: ['projects'] } }, async (req) => scoped(req, 'supplier.read', async (tx) => {
     const rows = (await tx.query<{ id: string; legalName: string; status: string; taxIdType: string | null; taxId: string | null; identityReviewRequired: boolean }>(

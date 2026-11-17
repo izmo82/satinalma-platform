@@ -32,8 +32,16 @@ export const ERP_FEATURE_CATALOG: Record<ErpFeature, ErpFeatureDef> = {
       { key: 'taxId', label: 'Vergi kimlik no (VKN)', required: true, type: 'text' },
       { key: 'erpSupplierCode', label: 'ERP tedarikçi kodu', required: true, type: 'text' },
       { key: 'legalName', label: 'Unvan', required: false, type: 'text' },
+      // Görev 6 (yazma): isteğe bağlı adres ve iletişim. Banka bilgisi alan olarak yoktur (D93: banka verisi ERP'de).
+      { key: 'address', label: 'Adres', required: false, type: 'text' },
+      { key: 'contactName', label: 'İletişim kişisi', required: false, type: 'text' },
+      { key: 'contactEmail', label: 'İletişim e-postası', required: false, type: 'text' },
+      { key: 'contactPhone', label: 'İletişim telefonu', required: false, type: 'text' },
     ],
-    ebsDefaultMap: { taxId: m('TAX_REGISTRATION_NUM', 'TRIM'), erpSupplierCode: m('SEGMENT1', 'TRIM'), legalName: m('VENDOR_NAME', 'TRIM') },
+    ebsDefaultMap: {
+      taxId: m('TAX_REGISTRATION_NUM', 'TRIM'), erpSupplierCode: m('SEGMENT1', 'TRIM'), legalName: m('VENDOR_NAME', 'TRIM'),
+      address: m('ADDRESS_LINE1', 'TRIM'), contactName: m('CONTACT_NAME', 'TRIM'), contactEmail: m('EMAIL_ADDRESS', 'TRIM'), contactPhone: m('PHONE', 'TRIM'),
+    },
     manualFallback: 'Tedarikçi kartındaki "ERP tedarikçi kodu" alanına Satınalma elle yazar; kaynağı "Elle" görünür.',
   },
   COST_CENTER: {
@@ -54,10 +62,14 @@ export const ERP_FEATURE_CATALOG: Record<ErpFeature, ErpFeatureDef> = {
       { key: 'amount', label: 'Tutar', required: true, type: 'money' },
       { key: 'currency', label: 'Para birimi', required: true, type: 'text' },
       { key: 'erpReference', label: 'ERP referans no', required: false, type: 'text' },
+      // Görev 6: departman masraf merkezi ve kazanan tedarikçi(ler)in ERP kodu (birden çok kazananda virgülle).
+      { key: 'costCenter', label: 'Masraf merkezi kodu', required: false, type: 'text' },
+      { key: 'supplierErpCode', label: 'Kazanan tedarikçi ERP kodu', required: false, type: 'text' },
     ],
     ebsDefaultMap: {
       projectNo: m('SEGMENT_REFERENCE'), description: m('DESCRIPTION'), amount: m('AMOUNT', 'DECIMAL'),
       currency: m('CURRENCY_CODE', 'UPPER'), erpReference: m('REQUISITION_NUMBER', 'TRIM'),
+      costCenter: m('COST_CENTER', 'TRIM'), supplierErpCode: m('VENDOR_NUMBER', 'TRIM'),
     },
     manualFallback: 'Proje detayında Satınalma "ERP\'ye elle iletildi" işaretler ve ERP referans no girer.',
   },
@@ -72,8 +84,12 @@ export const ERP_FEATURE_CATALOG: Record<ErpFeature, ErpFeatureDef> = {
       { key: 'amount', label: 'Tutar', required: false, type: 'money' },
       { key: 'currency', label: 'Para birimi', required: false, type: 'text' },
       { key: 'erpReference', label: 'ERP referans no', required: false, type: 'text' },
+      // Görev 6: tedarikçi ERP kodu ve proje no (Faz 3 alanları).
+      { key: 'supplierErpCode', label: 'Tedarikçi ERP kodu', required: false, type: 'text' },
+      { key: 'projectNo', label: 'Proje no', required: false, type: 'text' },
     ],
     ebsDefaultMap: {
+      supplierErpCode: m('VENDOR_NUMBER', 'TRIM'), projectNo: m('PROJECT_NUMBER', 'TRIM'),
       contractNo: m('SEGMENT1', 'TRIM'), supplierTaxId: m('TAX_REGISTRATION_NUM', 'TRIM'), startDate: m('START_DATE', 'DATE_YMD'),
       title: m('COMMENTS', 'TRIM'), endDate: m('END_DATE', 'DATE_YMD'), amount: m('AMOUNT_AGREED', 'DECIMAL'),
       currency: m('CURRENCY_CODE', 'UPPER'), erpReference: m('PO_HEADER_ID', 'TRIM'),
