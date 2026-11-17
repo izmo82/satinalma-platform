@@ -5,11 +5,10 @@ import { SupplierEvaluation } from './SupplierEvaluation.tsx';
 import { useResource } from '../lib/useApi.ts';
 import { api, ApiError } from '../lib/api.ts';
 import { fmtDateTime } from '../lib/format.ts';
-import { supplierStatus } from '../lib/labels.ts';
-import { hasRole, useSession } from '../lib/session.tsx';
+import { hasPermission, hasRole, useSession } from '../lib/session.tsx';
 import { Banner, ErrorState, Field, Loading, Modal, Tag } from '../ui/kit.tsx';
 import { Icon } from '../ui/icons.tsx';
-import { stageTag } from '../lib/supplierV2.tsx';
+import { StageWithStatus } from '../lib/supplierV2.tsx';
 import { ActivationHints, ContractsProjectsTab, DocumentsTab, LifecycleBanner, OffboardingTab, PortalUsersTab, ProfilePanel, ReasonDialog, ScoreRiskPanel, type CardV2 } from './SupplierCardV2.tsx';
 
 // v2 Faz 5 (D110, Figma 14): Belgeler ve geçerlilik, Sözleşmeler ve projeler, Portal kullanıcıları ve (liste varsa) Ayrılış sekmeleri eklendi;
@@ -73,7 +72,7 @@ export function SupplierDetailPage() {
           <h1 style={{ overflowWrap: 'anywhere' }}>{s.legalName}</h1>
           <div className="btn-row" style={{ marginTop: 8 }}>
             {/* v2 Faz 5 (R1): aşama etiketi (türetilir); eski kayıt durumu ipucunda. */}
-            <Tag label={stageTag(s.stage, s.stageLabel) ?? supplierStatus[s.status]} title={supplierStatus[s.status] ? `Kayıt durumu: ${supplierStatus[s.status]!.text}` : undefined} />
+            <StageWithStatus stage={s.stage} stageLabel={s.stageLabel} status={s.status} />
             {s.taxId ? <span className="mono">{s.country} · {s.taxIdType} {s.taxId}</span> : <Tag label={{ text: 'Kimlik doğrulanmadı', tone: 'warn', icon: 'help' }} />}
           </div>
         </div>
@@ -102,7 +101,9 @@ export function SupplierDetailPage() {
         {actionError.status === 409 && 'Sayfa güncel bilgilerle yenilendi; kararınızı yeniden gözden geçirin.'}
       </Banner>}
       <LifecycleBanner s={s} />
-      {s.status === 'SUSPENDED' && s.deactivation && !s.can?.reactivate && s.can && <p className="mb-4 -mt-2 text-sm text-ink-muted">Görev ayrılığı: tedarikçiyi pasife alan kişi yeniden açamaz; başka bir Satınalma kullanıcısı açar.</p>}
+      {/* can.reactivate izni olan ama pasife alan kişi için false döner: not yalnız o kişiye. */}
+      {s.status === 'SUSPENDED' && s.deactivation && s.can && !s.can.reactivate && hasPermission(me, 'supplier.offboard') && <p className="mb-4 -mt-2 text-sm text-ink-muted">Görev ayrılığı: tedarikçiyi siz pasife aldınız; yeniden açmayı başka bir Satınalma kullanıcısı yapar.</p>}
+      {s.status === 'ARCHIVED' && <p className="mb-4 -mt-2 text-sm text-ink-muted">Arşivlenmiş kayıt bu aşamada yeniden açılamaz; bu yüzden "Yeniden aç" yok. Kayıt ve geçmişi silinmedi.</p>}
       {warnings.length > 0 && <Banner tone="warn" title="Pasife alındı; kontrol edilmesi gerekenler">{warnings.map((w) => w.message).join(' · ')}</Banner>}
       {s.status === 'CANDIDATE' && (
         <Banner tone="warn" title="Aday kayıt: kayıt onayına kadar kesin seçim engelli">

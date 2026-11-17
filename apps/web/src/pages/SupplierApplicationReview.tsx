@@ -8,7 +8,7 @@ import { fmtDate, fmtDateTime } from '../lib/format.ts';
 import { Banner, ErrorState, Field, Loading, Modal, Tag } from '../ui/kit.tsx';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { applicationTag, DocTags, downloadDoc, emailTag, fmtSize, type SupplierDoc } from '../lib/supplierV2.tsx';
+import { applicationTag, DocActions, DocTags, emailTag, fmtSize, type SupplierDoc } from '../lib/supplierV2.tsx';
 
 interface Application {
   id: string; status: string; statusLabel: string; rowVersion: number; legalName: string; country: string; taxIdType: string; taxId: string;
@@ -103,15 +103,14 @@ export function SupplierApplicationReview() {
             <h2 id="docs-h" className="mb-2 text-base">Yüklenen belgeler</h2>
             {!a.documents.length ? <p className="rounded-md border border-border bg-surface px-4 py-3 text-ink-muted">Belge yüklenmedi.</p> : (
               <Table>
-                <TableHeader><TableRow className="hover:bg-transparent"><TableHead>Belge</TableHead><TableHead>Dosya</TableHead><TableHead>Geçerlilik</TableHead><TableHead>Kontrol</TableHead><TableHead><span className="sr-only">İndir</span></TableHead></TableRow></TableHeader>
+                <TableHeader><TableRow className="hover:bg-transparent"><TableHead>Belge</TableHead><TableHead>Dosya</TableHead><TableHead>Geçerlilik</TableHead><TableHead>Kontrol</TableHead><TableHead><span className="sr-only">Önizle ve indir</span></TableHead></TableRow></TableHeader>
                 <TableBody>{a.documents.map((d) => (
                   <TableRow key={d.id}>
                     <TableCell className="font-semibold">{d.typeName}</TableCell>
                     <TableCell className="min-w-[160px]"><span className="mono block break-all text-sm">{d.originalFilename}</span><span className="text-xs text-ink-subtle">{fmtSize(d.sizeBytes)}</span></TableCell>
                     <TableCell className="tabular whitespace-nowrap">{d.validUntil ? fmtDate(d.validUntil) : '—'}</TableCell>
                     <TableCell><DocTags d={d} /></TableCell>
-                    <TableCell>{d.quarantined ? <span className="text-sm text-ink-subtle">Karantinada; indirilemez</span>
-                      : <Button size="sm" variant="ghost" aria-label={`${d.typeName} indir`} onClick={() => void downloadDoc(d.contentUrl, d.originalFilename)}>İndir</Button>}</TableCell>
+                    <TableCell><DocActions d={d} label={d.typeName} /></TableCell>
                   </TableRow>
                 ))}</TableBody>
               </Table>

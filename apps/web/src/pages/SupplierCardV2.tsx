@@ -11,7 +11,7 @@ import { Banner, Empty, ErrorState, Field, Loading, Modal, Tag } from '../ui/kit
 import { Icon } from '../ui/icons.tsx';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { ACCEPT, DocTags, downloadDoc, fmtNum, fmtSize, UPLOADED_VIA, type SupplierDoc } from '../lib/supplierV2.tsx';
+import { ACCEPT, DocActions, DocTags, fmtNum, fmtSize, UPLOADED_VIA, type SupplierDoc } from '../lib/supplierV2.tsx';
 import { cn } from '@/lib/utils';
 
 export interface CardV2 {
@@ -90,15 +90,18 @@ export function ProfilePanel({ s, run }: { s: CardV2; run: Run }) {
         <dt>Çağrı kanalı</dt><dd>{p.supportChannel ?? '—'}</dd>
         {p.applicationId && <><dt>Başvuru</dt><dd><Link to={`/tedarikciler/basvurular/${p.applicationId}`}>Başvuruyu aç</Link></dd></>}
       </dl></div>
-      {edit && <ProfileDialog s={s} onClose={() => setEdit(false)} onSubmit={(body) => run(() => api(`/api/v1/suppliers/${s.id}/profile`, { method: 'PUT', json: { ...body, expectedRowVersion: s.rowVersion } }), 'İletişim ve envanter bilgileri kaydedildi.').then(() => setEdit(false))} />}
+      {edit && <ProfileDialog s={s} onClose={() => setEdit(false)} onSubmit={(body, version) => run(() => api(`/api/v1/suppliers/${s.id}/profile`, { method: 'PUT', json: { ...body, expectedRowVersion: version } }), 'İletişim ve envanter bilgileri kaydedildi.').then(() => setEdit(false))} />}
     </section>
   );
 }
 
-function ProfileDialog({ s, onClose, onSubmit }: { s: CardV2; onClose: () => void; onSubmit: (b: Record<string, unknown>) => Promise<void> }) {
+function ProfileDialog({ s, onClose, onSubmit }: { s: CardV2; onClose: () => void; onSubmit: (b: Record<string, unknown>, version: number) => Promise<void> }) {
   const p = s.profile!;
+  // Diyalog açıldığı andaki sürüm: çakışmadan sonra kart yenilense de form eski değerlerle yeni sürüme gönderilmez (başka oturumun değişikliği ezilmez).
+  const [version] = useState(s.rowVersion);
+  const [conflict, setConflict] = useState(false);
   const deps = useResource<{ items: { id: string; name: string }[] }>('/api/v1/departments');
-  const members = useResource<{ id: string; displayName: string }[]>('/api/v1/members');
+  const members = useResource<{ id: string; displayName: string }[]>('/api/v1/members?active=true');
   const [f, setF] = useState({ contactName: p.contactName ?? '', contactEmail: p.contactEmail ?? '', contactPhone: p.contactPhone ?? '', address: p.address ?? '',
     serviceCategories: p.serviceCategories.join(', '), servicesOffered: p.servicesOffered ?? '', serviceScope: p.serviceScope ?? '',
     responsibleDepartmentId: p.responsibleDepartment?.id ?? '', supplierManagerUserId: p.supplierManager?.id ?? '', vpnAccess: p.vpnAccess,
@@ -108,16 +111,20 @@ function ProfileDialog({ s, onClose, onSubmit }: { s: CardV2; onClose: () => voi
   const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => setF({ ...f, [k]: e.target.value });
   const nul = (v: string) => v.trim() || null;
   const submit = () => {
+    if (conflict) return;
     setBusy(true);
     void onSubmit({ contactName: nul(f.contactName), contactEmail: nul(f.contactEmail), contactPhone: nul(f.contactPhone), address: nul(f.address),
       serviceCategories: f.serviceCategories.split(',').map((x) => x.trim()).filter(Boolean), servicesOffered: nul(f.servicesOffered), serviceScope: nul(f.serviceScope),
       responsibleDepartmentId: f.responsibleDepartmentId || null, supplierManagerUserId: f.supplierManagerUserId || null, vpnAccess: f.vpnAccess,
-      slaSummary: nul(f.slaSummary), supportChannel: nul(f.supportChannel) }).catch((e: unknown) => setErr(e instanceof ApiError ? e.message : 'Kaydedilemedi.')).finally(() => setBusy(false));
+      slaSummary: nul(f.slaSummary), supportChannel: nul(f.supportChannel) }, version).catch((e: unknown) => {
+      if (e instanceof ApiError && e.status === 409) { setConflict(true); setErr('Kayıt siz düzenlerken başka bir oturumda değişti; kaydedilmedi. Kart güncel bilgilerle yenilendi: diyalogu kapatıp yeniden açın ve değişikliğinizi tekrar girin.'); }
+      else setErr(e instanceof ApiError ? e.message : 'Kaydedilemedi.');
+    }).finally(() => setBusy(false));
   };
   return (
-    <Modal title="İletişim ve envanteri düzenle" onClose={onClose} footer={<><Button variant="outline" onClick={onClose}>Vazgeç</Button><Button disabled={busy} onClick={submit}>{busy ? 'Kaydediliyor…' : 'Kaydet'}</Button></>}>
+    <Modal title="İletişim ve envanteri düzenle" onClose={onClose} footer={<><Button variant="outline" onClick={onClose}>Vazgeç</Button><Button disabled={busy || conflict} onClick={submit}>{busy ? 'Kaydediliyor…' : 'Kaydet'}</Button></>}>
       <p className="mb-3 text-sm text-ink-muted">Değişiklikler önce/sonra değerleriyle denetim izine yazılır.</p>
-      {err && <Banner tone="danger" title={err} />}
+      {err && <Banner tone={conflict ? 'warn' : 'danger'} title={err} />}
       <Field label="İletişim kişisi">{(x) => <input className="input" maxLength={200} {...x} value={f.contactName} onChange={set('contactName')} />}</Field>
       <Field label="İletişim e-postası">{(x) => <input className="input" type="email" maxLength={254} {...x} value={f.contactEmail} onChange={set('contactEmail')} />}</Field>
       <Field label="Telefon">{(x) => <input className="input" maxLength={40} {...x} value={f.contactPhone} onChange={set('contactPhone')} />}</Field>
@@ -174,7 +181,7 @@ export function DocumentsTab({ s, run }: { s: CardV2; run: Run }) {
       <TableCell><DocTags d={d} /></TableCell>
       <TableCell className="text-sm max-[900px]:hidden">{UPLOADED_VIA[d.uploadedVia] ?? 'Diğer'}{d.uploadedByName ? ` · ${d.uploadedByName}` : ''}<span className="block text-ink-subtle">{fmtDate(d.createdAt)}</span></TableCell>
       <TableCell><div className="flex gap-1">
-        {!d.quarantined && <Button size="sm" variant="ghost" aria-label={`${d.typeName} indir`} onClick={() => void downloadDoc(d.contentUrl, d.originalFilename)}>İndir</Button>}
+        <DocActions d={d} label={d.typeName} />
         {d.current && s.can?.manageDocuments && <Button size="sm" variant="outline" aria-label={`${d.typeName} yenile`} onClick={() => setUpload({ replaces: d })}>Yenile</Button>}
       </div></TableCell>
     </TableRow>));

@@ -143,6 +143,10 @@ test('tedarikçi portalı v2: başvurudan teklife, belgeler, skor, firma bilgile
     await expect(page.getByRole('heading', { name: `Başvuru · ${firm}` })).toBeVisible();
     await expect(page.getByText('Virüs taraması yapılandırılmadı').first()).toBeVisible();
     await expect(page.getByText('Vergi kimliği denetim basamağı doğru')).toBeVisible();
+    // Önizleme yeni sekmede (nesne adresi).
+    const [preview] = await Promise.all([page.context().waitForEvent('page'), page.getByRole('button', { name: /önizle$/ }).first().click()]);
+    await expect(preview.locator('iframe')).toHaveAttribute('src', /^blob:/);
+    await preview.close();
     await check(page, 'Başvuru incelemesi');
     await page.getByRole('button', { name: 'Eksik belge iste' }).click();
     await page.getByRole('dialog').getByRole('checkbox', { name: 'Faaliyet belgesi' }).check();
@@ -330,6 +334,8 @@ test('tedarikçi portalı v2: başvurudan teklife, belgeler, skor, firma bilgile
     await expect(page.getByText('Tedarikçi pasife alındı; ayrılış kontrol listesi açıldı.')).toBeVisible();
     await expect(page.getByText(/Açık teklif turu/).first()).toBeVisible();
     await expect(page.getByText('Pasif', { exact: true }).first()).toBeVisible();
+    // Eski kayıt durumu görünür ikincil metin (sıfır gerileme).
+    await expect(page.getByText('· Askıda').first()).toBeVisible();
     // Pasife alan kişi yeniden açamaz.
     await expect(page.getByRole('button', { name: 'Yeniden aç' })).toHaveCount(0);
     await page.getByRole('tab', { name: 'Ayrılış kontrol listesi' }).click();

@@ -9,7 +9,7 @@ import { Banner, Empty, ErrorState, Field, Loading, PageHeader, Tag } from '../u
 import { Icon } from '../ui/icons.tsx';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { ACCEPT, DocTags, downloadDoc, fmtNum, fmtSize, typesText, type SupplierDoc } from '../lib/supplierV2.tsx';
+import { ACCEPT, DocActions, DocTags, fmtNum, fmtSize, typesText, type SupplierDoc } from '../lib/supplierV2.tsx';
 import { cn } from '@/lib/utils';
 
 interface Summary { openInvites: number; pendingSurveys: number; documents: { expired: number; expiring: number; missing: number }; standing: { score: number | null; levelLabel: string | null } }
@@ -158,7 +158,7 @@ export function PortalDocuments() {
                       <span className="text-sm text-ink-subtle">{x.validUntil ? `Geçerlilik ${fmtDate(x.validUntil)}` : 'Süresiz'} · yüklendi {fmtDate(x.createdAt)}{x.uploadedViaLabel ? ` · ${x.uploadedViaLabel}` : ''}</span></div>
                     <DocTags d={x} />
                     <div className="flex gap-2">
-                      {!x.quarantined && <Button size="sm" variant="ghost" onClick={() => void downloadDoc(x.contentUrl, x.originalFilename)}>İndir</Button>}
+                      <DocActions d={x} label={t.name} />
                       <Button size="sm" variant="outline" onClick={() => { setMsg(null); setOpen({ code: t.code, replaces: x }); }}>Yenile</Button>
                     </div>
                   </div>
@@ -236,6 +236,10 @@ interface Profile {
   changeRequestFields: { code: string; label: string }[]; pendingChangeRequests: { field: string; fieldLabel: string; requestedAt: string }[];
 }
 
+const TAX_TYPE: Record<string, string> = { VKN: 'VKN', TCKN: 'T.C. kimlik no', FOREIGN: 'Yabancı vergi no' };
+/** Ülke kodu → Türkçe ad (tarayıcının tr-TR ülke adları); bilinmiyorsa kod. */
+const countryName = (code: string) => { try { return new Intl.DisplayNames(['tr-TR'], { type: 'region' }).of(code) ?? code; } catch { return code; } };
+
 export function PortalProfile() {
   const r = useResource<Profile>('/api/v1/portal/profile');
   if (r.loading && !r.data) return <div className="page"><PageHeader title="Firma bilgileri" /><Loading /></div>;
@@ -282,8 +286,8 @@ function ProfileView({ p, reload }: { p: Profile; reload: () => Promise<void> })
           <div className="panel-head"><h2 id="firm-h">Kayıtlı bilgiler</h2></div>
           <div className="panel-body"><dl className="facts">
             <dt>Unvan</dt><dd>{p.legalName}</dd>
-            <dt>Vergi kimliği</dt><dd className="mono">{p.taxId ? `${p.taxIdType === 'FOREIGN' ? 'Yabancı' : p.taxIdType} ${p.taxId}` : '—'}</dd>
-            <dt>Ülke</dt><dd>{p.country}</dd>
+            <dt>Vergi kimliği</dt><dd>{p.taxId ? <>{TAX_TYPE[p.taxIdType] ?? 'Vergi kimliği'} <span className="mono">{p.taxId}</span></> : '—'}</dd>
+            <dt>Ülke</dt><dd>{countryName(p.country)}</dd>
             <dt>Durum</dt><dd>{p.stageLabel}</dd>
             <dt>E-posta</dt><dd>{p.contactEmail ?? '—'}</dd>
             <dt>Hizmet kategorileri</dt><dd>{p.serviceCategories.length ? p.serviceCategories.join(', ') : '—'}</dd>

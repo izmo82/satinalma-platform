@@ -2,8 +2,7 @@ import { useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useResource } from '../lib/useApi.ts';
 import { fmtDate } from '../lib/format.ts';
-import { supplierStatus } from '../lib/labels.ts';
-import { applicationTag, STAGE_FILTERS, stageTag } from '../lib/supplierV2.tsx';
+import { applicationTag, STAGE_FILTERS, StageWithStatus } from '../lib/supplierV2.tsx';
 import { Empty, ErrorState, FilterChip, Loading, PageHeader, Tag } from '../ui/kit.tsx';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -42,7 +41,11 @@ export function SuppliersPage() {
   const openApps = r.data?.applicationsOpen;
   const count = (v: string) => v === '' ? total : v === 'basvuru' ? openApps : counts?.[v as keyof NonNullable<typeof counts>];
   const appsQ = (params.get('q') ?? '').toLocaleLowerCase('tr-TR');
-  const appRows = (apps.data?.items ?? []).filter((a) => !appsQ || a.legalName.toLocaleLowerCase('tr-TR').includes(appsQ) || a.taxId === appsQ);
+  // Başvuru çipindeki sayı açık (incelenecek) başvurulardır; liste de varsayılan olarak yalnız onları gösterir, kapanmışlar isteğe bağlı.
+  const [showClosed, setShowClosed] = useState(false);
+  const OPEN_APP = new Set(['SUBMITTED', 'NEEDS_DOCUMENTS']);
+  const allApps = (apps.data?.items ?? []).filter((a) => !appsQ || a.legalName.toLocaleLowerCase('tr-TR').includes(appsQ) || a.taxId === appsQ);
+  const appRows = showClosed ? allApps : allApps.filter((a) => OPEN_APP.has(a.status));
 
   return (
     <div className="page">
@@ -60,9 +63,15 @@ export function SuppliersPage() {
           <Button variant="outline" type="submit">Ara</Button>
         </form>
       </div>
+      {applications && (
+        <label className="mb-3 inline-flex min-h-8 items-center gap-2 text-sm">
+          <input type="checkbox" className="size-4 accent-ink" checked={showClosed} onChange={(e) => setShowClosed(e.target.checked)} />
+          Doğrulanmamış, onaylanmış, reddedilmiş ve süresi dolmuş başvuruları da göster{apps.data ? ` (${allApps.length - allApps.filter((a) => OPEN_APP.has(a.status)).length})` : ''}
+        </label>
+      )}
       {applications ? (
         apps.loading && !apps.data ? <Loading /> : apps.error ? <ErrorState error={apps.error} onRetry={apps.reload} /> : !appRows.length ? (
-          <div className="rounded-md border border-border bg-surface"><Empty icon="inbox" title="Başvuru yok">Başvuru adresi Yönetim &gt; Tedarikçi başvurusu sekmesinden açılır; gelen başvurular e-posta doğrulandıktan sonra burada incelenir.</Empty></div>
+          <div className="rounded-md border border-border bg-surface"><Empty icon="inbox" title={showClosed ? 'Başvuru yok' : 'İnceleme bekleyen başvuru yok'}>Başvuru adresi Yönetim &gt; Tedarikçi başvurusu sekmesinden açılır; gelen başvurular e-posta doğrulandıktan sonra burada incelenir.</Empty></div>
         ) : (
           <Table>
             <TableHeader><TableRow className="hover:bg-transparent">
@@ -96,7 +105,7 @@ export function SuppliersPage() {
                 <TableCell className="min-w-[220px]"><Link className="font-semibold text-ink no-underline hover:underline" to={`/tedarikciler/${s.id}`}>{s.legalName}
                   {(s.identityReviewRequired || !s.taxId) && <span className="sr-only">, vergi kimliği doğrulanmadı</span>}</Link></TableCell>
                 <TableCell className="whitespace-nowrap">{s.taxId ? <span className="mono">{s.taxIdType} {s.taxId}</span> : <span className="text-ink-muted">Doğrulanmadı</span>}</TableCell>
-                <TableCell><Tag label={stageTag(s.stage, s.stageLabel) ?? supplierStatus[s.status]} title={supplierStatus[s.status] ? `Kayıt durumu: ${supplierStatus[s.status]!.text}` : undefined} /></TableCell>
+                <TableCell><StageWithStatus stage={s.stage} stageLabel={s.stageLabel} status={s.status} /></TableCell>
                 <TableCell className="max-[1100px]:hidden">{s.responsibleDepartment?.name ?? <span className="text-ink-subtle">—</span>}</TableCell>
                 <TableCell>
                   <div className="flex flex-wrap items-center gap-1.5">
