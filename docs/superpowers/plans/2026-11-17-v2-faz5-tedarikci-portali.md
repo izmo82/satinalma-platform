@@ -14,7 +14,7 @@
 
 - Sıfır gerileme: mevcut tedarikçi işlevlerinin hepsi kalır — liste arama/süzgeç, kart (kimlik, onaylar, MASTER_DATA/SECURITY/FINANCE onayı, aktivasyon, kimlik çözme/birleştirme, bağlı belgeler, banka bilgisi bandı D104b), Olaylar/Anketler/Performans ağırlıkları sekmeleri, karne; portal Teklif davetleri, teklif verme (geri sayım, satır fiyatı, ekler, soru-cevap, sürüm ve alındı), Anketler. Portal adresleri (`/portal`, `/portal/:id`, `/portal/anketler`, `/portal/anketler/:id`) aynı kalır; yeni ekranlar eklenir. iOS Tedarikçiler listesi ve Olaylar girişi aynen kalır.
 - Mevcut tedarikçi durumları (`CANDIDATE, CONDITIONAL, ACTIVE, SUSPENDED, ARCHIVED, REJECTED, MERGED`) ve CHECK'i değişmez; hiçbir satır güncellenmez. v2 aşaması türetilir (R1).
-- Kiracı bağlamı yalnız `withTenant`; `sp_app`; girişsiz uçlar yalnız `SECURITY DEFINER` işlevleri çağırır (`SET search_path = public, pg_temp`, `REVOKE ALL ... FROM PUBLIC`, `GRANT EXECUTE ... TO sp_app`). Her yeni tablo `tenant_id` + RLS (`tenant_id = app_tenant_id()`; tedarikçi kullanıcısı için `AND (app_supplier_id() IS NULL OR supplier_id = app_supplier_id())`) + en dar GRANT; satır silme izni yok. Uygulanmış migration düzenlenmez; yeni dosyalar `051_` (gerekirse `052_`).
+- Kiracı bağlamı yalnız `withTenant`; `sp_app`; girişsiz uçlar yalnız `SECURITY DEFINER` işlevleri çağırır (`SET search_path = public, pg_temp`, `REVOKE ALL ... FROM PUBLIC`, `GRANT EXECUTE ... TO sp_app`). Her yeni tablo `tenant_id` + RLS (`tenant_id = app_tenant_id()`; tedarikçi kullanıcısı için `AND (app_supplier_id() IS NULL OR supplier_id = app_supplier_id())`) + en dar GRANT; satır silme izni yok. Uygulanmış migration düzenlenmez; yeni dosyalar `052_` (gerekirse `052a_`).
 - Ücretli/dış kaynak bağlanmaz: Graph posta gönderimi ve ClamAV bağdaştırıcı olarak eklenir, varsayılan kapalı; gerçek gönderim ve gerçek tarama NOT_RUN. Ekran gönderilmemiş iletiyi "gönderildi", taranmamış dosyayı "temiz" göstermez.
 - Belirteçler (e-posta doğrulama, belge tamamlama) en az 32 bayt rastgele, tek kullanımlık, 24 saat; veritabanında yalnız SHA-256 özeti; bağlantıda sorgu dizesinde değil `#` parçasında taşınır (sunucu günlüğüne, yönlendirene düşmez). Üretimde e-posta kutusu görüntüleyicisi belirteçli bağlantıyı maskeler.
 - Para decimal string; skor ve risk seviyesi kodla hesaplanır (D103 `scorecardScore`); LLM bu fazda çağrılmaz. VKN denetim basamağı `normalizeTaxId` ile doğrulanır.
@@ -68,9 +68,9 @@
 - [ ] **Step 1: Testler** — her `suppliers.status` değerinin aşaması (CONDITIONAL "Onaylı (koşullu)", ARCHIVED "Pasif"); CANDIDATE davet edilemez; başvuru geçişleri (UNVERIFIED→APPROVED geçersiz, NEEDS_DOCUMENTS→COMPLETE→SUBMITTED); ISO 27001 yalnız BT kategorisinde zorunlu; süresi dolmuş belge eksik sayılır, yerine yenisi yüklenen eski belge sayılmaz; geçerlilik sınırları (belge bitiş günü dahil geçerlidir: bugün = bitiş → `EXPIRING`, `daysLeft: 0`; ertesi gün `EXPIRED`; bitişe 31 gün → `VALID`); hatırlatma tarihleri; `portalStanding` çıktısında yalnız izinli anahtarlar (anahtar listesi eşitliği), puan D103 örneğiyle aynı; ayrılış listesi "Uygulanmaz" ile tamamlanır; davet e-postası gövdesinde bağlantı, son tarih "21.12.2026 17:00" biçiminde, kapsam 600 karakterde kesilir.
 - [ ] **Step 2–4:** RED → yaz → GREEN (`npm test -w @sp/domain`, `npm run typecheck`). **Step 5: Commit.**
 
-### Task 2: Şema (051) — başvuru, belgeler, envanter, ayrılış, girişsiz işlevler
+### Task 2: Şema (052) — başvuru, belgeler, envanter, ayrılış, girişsiz işlevler
 
-**Files:** Create `apps/api/migrations/051_v2_supplier_portal.sql`, `apps/api/test/supplierPortalSchema.test.ts`.
+**Files:** Create `apps/api/migrations/052_v2_supplier_portal.sql`, `apps/api/test/supplierPortalSchema.test.ts`.
 
 **Interfaces — Produces:**
 - `supplier_application_settings(tenant_id PK, enabled bool DEFAULT false, public_slug text UNIQUE CHECK (public_slug ~ '^[a-z0-9-]{3,40}$'), categories text[] NOT NULL DEFAULT '{}', updated_by, updated_at)`; `supplier_document_types(id, tenant_id, code, name, required bool, required_categories text[] DEFAULT '{}', expiry_required bool, active bool DEFAULT true, UNIQUE(tenant_id, code))`.
@@ -181,4 +181,4 @@
 
 ## Controller ruling (17.11.2026)
 
-- R17 `suppliers` RLS (002 `s_tenant`) is tenant-only, so a SUPPLIER session can read every supplier row. Faz 5 migration 051 adds `CREATE POLICY supplier_scope ON suppliers AS RESTRICTIVE FOR ALL USING (app_supplier_id() IS NULL OR id = app_supplier_id())` (same WITH CHECK), with a test: a supplier session sees only its own row, internal sessions unchanged. Owner: the plan's schema task. Any portal read of another supplier (e.g. bid comparisons) goes through existing SECURITY DEFINER paths; tests must show no regression in the supplier portal e2e.
+- R17 `suppliers` RLS (002 `s_tenant`) is tenant-only, so a SUPPLIER session can read every supplier row. Faz 5 migration 052 adds `CREATE POLICY supplier_scope ON suppliers AS RESTRICTIVE FOR ALL USING (app_supplier_id() IS NULL OR id = app_supplier_id())` (same WITH CHECK), with a test: a supplier session sees only its own row, internal sessions unchanged. Owner: the plan's schema task. Any portal read of another supplier (e.g. bid comparisons) goes through existing SECURITY DEFINER paths; tests must show no regression in the supplier portal e2e.
