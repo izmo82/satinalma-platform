@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assessmentOutcome, criticalBlock, DEFAULT_WEIGHTS, incidentImpact, inherentRisk, performanceScore, validateResidual, validateWeights, type IncidentState, type QuestionDef } from '../src/supplierRisk.ts';
+import { assessmentOutcome, criticalBlock, DEFAULT_WEIGHTS, incidentImpact, inherentRisk, performanceScore, SCORECARD_RISK_PENALTY, scorecardScore, validateResidual, validateWeights, type IncidentState, type QuestionDef } from '../src/supplierRisk.ts';
 
 const q = (id: string, critical = false, evidenceRequired = false): QuestionDef => ({ id, controlId: `C-${id}`, text: id, critical, evidenceRequired });
 
@@ -76,5 +76,22 @@ describe('inceleme bulguları (regresyon)', () => {
   it('kritik şiddetli bulgu kritik olmayan kontrolde de engeldir; yüksek bulgu yalnız kritik kontrolde', () => {
     expect(assessmentOutcome([q('a')], [{ questionId: 'a', response: 'PARTIAL', review: 'FINDING', findingSeverity: 'CRITICAL' }], '2026-10-27').outcome).toBe('BLOCKED');
     expect(assessmentOutcome([q('a')], [{ questionId: 'a', response: 'PARTIAL', review: 'FINDING', findingSeverity: 'HIGH' }], '2026-10-27').outcome).toBe('CONDITIONAL');
+  });
+});
+
+// v2 (D103, kullanıcı kararı 17.11.2026): mal kabul kalktı; karne puanı anket, risk ve olaylardan hesaplanır.
+describe('karne puanı (v2: anket, risk, olay)', () => {
+  const s = { quality: 90, delivery: 80, sla: 70, communication: 100, commercial: 60 };
+  it('taban anket uyum ortalaması; inceleme varsa eşit ağırlıkla ortalanır; risk ve olay cezası düşülür', () => {
+    expect(scorecardScore({ surveyRates: [70, 90], review: null, riskLevel: null, incidentPenalty: 0 })).toMatchObject({ score: 80, base: 80, surveyMean: 80, reviewScore: null, riskPenalty: 0, insufficient: false });
+    expect(scorecardScore({ surveyRates: [70], review: { scores: s, weights: DEFAULT_WEIGHTS }, riskLevel: 'HIGH', incidentPenalty: 3 })).toMatchObject({ base: 75, reviewScore: 80, riskPenalty: 7, score: 65 });
+    expect(scorecardScore({ surveyRates: [], review: { scores: s, weights: DEFAULT_WEIGHTS }, riskLevel: 'CRITICAL', incidentPenalty: 70 })).toMatchObject({ base: 80, riskPenalty: 15, score: 0 });
+    expect(SCORECARD_RISK_PENALTY).toEqual({ LOW: 0, MEDIUM: 3, HIGH: 7, CRITICAL: 15 });
+  });
+  it('anket ve inceleme yoksa puan yerine yetersiz veri; uyum oranı olmayan anket sayılmaz; eksik boyutlu inceleme reddedilir', () => {
+    const none = scorecardScore({ surveyRates: [null], review: null, riskLevel: 'LOW', incidentPenalty: 0 });
+    expect(none).toMatchObject({ score: null, insufficient: true });
+    expect(none.reason).toContain('anket');
+    expect(scorecardScore({ surveyRates: [80], review: { scores: { quality: 90 }, weights: DEFAULT_WEIGHTS }, riskLevel: null, incidentPenalty: 0 }).reason).toContain('Puanlanmamış');
   });
 });

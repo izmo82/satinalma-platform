@@ -1,3 +1,4 @@
+// v2 (D103, kullanıcı kararı 17.11.2026): karne puanı mal kabulünden değil anket, performans incelemesi, kalan risk ve olaylardan; karne testleri buna çevrildi.
 // v2 Faz 1 (D93/D95): değerlendirme bölüm kullanıcısının departmanında; yetkisiz rol örnekleri v2'ye göre; sipariş/kabul adımları kaldırıldı (kabul örneği test verisi)
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { withTenant, type TenantContext } from '../src/db.ts';
@@ -181,39 +182,54 @@ describe('T19 olay: iddia ≠ doğrulanmış; itiraz; çift sayım yok', () => {
 });
 
 describe('performans ve yıllık karne', () => {
-  it('örneklem yetersizse puan yok; inceleme ağırlıkları doğrulanır; karne kaynak ve veri anını gösterir', async () => {
+  // Puan formülü (karne-2026-v2): taban = anket uyum ortalaması ve (varsa) performans incelemesinin eşit ortalaması; − olay cezası − kalan risk cezası.
+  const expected = (p: any, incidentPenalty: number) => Math.max(0, Math.round((p.base - incidentPenalty - p.riskPenalty) * 10) / 10);
+
+  it('inceleme ağırlıkları doğrulanır; puan anket, inceleme, risk ve olaydan hesaplanır; karne kaynak ve veri anını gösterir', async () => {
     const future = await call('buyer', 'POST', `/api/v1/suppliers/${s2()}/performance-reviews`, { periodStart: '2026-01-01', periodEnd: '2099-12-31', category: 'BT hizmeti',
       scores: { quality: 90, delivery: 80, sla: 70, communication: 100, commercial: 60 }, basis: 'Gelecek dönem denemesi (sentetik).' });
     expect(future.body.error.code).toBe('invalid_period');
     const bad = await call('buyer', 'POST', `/api/v1/suppliers/${s2()}/performance-reviews`, { periodStart: '2026-01-01', periodEnd: '2026-06-30', category: 'BT hizmeti',
-      weights: { quality: 50, delivery: 50, sla: 10, communication: 0, commercial: 0 }, scores: { quality: 90 }, basis: 'Kabul kayıtları ve SLA raporları (sentetik).' });
+      weights: { quality: 50, delivery: 50, sla: 10, communication: 0, commercial: 0 }, scores: { quality: 90 }, basis: 'SLA raporları (sentetik).' });
     expect(bad.body.error.code).toBe('invalid_weights');
     expect((await call('techEval', 'POST', `/api/v1/suppliers/${s2()}/performance-reviews`, { periodStart: '2026-01-01', periodEnd: '2026-06-30', category: 'BT', scores: {}, basis: 'Yetkisiz deneme (sentetik).' })).status).toBe(403); // v2: bölüm kullanıcısının yetkisi yok
-    expect((await call('buyer', 'POST', `/api/v1/suppliers/${s2()}/performance-reviews`, { periodStart: '2026-01-01', periodEnd: new Date().toISOString().slice(0, 10), category: 'BT hizmeti',
-      scores: { quality: 90, delivery: 80, sla: 70, communication: 100, commercial: 60 }, basis: 'Kabul kayıtları ve SLA raporları (sentetik).' })).status).toBe(201);
-    const sc = (await call('auditor', 'GET', `/api/v1/suppliers/${s2()}/scorecard?year=2026`)).body;
-    expect(sc.performance).toMatchObject({ score: null, insufficient: true });
-    expect(sc.performance.reason).toMatch(/en az 5/);
-    expect(sc.narrative[0]).toContain('puan verilmedi');
+    const year = new Date().getFullYear();
+    expect((await call('buyer', 'POST', `/api/v1/suppliers/${s2()}/performance-reviews`, { periodStart: `${year}-01-01`, periodEnd: new Date().toISOString().slice(0, 10), category: 'BT hizmeti',
+      scores: { quality: 90, delivery: 80, sla: 70, communication: 100, commercial: 60 }, basis: 'SLA raporları ve görüşmeler (sentetik).' })).status).toBe(201);
+    const sc = (await call('auditor', 'GET', `/api/v1/suppliers/${s2()}/scorecard?year=${year}`)).body;
+    expect(sc.policy.scorecard).toBe('karne-2026-v2');
+    expect(sc.performance).toMatchObject({ insufficient: false, reviewScore: 80 });
+    // Bu dosyadaki önceki testler s2 için tamamlanmış değerlendirme açtı: anket ortalaması tabana girer.
+    expect(sc.performance.surveyCount).toBeGreaterThan(0);
+    expect(sc.performance.base).toBe(Math.round(((sc.performance.surveyMean + 80) / 2) * 10) / 10);
+    expect(sc.performance.score).toBe(expected(sc.performance, sc.incidents.penalty));
+    expect(sc.narrative[0]).toContain('karne puanı');
     expect(sc.dataAsOf).toBeTruthy();
-    expect(sc.sources.length).toBeGreaterThan(0);
+    expect(sc.sources[0]).toContain('Anketler');
   });
 
-  // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; davranış removed-v1.test.ts ile 403 olarak korunur
-  it.skip('yeterli kabul örneğinde puan = ağırlıklı ortalama − doğrulanmış olay cezası', async () => {
-    const po = await call('buyer', 'POST', '/api/v1/purchase-orders', { companyId: h.world.companyA1.id, supplierId: s2(), contractVersionId: null, currency: 'TRY',
-      lines: [{ kind: 'GOODS', description: 'Sarf malzeme', unit: 'adet', quantity: '10', unitPrice: '10' }] });
-    const line = (await call('buyer', 'GET', `/api/v1/purchase-orders/${po.body.id}`)).body.lines[0].poLineId;
-    for (let i = 0; i < 5; i++) await call('buyer', 'POST', `/api/v1/po-lines/${line}/receipts`, { quantity: '1', note: `Teslim ${i + 1} (sentetik)` });
-    const sc = (await call('buyer', 'GET', `/api/v1/suppliers/${s2()}/scorecard?year=${new Date().getFullYear()}`)).body;
-    expect(sc.performance.sample).toBeGreaterThanOrEqual(5);
-    expect(sc.performance.base).toBe(80);
-    expect(sc.performance.score).toBe(80 - sc.incidents.penalty);
+  it('anket ve inceleme yoksa puan yerine yetersiz veri', async () => {
+    const sc = (await call('buyer', 'GET', `/api/v1/suppliers/${s2()}/scorecard?year=2020`)).body;
+    expect(sc.performance).toMatchObject({ score: null, insufficient: true, surveyCount: 0 });
+    expect(sc.performance.reason).toContain('anket');
+    expect(sc.narrative[0]).toContain('puan verilmedi');
   });
 
-  // Görev 4 ayrımı: karne puanı korunur. Sipariş ve mal kabul v2'de kaldırıldı; örneklem için eski (v1) kabul kayıtları test verisi olarak
-  // modül işleviyle yazılır (API ucu değil). Bkz. rapor: yeni kabul kaydı oluşmadığı için örneklem yalnız eski kayıtlardan gelir.
-  it('yeterli kabul örneğinde puan = ağırlıklı ortalama − doğrulanmış olay cezası (kabul kayıtları test verisi)', async () => {
+  it('yalnız anketle puan: inceleme yoksa taban anket uyum ortalamasıdır; kalan risk cezası düşülür', async () => {
+    await reviewedAssessment(h, s1(), tpl, {}, { dataSensitivity: 'LOW', accessLevel: 'LOW', criticality: 'LOW', substitutability: 'LOW', subcontractorDependence: 'LOW' });
+    const sc = (await call('buyer', 'GET', `/api/v1/suppliers/${s1()}/scorecard?year=${new Date().getFullYear()}`)).body;
+    expect(sc.performance).toMatchObject({ insufficient: false, reviewScore: null });
+    expect(sc.performance.base).toBe(sc.performance.surveyMean);
+    expect(sc.performance.riskLevel).toBeTruthy();
+    expect(sc.performance.riskPenalty).toBe({ LOW: 0, MEDIUM: 3, HIGH: 7, CRITICAL: 15 }[sc.performance.riskLevel as 'LOW']);
+    expect(sc.performance.score).toBe(expected(sc.performance, sc.incidents.penalty));
+  });
+
+  // Görev 4 ayrımı: sipariş ve mal kabul v2'de kaldırıldı. Eski (v1) kabul kayıtları test verisi olarak modül işleviyle yazılır (API ucu değil);
+  // v2 (D103) puan artık kabul kaydına bağlı değildir: eski kabul kayıtları karneyi değiştirmez.
+  it('eski mal kabul kayıtları karne puanını değiştirmez (kabul kayıtları test verisi)', async () => {
+    const year = new Date().getFullYear();
+    const before = (await call('buyer', 'GET', `/api/v1/suppliers/${s2()}/scorecard?year=${year}`)).body.performance;
     const ctx: TenantContext = { tenantId: h.world.tenantA, userId: h.world.users.buyer.id, roles: ['PROCUREMENT'], companyIds: [h.world.companyA1.id],
       departmentIds: [], allDepartments: true, correlationId: 'v2-legacy-receipts' };
     await withTenant(h.pool, ctx, async (tx) => {
@@ -222,9 +238,8 @@ describe('performans ve yıllık karne', () => {
       const line = (await tx.query<{ id: string }>(`SELECT id FROM po_lines WHERE po_id = $1`, [po.id])).rows[0]!.id;
       for (let i = 0; i < 5; i++) await recordReceipt(tx, ctx, line, { quantity: '1', note: `Teslim ${i + 1} (sentetik)` });
     });
-    const sc = (await call('buyer', 'GET', `/api/v1/suppliers/${s2()}/scorecard?year=${new Date().getFullYear()}`)).body;
-    expect(sc.performance.sample).toBeGreaterThanOrEqual(5);
-    expect(sc.performance.base).toBe(80);
-    expect(sc.performance.score).toBe(80 - sc.incidents.penalty);
+    const after = (await call('buyer', 'GET', `/api/v1/suppliers/${s2()}/scorecard?year=${year}`)).body.performance;
+    expect(after.score).toBe(before.score);
+    expect(after.base).toBe(before.base);
   });
 });

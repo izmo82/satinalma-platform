@@ -143,6 +143,34 @@ export function performanceScore(scores: Partial<Record<Dimension, number>>, wei
   return { score, base: Math.round(raw * 10) / 10, insufficient: false as const, reason: null };
 }
 
+/**
+ * v2 karne puanı (D103): mal kabul kalktığı için örneklem kabul kaydından gelmez.
+ * Taban = yıl içinde tamamlanmış anketlerin uyum oranı ortalaması; performans incelemesi varsa ağırlıklı puanıyla eşit ağırlıkta ortalanır.
+ * Puan = taban − doğrulanmış olay cezası − güncel kalan risk cezası (0 altına inmez). Kod hesaplar; AI kullanılmaz.
+ */
+export const SCORECARD_POLICY_VERSION = 'karne-2026-v2';
+export const SCORECARD_RISK_PENALTY: Record<Level, number> = { LOW: 0, MEDIUM: 3, HIGH: 7, CRITICAL: 15 };
+const round1 = (n: number) => Math.round(n * 10) / 10;
+
+export function scorecardScore(input: { surveyRates: readonly (number | null)[]; review: { scores: Partial<Record<Dimension, number>>; weights: Record<Dimension, number> } | null;
+  riskLevel: Level | null; incidentPenalty: number }) {
+  const rates = input.surveyRates.filter((r): r is number => typeof r === 'number');
+  const surveyMean = rates.length ? round1(rates.reduce((s, r) => s + r, 0) / rates.length) : null;
+  const riskPenalty = input.riskLevel ? SCORECARD_RISK_PENALTY[input.riskLevel] : 0;
+  const empty = { score: null, base: null, surveyMean, surveyCount: rates.length, reviewScore: null, riskPenalty, insufficient: true as const };
+  let reviewScore: number | null = null;
+  if (input.review) {
+    const r = performanceScore(input.review.scores, input.review.weights, 0, 0, 0);
+    if (r.insufficient) return { ...empty, reason: r.reason };
+    reviewScore = r.base;
+  }
+  const parts = [surveyMean, reviewScore].filter((x): x is number => x !== null);
+  if (!parts.length) return { ...empty, reason: 'Bu yıl için tamamlanmış anket ya da performans incelemesi yok.' };
+  const base = round1(parts.reduce((s, x) => s + x, 0) / parts.length);
+  const score = Math.max(0, round1(base - input.incidentPenalty - riskPenalty));
+  return { score, base, surveyMean, surveyCount: rates.length, reviewScore, riskPenalty, insufficient: false as const, reason: null };
+}
+
 /** T20: kritik güvenlik engeli olan tedarikçiye seçim/sipariş, ticari puan ne olursa olsun önerilemez. */
 export function criticalBlock(latest: { outcome: AssessmentOutcome; scope: string } | null): string | null {
   return latest?.outcome === 'BLOCKED' ? `Tedarikçi değerlendirmesinde kritik engel var (${latest.scope}); ticari puan bu engeli aşmaz.` : null;

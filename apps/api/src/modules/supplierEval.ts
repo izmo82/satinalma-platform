@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
-  assessmentOutcome, criticalBlock, DEFAULT_INCIDENT_POLICY, DEFAULT_WEIGHTS, DIMENSION_TR, incidentImpact, inherentRisk, LEVEL_TR, MIN_SAMPLE,
-  PERFORMANCE_DIMENSIONS, performanceScore, validateResidual, validateWeights,
+  assessmentOutcome, criticalBlock, DEFAULT_INCIDENT_POLICY, DEFAULT_WEIGHTS, DIMENSION_TR, incidentImpact, inherentRisk, LEVEL_TR,
+  PERFORMANCE_DIMENSIONS, SCORECARD_POLICY_VERSION, scorecardScore, validateResidual, validateWeights,
   type AnswerState, type Dimension, type IncidentState, type InherentFactors, type Level, type QuestionDef,
 } from '@sp/domain';
 import type { TenantContext, Tx } from '../db.ts';
@@ -222,7 +222,7 @@ export async function supplierAssessments(tx: Tx, ctx: TenantContext, supplierId
     const t = (await tx.query<{ name: string; version: number; category: string }>(`SELECT name, version, category FROM questionnaire_templates WHERE id = $1`, [r.a.template_id])).rows[0]!;
     out.push({ id, scope: r.a.scope, status: r.a.status, template: `${t.name} v${t.version}`, category: t.category, outcome: r.result.outcome, complianceRate: r.result.complianceRate,
       blockers: r.result.items.filter((x) => x.kind === 'BLOCKER').length, findings: r.result.items.filter((x) => x.kind === 'FINDING').length,
-      inherent: r.inherent.level, residual: r.a.residual_level, createdAt: r.a.created_at, reviewDue: r.a.review_due,
+      inherent: r.inherent.level, residual: r.a.residual_level, createdAt: r.a.created_at, reviewedAt: (r.a.reviewed_at ?? null) as Date | null, reviewDue: r.a.review_due,
       departmentId: r.a.department_id, departmentName: r.a.department_name });
   }
   void ctx;
@@ -447,13 +447,14 @@ export async function addPerformanceReview(tx: Tx, ctx: TenantContext, supplierI
   return { id: r.id };
 }
 
-/** Teslimat/kabul örneklemi: dönemdeki pozitif kabul kayıtları (kullanıcının şirket kapsamındaki siparişler; RLS). */
-async function sampleSize(tx: Tx, supplierId: string, from: string, to: string) {
-  return Number((await tx.query<{ n: number }>(`SELECT count(*)::int AS n FROM receipts r JOIN po_lines pl ON pl.id = r.po_line_id JOIN purchase_orders po ON po.id = pl.po_id
-    WHERE po.supplier_id = $1 AND r.quantity > 0 AND r.recorded_at >= $2::date AND r.recorded_at < ($3::date + 1)`, [supplierId, from, to])).rows[0]!.n);
-}
+type AssessmentRow = Awaited<ReturnType<typeof supplierAssessments>>[number];
+const RISK_RANK: Record<Level, number> = { LOW: 0, MEDIUM: 1, HIGH: 2, CRITICAL: 3 };
 
-async function yearSummary(tx: Tx, supplierId: string, year: number) {
+/**
+ * v2 (D103): mal kabul kalktı. Puan anket (yıl içinde tamamlanmış değerlendirmelerin uyum oranı), performans incelemesi (varsa),
+ * güncel kalan risk ve doğrulanmış olaylardan hesaplanır. Değerlendirmeler RLS ve departman kapsamıyla gelir.
+ */
+async function yearSummary(tx: Tx, supplierId: string, year: number, assessments: AssessmentRow[]) {
   const from = `${year}-01-01`; const to = `${year}-12-31`;
   const review = (await tx.query<{ id: string; scores: Partial<Record<Dimension, number>>; weights: Record<Dimension, number>; policy_version: string; basis: string; period_start: string; period_end: string;
     category: string; reviewer: string; reviewed_at: Date }>(`SELECT r.id, r.scores, r.weights, r.policy_version, r.basis, r.period_start::text, r.period_end::text, r.category, u.display_name AS reviewer, r.reviewed_at
@@ -461,9 +462,14 @@ async function yearSummary(tx: Tx, supplierId: string, year: number) {
   const incidents = (await tx.query<IncidentState & { code: string; title: string; occurredOn: string }>(`SELECT ${incidentStateSql}, i.code, i.title, i.occurred_on::text AS "occurredOn"
     FROM supplier_incidents i WHERE i.supplier_id = $1 AND i.occurred_on BETWEEN $2 AND $3 ORDER BY i.occurred_on`, [supplierId, from, to])).rows;
   const impact = incidentImpact(incidents);
-  const sample = await sampleSize(tx, supplierId, from, to);
-  const perf = review ? performanceScore(review.scores, review.weights, sample, impact.penalty) : { score: null, insufficient: true as const, reason: 'Bu dönem için performans incelemesi yok.' };
-  return { year, from, to, review, incidents, impact, sample, perf };
+  const yearOf = (d: unknown) => new Date(d as string).getFullYear();
+  // Anket: incelemesi o yıl tamamlanmış değerlendirmeler (sonradan yenilenmiş olanlar da o yılın anketidir; incelenmeden yenilenen sayılmaz).
+  const surveys = assessments.filter((a) => a.reviewedAt !== null && yearOf(a.reviewedAt) === year && a.complianceRate !== null);
+  // Risk: yıl sonunda güncel olan (yenilenmemiş) tamamlanmış değerlendirmelerin en yüksek kalan riski (yoksa içsel risk).
+  const riskLevels = assessments.filter((a) => a.status === 'REVIEWED' && a.reviewedAt !== null && yearOf(a.reviewedAt) <= year).map((a) => (a.residual ?? a.inherent) as Level).filter(Boolean);
+  const riskLevel = riskLevels.length ? riskLevels.reduce((m, l) => (RISK_RANK[l] > RISK_RANK[m] ? l : m)) : null;
+  const perf = scorecardScore({ surveyRates: surveys.map((a) => a.complianceRate), review: review && { scores: review.scores, weights: review.weights }, riskLevel, incidentPenalty: impact.penalty });
+  return { year, from, to, review, incidents, impact, surveys, riskLevel, perf };
 }
 
 /**
@@ -473,16 +479,16 @@ async function yearSummary(tx: Tx, supplierId: string, year: number) {
 export async function scorecard(tx: Tx, ctx: TenantContext, supplierId: string, year: number) {
   const s = (await tx.query<{ legal_name: string; status: string }>(`SELECT legal_name, status FROM suppliers WHERE id = $1`, [supplierId])).rows[0];
   if (!s) throw notFound();
-  const cur = await yearSummary(tx, supplierId, year);
-  const prev = await yearSummary(tx, supplierId, year - 1);
+  const assessments = await supplierAssessments(tx, ctx, supplierId);
+  const cur = await yearSummary(tx, supplierId, year, assessments);
+  const prev = await yearSummary(tx, supplierId, year - 1, assessments);
   const openActions = (await tx.query(`SELECT a.title, a.due_date::text AS "dueDate", a.status, i.code FROM corrective_actions a JOIN supplier_incidents i ON i.id = a.incident_id
     WHERE i.supplier_id = $1 AND a.status <> 'VERIFIED' ORDER BY a.due_date`, [supplierId])).rows as { title: string; dueDate: string; status: string; code: string }[];
-  const assessments = await supplierAssessments(tx, ctx, supplierId);
   const current = assessments.filter((a) => a.status !== 'SUPERSEDED');
   const bySeverity = Object.fromEntries((['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'] as Level[]).map((l) => [l, cur.incidents.filter((x) => x.severity === l && cur.impact.counted.some((c) => c.id === x.id)).length]));
   const narrative: string[] = [];
   narrative.push(cur.perf.score !== null
-    ? `${year} performans puanı ${cur.perf.score} (boyut ortalaması ${'base' in cur.perf ? cur.perf.base : '—'}, doğrulanmış olay cezası ${cur.impact.penalty}); örneklem ${cur.sample} kabul kaydı.`
+    ? `${year} karne puanı ${cur.perf.score}: taban ${cur.perf.base} (${[cur.perf.surveyMean !== null ? `${cur.perf.surveyCount} anketin uyum ortalaması ${cur.perf.surveyMean}` : null, cur.perf.reviewScore !== null ? `performans incelemesi ${cur.perf.reviewScore}` : null].filter(Boolean).join(', ')}), doğrulanmış olay cezası −${cur.impact.penalty}, kalan risk ${cur.riskLevel ? LEVEL_TR[cur.riskLevel] : 'yok'} −${cur.perf.riskPenalty}.`
     : `${year} için puan verilmedi: ${cur.perf.reason}`);
   if (cur.perf.score !== null && prev.perf.score !== null) narrative.push(`Önceki yıla göre ${cur.perf.score >= prev.perf.score ? '+' : ''}${Math.round((cur.perf.score - prev.perf.score) * 10) / 10} puan.`);
   narrative.push(`${cur.incidents.length} olay kaydı; ${cur.impact.counted.length} doğrulanmış olay puana yansıdı, ${cur.impact.excluded.length} olay yansımadı (iddia, itiraz, mükerrer veya ölçüme zaten yansımış).`);
@@ -491,8 +497,8 @@ export async function scorecard(tx: Tx, ctx: TenantContext, supplierId: string, 
   if (blocked.length) narrative.push(`Kritik engel: ${blocked.map((a) => a.scope).join(', ')}.`);
   return {
     supplier: { id: supplierId, name: s.legal_name, status: s.status }, year, dataAsOf: new Date().toISOString(),
-    policy: { incident: DEFAULT_INCIDENT_POLICY.version, weights: cur.review?.policy_version ?? null, minSample: MIN_SAMPLE },
-    performance: { ...cur.perf, sample: cur.sample, review: cur.review && { id: cur.review.id, period: [cur.review.period_start, cur.review.period_end], category: cur.review.category,
+    policy: { incident: DEFAULT_INCIDENT_POLICY.version, weights: cur.review?.policy_version ?? null, scorecard: SCORECARD_POLICY_VERSION },
+    performance: { ...cur.perf, riskLevel: cur.riskLevel, review: cur.review && { id: cur.review.id, period: [cur.review.period_start, cur.review.period_end], category: cur.review.category,
       scores: cur.review.scores, weights: cur.review.weights, basis: cur.review.basis, reviewer: cur.review.reviewer, reviewedAt: cur.review.reviewed_at },
       dimensions: PERFORMANCE_DIMENSIONS.map((d) => ({ key: d, label: DIMENSION_TR[d], score: cur.review?.scores[d] ?? null, weight: cur.review?.weights[d] ?? DEFAULT_WEIGHTS[d] })) },
     previous: { year: year - 1, score: prev.perf.score, insufficient: prev.perf.insufficient },
@@ -501,7 +507,7 @@ export async function scorecard(tx: Tx, ctx: TenantContext, supplierId: string, 
       items: cur.incidents.map((x) => ({ id: x.id, code: x.code, title: x.title, occurredOn: x.occurredOn, severity: x.severity, status: x.status,
         counted: cur.impact.counted.some((c) => c.id === x.id), reason: cur.impact.excluded.find((e) => e.id === x.id)?.reason ?? null })) },
     openActions, assessments: current, narrative,
-    sources: [`Kabul kayıtları ${cur.from}–${cur.to} (yalnız erişiminiz olan şirketlerin siparişleri)`, cur.review ? `Performans incelemesi (${cur.review.reviewer})` : 'Performans incelemesi yok', `Olay politikası ${DEFAULT_INCIDENT_POLICY.version}`],
+    sources: [`Anketler ${cur.from}–${cur.to} (${cur.surveys.length} tamamlanmış değerlendirme, erişiminiz olan departmanlar)`, cur.review ? `Performans incelemesi (${cur.review.reviewer})` : 'Performans incelemesi yok', `Olay politikası ${DEFAULT_INCIDENT_POLICY.version}`],
   };
 }
 

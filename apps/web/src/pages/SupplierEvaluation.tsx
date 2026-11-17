@@ -193,8 +193,9 @@ function ReportIncident({ supplierId, onCancel, onReported }: { supplierId: stri
 }
 
 interface Scorecard {
-  supplier: { id: string; name: string; status: string }; year: number; dataAsOf: string; policy: { incident: string; weights: string | null; minSample: number };
-  performance: { score: number | null; base?: number; insufficient: boolean; reason: string | null; sample: number;
+  supplier: { id: string; name: string; status: string }; year: number; dataAsOf: string; policy: { incident: string; weights: string | null; scorecard: string };
+  performance: { score: number | null; base: number | null; insufficient: boolean; reason: string | null; surveyMean: number | null; surveyCount: number; reviewScore: number | null;
+    riskLevel: string | null; riskPenalty: number;
     review: null | { period: [string, string]; category: string; basis: string; reviewer: string; reviewedAt: string };
     dimensions: { key: string; label: string; score: number | null; weight: number }[] };
   previous: { year: number; score: number | null; insufficient: boolean }; reviewCount: number;
@@ -216,7 +217,7 @@ function ScorecardTab({ supplierId }: { supplierId: string }) {
       <div className="flex flex-wrap items-end gap-3">
         <Field label="Yıl">{(p) => <select className="input w-28" {...p} value={year} onChange={(e) => setYear(Number(e.target.value))}>
           {[0, 1, 2].map((n) => new Date().getFullYear() - n).map((y) => <option key={y} value={y}>{y}</option>)}</select>}</Field>
-        <p className="min-w-0 flex-1 pb-2 text-sm text-ink-subtle">Veri anı {fmtDateTime(d.dataAsOf)} · olay politikası {d.policy.incident} · en az {d.policy.minSample} kabul kaydı</p>
+        <p className="min-w-0 flex-1 pb-2 text-sm text-ink-subtle">Veri anı {fmtDateTime(d.dataAsOf)} · karne kuralı {d.policy.scorecard} · olay politikası {d.policy.incident}</p>
         {d.can.review && !reviewing && <Button variant="outline" onClick={() => setReviewing(true)}>Performans incelemesi gir</Button>}
       </div>
       {reviewing && <PerformanceForm supplierId={supplierId} year={year} onDone={() => { setReviewing(false); void r.reload(); }} />}
@@ -226,14 +227,14 @@ function ScorecardTab({ supplierId }: { supplierId: string }) {
           <div className="panel-body grid gap-3">
             {d.performance.score === null
               ? <Banner tone="neutral" icon="help" title="Yetersiz veri; puan verilmedi">{d.performance.reason}</Banner>
-              : <p className="tabular text-3xl font-bold">{d.performance.score}<span className="ml-2 text-base font-normal text-ink-muted">/ 100 · boyut ortalaması {d.performance.base}, olay cezası −{d.incidents.penalty}</span></p>}
+              : <p className="tabular text-3xl font-bold">{d.performance.score}<span className="ml-2 text-base font-normal text-ink-muted">/ 100 · taban {d.performance.base}, olay cezası −{d.incidents.penalty}, kalan risk cezası −{d.performance.riskPenalty}</span></p>}
             <Table>
               <TableHeader><TableRow className="hover:bg-transparent"><TableHead>Boyut</TableHead><TableHead className="text-right">Ağırlık</TableHead><TableHead className="text-right">Puan</TableHead></TableRow></TableHeader>
               <TableBody>{d.performance.dimensions.map((x) => (
                 <TableRow key={x.key}><TableCell>{x.label}</TableCell><TableCell className="tabular text-right">%{x.weight}</TableCell><TableCell className="tabular text-right">{x.score ?? '—'}</TableCell></TableRow>
               ))}</TableBody>
             </Table>
-            <p className="text-sm text-ink-muted">Örneklem: {d.performance.sample} kabul kaydı (puan için en az {d.policy.minSample}).{d.reviewCount > 1 ? ` Bu yıl ${d.reviewCount} inceleme var; puan en son incelemeye dayanır.` : ''}{d.performance.review ? ` İnceleme: ${d.performance.review.reviewer}, ${fmtDate(d.performance.review.period[0])}–${fmtDate(d.performance.review.period[1])}. Dayanak: ${d.performance.review.basis}` : ''}</p>
+            <p className="text-sm text-ink-muted">Taban: {d.performance.surveyCount ? `${d.performance.surveyCount} tamamlanmış anketin uyum ortalaması ${d.performance.surveyMean}` : 'bu yıl tamamlanmış anket yok'}{d.performance.reviewScore !== null ? `; performans incelemesi ${d.performance.reviewScore}${d.performance.surveyCount ? ' (ikisi eşit ağırlıkta)' : ''}` : ''}. Kalan risk: {d.performance.riskLevel ? (LEVEL[d.performance.riskLevel]?.text ?? d.performance.riskLevel) : 'değerlendirme yok'}.{d.reviewCount > 1 ? ` Bu yıl ${d.reviewCount} inceleme var; puan en son incelemeye dayanır.` : ''}{d.performance.review ? ` İnceleme: ${d.performance.review.reviewer}, ${fmtDate(d.performance.review.period[0])}–${fmtDate(d.performance.review.period[1])}. Dayanak: ${d.performance.review.basis}` : ''}</p>
           </div>
         </section>
         <aside className="grid content-start gap-4">
