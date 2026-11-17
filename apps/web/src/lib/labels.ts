@@ -1,5 +1,5 @@
 // Durum dili: tüm kanallarda aynı anlam (02 §22). Renk tek başına anlam taşımaz; ikon+metin.
-export type Tone = 'ok' | 'warn' | 'danger' | 'info' | 'neutral' | 'ai' | 'human';
+export type Tone = 'ok' | 'warn' | 'orange' | 'danger' | 'info' | 'neutral' | 'ai' | 'human';
 export interface Label { text: string; tone: Tone; icon: string; hint?: string }
 
 export const overallLabel: Record<string, Label> = {

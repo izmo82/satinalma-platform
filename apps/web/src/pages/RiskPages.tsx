@@ -18,6 +18,7 @@ import { Icon } from '../ui/icons.tsx';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { cn } from '@/lib/utils';
+import { RISK_CARD_BODY } from './RiskReportPlaceholder.tsx';
 
 type Ref = { id: string; name: string | null };
 interface ListItem {
@@ -101,6 +102,7 @@ export function RiskMatrixPage() {
       <PageHeader title="Risk matrisi" actions={<div className="flex flex-wrap gap-2">
         {canExport && <Button variant="outline" onClick={() => void exportXlsx()}><Icon name="download" />Excel'e aktar</Button>}
         {canImport && <Button variant="outline" asChild><Link to="/tedarikciler/risk/ice-aktar"><Icon name="upload" />Excel'den içe aktar</Link></Button>}
+        <Button variant="outline" asChild><Link to="/tedarikciler/risk/aksiyonlarim">Risk aksiyonlarım</Link></Button>
         {canCycle && <Button onClick={() => setOpening(true)}>Yılı başlat</Button>}
       </div>}>
         Yıllık tedarikçi risk değerlendirmesi: kritiklik (altı ölçütün geometrik ortalaması) sütunu, risk skoru satırı belirler. Seviye 4–5 için aksiyon ve denetim planı zorunludur.
@@ -214,6 +216,8 @@ export interface RiskDetail {
     id: string; supplier: { id: string; name: string }; year: number; department: Ref | null; responsibleTeam: string | null; services: string | null;
     status: string; source: string; dueOn: string | null; overdue: boolean; openedAt: string; completedAt: string | null; pendingReviewPeriod: string | null;
     access: 'RESPONSIBLE' | 'CONTRIBUTOR' | 'READ';
+    /** v2 Faz 6 izleme (M6): ilk revizyonun İstanbul çeyreği ("2026-4"); bundan önceki dönem gözden geçirilemez. */
+    firstReviewablePeriod?: string | null;
   };
   draft: { criteria: Partial<Record<RiskCriterion, number>>; questionSetId: string | null; answers: Record<string, 'YES' | 'NO'>; manualScore: string | null; manualNote: string | null;
     importScore: string | null; importNote?: string | null };
@@ -231,12 +235,15 @@ export interface RiskDetail {
 }
 
 /** Çeyreklik gözden geçirme adayları: yılın cari İstanbul çeyreğine kadarki (geçmiş yılda 4'ü) kaydı olmayan çeyrekleri (en eski önce). */
-export function reviewCandidates(year: number, reviews: { period: string }[]): string[] {
+export function reviewCandidates(year: number, reviews: { period: string }[], firstReviewablePeriod?: string | null): string[] {
   const cur = currentPeriod();
   const curYear = Number(cur.slice(0, 4));
   const last = year < curYear ? 4 : year === curYear ? Number(cur.slice(5)) : 0;
   const done = new Set(reviews.map((r) => r.period));
-  return Array.from({ length: last }, (_, i) => `${year}-${i + 1}`).filter((p) => !done.has(p));
+  // v2 Faz 6 izleme (M6): değerlendirmenin ilk tamamlandığı çeyrekten önceki dönemler aday değildir (sunucu 422 period_before_assessment).
+  const key = (p: string) => Number(p.slice(0, 4)) * 10 + Number(p.slice(5));
+  const floor = firstReviewablePeriod && /^\d{4}-[1-4]$/.test(firstReviewablePeriod) ? key(firstReviewablePeriod) : null;
+  return Array.from({ length: last }, (_, i) => `${year}-${i + 1}`).filter((p) => !done.has(p) && (floor === null || key(p) >= floor));
 }
 
 export function RiskAssessmentPage() {
@@ -246,18 +253,21 @@ export function RiskAssessmentPage() {
   const [version, setVersion] = useState(0);
   // Bildirim üst bileşende: kayıttan sonra form yeni sunucu verisiyle yeniden kurulur, bildirim kaybolmaz.
   const [notice, setNotice] = useState<string | null>(null);
+  // v2 Faz 6 izleme: hata ve meşguliyet de üst bileşende; Tamamla'da kayıttan sonra form sunucu verisiyle yeniden kurulduğunda kaybolmaz.
+  const [error, setError] = useState<ApiError | null>(null);
+  const [busy, setBusy] = useState(false);
   useEffect(() => { if (r.data) { setD(r.data); setVersion((v) => v + 1); } }, [r.data]);
-  useEffect(() => setNotice(null), [id]);
+  useEffect(() => { setNotice(null); setError(null); }, [id]);
   if (r.error && (!d || d.assessment.id !== id)) return <div className="page"><ErrorState error={r.error} onRetry={r.reload} /></div>;
   if (!d || d.assessment.id !== id) return <div className="page"><Loading /></div>;
-  return <AssessmentView key={`${d.assessment.id}:${version}`} d={d} notice={notice} setNotice={setNotice}
+  return <AssessmentView key={`${d.assessment.id}:${version}`} d={d} notice={notice} setNotice={setNotice} error={error} setError={setError} busy={busy} setBusy={setBusy}
     replace={(x) => { setD(x); setVersion((v) => v + 1); }} reload={r.reload} />;
 }
 
 interface Local { criteria: Partial<Record<RiskCriterion, number>>; questionSetId: string; answers: Record<string, 'YES' | 'NO'>; manualScore: string; manualNote: string }
 
-function AssessmentView({ d, replace, reload, notice, setNotice }: { d: RiskDetail; replace: (x: RiskDetail) => void; reload: () => Promise<void>;
-  notice: string | null; setNotice: (n: string | null) => void }) {
+function AssessmentView({ d, replace, reload, notice, setNotice, error, setError, busy, setBusy }: { d: RiskDetail; replace: (x: RiskDetail) => void; reload: () => Promise<void>;
+  notice: string | null; setNotice: (n: string | null) => void; error: ApiError | null; setError: (e: ApiError | null) => void; busy: boolean; setBusy: (b: boolean) => void }) {
   const { me } = useSession();
   const [params] = useSearchParams();
   const a = d.assessment;
@@ -267,8 +277,6 @@ function AssessmentView({ d, replace, reload, notice, setNotice }: { d: RiskDeta
   };
   const [loc, setLoc] = useState<Local>(init);
   const [dirty, setDirty] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<ApiError | null>(null);
   const edit = d.can.edit;
   const upd = (f: (l: Local) => Local) => { setLoc(f); setDirty(true); setNotice(null); };
 
@@ -309,7 +317,8 @@ function AssessmentView({ d, replace, reload, notice, setNotice }: { d: RiskDeta
   }
   const onSave = () => run(save, 'Taslak kaydedildi.');
   const onComplete = () => run(async () => {
-    if (dirty) await save();
+    // v2 Faz 6 izleme: kayıt başarılıysa sunucu verisi önce yerleşir; tamamlama reddedilirse engeller kaydedilen taslağa göre güncel görünür.
+    if (dirty) { const saved = await save(); if (saved) replace(saved); }
     return (await api<RiskDetail>(`/api/v1/risk/assessments/${a.id}/complete`, { method: 'POST' })).data;
   }, 'Değerlendirme tamamlandı; yeni revizyon yazıldı.');
 
@@ -610,7 +619,7 @@ function CloseActionDialog({ c, onClose, onDone, onError }: { c: { a: Action; st
 
 function ReviewsPanel({ d, replace, defaultPeriod, setNotice }: { d: RiskDetail; replace: (x: RiskDetail) => void; defaultPeriod: string | null; setNotice: (n: string) => void }) {
   const a = d.assessment;
-  const candidates = reviewCandidates(a.year, d.reviews);
+  const candidates = reviewCandidates(a.year, d.reviews, a.firstReviewablePeriod);
   const [period, setPeriod] = useState(defaultPeriod && candidates.includes(defaultPeriod) ? defaultPeriod : candidates[0] ?? '');
   const [confirm, setConfirm] = useState<null | 'NO_CHANGE' | 'UPDATE'>(null);
   const [error, setError] = useState<ApiError | null>(null);
@@ -622,7 +631,16 @@ function ReviewsPanel({ d, replace, defaultPeriod, setNotice }: { d: RiskDetail;
       setConfirm(null);
       setNotice(outcome === 'NO_CHANGE' ? `${period} dönemi "Değişiklik yok" olarak kaydedildi.` : `${period} güncellemesi için değerlendirme yeniden açıldı.`);
       replace(r.data);
-    } catch (e) { setConfirm(null); setError(e as ApiError); }
+    } catch (e) {
+      setConfirm(null);
+      const err = e as ApiError;
+      // 422 period_before_assessment: dönem ilk revizyondan önce; sunucunun ilettiği ilk dönemle açık Türkçe ileti.
+      if (err.status === 422 && err.code === 'period_before_assessment') {
+        const fp = (err.details as { firstReviewablePeriod?: string } | undefined)?.firstReviewablePeriod;
+        err.message = `${period} dönemi gözden geçirilemez: değerlendirme ilk kez ${fp ? `${fp.replace('-', '-Ç')} döneminde` : 'daha sonraki bir dönemde'} tamamlandı. Daha sonraki bir dönem seçin.`;
+      }
+      setError(err);
+    }
   }
   return (
     <section className="panel" aria-labelledby="rev-h">
@@ -692,7 +710,7 @@ function RevisionsPanel({ d }: { d: RiskDetail }) {
               <span className="text-sm">Kritiklik <span className="tabular">{x.criticalityDisplay}</span> (sütun {x.column}) · skor <span className="tabular">{fmtScore(x.riskScore)}</span> · kaynak: {x.scoreSourceLabel}</span>
               {x.scoreNote && <span className="text-sm text-ink-muted">{x.scoreNote}</span>}
               {x.changedFields.length > 0 && <span className="text-sm text-ink-muted">Değişen: {x.changedFields.map(changedLabel).join(', ')}</span>}
-              <span className="text-xs text-ink-subtle">{x.createdBy.displayName ?? '—'} · {fmtDateTime(x.createdAt)} · yöntem {x.methodVersion}</span>
+              <span className="text-xs text-ink-subtle">{x.createdBy.displayName ?? '—'} · {fmtDateTime(x.createdAt)} · Yöntem sürümü: {x.methodVersion}</span>
             </li>))}</ol>
         )}
       </div>
@@ -1045,7 +1063,7 @@ export function RiskReportCard() {
     <section className="panel mb-4" aria-labelledby="rr-h">
       <div className="panel-head"><h2 id="rr-h">Yıllık risk matrisi ({year})</h2>
         <Button size="sm" variant="outline" asChild className="ml-auto"><Link to="/tedarikciler/risk">Risk matrisini aç</Link></Button></div>
-      <div className="panel-body">{!m.data ? <Loading rows={2} /> : <div className="grid items-start gap-4 min-[900px]:grid-cols-[minmax(260px,360px)_minmax(0,1fr)]">
+      <div className={`panel-body ${RISK_CARD_BODY}`}>{!m.data ? <Loading rows={2} /> : <div className="grid items-start gap-4 min-[900px]:grid-cols-[minmax(260px,360px)_minmax(0,1fr)]">
         <RiskMatrix compact caption={`${year} risk matrisi: hücrede değerlendirme sayısı`} cells={m.data.cells} />
         <dl className="facts">
           {byLevel.map((n, i) => <Fragment2 key={i} dt={RISK_LEVEL_TR[i + 1]!} dd={<span className="tabular">{n}</span>} />)}

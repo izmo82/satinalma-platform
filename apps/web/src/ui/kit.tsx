@@ -14,6 +14,7 @@ export const toneClass: Record<Tone, string> = {
   ok: 'border-[1.5px] border-verified text-verified bg-verified-soft',
   ai: 'border-[1.5px] border-dashed border-ai text-ai bg-transparent',
   warn: 'border border-transparent bg-warn-soft text-warn',
+  orange: 'border border-transparent bg-orange-soft text-orange',
   danger: 'border border-transparent bg-danger-soft text-danger',
   info: 'border border-transparent bg-info-soft text-info',
   neutral: 'border border-transparent bg-sunken text-ink-muted',
@@ -30,7 +31,7 @@ export function Tag({ label, title, className }: { label: Label | undefined; tit
   );
 }
 
-const bannerTone: Record<Exclude<Tone, 'ok' | 'ai' | 'human'>, string> = {
+const bannerTone: Record<Exclude<Tone, 'ok' | 'ai' | 'human' | 'orange'>, string> = {
   info: 'bg-info-soft border-[#cfd5e2]',
   warn: 'bg-warn-soft border-[#e8d29c]',
   danger: 'bg-danger-soft border-[#e5b9b0]',
@@ -38,7 +39,7 @@ const bannerTone: Record<Exclude<Tone, 'ok' | 'ai' | 'human'>, string> = {
 };
 const bannerIcon = { danger: 'x', warn: 'alert', info: 'info', neutral: 'info' } as const;
 
-export function Banner({ tone, icon, title, children, action }: { tone: Exclude<Tone, 'ok' | 'ai' | 'human'>; icon?: string; title: string; children?: ReactNode; action?: ReactNode }) {
+export function Banner({ tone, icon, title, children, action }: { tone: Exclude<Tone, 'ok' | 'ai' | 'human' | 'orange'>; icon?: string; title: string; children?: ReactNode; action?: ReactNode }) {
   return (
     <div role={tone === 'danger' ? 'alert' : 'status'} className={cn('mb-4 flex items-start gap-3 rounded-md border px-4 py-3 text-ink', bannerTone[tone])}>
       <Icon name={icon ?? bannerIcon[tone]} size={18} className={cn('mt-0.5 shrink-0', tone === 'danger' ? 'text-danger' : tone === 'warn' ? 'text-warn' : 'text-info')} />

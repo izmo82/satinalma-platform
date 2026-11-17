@@ -240,7 +240,7 @@ function PortalRiskActions() {
   if (!r.data) return null;
   return (
     <div className="grid gap-1.5 border-t border-border pt-2">
-      <p className="text-sm text-ink-muted">Kurum yıl içinde değerlendirmeyi güncellerken, güncelleme tamamlanana dek son tamamlanmış değerlendirmenin sonucu gösterilir.</p>
+      <p className="text-sm text-ink-muted">Gösterilen sonuç, kurumun son tamamladığı yıllık risk değerlendirmesidir.</p>
       <h3 className="text-sm font-semibold">Risk aksiyonları{r.data.year ? ` (${r.data.year})` : ''}</h3>
       {!r.data.actions.length ? <p className="text-sm text-ink-muted">Sizinle paylaşılan risk aksiyonu yok.</p> : (
         <ul className="grid gap-1" aria-label="Risk aksiyonları">{r.data.actions.map((a, i) => (

@@ -26,6 +26,9 @@
   --danger-soft: #f8e3de;
   --warn: #855600;
   --warn-soft: #f7ebcd;
+  /* v2 Faz 6 izleme: risk Seviye 4 "Turuncu" (sarı uyarı ile kırmızı arasında); metin/zemin kontrastı ≈5,3:1. */
+  --orange: #9a4a00;
+  --orange-soft: #fbe2cc;
   --info: #33415e;
   --info-soft: #e5e8ef;
   --focus: #2f4f8f;
@@ -90,6 +93,8 @@
   --color-danger-soft: var(--danger-soft);
   --color-warn: var(--warn);
   --color-warn-soft: var(--warn-soft);
+  --color-orange: var(--orange);
+  --color-orange-soft: var(--orange-soft);
   --color-info: var(--info);
   --color-info-soft: var(--info-soft);
   --color-selected: var(--selected);

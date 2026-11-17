@@ -53,11 +53,13 @@ const risk = () => import('./pages/RiskPages.tsx');
 const RiskMatrixPage = lazy(() => risk().then((m) => ({ default: m.RiskMatrixPage })));
 const RiskAssessmentPage = lazy(() => risk().then((m) => ({ default: m.RiskAssessmentPage })));
 const RiskImportPage = lazy(() => risk().then((m) => ({ default: m.RiskImportPage })));
+// v2 Faz 6 izleme (I2): aksiyon sorumlusunun ekranı (İşlerim risk_action_owner görevi buraya açılır).
+const RiskActionsMinePage = lazy(() => import('./pages/RiskActionsMine.tsx').then((m) => ({ default: m.RiskActionsMinePage })));
 
 /** Adresin ilk bölümü kendi listesi olmayan detaylar: kiracı değişince dönülecek liste. */
 const LIST_OF: Record<string, string> = { belgeler: '/sozlesmeler/ekle', degerlendirmeler: '/tedarikciler' };
 /** Alt adresi olan liste sayfaları (sekmeler, yükleme ekranları): kiracı değişince adres korunur. */
-const KEEP = new Set(['/tedarikciler/olaylar', '/tedarikciler/anketler', '/tedarikciler/performans-agirliklari', '/tedarikciler/risk', '/tedarikciler/risk/ice-aktar', '/sozlesmeler/ekle', '/sozlesmeler/sablonlar', '/faturalar/yukle']);
+const KEEP = new Set(['/tedarikciler/olaylar', '/tedarikciler/anketler', '/tedarikciler/performans-agirliklari', '/tedarikciler/risk', '/tedarikciler/risk/ice-aktar', '/tedarikciler/risk/aksiyonlarim', '/sozlesmeler/ekle', '/sozlesmeler/sablonlar', '/faturalar/yukle']);
 /** Kiracı değişince gidilecek liste; null = adres kalır. */
 function listOf(path: string): string | null {
   if (KEEP.has(path) || path.startsWith('/yonetim/')) return null;
@@ -241,6 +243,7 @@ function Shell() {
             <Route path="risk" element={<RiskMatrixPage />} />
           </Route>
           <Route path="/tedarikciler/risk/ice-aktar" element={<RiskImportPage />} />
+          <Route path="/tedarikciler/risk/aksiyonlarim" element={<RiskActionsMinePage />} />
           <Route path="/tedarikciler/risk/:id" element={<RiskAssessmentPage />} />
           <Route path="/tedarikciler/olaylar/:id" element={<IncidentPage />} />
           <Route path="/tedarikciler/basvurular/:id" element={<SupplierApplicationReview />} />

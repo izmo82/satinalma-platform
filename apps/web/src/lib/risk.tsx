@@ -41,14 +41,15 @@ export const ACTION_KIND_TR: Record<string, string> = { MITIGATION: 'Aksiyon (az
 export const CONTROL_METHOD_TR: Record<string, string> = { ON_SITE: 'Yerinde', ONLINE: 'Online', DESK: 'Kanıt kontrolü – masabaşı' };
 export const REVIEW_OUTCOME_TR: Record<string, string> = { NO_CHANGE: 'Değişiklik yok', UPDATED: 'Güncellendi', UPDATE: 'Güncellendi' };
 
-/** Seviye renkleri Figma 16: 1–2 kâğıt grisi, 3 sarı (uyarı zemini), 4–5 kırmızı zemin; 5 ayrıca koyu çerçeve. */
+/** Seviye renkleri Figma 16: 1–2 kâğıt grisi, 3 sarı (uyarı zemini), 5 kırmızı zemin + koyu çerçeve. v2 Faz 6 izleme: 4 etiketindeki "Turuncu" ile tutarlı turuncu zemin (Figma'da 4 ve 5 aynı kırmızıydı). */
 export const LEVEL_CELL: Record<number, string> = {
-  1: 'bg-sunken', 2: 'bg-sunken', 3: 'bg-warn-soft', 4: 'bg-danger-soft', 5: 'bg-danger-soft',
+  1: 'bg-sunken', 2: 'bg-sunken', 3: 'bg-warn-soft', 4: 'bg-orange-soft', 5: 'bg-danger-soft',
 };
 export const levelTag = (level: number | null | undefined, label?: string | null): Label | undefined => {
   if (!level) return undefined;
   const text = label ?? RISK_LEVEL_TR[level] ?? `Seviye ${level}`;
-  if (level >= 4) return { text, tone: 'danger', icon: 'alert' };
+  if (level >= 5) return { text, tone: 'danger', icon: 'alert' };
+  if (level === 4) return { text, tone: 'orange', icon: 'alert' };
   if (level === 3) return { text, tone: 'warn', icon: 'alert' };
   return { text, tone: 'neutral', icon: level === 1 ? 'check' : 'minus' };
 };

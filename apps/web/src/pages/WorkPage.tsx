@@ -9,6 +9,7 @@ import { Icon } from '../ui/icons.tsx';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCaption, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { cn } from '@/lib/utils';
+import { hasPermission, useSession } from '../lib/session.tsx';
 
 interface Task { id: string; kind: string; entityType: string; entityId: string; title: string; reason: string; nextAction: string;
   assigneeRole: string; severity: string; dueAt: string | null; createdAt: string; refNo: string | null }
@@ -33,11 +34,16 @@ const FAZ7_HREF: Record<string, (id: string) => string> = {
   compliance_no_ruleset: () => '/yonetim/satinalma-kurallari',
   contract_overrun: (id) => `/sozlesmeler/aile/${id}?sekme=ozet`,
   invoice_unmatched: (id) => `/faturalar/${id}`,
+  // v2 Faz 6 izleme (I2): aksiyon sorumlusu görevi → Risk aksiyonlarım (aksiyon önde ve vurgulu).
+  risk_action_owner: (id) => `/tedarikciler/risk/aksiyonlarim?aksiyon=${id}`,
 };
+/** Başlığın tek başına türü söylemediği görevlerde küçük tür etiketi. */
+const KIND_LABEL: Record<string, string> = { risk_action_owner: 'Risk aksiyonu (sorumlusu sizsiniz)' };
 export const entityHref = (t: { entityType: string; entityId: string; kind?: string; title?: string }) =>
   t.kind && FAZ7_HREF[t.kind] ? FAZ7_HREF[t.kind]!(t.entityId) : t.entityType === 'risk_assessment' ? riskHref(t) : t.entityType === 'supplier' ? `/tedarikciler/${t.entityId}${supplierTab(t.kind)}` : t.entityType === 'supplier_application' ? `/tedarikciler/basvurular/${t.entityId}` : t.entityType === 'contract_version' ? `/sozlesmeler/${t.entityId}`
     : t.entityType === 'document_version' ? `/belgeler/${t.entityId}` : t.entityType === 'project' ? `/projeler/${t.entityId}`
     : t.entityType === 'invoice' ? `/faturalar/${t.entityId}`
+    : t.entityType === 'risk_action' ? `/tedarikciler/risk/aksiyonlarim?aksiyon=${t.entityId}`
     : t.entityType === 'incident' ? `/tedarikciler/olaylar/${t.entityId}` : t.entityType === 'tenant' ? '/yonetim/yapay-zeka'
     : t.entityType === 'tenant_export' ? '/yonetim/denetim-izi'
     // v2 Faz 3 (D108): onay adımı → Onaylar sekmesi; hatırlatıcı → Hatırlatıcılar; red ve yeniden gönderim → Onaylar (aile kimliğiyle).
@@ -54,6 +60,7 @@ export function WorkPage() {
   const [view, setView] = useState<(typeof VIEWS)[number][0]>('mine');
   const [cursor, setCursor] = useState(0);
   const navigate = useNavigate();
+  const { me } = useSession();
   const r = useResource<TaskPage>(`/api/v1/tasks?view=${view}`);
   // Persona K2: ilk sayfa (200) üstüne "Daha fazla yükle" ile sonraki sayfalar eklenir; görünüm değişince ya da yenilenince sıfırlanır.
   const [more, setMore] = useState<{ items: Task[]; nextOffset: number | null; error: string | null; loading: boolean } | null>(null);
@@ -95,7 +102,10 @@ export function WorkPage() {
 
   return (
     <div className="page">
-      <PageHeader title="İşlerim" actions={<Button variant="outline" onClick={() => void r.reload()}><Icon name="refresh" /> Yenile</Button>}>
+      <PageHeader title="İşlerim" actions={<div className="flex flex-wrap gap-2">
+        {/* v2 Faz 6 izleme (I2): Risk aksiyonlarım menüye eklenmeden buradan (ve Risk matrisi'nden) açılır. */}
+        {hasPermission(me, 'risk.read') && !me?.supplierPortal && <Button variant="outline" asChild><Link to="/tedarikciler/risk/aksiyonlarim">Risk aksiyonlarım</Link></Button>}
+        <Button variant="outline" onClick={() => void r.reload()}><Icon name="refresh" /> Yenile</Button></div>}>
         Sizden beklenen kararlar, nedenleri ve sonraki adım. Yalnız rolünüze atanmış işler gösterilir.
       </PageHeader>
       <div role="tablist" aria-label="İş görünümü" className="mb-4 flex gap-6 border-b border-border">
@@ -121,6 +131,7 @@ export function WorkPage() {
             {items.map((t) => (
               <li key={t.id} className="grid gap-1.5 p-3">
                 <div className="flex items-center justify-between gap-2"><span className="flex items-center gap-2"><Tag label={severityLabel[t.severity]} />{t.refNo && <span className="tabular text-sm text-ink-subtle">{t.refNo}</span>}</span><span className="tabular text-sm"><Due at={t.dueAt} /></span></div>
+                {KIND_LABEL[t.kind] && <span className="text-sm text-ink-subtle">{KIND_LABEL[t.kind]}</span>}
                 <Link className="font-semibold text-ink no-underline hover:underline" to={entityHref(t)}>{t.title}</Link>
                 <p className="text-ink-muted">{t.reason}</p>
                 <p className="flex gap-1.5"><Icon name="arrow" size={16} className="mt-0.5 shrink-0 text-ink-subtle" />{t.nextAction}</p>
@@ -139,7 +150,7 @@ export function WorkPage() {
                 <TableRow key={t.id} data-state={i === cursor ? 'selected' : undefined} className={cn(i === cursor && 'outline-2 -outline-offset-2 outline-focus')}>
                   <TableCell className="whitespace-nowrap">{t.refNo ?? <span className="text-ink-subtle">—</span>}</TableCell>
                   <TableCell><Tag label={severityLabel[t.severity]} /></TableCell>
-                  <TableCell className="min-w-[200px]"><Link className="font-semibold text-ink no-underline hover:underline" to={entityHref(t)}>{t.title}</Link>
+                  <TableCell className="min-w-[200px]">{KIND_LABEL[t.kind] && <span className="block text-sm text-ink-subtle">{KIND_LABEL[t.kind]}</span>}<Link className="font-semibold text-ink no-underline hover:underline" to={entityHref(t)}>{t.title}</Link>
                     {/* 1280 px altında neden ve sonraki adım İş hücresinde alt alta (sütunlar kesilmesin, persona K4); bilgi kaybolmaz. */}
                     <div className="hidden max-[1279px]:block">
                       <p className="mt-1 text-ink-muted"><span className="sr-only">Neden bekliyor: </span>{t.reason}</p>
