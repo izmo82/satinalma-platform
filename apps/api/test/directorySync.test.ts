@@ -57,7 +57,7 @@ async function sync(w: SyntheticWorld, provider: DirectoryProvider) {
 
 async function run(runId: string) {
   return (await h.owner.query<{ status: string; error_code: string | null; error_message: string | null; fetched: number; created: number;
-    updated: number; suspended: number; reactivated: number; trigger: string; provider_kind: string }>(
+    updated: number; suspended: number; reactivated: number; warnings: number; trigger: string; provider_kind: string }>(
     `SELECT * FROM directory_sync_runs WHERE id = $1`, [runId])).rows[0]!;
 }
 
@@ -379,5 +379,76 @@ describe('dizin eşitleme', () => {
     for (let i = 0; i < 5; i++) if (!(await processJobs(h.pool, h.store, null, 10, null, 'short', { directoryProvider: p }))) break;
     expect((await jobOf(j.payload.runId)).status).toBe('SUCCEEDED');
     expect(await run(j.payload.runId)).toMatchObject({ status: 'SUCCEEDED', fetched: 1, created: 1 });
+  });
+
+  it('son etkin Yönetici dizinde kapanınca askıya alınmaz; uyarı ve denetim kaydı; iki Yönetici varken biri askıya alınır', async () => {
+    const w = await freshWorld();
+    await enable(w.tenantA);
+    const p = fakeProvider([du('adm', w.users.tenantAdmin.email, null, { accountEnabled: false })]);
+    const r = await sync(w, p);
+    expect(r).toMatchObject({ status: 'SUCCEEDED', suspended: 0, warnings: 1 });
+    expect(await membership(w.tenantA, w.users.tenantAdmin.id)).toMatchObject({ status: 'ACTIVE', suspended_by_directory: false });
+    expect(await count(`SELECT count(*)::int AS n FROM audit_events WHERE tenant_id = $1 AND action = 'directory.suspend_skipped_last_admin' AND entity_id = $2`,
+      [w.tenantA, w.users.tenantAdmin.id])).toBe(1);
+    // İkinci Yönetici (finance) varken kapanan Yönetici askıya alınır.
+    await h.owner.query(`UPDATE memberships SET roles = roles || '{ADMIN}'::text[] WHERE tenant_id = $1 AND user_id = $2`, [w.tenantA, w.users.finance.id]);
+    p.result = [du('adm', w.users.tenantAdmin.email, null, { accountEnabled: false }), du('fin', w.users.finance.email, null)];
+    const r2 = await sync(w, p);
+    expect(r2).toMatchObject({ status: 'SUCCEEDED', suspended: 1, warnings: 0 });
+    expect(await membership(w.tenantA, w.users.tenantAdmin.id)).toMatchObject({ status: 'SUSPENDED', suspended_by_directory: true });
+    // Şimdi son etkin Yönetici finance: o da kapanırsa askıya alınmaz.
+    p.result = [du('adm', w.users.tenantAdmin.email, null, { accountEnabled: false }), du('fin', w.users.finance.email, null, { accountEnabled: false })];
+    expect(await sync(w, p)).toMatchObject({ status: 'SUCCEEDED', suspended: 0, warnings: 1 });
+    expect((await membership(w.tenantA, w.users.finance.id)).status).toBe('ACTIVE');
+  });
+
+  it('işi ölmüş (DEAD) açık çalıştırma yeni eşitlemeyi kilitlemez', async () => {
+    const w = await freshWorld();
+    await enable(w.tenantA);
+    const p = fakeProvider([]);
+    const { runId } = await withTenant(h.pool, adminCtx(w), (tx) => requestSync(tx, adminCtx(w), 'MANUAL', p));
+    await h.owner.query(`UPDATE jobs SET status = 'DEAD' WHERE payload->>'runId' = $1`, [runId]);
+    const next = await withTenant(h.pool, adminCtx(w), (tx) => requestSync(tx, adminCtx(w), 'MANUAL', p));
+    expect(next.runId).not.toBe(runId);
+    expect(await run(runId)).toMatchObject({ status: 'FAILED', error_code: 'job_failed' });
+  });
+
+  it('bir saatten eski QUEUED çalıştırma zaman aşımıyla düşer; işi sonradan işlenirse hiçbir şey yazmaz', async () => {
+    const w = await freshWorld();
+    await enable(w.tenantA);
+    const p = fakeProvider([du('a', 'a@example.test', null)]);
+    const { runId } = await withTenant(h.pool, adminCtx(w), (tx) => requestSync(tx, adminCtx(w), 'MANUAL', p));
+    await h.owner.query(`UPDATE directory_sync_runs SET created_at = now() - interval '2 hours' WHERE id = $1`, [runId]);
+    const next = await withTenant(h.pool, adminCtx(w), (tx) => requestSync(tx, adminCtx(w), 'MANUAL', p));
+    expect(await run(runId)).toMatchObject({ status: 'FAILED', error_code: 'timeout' });
+    const old = await jobOf(runId);
+    await processDirectorySync(h.pool, p, old.id, directoryJobContext(old.tenant_id, old.requested_by, old.id));
+    expect(await run(runId)).toMatchObject({ status: 'FAILED', error_code: 'timeout', fetched: 0 });
+    expect(await count(`SELECT count(*)::int AS n FROM directory_users WHERE tenant_id = $1`, [w.tenantA])).toBe(0);
+    // Yeni çalıştırma normal işlenir.
+    const nj = await jobOf(next.runId);
+    await processDirectorySync(h.pool, p, nj.id, directoryJobContext(nj.tenant_id, nj.requested_by, nj.id));
+    expect(await run(next.runId)).toMatchObject({ status: 'SUCCEEDED', created: 1 });
+  });
+
+  it('okuma sırasında zaman aşımıyla FAILED sayılan çalıştırma hiçbir şey yazmaz ve FAILED kalır', async () => {
+    const w = await freshWorld();
+    await enable(w.tenantA);
+    const { runId } = await withTenant(h.pool, adminCtx(w), (tx) => requestSync(tx, adminCtx(w), 'MANUAL', fakeProvider([])));
+    const t = await openTask(w, w.users.techEval.id);
+    const p = fakeProvider([du('tech', w.users.techEval.email, 'Kalite Güvence (sentetik)', { accountEnabled: false })]);
+    const inner = p.listUsers;
+    p.listUsers = async () => {
+      await h.owner.query(`UPDATE directory_sync_runs SET status = 'FAILED', error_code = 'timeout', finished_at = now() WHERE id = $1`, [runId]);
+      return inner();
+    };
+    const j = await jobOf(runId);
+    await processDirectorySync(h.pool, p, j.id, directoryJobContext(j.tenant_id, j.requested_by, j.id));
+    expect(await run(runId)).toMatchObject({ status: 'FAILED', error_code: 'timeout', fetched: 0, suspended: 0 });
+    expect(await count(`SELECT count(*)::int AS n FROM directory_users WHERE tenant_id = $1`, [w.tenantA])).toBe(0);
+    expect(await count(`SELECT count(*)::int AS n FROM departments WHERE tenant_id = $1 AND source = 'ENTRA'`, [w.tenantA])).toBe(0);
+    expect((await membership(w.tenantA, w.users.techEval.id)).status).toBe('ACTIVE');
+    expect(await taskAssignee(t)).toBe(w.users.techEval.id);
+    expect((await jobOf(runId)).status).toBe('FAILED');
   });
 });

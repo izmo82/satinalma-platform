@@ -23,6 +23,8 @@ const MSG = {
   empty_result: 'Dizin boş sonuç döndürdü. Önceki eşitlemede kapsamda kullanıcı olduğundan hiçbir üyelik değiştirilmedi; kapsam ayarını denetleyin.',
   internal_error: 'Eşitleme sonuçları kaydedilemedi; hiçbir değişiklik uygulanmadı.',
   timeout: 'Eşitleme bir saat içinde tamamlanmadı; yeniden başlatılabilir.',
+  job_failed: 'Eşitleme işi tamamlanamadı; yeniden başlatılabilir.',
+  last_admin: 'Kurumun son etkin Yönetici üyeliği dizinde kapalı ya da kapsam dışı; kurum yöneticisiz kalmasın diye askıya alınmadı.',
 } as const;
 
 /** İşçinin `directory.sync` işi için kiracı bağlamı (worker.ts ile aynı biçim). Gece işinde isteyen yoktur. Sistem işi: departman kapsamı uygulanmaz. */
@@ -45,9 +47,13 @@ async function queueSync(tx: Tx, ctx: TenantContext, trigger: 'MANUAL' | 'NIGHTL
     const seen = await tx.query(`SELECT 1 FROM jobs WHERE tenant_id = $1 AND kind = $2 AND idempotency_key = $3`, [ctx.tenantId, JOB_KIND, idempotencyKey]);
     if (seen.rowCount) return null;
   }
-  // Çöken işçinin bıraktığı RUNNING çalıştırma sonsuza dek eşitlemeyi kilitlemez.
+  // Hiç işlenmeyen ya da yarıda kalan çalıştırma eşitlemeyi sonsuza dek kilitlemez:
+  // (a) işi bitmiş/ölmüş (DEAD, FAILED, BLOCKED, SUCCEEDED) açık çalıştırma, (b) bir saatten eski QUEUED/RUNNING çalıştırma.
+  await tx.query(`UPDATE directory_sync_runs r SET status = 'FAILED', error_code = 'job_failed', error_message = $1, finished_at = now()
+    WHERE r.status IN ('QUEUED','RUNNING') AND EXISTS (SELECT 1 FROM jobs j WHERE j.kind = $2 AND j.payload->>'runId' = r.id::text
+      AND j.status IN ('DEAD','FAILED','BLOCKED','SUCCEEDED'))`, [MSG.job_failed, JOB_KIND]);
   await tx.query(`UPDATE directory_sync_runs SET status = 'FAILED', error_code = 'timeout', error_message = $1, finished_at = now()
-    WHERE status = 'RUNNING' AND started_at < now() - interval '1 hour'`, [MSG.timeout]);
+    WHERE status IN ('QUEUED','RUNNING') AND coalesce(started_at, created_at) < now() - interval '1 hour'`, [MSG.timeout]);
   const open = await tx.query<{ id: string }>(`SELECT id FROM directory_sync_runs WHERE status IN ('QUEUED','RUNNING') LIMIT 1`);
   if (open.rowCount) throw conflict('sync_running', MSG.sync_running, { runId: open.rows[0]!.id });
   const runId = randomUUID();
@@ -101,10 +107,12 @@ interface DirRow {
   id: string; entra_object_id: string; email: string | null; display_name: string; user_principal_name: string | null; department_name: string | null;
   department_id: string | null; job_title: string | null; manager_object_id: string | null; account_enabled: boolean; in_scope: boolean; user_id: string | null;
 }
-interface Counters { fetched: number; created: number; updated: number; suspended: number; reactivated: number }
+interface Counters { fetched: number; created: number; updated: number; suspended: number; reactivated: number; warnings: number }
 
 async function finishFailed(tx: Tx, runId: string, jobId: string, code: string, message: string) {
-  await tx.query(`UPDATE directory_sync_runs SET status = 'FAILED', error_code = $2, error_message = $3, finished_at = now() WHERE id = $1`, [runId, code, message]);
+  // Zaten sonuçlanmış (ör. zaman aşımıyla FAILED) çalıştırmanın kaydı ezilmez.
+  await tx.query(`UPDATE directory_sync_runs SET status = 'FAILED', error_code = $2, error_message = $3, finished_at = now()
+    WHERE id = $1 AND status IN ('QUEUED','RUNNING')`, [runId, code, message]);
   await tx.query(`UPDATE jobs SET status = 'FAILED', error_code = $2, result = $3, updated_at = now() WHERE id = $1`, [jobId, code, { runId }]);
 }
 
@@ -154,6 +162,12 @@ export async function processDirectorySync(pool: pg.Pool, provider: DirectoryPro
 }
 
 async function applySync(tx: Tx, ctx: TenantContext, provider: DirectoryProvider, runId: string, jobId: string, fetchedRaw: DirectoryUser[]) {
+  // Çalıştırma kilitlenir; RUNNING değilse (ör. zaman aşımıyla FAILED sayıldı, başka eşitleme başladı) hiçbir şey yazılmaz.
+  const status = (await tx.query<{ status: string }>(`SELECT status FROM directory_sync_runs WHERE id = $1 FOR UPDATE`, [runId])).rows[0]?.status;
+  if (status !== 'RUNNING') {
+    await tx.query(`UPDATE jobs SET status = 'FAILED', error_code = 'run_not_running', result = $2, updated_at = now() WHERE id = $1`, [jobId, { runId }]);
+    return;
+  }
   // Aynı nesne iki kez dönerse sonuncusu geçerli.
   const fetched = [...new Map(fetchedRaw.map((u) => [u.objectId, u])).values()];
   const existing = new Map((await tx.query<DirRow>(`SELECT * FROM directory_users FOR UPDATE`)).rows.map((r) => [r.entra_object_id, r]));
@@ -161,7 +175,7 @@ async function applySync(tx: Tx, ctx: TenantContext, provider: DirectoryProvider
     await finishFailed(tx, runId, jobId, 'empty_result', MSG.empty_result);
     return;
   }
-  const c: Counters = { fetched: fetched.length, created: 0, updated: 0, suspended: 0, reactivated: 0 };
+  const c: Counters = { fetched: fetched.length, created: 0, updated: 0, suspended: 0, reactivated: 0, warnings: 0 };
   const deptCache = new Map<string, string | null>();
   const linkedUserIds = new Set([...existing.values()].map((r) => r.user_id).filter((x): x is string => !!x));
 
@@ -212,11 +226,18 @@ async function applySync(tx: Tx, ctx: TenantContext, provider: DirectoryProvider
     `SELECT user_id, bool_or(account_enabled AND in_scope) AS active FROM directory_users WHERE user_id IS NOT NULL GROUP BY user_id ORDER BY user_id`)).rows;
   for (const l of links) {
     if (l.active) { if (await reactivate(tx, ctx, l.user_id, runId)) c.reactivated++; }
-    else if (await suspend(tx, ctx, l.user_id, runId)) c.suspended++;
+    else {
+      const r = await suspend(tx, ctx, l.user_id, runId);
+      if (r === 'suspended') c.suspended++;
+      else if (r === 'last_admin') c.warnings++;
+    }
   }
 
-  await tx.query(`UPDATE directory_sync_runs SET status = 'SUCCEEDED', fetched = $2, created = $3, updated = $4, suspended = $5, reactivated = $6,
-      error_code = NULL, error_message = NULL, finished_at = now() WHERE id = $1`, [runId, c.fetched, c.created, c.updated, c.suspended, c.reactivated]);
+  const done = await tx.query(`UPDATE directory_sync_runs SET status = 'SUCCEEDED', fetched = $2, created = $3, updated = $4, suspended = $5, reactivated = $6,
+      warnings = $7, error_code = NULL, error_message = NULL, finished_at = now() WHERE id = $1 AND status = 'RUNNING'`,
+    [runId, c.fetched, c.created, c.updated, c.suspended, c.reactivated, c.warnings]);
+  // Başta FOR UPDATE ile kilitlendiğinden olmaz; olursa işlem geri alınır (hiçbir değişiklik kalmaz).
+  if (done.rowCount !== 1) throw new Error('directory sync run no longer RUNNING');
   await tx.query(`UPDATE jobs SET status = 'SUCCEEDED', result = $2, updated_at = now() WHERE id = $1`, [jobId, { runId, ...c }]);
   await audit(tx, ctx, 'directory.synced', 'directory_sync_run', runId, { provider: provider.kind, ...c });
 }
@@ -271,7 +292,18 @@ async function applyDirectoryDepartment(tx: Tx, ctx: TenantContext, userId: stri
   if (!same) await audit(tx, ctx, 'membership.departments.set', 'user', userId, { before: m.department_ids, after, source: 'directory' });
 }
 
-async function suspend(tx: Tx, ctx: TenantContext, userId: string, runId: string): Promise<boolean> {
+/** Yönetici rol kodları (039 auth_memberships ile aynı eşleme). */
+const ADMIN_ROLES = ['ADMIN', 'TENANT_ADMIN', 'PLATFORM_OPS'];
+
+async function suspend(tx: Tx, ctx: TenantContext, userId: string, runId: string): Promise<'suspended' | 'last_admin' | false> {
+  // Kiracı yöneticisiz kalmaz: askıya alma son etkin Yönetici üyeliğini kaldıracaksa atlanır, uyarı sayılır ve denetlenir.
+  const admins = (await tx.query<{ user_id: string }>(
+    `SELECT user_id FROM memberships WHERE tenant_id = $1 AND status = 'ACTIVE' AND supplier_id IS NULL AND roles && $2::text[] ORDER BY user_id FOR UPDATE`,
+    [ctx.tenantId, ADMIN_ROLES])).rows;
+  if (admins.length === 1 && admins[0]!.user_id === userId) {
+    await audit(tx, ctx, 'directory.suspend_skipped_last_admin', 'user', userId, { runId }, MSG.last_admin);
+    return 'last_admin';
+  }
   const r = await tx.query(`UPDATE memberships SET status = 'SUSPENDED', suspended_by_directory = true WHERE ${ORG_MEMBERSHIP} AND status = 'ACTIVE'`,
     [ctx.tenantId, userId]);
   if (!r.rowCount) return false;
@@ -287,7 +319,7 @@ async function suspend(tx: Tx, ctx: TenantContext, userId: string, runId: string
     await tx.query(`UPDATE tasks SET assignee_user_id = $2 WHERE id = $1`, [t.id, deputy]);
     await audit(tx, ctx, 'task.reassigned', 'task', t.id, { from: userId, to: deputy, reason: 'directory_suspended', runId });
   }
-  return true;
+  return 'suspended';
 }
 
 async function reactivate(tx: Tx, ctx: TenantContext, userId: string, runId: string): Promise<boolean> {
