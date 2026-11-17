@@ -6,6 +6,7 @@ import { audit } from '../audit.ts';
 import { closeTasks, openTask } from '../tasks.ts';
 import { notFound, unprocessable } from '../errors.ts';
 import { currentApprovers } from './approvers.ts';
+import { EMAIL_NOT_CONFIGURED_LABEL, EMAIL_STATUS_LABEL, mailChannel, queueEmail } from '../mail/index.ts';
 
 /**
  * v2 Faz 3 (D108+, R7) Görev 6: sözleşme bitiş ve ihbar hatırlatıcıları + e-posta kuyruğu.
@@ -25,10 +26,9 @@ import { currentApprovers } from './approvers.ts';
  */
 
 export const DEFAULT_OFFSETS = [90, 60, 30, 7];
-export const EMAIL_NOT_CONFIGURED_LABEL = 'Gönderilmedi — e-posta kanalı yapılandırılmadı';
-const EMAIL_STATUS_TR: Record<string, string> = {
-  NOT_CONFIGURED: EMAIL_NOT_CONFIGURED_LABEL, QUEUED: 'Kuyrukta (henüz gönderilmedi)', SENT: 'Gönderildi', FAILED: 'Gönderilemedi',
-};
+// v2 Faz 5 (R6): etiketler ve kuyruk yazımı ortak e-posta yardımcısında (`mail/index.ts`); metinler aynı.
+export { EMAIL_NOT_CONFIGURED_LABEL };
+const EMAIL_STATUS_TR: Record<string, string> = EMAIL_STATUS_LABEL;
 /** Rol kuyruğu adı; bilinmeyen rol ham kod olarak gösterilmez (final inceleme M3). */
 const ROLE_QUEUE_TR: Record<string, string> = {
   PROCUREMENT: 'Satınalma', DEPARTMENT_USER: 'Departman kullanıcıları', LEGAL: 'Hukuk', FINANCE: 'Finans', ADMIN: 'Yönetici', AUDITOR: 'Denetçi',
@@ -37,8 +37,8 @@ const KIND_TR: Record<'END' | 'NOTICE', string> = { END: 'Bitiş hatırlatıcıs
 export const DECISION_TR: Record<string, string> = {
   RENEW: 'Yenilenecek', TERMINATE: 'Sonlandırılacak', RENEGOTIATE: 'Yeniden müzakere edilecek', NEW_PROJECT: 'Yeni proje açıldı',
 };
-/** Bu fazda gerçek e-posta kanalı (Graph) bağlı değil; gönderici uydurulmaz. */
-export const emailChannelConfigured = () => false;
+/** v2 Faz 5 (R6): yapılandırılmış kanal (`MAIL_PROVIDER`); varsayılan `none` → bağlı değil, gönderici uydurulmaz. */
+export const emailChannelConfigured = () => mailChannel().kind !== 'none';
 
 /** İstanbul takvim günü (YYYY-MM-DD). */
 export const istanbulDay = (d: Date) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' }).format(d);
@@ -268,15 +268,15 @@ export async function processEndReminder(tx: Tx, ctx: TenantContext, jobId: stri
   // E-posta: kişi alıcılar + Satınalma kuyruğu varsa satınalma sorumlusu. Kanal yoksa NOT_CONFIGURED (gönderilmiş gibi gösterilmez).
   const lead = queue && approvers.lead ? await userById(tx, approvers.lead.userId) : null;
   const mailTo = [...people, ...(lead && !people.some((p) => p.id === lead.id) ? [lead] : [])];
-  const status = emailChannelConfigured() ? 'QUEUED' : 'NOT_CONFIGURED';
+  const channel = mailChannel();
+  const status = channel.kind === 'none' ? 'NOT_CONFIGURED' : 'QUEUED';
   let emails = 0;
   for (const p of mailTo) {
     const dup = (await tx.query(`SELECT 1 FROM email_outbox WHERE related_type = 'contract_reminder' AND related_id = $1 AND to_user_id = $2`, [r.id, p.id])).rowCount;
     if (dup) continue;
-    await tx.query(`INSERT INTO email_outbox (id, tenant_id, to_user_id, to_email, subject, body_text, related_type, related_id, status)
-      VALUES ($1,$2,$3,$4,$5,$6,'contract_reminder',$7,$8)`,
-      [randomUUID(), ctx.tenantId, p.id, p.email, `Sözleşme hatırlatıcısı: ${title}`.slice(0, 300),
-        `Sayın ${p.display_name},\n\n${reason}\n\n${nextAction}\n\nBu ileti Satınalma Platformu tarafından hazırlanmıştır.`, r.id, status]);
+    await queueEmail(tx, ctx, { toUserId: p.id, toEmail: p.email, subject: `Sözleşme hatırlatıcısı: ${title}`.slice(0, 300),
+      body: `Sayın ${p.display_name},\n\n${reason}\n\n${nextAction}\n\nBu ileti Satınalma Platformu tarafından hazırlanmıştır.`,
+      relatedType: 'contract_reminder', relatedId: r.id }, channel);
     emails++;
   }
   await tx.query(`UPDATE contract_reminders SET task_ids = $2 WHERE id = $1`, [r.id, [...new Set(taskIds)]]);

@@ -54,17 +54,10 @@ function mapUser(u: GraphUser): DirectoryUser | null {
   };
 }
 
-export function graphProvider(
-  cfg: { tenantId: string; clientId: string; clientSecret: string },
-  fetchImpl: typeof fetch = fetch,
-  opts: GraphOptions = {},
-): DirectoryProvider {
+/** Graph isteği: 429/503'te `Retry-After` kadar (en çok 30 sn) bekleyip en çok 3 kez dener; ağ hatası `network` olur. */
+export function graphSend(fetchImpl: typeof fetch = fetch, opts: GraphOptions = {}) {
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
-  // Sır nesnenin görünür alanlarında durmaz (JSON.stringify/günlük sızdırmaz).
-  const secret = (() => cfg.clientSecret);
-  let token: { value: string; expiresAt: number } | null = null;
-
-  async function send(url: string, init: RequestInit): Promise<Response> {
+  return async function send(url: string, init: RequestInit): Promise<Response> {
     for (let attempt = 1; ; attempt++) {
       let res: Response;
       try { res = await fetchImpl(url, init); } catch { throw fail('network'); }
@@ -77,30 +70,52 @@ export function graphProvider(
       if (res.status === 429 || res.status === 503) throw fail('throttled');
       return res;
     }
-  }
+  };
+}
 
-  async function getToken(): Promise<string> {
-    if (token && token.expiresAt > Date.now() + 60_000) return token.value;
-    const body = new URLSearchParams({
-      grant_type: 'client_credentials', client_id: cfg.clientId, client_secret: secret(), scope: `${GRAPH}/.default`,
-    });
-    const res = await send(`https://login.microsoftonline.com/${encodeURIComponent(cfg.tenantId)}/oauth2/v2.0/token`, {
-      method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: body.toString(),
-    });
-    if (res.status === 400 || res.status === 401 || res.status === 403) throw fail('unauthorized');
-    if (!res.ok) throw fail('http_error');
-    let j: { access_token?: unknown; expires_in?: unknown };
-    try { j = await res.json() as typeof j; } catch { throw fail('bad_response'); }
-    const value = str(j.access_token);
-    if (!value) throw fail('bad_response');
-    const ttl = typeof j.expires_in === 'number' ? j.expires_in : 3600;
-    token = { value, expiresAt: Date.now() + ttl * 1000 };
-    return value;
-  }
+/**
+ * İstemci kimlik bilgisi (client credentials) uygulama belirteci; süresi dolana kadar (1 dk pay) bellekte tutulur.
+ * v2 Faz 5 (R6): dizin eşitlemesi ve e-posta gönderimi (Mail.Send) aynı yardımcıyı kullanır. Sır yalnız belirteç isteğinin gövdesindedir.
+ */
+export function graphAppToken(cfg: { tenantId: string; clientId: string; clientSecret: string }, send: (url: string, init: RequestInit) => Promise<Response>) {
+  // Sır nesnenin görünür alanlarında durmaz (JSON.stringify/günlük sızdırmaz).
+  const secret = (() => cfg.clientSecret);
+  let token: { value: string; expiresAt: number } | null = null;
+  return {
+    async get(): Promise<string> {
+      if (token && token.expiresAt > Date.now() + 60_000) return token.value;
+      const body = new URLSearchParams({
+        grant_type: 'client_credentials', client_id: cfg.clientId, client_secret: secret(), scope: `${GRAPH}/.default`,
+      });
+      const res = await send(`https://login.microsoftonline.com/${encodeURIComponent(cfg.tenantId)}/oauth2/v2.0/token`, {
+        method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: body.toString(),
+      });
+      if (res.status === 400 || res.status === 401 || res.status === 403) throw fail('unauthorized');
+      if (!res.ok) throw fail('http_error');
+      let j: { access_token?: unknown; expires_in?: unknown };
+      try { j = await res.json() as typeof j; } catch { throw fail('bad_response'); }
+      const value = str(j.access_token);
+      if (!value) throw fail('bad_response');
+      const ttl = typeof j.expires_in === 'number' ? j.expires_in : 3600;
+      token = { value, expiresAt: Date.now() + ttl * 1000 };
+      return value;
+    },
+    clear() { token = null; },
+  };
+}
+
+export function graphProvider(
+  cfg: { tenantId: string; clientId: string; clientSecret: string },
+  fetchImpl: typeof fetch = fetch,
+  opts: GraphOptions = {},
+): DirectoryProvider {
+  const send = graphSend(fetchImpl, opts);
+  const tokens = graphAppToken({ tenantId: cfg.tenantId, clientId: cfg.clientId, clientSecret: cfg.clientSecret }, send);
+  const getToken = () => tokens.get();
 
   async function getPage(url: string): Promise<{ value: GraphUser[]; next: string | null }> {
     const res = await send(url, { headers: { authorization: `Bearer ${await getToken()}`, consistencylevel: 'eventual', accept: 'application/json' } });
-    if (res.status === 401) { token = null; throw fail('unauthorized'); }
+    if (res.status === 401) { tokens.clear(); throw fail('unauthorized'); }
     if (res.status === 403) throw fail('forbidden');
     if (res.status === 404) throw fail('not_found');
     if (!res.ok) throw fail('http_error');

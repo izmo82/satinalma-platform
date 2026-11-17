@@ -36,6 +36,8 @@ import * as contractAi from './modules/contractAi.ts';
 import * as reminders from './modules/contractReminders.ts';
 import * as contractApprovals from './modules/contractApprovals.ts';
 import { directoryProvider, type DirectoryProvider } from './directory/provider.ts';
+import * as emailOutbox from './modules/emailOutbox.ts';
+import { configureMailChannel } from './mail/index.ts';
 import { taskRoleSql, visibleTaskSql } from './tasks.ts';
 import { decisionSummaryPdf, evaluationWorkbook } from './reports.ts';
 import { RateLimiter, rateLimited } from './rateLimit.ts';
@@ -88,6 +90,11 @@ export async function buildApp(deps: AppDeps) {
   });
   await app.register(multipart, { limits: { fileSize: MAX_UPLOAD_BYTES, files: 1, fields: 10 } });
 
+  // v2 Faz 5 (R6): e-posta kanalı (varsayılan none → NOT_CONFIGURED). R5: üretimde virüs taraması kapalıysa açılışta uyarı (reddedilmez).
+  const mail = configureMailChannel(deps.config.mail);
+  if (deps.config.env === 'production' && (deps.config.av?.kind ?? 'none') === 'none') {
+    app.log.warn('AV_SCANNER=none: virüs taraması yapılandırılmadı; yüklenen dosyalar "Virüs taraması yapılandırılmadı" olarak işaretlenir');
+  }
   const dirProvider: DirectoryProvider | null = deps.directoryProvider !== undefined ? deps.directoryProvider : directoryProvider(deps.config.directory);
   const sessions = new WebSessions(deps.pool, deps.config.session ?? DEFAULT_SESSION, deps.config.webOrigin, deps.config.oidc, deps.auth, deps.config.extraWebOrigins);
   const limiter = deps.config.rateLimit?.enabled ? new RateLimiter(deps.config.rateLimit) : null;
@@ -672,6 +679,12 @@ export async function buildApp(deps: AppDeps) {
   // Görev 7 inceleme (I4): ailenin sürümlerine (doğrudan ya da sözleşmeye bağlı sipariş üzerinden) tahsis edilmiş faturalar; limit ucuyla aynı veri.
   app.get('/api/v1/contracts/:id/invoices', { schema: { tags: ['contracts'], params: idParams } }, async (req) =>
     scoped(req, 'contract.read', (tx) => invoices.familyInvoices(tx, (req.params as { id: string }).id)));
+  // v2 Faz 5 (R7): Yönetim > E-posta kutusu (yalnız Yönetici, yalnız okuma). Üretimde belirteçli bağlantı maskelenir.
+  app.get('/api/v1/admin/email-outbox', { schema: { tags: ['admin'], querystring: { type: 'object', additionalProperties: false, properties: {
+    status: { type: 'string', enum: ['QUEUED', 'NOT_CONFIGURED', 'SENT', 'FAILED'] }, relatedType: { type: 'string', minLength: 1, maxLength: 100 },
+    limit: { type: 'integer', minimum: 1, maximum: 200 }, offset: { type: 'integer', minimum: 0, maximum: 1_000_000 } } } } }, async (req) =>
+    scoped(req, 'email.outbox.read', (tx) => emailOutbox.listOutbox(tx, req.query as emailOutbox.OutboxQuery,
+      { channel: mail, maskTokens: deps.config.env === 'production' })));
   app.get('/api/v1/settings/contract-reminders', { schema: { tags: ['settings'] } }, async (req) =>
     scoped(req, 'reminder.settings', (tx) => reminders.getSettings(tx)));
   app.put('/api/v1/settings/contract-reminders', { schema: { tags: ['settings'], body: { type: 'object', required: ['offsets'], additionalProperties: false, properties: {

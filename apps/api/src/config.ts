@@ -38,7 +38,19 @@ export interface Config {
    * `anthropic` = ücretli, kurum dışı; anahtar zorunlu, üretimde ayrıca KVKK/kurum onayı bayrağı. Anahtar yalnız ortamdan gelir; yanıta/günlüğe yazılmaz.
    */
   ai?: { provider: 'none' | 'test' | 'anthropic'; modelId: string; apiKey?: string; externalTransferApproved: boolean };
+  /**
+   * v2 Faz 5 (R6): e-posta kanalı. `none` (varsayılan) = satır `NOT_CONFIGURED` yazılır, gönderilmez. `graph` = Microsoft Graph `sendMail`
+   * (`MAIL_SENDER` posta kutusu; kimlik Faz 2 `ENTRA_*` uygulama kaydı, `Mail.Send` uygulama izni). Sır yalnız ortamdan gelir; yanıta/günlüğe yazılmaz.
+   */
+  mail?: MailConfig;
+  /** v2 Faz 5 (R5): virüs taraması. `none` (varsayılan) = "Virüs taraması yapılandırılmadı"; `clamav` = clamd `zINSTREAM`. */
+  av?: AvConfig;
 }
+
+export type MailConfig =
+  | { kind: 'none'; sender?: undefined }
+  | { kind: 'graph'; sender: string; tenantId: string; clientId: string; clientSecret: string };
+export type AvConfig = { kind: 'none'; host?: undefined; port?: undefined } | { kind: 'clamav'; host: string; port: number };
 
 export interface OidcConfig {
   /** Kimlik ad alanı ve tarayıcı akışının issuer'ı (keşif belgesindeki). */
@@ -85,6 +97,37 @@ function loadDirectory(env: Config['env']): Config['directory'] {
     return { kind: 'graph', tenantId: req('ENTRA_TENANT_ID'), clientId: req('ENTRA_CLIENT_ID'), clientSecret: req('ENTRA_CLIENT_SECRET') };
   }
   throw new Error('DIRECTORY_PROVIDER geçersiz: graph, test ya da none olmalı');
+}
+
+/** R6: eksik değişkende yalnız adı yazılır (Faz 2 `loadDirectory` deseni); geçersiz sağlayıcı değeri iletiye kopyalanmaz. */
+export function loadMail(vars: NodeJS.ProcessEnv = process.env): MailConfig {
+  const kind = vars.MAIL_PROVIDER || 'none';
+  if (kind === 'none') return { kind: 'none' };
+  if (kind === 'graph') {
+    const need = (name: string) => {
+      const v = vars[name];
+      if (!v) throw new Error(`Missing required env ${name} (MAIL_PROVIDER=graph)`);
+      return v;
+    };
+    const sender = need('MAIL_SENDER');
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(sender)) throw new Error('MAIL_SENDER geçersiz: gönderen posta kutusunun e-posta adresi olmalı');
+    return { kind: 'graph', sender, tenantId: need('ENTRA_TENANT_ID'), clientId: need('ENTRA_CLIENT_ID'), clientSecret: need('ENTRA_CLIENT_SECRET') };
+  }
+  throw new Error('MAIL_PROVIDER geçersiz: graph ya da none olmalı');
+}
+
+/** R5: `none` üretimde de reddedilmez (dürüst "yapılandırılmadı" durumu; açılışta uyarı günlüğe yazılır). */
+export function loadAv(vars: NodeJS.ProcessEnv = process.env): AvConfig {
+  const kind = vars.AV_SCANNER || 'none';
+  if (kind === 'none') return { kind: 'none' };
+  if (kind === 'clamav') {
+    const host = vars.CLAMAV_HOST;
+    if (!host) throw new Error('Missing required env CLAMAV_HOST (AV_SCANNER=clamav)');
+    const port = Number(vars.CLAMAV_PORT || 3310);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('CLAMAV_PORT geçersiz: 1–65535 arası tam sayı olmalı');
+    return { kind: 'clamav', host, port };
+  }
+  throw new Error('AV_SCANNER geçersiz: clamav ya da none olmalı');
 }
 
 export const DEFAULT_AI_MODEL_ID = 'claude-sonnet-5-5';
@@ -159,6 +202,8 @@ export function loadConfig(): Config {
     reportCacheSeconds: Number(process.env.REPORT_CACHE_SECONDS ?? 120),
     directory: loadDirectory(env),
     ai: loadAi(env),
+    mail: loadMail(),
+    av: loadAv(),
     session: {
       secret: process.env.SESSION_SECRET || null,
       // Üretimde çerez yalnız HTTPS'te; web kökeni https ise yerelde de Secure.

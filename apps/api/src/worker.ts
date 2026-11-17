@@ -13,11 +13,14 @@ import { registerConfiguredAiProvider } from './ai/register.ts';
 import { normalizeRoles } from '@sp/domain';
 import { directoryProvider, type DirectoryProvider } from './directory/provider.ts';
 import { directoryJobContext, enqueueNightlySyncs, processDirectorySync } from './modules/directory.ts';
+import { configureMailChannel, DISPATCH_JOB, mailSender, processEmailDispatch, type MailSender } from './mail/index.ts';
 
 /** İsteğe bağlı işçi bağımlılıkları; eski çağrılar etkilenmez. */
 export interface WorkerOptions {
   /** v2 Faz 2 (D105): yapılandırılmış dizin sağlayıcısı; yoksa `directory.sync` işi çekilmez. */
   directoryProvider?: DirectoryProvider | null;
+  /** v2 Faz 5 (R6): yapılandırılmış e-posta göndericisi; yoksa `email.dispatch` işi çekilmez (kanal `none` iken QUEUED satır da yazılmaz). */
+  mailSender?: MailSender | null;
 }
 
 /**
@@ -27,9 +30,10 @@ export interface WorkerOptions {
 export async function processJobs(pool: pg.Pool, store: ObjectStore, detectorProvider: string | null, limit = 10, erpAdapterName: string | null = process.env.ERP_ADAPTER || null,
   lane: 'all' | 'short' | 'export' = 'all', opts: WorkerOptions = {}): Promise<number> {
   const directory = opts.directoryProvider ?? null;
+  const sender = opts.mailSender ?? null;
   // Kiracı dışa aktarımı saatler sürebilir: ayrı şeritte tek tek çalışır, ihbar/imza/silme işlerini bekletmez.
   const short = ['signature.detect', 'contract.notice_reminder', 'contract.end_reminder', 'contract.reminder_backfill', 'contract.obligation_due', 'retention.purge', ...(erpAdapterName ? ['erp.export'] : []), ...(hasAiProviders() ? ['ai.run'] : []),
-    ...(directory ? ['directory.sync'] : [])];
+    ...(directory ? ['directory.sync'] : []), ...(sender ? [DISPATCH_JOB] : [])];
   const kinds = lane === 'export' ? ['tenant.export'] : lane === 'short' ? short : [...short, 'tenant.export'];
   const claimed = await withoutTenant(pool, async (c) =>
     (await c.query<{ id: string; tenant_id: string; company_id: string | null; kind: string; requested_by: string | null }>(
@@ -56,6 +60,8 @@ export async function processJobs(pool: pg.Pool, store: ObjectStore, detectorPro
         await withTenant(pool, sctx, (tx) => processEndReminder(tx, sctx, job.id));
         continue;
       }
+      // v2 Faz 5 (R6): gönderim sistem işidir (kuyruğa yazanın üyeliğine bağlı değil); yalnız QUEUED satır gönderilir.
+      if (job.kind === DISPATCH_JOB && sender) { await processEmailDispatch(pool, sender, job.tenant_id, job.id); continue; }
       if (job.kind === 'contract.reminder_backfill') { await processReminderBackfill(pool, job.tenant_id, job.id); continue; }
       if (job.kind === 'retention.purge') { await withTenant(pool, { ...ctx, roles: [], companyIds: [] }, (tx) => processPurge(tx, store, job.id)); continue; }
       if (!m || (job.company_id && !m.company_ids.includes(job.company_id))) {
@@ -85,6 +91,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const config = loadConfig();
   // v2 Faz 4 (R1): API ile aynı sağlayıcı; `none` iken ai.run işi çekilmez (v1 davranışı).
   registerConfiguredAiProvider(config.ai);
+  // v2 Faz 5 (R6): hatırlatıcı gibi işçide yazılan e-postalar da yapılandırılmış kanala göre QUEUED/NOT_CONFIGURED olur.
+  configureMailChannel(config.mail);
+  const mail = mailSender(config.mail);
+  if (config.env === 'production' && (config.av?.kind ?? 'none') === 'none') console.warn('AV_SCANNER=none: virüs taraması yapılandırılmadı');
   const pool = createPool(config.databaseUrl, 4);
   const store = new S3ObjectStore(config.objectStore);
   let stopping = false;
@@ -103,7 +113,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       if (lane === 'short') {
         await reminderBackfill(pool, new Date()).catch((e) => console.error('reminder backfill enqueue failed', (e as Error).message));
       }
-      const n = await processJobs(pool, store, config.signatureDetectorProvider, 10, config.erpAdapter ?? null, lane, { directoryProvider: directory });
+      const n = await processJobs(pool, store, config.signatureDetectorProvider, 10, config.erpAdapter ?? null, lane, { directoryProvider: directory, mailSender: mail });
       if (n === 0) await new Promise((r) => setTimeout(r, 2000));
     }
   };
