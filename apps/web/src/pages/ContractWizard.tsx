@@ -340,6 +340,9 @@ export function savedAsShown(field: string, f: Form): boolean {
   return true;
 }
 const AI_INFO_ONLY = ['title', 'supplierName', 'guarantee', 'slaPenalty'];
+/** Persona K1: süresiz değil ve bitiş boş → ihbar süresi kaydedilemez (sunucu 422 invalid_terms); önce bitiş ya da "Süresiz". */
+export const noticeNeedsEnd = (f: Form) => !f.indefinite && String(f.endDate ?? '').trim() === '';
+const NOTICE_NEEDS_END = 'İhbar süresi için önce bitiş tarihini girin ya da sözleşmeyi süresiz işaretleyin.';
 const DECIDED: Record<Exclude<Decision, 'PENDING'>, string> = { CONFIRMED: 'Öneri onaylandı', CORRECTED: 'Öneriden farklı değer kaydedildi', REJECTED: 'Öneri yoksayıldı' };
 
 function CompleteStep({ d, ex, reload, onNext, onBack }: { d: ContractV2; ex: Polled; reload: () => Promise<void>; onNext: () => void; onBack: () => void }) {
@@ -365,6 +368,8 @@ function CompleteStep({ d, ex, reload, onNext, onBack }: { d: ContractV2; ex: Po
         const m = AI_FORM[x.field];
         if (!m || !x.prefill || x.critical || x.value === null || x.decision !== 'PENDING') continue;
         if (cur[m.key] !== '' || base[m.key] !== '') continue;
+        // Persona K1: ihbar süresi bitişe göre işler; bitiş (kritik, önceden yazılmaz) boşken ve süresiz değilken yalnız öneri olarak kalır.
+        if (x.field === 'noticePeriodDays' && noticeNeedsEnd(next)) continue;
         next = { ...next, [m.key]: m.toForm(x.value) };
         pf[m.key] = x.id;
       }
@@ -418,6 +423,9 @@ function CompleteStep({ d, ex, reload, onNext, onBack }: { d: ContractV2; ex: Po
   const members = useResource<Member[]>('/api/v1/members?active=true');
   const deps = useDepartments();
   const [candidate, setCandidate] = useState<{ legalName: string; vkn: string; contactEmail: string } | null>(null);
+  // Persona K6: aday formundaki VKN önerilen VKN'ye eşit ve aynı VKN'li kayıtlı kart varsa düğme "Mevcut kartı seç" der (sunucu o kartı seçer).
+  const vknSuggestion = byField.get('supplierVkn');
+  const existingByVkn = candidate && vknSuggestion?.existingSupplier && candidate.vkn.replace(/\s/g, '') === vknSuggestion.value ? vknSuggestion.existingSupplier : null;
   const set = (k: string, v: string | boolean) => setF((x) => ({ ...x, [k]: v }));
   const dirty = Object.keys(base).some((k) => base[k] !== f[k]) || (!d.can.edit ? false : rejected.size > 0 || used.size > 0);
   const ro = !d.can.edit;
@@ -510,6 +518,7 @@ function CompleteStep({ d, ex, reload, onNext, onBack }: { d: ContractV2; ex: Po
           <span className="text-ink-subtle">güven {CONFIDENCE[x.confidence].text.toLocaleLowerCase('tr-TR')}</span>
         </span>
         {flagTexts(x.flags).map((t) => <span key={t} className="text-warn">{t}</span>)}
+        {field === 'noticePeriodDays' && noticeNeedsEnd(f) && <span className="text-ink-muted">{NOTICE_NEEDS_END}</span>}
         {!ro && <span className="flex flex-wrap gap-1.5">
           <Button type="button" size="xs" variant="outline" aria-label={`Öneriyi kullan: ${x.label}`} onClick={() => applySuggestion(x)}>Öneriyi kullan</Button>
           <Button type="button" size="xs" variant="ghost" aria-label={`Öneriyi yoksay: ${x.label}`} onClick={() => toggleReject(x)}>Yoksay</Button>
@@ -556,7 +565,8 @@ function CompleteStep({ d, ex, reload, onNext, onBack }: { d: ContractV2; ex: Po
                   <Field label="Unvan">{(p) => <input className="input" {...p} value={candidate.legalName} onChange={(e) => setCandidate({ ...candidate, legalName: e.target.value })} />}</Field>
                   <Field label="VKN" hint="10 hane; kontrol basamağı denetlenir.">{(p) => <input className="input tabular" inputMode="numeric" {...p} value={candidate.vkn} onChange={(e) => setCandidate({ ...candidate, vkn: e.target.value })} />}</Field>
                   <Field label="İletişim e-postası (isteğe bağlı)">{(p) => <input className="input" type="email" {...p} value={candidate.contactEmail} onChange={(e) => setCandidate({ ...candidate, contactEmail: e.target.value })} />}</Field>
-                  <div className="flex gap-2"><Button type="button" size="sm" disabled={busy || !candidate.legalName.trim() || !candidate.vkn.trim()} onClick={() => void openCandidate()}>Aday kartı aç</Button>
+                  {existingByVkn && <p className="mb-2 text-sm">Bu VKN ile kayıtlı kart var: <span className="font-semibold">{existingByVkn.legalName}</span>. Yeni kart açılmaz; bu kart seçilir.</p>}
+                  <div className="flex gap-2"><Button type="button" size="sm" disabled={busy || !candidate.legalName.trim() || !candidate.vkn.trim()} onClick={() => void openCandidate()}>{existingByVkn ? 'Mevcut kartı seç' : 'Aday kartı aç'}</Button>
                     <Button type="button" size="sm" variant="outline" onClick={() => setCandidate(null)}>Vazgeç</Button></div>
                 </div>
               )}
@@ -650,7 +660,9 @@ export function contractFacts(d: ContractV2): [string, ReactNode][] {
     ['Başlangıç', <span className="tabular">{fmtDate(f.startDate)}</span>],
     ['Bitiş', <span className="tabular">{f.indefinite ? 'Süresiz' : fmtDate(f.endDate)}</span>],
     [`Tutar (${f.limitBasis === 'GROSS' ? 'KDV dahil' : 'KDV hariç'})`, <span className="tabular">{f.valueType === 'UNPRICED' ? 'Bedelsiz' : fmtMoney(f.amount, f.currency)}</span>],
-    ['Kullanılan şablon', d.template ? `${d.template.code} ${d.template.name} · v${d.template.versionNo}${d.template.superseded ? ' (eski sürüm)' : ''}` : 'Kullanılmadı'],
+    // Persona K2: şablon seçilmediyse ve inceleme türün güncel şablonunu kullandıysa "Kullanılmadı" yanıltır; sunucunun açıklaması gösterilir.
+    ['Kullanılan şablon', d.template ? `${d.template.code} ${d.template.name} · v${d.template.versionNo}${d.template.superseded ? ' (eski sürüm)' : ''}`
+      : d.review && !d.review.stale && d.review.templateUsageNote ? d.review.templateUsageNote : 'Kullanılmadı'],
     ['Sözleşme türü', f.contractTypeLabel ?? '—'],
     ['Yenileme', f.autoRenewal ? `Otomatik, ${f.renewalMonths ?? '—'} ay` : f.autoRenewal === false ? 'Otomatik yenilenmez' : '—'],
     ['Fesih bildirimi', f.noticePeriod ?? 'Tanımlı değil'],

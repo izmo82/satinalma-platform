@@ -43,6 +43,8 @@ enum AiText {
         case "RUNNING": return review ? "İnceleniyor" : "Okunuyor"
         case "SUCCEEDED": return "Tamamlandı"
         case "FAILED": return "Başarısız"
+        // Persona K5: politika ya da sağlayıcı yokken inceleme beklemez, hiç çalışmaz.
+        case "NOT_ALLOWED", "NO_PROVIDER": return review ? "Çalışmayacak" : "Bekliyor"
         default: return "Bekliyor"
         }
     }
@@ -200,6 +202,7 @@ struct ReviewInfoCard: View {
                 if cur.isTestProvider { TestProviderTag(label: cur.providerLabel) }
                 Label(d.disclaimer, systemImage: "sparkles").font(.footnote).foregroundStyle(.secondary)
                 Text(statusLine(d, cur)).font(.footnote).foregroundStyle(cur.stale ? .orange : .secondary)
+                if let a = d.submitAcknowledgement { AckLine(ack: a) }
                 Text(AiText.counts(cur.findings)).font(.footnote)
                 ForEach(AiText.ordered(cur.findings).prefix(3)) { f in FindingRow(f: f) }
                 NavigationLink { ContractReviewView(familyId: familyId) } label: {
@@ -227,7 +230,22 @@ struct ReviewInfoCard: View {
         if d.belowThreshold { s += " · eşiğin altında (bilgi; onayı engellemez)" }
         if cur.stale { s += " · güncel değil: belge ya da şablon sürümü incelemeden sonra değişti" }
         if let n = cur.templateNote { s += " · \(n)" }
+        if let n = cur.templateUsageNote { s += " · \(n)" }
         return s + ". Puan onay vermez; belgeyi siz incelersiniz."
+    }
+}
+
+/// Persona K3: gönderen, gönderim anında eşik altı puanı onaylayarak gönderdi (o anki eşikle; canlı eşik sonradan değişebilir).
+struct AckLine: View {
+    let ack: ReviewAcknowledgement
+    var body: some View {
+        Label {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(ack.text)
+                Text("\(ack.by.map { "\($0.displayName) · " } ?? "")\(Fmt.date(ack.at))").foregroundStyle(.secondary)
+            }
+        } icon: { Image(systemName: "exclamationmark.triangle") }
+        .font(.footnote).foregroundStyle(.orange)
     }
 }
 
@@ -236,6 +254,10 @@ func emptyLine(_ d: ContractReviews, timedOut: Bool) -> String {
     guard let run = d.run else { return "Bu belge sürümü için ön inceleme yapılmadı. Belgeyi kendiniz inceleyin." }
     if run.active { return timedOut ? "İnceleme sürüyor; beklemeniz gerekmez." : "İnceleniyor… Sonuç birkaç saniye içinde burada görünür." }
     if run.status == "FAILED" { return "İnceleme tamamlanamadı. \(AiText.reason(run, review: true)) Belgeyi kendiniz inceleyin." }
+    // Persona K5: politika ya da sağlayıcı yokken "bekliyor" değil; inceleme çalışmayacak.
+    if run.status == "NOT_ALLOWED" || run.status == "NO_PROVIDER" {
+        return "Ön inceleme çalışmayacak: \(AiText.reason(run, review: true)) İnceleme yapılmadı; gönderim açık, belgeyi kendiniz inceleyin."
+    }
     return "İnceleme yapılmadı. \(AiText.reason(run, review: true)) Belgeyi kendiniz inceleyin."
 }
 
@@ -284,6 +306,8 @@ struct ContractReviewView: View {
                         }
                         if d.belowThreshold, let a = d.advice { Text("\(a) Ek onaycı web uygulamasında eklenir; zorunlu değildir.").font(.footnote).foregroundStyle(.orange) }
                         if let n = cur.templateNote { Text(n).font(.footnote).foregroundStyle(.secondary) }
+                        if let n = cur.templateUsageNote { Text(n).font(.footnote).foregroundStyle(.secondary) }
+                        if let a = d.submitAcknowledgement { AckLine(ack: a) }
                         ForEach(cur.subScoreList) { s in LabeledContent(s.label, value: s.score.map(String.init) ?? "—") }
                     }
                     Section {

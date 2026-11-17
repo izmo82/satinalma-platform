@@ -162,6 +162,10 @@ describe('inceleme hattı (R7–R9)', () => {
     const v2 = await call(w, 'techEval', 'GET', `/api/v1/contracts/${d.familyId}/v2`);
     expect(v2.body.review).toMatchObject({ id: cur.id, score: cur.score, threshold: 60, belowThreshold: false, stale: false, isTestProvider: true, disclaimer: AI_DISCLAIMER,
       template: { code: t.code, versionNo: 1 }, modelId: 'test-fixture' });
+    // Persona K2: sözleşmeye şablon seçilmedi; inceleme türün güncel şablonunu kullandı — özet bunu açıkça söyler.
+    const autoNote = `İncelemede türün güncel şablonu kullanıldı: ${t.code} v1 (sözleşmeye şablon seçilmedi)`;
+    expect(v2.body.review).toMatchObject({ templateAutoPicked: true, templateUsageNote: autoNote, submitAcknowledgement: null });
+    expect(cur).toMatchObject({ templateAutoPicked: true, templateUsageNote: autoNote });
 
     // Yapay zekâ sayfası (defter sütunları, R3) — Satınalma ai.read.
     const ov = await call(w, 'buyer', 'GET', '/api/v1/ai/overview');
@@ -347,11 +351,17 @@ describe('eşik (R10) ve görünürlük', () => {
     expect(ack).toHaveLength(1);
     expect(ack[0]).toMatchObject({ actor_user_id: w.users.techEval.id, data: { reviewId: g.body.current.id, score: g.body.current.score, threshold: 99,
       rubricVersion: REVIEW_RUBRIC_VERSION, isTestProvider: true } });
+    // Persona K3: onaycı, gönderenin eşik altı puanı onaylayarak gönderdiğini o anki eşikle görür; eşik sonradan değişse de kayıt aynı kalır.
+    const ackText = `Gönderen, eşik altı puanı (${g.body.current.score} / eşik 99) onaylayarak gönderdi.`;
+    expect((await call(w, 'techEval', 'GET', `/api/v1/contracts/${d.familyId}/v2`)).body.review.submitAcknowledgement)
+      .toMatchObject({ reviewId: g.body.current.id, score: g.body.current.score, threshold: 99, text: ackText, by: { id: w.users.techEval.id } });
+    expect((await call(w, 'tenantAdmin', 'PUT', '/api/v1/ai/contract-settings', { reviewThreshold: 60 })).status).toBe(200);
 
     // Görünürlük (R10, karar 1): EXTRA onaycı (İK) puanı ve bulguları görür, isteyemez; onaysız başka departman göremez; Denetçi görür; başka kiracı göremez.
     const asApprover = await reviews(w, ik, d.familyId);
     expect(asApprover.status).toBe(200);
-    expect(asApprover.body).toMatchObject({ current: { id: g.body.current.id, score: g.body.current.score }, can: { request: false } });
+    expect(asApprover.body).toMatchObject({ current: { id: g.body.current.id, score: g.body.current.score }, can: { request: false },
+      threshold: 60, belowThreshold: false, submitAcknowledgement: { score: g.body.current.score, threshold: 99, text: ackText } });
     expect(asApprover.body.current.findings.length).toBeGreaterThan(0);
     expect((await requestReview(w, ik, d.familyId)).status).toBe(403);
     const other = await departmentUser(w, w.departments.ik);

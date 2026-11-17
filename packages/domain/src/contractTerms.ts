@@ -111,7 +111,8 @@ export function validateTerms(t: CommercialTerms): string | null {
   if (t.startDate && t.endDate && t.endDate < t.startDate) return 'Bitiş başlangıçtan önce olamaz.';
   if (t.limitBasis != null && t.limitBasis !== 'NET' && t.limitBasis !== 'GROSS') return 'Limit yöntemi vergi hariç veya vergi dahil olmalı.';
   if ((t.noticeAmount === null) !== (t.noticeUnit === null)) return 'İhbar süresi ve birimi birlikte girilir.';
-  if (t.noticeAmount !== null && !t.endDate) return 'Süresiz sözleşmede ihbar son günü bitişe göre hesaplanamaz; fesih bildirimi ayrı kuralla izlenir.';
+  // v2 Faz 4 (D109, persona K1): bitişi boş, süresiz işaretlenmemiş sözleşmede de doğru yönlendiren ileti.
+  if (t.noticeAmount !== null && !t.endDate) return 'İhbar süresi için önce bitiş tarihini girin ya da sözleşmeyi süresiz işaretleyin.';
   if (t.autoRenewal && !t.renewalMonths) return 'Otomatik yenilemede yenileme süresi gerekli.';
   if (t.paymentDays != null && (!Number.isInteger(t.paymentDays) || t.paymentDays < 0 || t.paymentDays > 365)) return 'Vade 0–365 gün arasında tam sayı olmalı.';
   if (t.fxDifference != null && t.fxDifference !== 'ALLOWED' && t.fxDifference !== 'NOT_ALLOWED') return 'Kur farkı hükmü izin var veya izin yok olmalı.';

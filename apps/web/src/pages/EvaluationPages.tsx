@@ -511,9 +511,39 @@ const FLAG_TR: Record<string, string> = {
   MISSING: 'alan okunamadı', NO_SOURCE: 'kaynak gösterilmedi', SHORT_QUOTE: 'alıntı çok kısa', VALUE_NOT_IN_SOURCE: 'değer alıntıda yok', INVALID_TAX_ID: 'VKN kontrol basamağı tutmuyor',
   INVALID_VALUE: 'değer biçimi geçersiz', INVALID_FORMAT: 'değer biçimi geçersiz', SOURCE_NOT_VERIFIED: 'kaynak doğrulanamadı', TEMPLATE_UNAVAILABLE: 'şablon metni okunamadı',
   DROPPED_FINDING: 'geçersiz bulgu atıldı', UNCLEAR: 'cevap belirsiz',
+  WEAK_SOURCE: 'alıntı değeri zayıf destekliyor', IGNORED_ANSWER: 'sorulmayan soruya verilen cevap yok sayıldı',
 };
-/** Ham kod gösterilmez: bilinmeyen işaret genel Türkçe metinle. */
-const flagTr = (f: string) => FLAG_TR[f.split(':')[0]!] ?? 'diğer denetim işareti';
+/** Okunan alanların Türkçe adları (işaret öneki `alan:KOD`). */
+const AI_FIELD_TR: Record<string, string> = {
+  title: 'Sözleşme başlığı', contractType: 'Sözleşme türü', supplierName: 'Tedarikçi adı', supplierVkn: 'Tedarikçi VKN', signedOn: 'İmza tarihi',
+  startDate: 'Başlangıç tarihi', endDate: 'Bitiş tarihi', indefinite: 'Süresiz', noticePeriodDays: 'İhbar süresi', amount: 'Tutar', currency: 'Para birimi',
+  limitBasis: 'Limit esası', autoRenewal: 'Otomatik yenileme', contractNo: 'Sözleşme numarası', paymentTermDays: 'Ödeme vadesi', guarantee: 'Teminat',
+  slaPenalty: 'SLA / cezai şart', kvkkClause: 'KVKK maddesi', governingCourt: 'Yetkili mahkeme', priceEscalation: 'Fiyat farkı / artış',
+};
+/**
+ * Ham kod gösterilmez. Persona K7: işaretler `KOD`, `KOD:ayrıntı` (IGNORED_KEY:score), `alan:KOD` (AI06) ya da `findingN:KOD` (AI14) biçimindedir;
+ * önek alan ya da bulgu adıyla Türkçe yazılır. Bilinmeyen kod yine genel metinle (öznesiyle).
+ */
+export function flagTr(f: string): string {
+  const parts = f.split(':');
+  if (FLAG_TR[parts[0]!]) return FLAG_TR[parts[0]!]!;
+  const code = parts[parts.length - 1]!;
+  const subject = parts.slice(0, -1).join(':');
+  const n = /^finding(\d+)$/.exec(subject);
+  const who = n ? `${Number(n[1]) + 1}. bulgu` : AI_FIELD_TR[subject] ?? null;
+  const what = FLAG_TR[code] ?? 'diğer denetim işareti';
+  return who ? `${who}: ${what}` : what;
+}
+/** Persona K7: aylık harcama ekranda 2 ondalığa yuvarlanır (yarım yukarı, decimal string; kayan nokta yok); kesin değer title'da. */
+export function spend2(v: string | null | undefined): string {
+  const m = v == null ? null : /^(-?)(\d+)(?:\.(\d+))?$/.exec(v.trim());
+  if (!m) return trDecimal(v);
+  const frac = (m[3] ?? '').padEnd(3, '0');
+  let cents = BigInt(`${m[2]}${frac.slice(0, 2)}`);
+  if (Number(frac[2]) >= 5) cents += 1n;
+  const s = cents.toString().padStart(3, '0');
+  return trDecimal(`${m[1]}${s.slice(0, -2)}.${s.slice(-2)}`);
+}
 
 export function AiPage() {
   const { me } = useSession();
@@ -548,7 +578,7 @@ export function AiPage() {
               <p className="m-0 text-sm text-ink-subtle">Salt okunur. Tek ayar: <span className="mono">AI_MODEL_ID</span> (sunucu yapılandırması).</p></div>
             <div><p className="m-0 text-sm text-ink-muted">Sağlayıcı</p><p className="m-0">{d.provider.label}</p>
               <p className="m-0 text-sm text-ink-subtle">{d.provider.external ? 'Sözleşme metni kurum dışına çıkar (KVKK onayı gerekir).' : d.provider.kind === 'test' ? 'Ağ yok, ücret yok; çıktısı gerçek okuma ya da gerçek inceleme değildir.' : 'Yapay zekâ çağrısı yapılmaz; elle akış sürer.'}</p></div>
-            <div><p className="m-0 text-sm text-ink-muted">Bu ay harcanan</p><p className="m-0 tabular">{trDecimal(d.usage.monthSpent)} {d.policy?.budgetCurrency ?? ''}</p>
+            <div><p className="m-0 text-sm text-ink-muted">Bu ay harcanan</p><p className="m-0 tabular" title={`Kesin değer: ${trDecimal(d.usage.monthSpent)} ${d.policy?.budgetCurrency ?? ''}`.trim()}>{spend2(d.usage.monthSpent)} {d.policy?.budgetCurrency ?? ''}</p>
               <p className="m-0 text-sm text-ink-subtle">Bütçe: {d.policy?.monthlyBudget ? `${trDecimal(d.policy.monthlyBudget)} ${d.policy.budgetCurrency}` : d.policy ? 'sınırsız' : 'politika yok (ücretli AI kapalı)'}</p></div>
           </div>
         </section>
@@ -578,7 +608,7 @@ export function AiPage() {
                       <td className="tabular whitespace-nowrap px-3 py-2 text-right">{x.actualCost ? `${trDecimal(x.actualCost)} ${x.costCurrency ?? ''}` : x.estimatedCost ? `tahmini ${trDecimal(x.estimatedCost)} ${x.costCurrency ?? ''}` : '—'}</td>
                       <td className="px-3 py-2"><strong>{RUN_STATUS[x.status] ?? 'Bilinmeyen durum'}</strong>
                         {x.reason && <span className="block text-ink-muted">{x.reason}</span>}
-                        {x.flags.length > 0 && <span className="block text-warn">Denetim: {x.flags.map(flagTr).join(', ')}</span>}
+                        {x.flags.length > 0 && <span className="block text-warn">Denetim: {[...new Set(x.flags.map(flagTr))].join(', ')}</span>}
                         {canRetry(x) && <button type="button" className="underline" disabled={rr.busy}
                           onClick={() => void rr.run(() => api(`/api/v1/ai/runs/${x.id}/retry`, { method: 'POST' }), 'İş yeniden yönlendirildi.')}>Yeniden dene</button>}</td>
                     </tr>))}</tbody>
@@ -615,7 +645,7 @@ export function AiPage() {
               </div></section>
           )}
           <section className="panel"><div className="panel-head"><h2>Kullanım</h2></div>
-            <div className="panel-body"><dl className="facts"><dt>Bu ay</dt><dd className="tabular">{d.usage.monthSpent} {d.policy?.budgetCurrency ?? ''}</dd><dt>Bugün çağrı</dt><dd className="tabular">{d.usage.todayCalls}</dd></dl>
+            <div className="panel-body"><dl className="facts"><dt>Bu ay</dt><dd className="tabular" title={`Kesin değer: ${trDecimal(d.usage.monthSpent)} ${d.policy?.budgetCurrency ?? ''}`.trim()}>{spend2(d.usage.monthSpent)} {d.policy?.budgetCurrency ?? ''}</dd><dt>Bugün çağrı</dt><dd className="tabular">{d.usage.todayCalls}</dd></dl>
               <p className="mt-2 text-sm text-ink-subtle">%80'de uyarı; %100'de yeni ücretli iş bekler, manuel iş sürer. Gerçekleşen ücret yoksa tahmin sayılır; bilinmeyen tarife sıfır yazılmaz.</p></div></section>
           <section className="panel"><div className="panel-head"><h2>Model kaydı</h2></div>
             <div className="panel-body">{!d.models.length ? <p className="text-ink-muted">Kayıtlı model yok.</p> : <ul className="grid gap-2">{d.models.map((m) => (

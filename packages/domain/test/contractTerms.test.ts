@@ -45,7 +45,8 @@ describe('koşullar', () => {
   it('doğrulama: kaynak madde zorunlu, süresiz sözleşmede bitişe göre ihbar yok, bedelsizde tutar yok', () => {
     expect(validateTerms(t)).toBeNull();
     expect(validateTerms({ ...t, sourceRef: '' })).toMatch(/madde/);
-    expect(validateTerms({ ...t, endDate: null })).toMatch(/Süresiz/);
+    // v2 Faz 4 (D109): ileti "önce bitiş tarihini girin ya da süresiz işaretleyin" oldu (persona K1: süresiz işaretlenmemiş sözleşmede "Süresiz sözleşmede…" yanıltıyordu).
+    expect(validateTerms({ ...t, endDate: null })).toMatch(/önce bitiş tarihini girin ya da sözleşmeyi süresiz işaretleyin/);
     expect(validateTerms({ ...t, valueType: 'UNPRICED' })).toMatch(/Bedelsiz/);
     expect(validateTerms({ ...t, endDate: '2025-12-31' })).toMatch(/Bitiş/);
   });

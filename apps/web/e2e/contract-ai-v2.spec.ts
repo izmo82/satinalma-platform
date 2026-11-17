@@ -209,7 +209,10 @@ test.describe('v2 sözleşme yapay zekâ: veri değiştiren akışlar (test sağ
     await page.goto(`/sozlesmeler/${v2a.document.contractVersionId}?sekme=onaylar`);
     await expect(page.getByRole('heading', { name: 'Ön inceleme (bilgi)' })).toBeVisible();
     await expect(page.getByText('Onay kararınızı etkilemez', { exact: false })).toBeVisible();
+    // Persona K3: onaycı, gönderenin eşik altı puanı o anki eşikle onaylayarak gönderdiğini görür.
+    await expect(page.getByTestId('review-ack')).toContainText(/Gönderen, eşik altı puanı \(\d+ \/ eşik 99\) onaylayarak gönderdi\./);
     await page.getByRole('tab', { name: 'İnceleme' }).click();
+    await expect(page.getByTestId('review-ack')).toBeVisible();
     await expect(page.getByRole('img', { name: /Ön inceleme puanı/ })).toBeVisible();
     await expect(page.getByRole('button', { name: /İncele/ })).toHaveCount(0);
     await logout(page);
@@ -226,6 +229,9 @@ test.describe('v2 sözleşme yapay zekâ: veri değiştiren akışlar (test sağ
     await expect(row).toContainText(TEST_LABEL);
     await expect(row).toContainText('1.000 / 200');
     await expect(row.getByRole('button', { name: 'Yeniden dene' })).toHaveCount(0);
+    // Persona K7: işaretler alan/bulgu adıyla Türkçe (genel metin yok); aylık harcama 2 ondalık, kesin değer title'da.
+    await expect(ledger.getByText('diğer denetim işareti', { exact: false })).toHaveCount(0);
+    await expect(page.getByTitle(/^Kesin değer: /).first()).toHaveText(/^\d{1,3}(\.\d{3})*,\d{2} USD$/);
     await expect(page.getByLabel('Ön inceleme eşiği (0–100)')).toHaveValue('99');
     await expect(page.getByRole('heading', { name: 'Doğruluk ölçümü' })).toBeVisible();
     await expect(page.getByText('Ölçülmedi (NOT_RUN)', { exact: true })).toBeVisible();

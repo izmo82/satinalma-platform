@@ -119,6 +119,12 @@ describe('okuma isteği ve defter (R3, R11)', () => {
     expect(after.body.fields).toHaveLength(20);
     expect(fieldOf(after.body, 'amount')).toMatchObject({ label: 'Tutar', value: '1250000.00', page: 1, confidence: 'HIGH', requiresHuman: true, prefill: false, decision: 'PENDING' });
     expect(fieldOf(after.body, 'supplierVkn')).toMatchObject({ value: VKN, requiresHuman: true, prefill: false });
+    // Persona K6: önerilen VKN ile kayıtlı kart yoksa existingSupplier null; aday kart açılınca o kart döner (düğme "Mevcut kartı seç").
+    expect(fieldOf(after.body, 'supplierVkn').existingSupplier).toBeNull();
+    expect(fieldOf(after.body, 'amount')).not.toHaveProperty('existingSupplier');
+    const cand = await call(w, 'techEval', 'POST', '/api/v1/suppliers/candidates', { legalName: 'Okunan Firma (SENTETİK)', vkn: VKN });
+    expect([200, 201], JSON.stringify(cand.body)).toContain(cand.status);
+    expect(fieldOf((await extractions(w, 'techEval', d.familyId)).body, 'supplierVkn').existingSupplier).toEqual({ id: cand.body.id, legalName: cand.body.legalName });
     expect(fieldOf(after.body, 'contractNo')).toMatchObject({ confidence: 'HIGH', requiresHuman: false, prefill: true });
     expect(fieldOf(after.body, 'guarantee')).toMatchObject({ value: null, confidence: 'MISSING', prefill: false });
     expect(fieldOf(after.body, 'amount').evidence).not.toMatch(/onayla/i);

@@ -200,7 +200,7 @@ struct ContractFieldsView: View {
             if let dv = previewDocument { DocumentPreview(documentVersionId: dv, expectedSha256: loaded?.document?.sha256, title: loaded?.family.title ?? "Sözleşme", page: p) }
         }
         .sheet(item: $candidateSheet) { seed in
-            CandidateSupplierSheet(initialLegalName: seed.legalName, initialVkn: seed.vkn) { s, vkn in
+            CandidateSupplierSheet(initialLegalName: seed.legalName, initialVkn: seed.vkn, existing: seed.existing) { s, vkn in
                 let seedSnap = snap()
                 knownVkn[s.id] = vkn.filter(\.isNumber)
                 if !suppliers.contains(where: { $0.id == s.id }) { suppliers.insert(SupplierOption(id: s.id, legalName: s.legalName, status: s.status, label: nil), at: 0) }
@@ -420,10 +420,15 @@ struct ContractFieldsView: View {
         used = []; rejected = []; prefilled = [:]; undo = [:]
         for x in aiFields where x.prefill && !x.critical && x.decision == "PENDING" {
             guard let v = x.value, x.field == "noticePeriodDays", needsNotice, noticeAmount == nil, loaded?.fields.noticeAmount == nil, let n = Int(v) else { continue }
+            // Persona K1: ihbar bitişe göre işler; bitiş (kritik, önceden yazılmaz) boşken ve süresiz değilken yalnız öneri olarak kalır.
+            if noticeNeedsEnd { continue }
             noticeAmount = n; noticeUnit = "DAY"
             prefilled[x.field] = x.id
         }
     }
+
+    /// Persona K1: süresiz değil ve bitiş boş → ihbar süresi kaydedilemez (sunucu 422 invalid_terms); önce bitiş ya da "Süresiz".
+    private var noticeNeedsEnd: Bool { !indefinite && endDate == nil }
 
     /// Formdaki değer öneri biçiminde (normalize). Eşleşme alanı yoksa nil.
     private func formValue(_ field: String) -> String? {
@@ -489,7 +494,7 @@ struct ContractFieldsView: View {
         if x.field == "supplierVkn" {
             // Kayıtlı ve seçili kartın VKN'si aynıysa onaylanır; değilse aday kart formu VKN ile açılır (aynı VKN'li kart varsa sunucu onu seçer).
             if knownVkn[supplierId] == v { undo[x.id] = snap(); used.insert(x.id); return }
-            candidateSheet = CandidateSeed(legalName: ai("supplierName")?.value ?? "", vkn: v, extractionId: x.id)
+            candidateSheet = CandidateSeed(legalName: x.existingSupplier?.legalName ?? ai("supplierName")?.value ?? "", vkn: v, extractionId: x.id, existing: x.existingSupplier)
             return
         }
         switch x.field {
@@ -652,7 +657,14 @@ struct ContractFieldsView: View {
                         .font(.footnote.weight(.semibold))
                     if let ev = x.evidence, !ev.isEmpty { Text("“\(ev)”").font(.footnote).foregroundStyle(.secondary).lineLimit(3) }
                     ForEach(AiText.flags(x.flags), id: \.self) { Text($0).font(.footnote).foregroundStyle(.orange) }
-                    if x.field == "supplierVkn" { Text("Kayıtlı kart VKN ile kesin aranır; yoksa aday kart açılır.").font(.footnote).foregroundStyle(.secondary) }
+                    if x.field == "supplierVkn" {
+                        // Persona K6: aynı VKN ile kayıtlı kart varsa açıkça söylenir; düğme o kartı seçer.
+                        if let e = x.existingSupplier { Text("Bu VKN ile kayıtlı kart var: \(e.legalName). Yeni kart açılmaz; bu kart seçilir.").font(.footnote).foregroundStyle(.secondary) }
+                        else { Text("Kayıtlı kart VKN ile kesin aranır; yoksa aday kart açılır.").font(.footnote).foregroundStyle(.secondary) }
+                    }
+                    if x.field == "noticePeriodDays" && noticeNeedsEnd {
+                        Text("İhbar süresi için önce bitiş tarihini girin ya da sözleşmeyi süresiz işaretleyin.").font(.footnote).foregroundStyle(.secondary)
+                    }
                     if canEditAi {
                         AdaptiveStack(spacing: 12) {
                             Button("Öneriyi kullan") { apply(x) }.buttonStyle(.bordered).tapTarget()
@@ -712,6 +724,8 @@ struct CandidateSeed: Identifiable {
     var legalName = ""
     var vkn = ""
     var extractionId: String?
+    /// Persona K6: önerilen VKN ile kayıtlı kart (varsa); sayfa düğmesi "Mevcut kartı seç" olur.
+    var existing: ContractExtractions.ExistingSupplier? = nil
 }
 
 /// "Sorulan alan": öneri düşük güvenli ya da okunamadı; değeri belgeden siz girersiniz.
@@ -835,10 +849,15 @@ struct ContractSubmitView: View {
 /// Aday tedarikçi (R9): unvan + VKN (+ e-posta). Aynı VKN varsa sunucu mevcut kartı döner.
 struct CandidateSupplierSheet: View {
     /// v2 Faz 4: VKN önerisiyle açılınca unvan ve VKN dolu gelir (kullanıcı görür, değiştirebilir, "Ekle" ile açar).
-    init(initialLegalName: String = "", initialVkn: String = "", done: @escaping (CandidateSupplier, String) -> Void) {
+    init(initialLegalName: String = "", initialVkn: String = "", existing: ContractExtractions.ExistingSupplier? = nil, done: @escaping (CandidateSupplier, String) -> Void) {
         _legalName = State(initialValue: initialLegalName); _vkn = State(initialValue: initialVkn); self.done = done
+        self.existing = existing; self.existingVkn = initialVkn
     }
     let done: (CandidateSupplier, String) -> Void
+    /// Persona K6: önerilen VKN ile kayıtlı kart; VKN değiştirilmediyse düğme "Mevcut kartı seç" der (sunucu o kartı seçer).
+    private let existing: ContractExtractions.ExistingSupplier?
+    private let existingVkn: String
+    private var selectsExisting: Bool { existing != nil && vkn.filter(\.isNumber) == existingVkn.filter(\.isNumber) }
     @Environment(SessionStore.self) private var session
     @Environment(\.dismiss) private var dismiss
     @State private var legalName: String
@@ -853,16 +872,19 @@ struct CandidateSupplierSheet: View {
                     TextField("Unvan", text: $legalName)
                     TextField("VKN (10 hane) / TCKN (11 hane)", text: $vkn).keyboardType(.numberPad)
                     TextField("İletişim e-postası (isteğe bağlı)", text: $email).keyboardType(.emailAddress).textInputAutocapitalization(.never)
-                } footer: { Text("VKN belgeden okunup elle girilir ve denetim basamağı doğrulanır. Kart \"Aday\" durumunda açılır; Satınalma sonradan tamamlar.") }
+                } footer: {
+                    if selectsExisting, let e = existing { Text("Bu VKN ile kayıtlı kart var: \(e.legalName). Yeni kart açılmaz; bu kart seçilir.") }
+                    else { Text("VKN belgeden okunup elle girilir ve denetim basamağı doğrulanır. Kart \"Aday\" durumunda açılır; Satınalma sonradan tamamlar.") }
+                }
                 if let notice { NoticeView(notice: notice) }
             }
-            .navigationTitle("Aday tedarikçi")
+            .navigationTitle(selectsExisting ? "Kayıtlı tedarikçi" : "Aday tedarikçi")
             .navigationBarTitleDisplayMode(.inline)
 
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Vazgeç") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(busy ? "Ekleniyor…" : "Ekle") { Task { await add() } }
+                    Button(busy ? (selectsExisting ? "Seçiliyor…" : "Ekleniyor…") : (selectsExisting ? "Mevcut kartı seç" : "Ekle")) { Task { await add() } }
                         .disabled(busy || legalName.trimmingCharacters(in: .whitespaces).isEmpty || vkn.count < 10)
                 }
             }

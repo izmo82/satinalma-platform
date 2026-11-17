@@ -173,7 +173,10 @@ struct ContractExtractions: Decodable, Sendable {
         let id: String; let field: String; let label: String; let value: String?; let page: Int?; let evidence: String?
         let confidence: String; let flags: [String]; let requiresHuman: Bool; let critical: Bool; let prefill: Bool
         let decision: String; let decidedBy: UserRef?; let decidedAt: String?
+        /// Persona K6: yalnız VKN önerisinde — aynı VKN ile kayıtlı, kullanılabilir kart (aday ucu yeni kart açmaz, bunu seçer). Eski sunucuda yok.
+        var existingSupplier: ExistingSupplier? = nil
     }
+    struct ExistingSupplier: Decodable, Sendable { let id: String; let legalName: String }
     struct Can: Decodable, Sendable { let request: Bool }
     let familyId: String; let contractVersionId: String; let documentVersionId: String
     let run: AiRun?; let fields: [Field]; let can: Can
@@ -184,10 +187,19 @@ struct AiRequestResult: Decodable, Sendable { let runId: String?; let status: St
 
 struct ReviewTemplateRef: Decodable, Sendable { let code: String; let versionNo: Int }
 
+/// Persona K3: son gönderimde gönderen eşik altı puanı onaylayarak gönderdiyse o anki puan ve eşik (eşik sonradan değişebilir). Metin sunucudan.
+struct ReviewAcknowledgement: Decodable, Sendable {
+    let reviewId: String?; let score: Int; let threshold: Int; let isTestProvider: Bool; let at: String; let by: UserRef?; let text: String
+}
+
 /// `GET /api/v1/contracts/:id/v2` içindeki `review` (Görev 5).
 struct ReviewSummary: Decodable, Sendable {
     let id: String; let score: Int; let threshold: Int; let belowThreshold: Bool; let stale: Bool; let template: ReviewTemplateRef?; let modelId: String?
     let isTestProvider: Bool; let providerLabel: String?; let createdAt: String; let disclaimer: String; let advice: String?
+    /// Persona K2: sözleşmeye şablon seçilmedi, inceleme türün güncel şablonunu kullandı (açıklama sunucudan). Eski sunucuda yok.
+    var templateUsageNote: String? = nil
+    /// Persona K3: gönderim anındaki eşik altı onayı.
+    var submitAcknowledgement: ReviewAcknowledgement? = nil
 }
 
 /// `GET /api/v1/contracts/:id/reviews` (Görev 5). Puan yalnız bilgidir: onay vermez, engellemez.
@@ -205,11 +217,13 @@ struct ContractReviews: Decodable, Sendable {
         let id: String; let score: Int; let documentVersionId: String; let template: ReviewTemplateRef?; let modelId: String?; let promptVersion: String
         let rubricVersion: String; let isTestProvider: Bool; let providerLabel: String?; let stale: Bool; let createdAt: String
         let subScoreList: [SubScore]; let summary: String?; let templateNote: String?; let findings: [Finding]
+        var templateUsageNote: String? = nil
     }
     struct Can: Decodable, Sendable { let request: Bool }
     let familyId: String; let contractVersionId: String; let documentVersionId: String; let templateVersionId: String?
     let current: Current?; let run: AiRun?; let history: [Base]
     let threshold: Int; let belowThreshold: Bool; let advice: String?; let disclaimer: String; let can: Can
+    var submitAcknowledgement: ReviewAcknowledgement? = nil
 }
 
 /// `GET /api/v1/contract-approvals/mine` (Görev 5): İşlerim'deki onay görevleriyle aynı küme.

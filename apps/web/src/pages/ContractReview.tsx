@@ -4,7 +4,7 @@ import { api, ApiError } from '../lib/api.ts';
 import { useResource } from '../lib/useApi.ts';
 import { fmtDate, fmtDateTime, fmtMoney } from '../lib/format.ts';
 import type { Label } from '../lib/labels.ts';
-import { CONTRACT_TYPES, type ContractType, type ReviewSummary } from '../lib/contractsV2.ts';
+import { CONTRACT_TYPES, type ContractType, type ReviewAcknowledgement, type ReviewSummary } from '../lib/contractsV2.ts';
 import { Banner, Empty, ErrorState, FilterChip, Loading, Tag } from '../ui/kit.tsx';
 import { Icon } from '../ui/icons.tsx';
 import { Button } from '@/components/ui/button';
@@ -29,6 +29,8 @@ export type Decision = 'PENDING' | 'CONFIRMED' | 'CORRECTED' | 'REJECTED';
 export interface ExtractionField {
   id: string; field: string; label: string; value: string | null; page: number | null; evidence: string | null; confidence: Confidence; flags: string[];
   requiresHuman: boolean; critical: boolean; prefill: boolean; decision: Decision; decidedBy: { id: string; displayName: string } | null; decidedAt: string | null;
+  /** Persona K6: yalnız VKN önerisinde — aynı VKN ile kayıtlı, kullanılabilir kart (aday ucu yeni kart açmaz, bunu seçer). */
+  existingSupplier?: { id: string; legalName: string } | null;
 }
 export interface ExtractionsRes { familyId: string; contractVersionId: string; documentVersionId: string; run: AiRun | null; fields: ExtractionField[]; can: { request: boolean } }
 
@@ -43,10 +45,12 @@ interface ReviewBase {
 }
 export interface Review extends ReviewBase {
   subScoreList: { category: string; label: string; score: number | null }[]; summary: string | null; templateNote: string | null; findings: Finding[];
+  templateAutoPicked?: boolean; templateUsageNote?: string | null;
 }
 export interface ReviewsRes {
   familyId: string; contractVersionId: string; documentVersionId: string; templateVersionId: string | null;
   current: Review | null; run: AiRun | null; history: ReviewBase[]; threshold: number; belowThreshold: boolean; advice: string | null; disclaimer: string;
+  submitAcknowledgement?: ReviewAcknowledgement | null;
   can: { request: boolean };
 }
 
@@ -61,6 +65,9 @@ export function runLabel(run: AiRun | null, kind: 'read' | 'review'): Label {
     case 'RUNNING': return { text: kind === 'read' ? 'Okunuyor' : 'İnceleniyor', tone: 'info', icon: 'refresh' };
     case 'SUCCEEDED': return { text: 'Tamamlandı', tone: 'info', icon: 'check' }; // yeşil çerçeve yalnız kural doğrulaması (Three-Ink Rule)
     case 'FAILED': return { text: 'Başarısız', tone: 'danger', icon: 'x' };
+    // Persona K5: politika ya da sağlayıcı yokken inceleme beklemez, hiç çalışmaz; etiket bunu söyler (okuma "Yeniden oku" ile sürer, etiketi aynı).
+    case 'NOT_ALLOWED': case 'NO_PROVIDER': if (kind === 'review') return { text: 'Çalışmayacak', tone: 'neutral', icon: 'minus' };
+      return { text: 'Bekliyor', tone: 'warn', icon: 'clock' };
     default: return { text: 'Bekliyor', tone: 'warn', icon: 'clock' };
   }
 }
@@ -176,6 +183,9 @@ function RunState({ data, kind, timedOut }: { data: { run: AiRun | null }; kind:
   if (!run) return <p className="text-ink-muted">{kind === 'review' ? 'Bu belge sürümü için ön inceleme yapılmadı. Onaycılar belgeyi kendileri inceler.' : 'Okuma istenmedi.'}</p>;
   if (ACTIVE.includes(run.status)) return <p className="text-ink-muted" role="status">{timedOut ? (kind === 'review' ? 'İnceleme sürüyor; gönderim için beklemeniz gerekmez.' : 'Okuma sürüyor, alanları elle girebilirsiniz.') : kind === 'review' ? 'İnceleniyor… Sonuç birkaç saniye içinde burada görünür.' : 'Okunuyor…'}</p>;
   if (run.status === 'SUCCEEDED') return null;
+  if (kind === 'review' && (run.status === 'NOT_ALLOWED' || run.status === 'NO_PROVIDER')) {
+    return <p className="text-ink-muted"><span className="font-semibold text-ink">Ön inceleme çalışmayacak:</span> {run.reason ?? runReason(run, 'review')} İnceleme yapılmadı; gönderim yine açık, onaycılar belgeyi kendileri inceler.</p>;
+  }
   return <p className="text-ink-muted"><span className="font-semibold text-ink">{run.status === 'FAILED' ? 'İnceleme tamamlanamadı.' : 'İnceleme yapılmadı.'}</span> {run.reason ?? (run.status === 'FAILED' ? '' : runReason(run, 'review'))} Gönderim yine açık; onaycılar belgeyi kendileri inceler.</p>;
 }
 
@@ -222,6 +232,7 @@ export function ReviewCard({ familyId, onAddApprover }: { familyId: string; onAd
                   {cur.findings.some((f) => !f.verified) ? <span className="font-normal text-ink-muted"> · {cur.findings.filter((f) => !f.verified).length} kaynağı doğrulanamayan (puana girmez)</span> : null}</p>
                 <p className="m-0 text-sm text-ink-muted">{AI_DISCLAIMER} Eşik {d.threshold}.</p>
                 {cur.templateNote && <p className="m-0 text-sm text-ink-muted">{cur.templateNote}</p>}
+                {cur.templateUsageNote && <p className="m-0 text-sm text-ink-muted">{cur.templateUsageNote}</p>}
               </div>
             </div>
             <ul className="grid gap-x-4 gap-y-1 text-sm min-[641px]:grid-cols-2" aria-label="Alt puanlar">
@@ -302,7 +313,9 @@ export function ReviewDetail({ familyId, documentHref }: { familyId: string; doc
                 <div className="grid gap-1 text-sm"><span>Eşik <span className="tabular">{d.threshold}</span></span>
                   {d.belowThreshold && <Tag label={{ text: 'Eşiğin altında', tone: 'warn', icon: 'alert' }} />}
                   {cur.templateNote && <span className="text-ink-muted">{cur.templateNote}</span>}</div></div>
+              {cur.templateUsageNote && <p className="m-0 text-sm text-ink-muted">{cur.templateUsageNote}</p>}
               {d.belowThreshold && d.advice && <p className="m-0 text-sm text-warn">{d.advice}</p>}
+              {d.submitAcknowledgement && <AckLine ack={d.submitAcknowledgement} />}
               <table className="w-full text-left text-sm">
                 <caption className="sr-only">Alt puanlar</caption>
                 <thead><tr className="text-ink-muted"><th scope="col" className="py-1 font-semibold">Başlık</th><th scope="col" className="py-1 text-right font-semibold">Puan</th></tr></thead>
@@ -359,6 +372,16 @@ export function ReviewDetail({ familyId, documentHref }: { familyId: string; doc
 
 // --- Onaylar sekmesi: onaycıya bilgi ---------------------------------------------------------------------------------------
 
+/** Persona K3: gönderenin gönderim anında eşik altı puanı onayladığı (o anki eşikle; canlı eşik sonradan değişebilir). */
+function AckLine({ ack }: { ack: ReviewAcknowledgement }) {
+  return (
+    <span className="flex flex-wrap items-center gap-x-2 text-sm text-warn" data-testid="review-ack">
+      <Icon name="alert" />{ack.text}
+      <span className="text-ink-subtle">{ack.by ? `${ack.by.displayName} · ` : ''}{fmtDateTime(ack.at)}</span>
+    </span>
+  );
+}
+
 export function ReviewApprovalNote({ review, href }: { review: ReviewSummary; href: string }): ReactNode {
   return (
     <section className="panel" aria-labelledby="review-note-h">
@@ -367,6 +390,8 @@ export function ReviewApprovalNote({ review, href }: { review: ReviewSummary; hr
         <ScoreValue score={review.score} size="md" />
         <div className="min-w-0 flex-1 grid gap-1 text-sm">
           <span>Eşik <span className="tabular">{review.threshold}</span>{review.belowThreshold ? ' · eşiğin altında' : ''}{review.stale ? ' · güncel değil (belge ya da şablon değişti)' : ''}</span>
+          {review.submitAcknowledgement && <AckLine ack={review.submitAcknowledgement} />}
+          {review.templateUsageNote && <span className="text-ink-muted">{review.templateUsageNote}</span>}
           <span className="text-ink-muted">{review.disclaimer} Onay kararınızı etkilemez; belgeyi siz incelersiniz.</span>
         </div>
         <Link to={href} className="text-sm font-semibold">Bulguları gör</Link>

@@ -50,6 +50,13 @@ export interface ContractV2 {
 export interface ReviewSummary {
   id: string; score: number; threshold: number; belowThreshold: boolean; stale: boolean; template: { code: string; versionNo: number } | null;
   modelId: string | null; isTestProvider: boolean; providerLabel: string | null; createdAt: string; disclaimer: string; advice: string | null;
+  /** Persona K2: sözleşmeye şablon seçilmedi, inceleme türün güncel şablonunu kullandı (açıklama metni sunucudan). Eski sunucuda yok. */
+  templateAutoPicked?: boolean; templateUsageNote?: string | null;
+  /** Persona K3: son gönderimde gönderen eşik altı puanı onaylayarak gönderdiyse o anki puan ve eşik (eşik sonradan değişebilir). */
+  submitAcknowledgement?: ReviewAcknowledgement | null;
+}
+export interface ReviewAcknowledgement {
+  reviewId: string | null; score: number; threshold: number; isTestProvider: boolean; at: string; by: { id: string; displayName: string } | null; text: string;
 }
 
 export interface ReminderTask { id: string; status: 'OPEN' | 'DONE'; closedAt: string | null; recipient: { type: 'USER'; userId: string; displayName: string } | { type: 'ROLE'; role: string; label: string } }

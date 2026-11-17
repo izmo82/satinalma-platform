@@ -104,6 +104,21 @@ interface ExtractionRow {
   requires_human: boolean; decision: 'PENDING' | 'CONFIRMED' | 'CORRECTED' | 'REJECTED'; decided_by: string | null; decided_by_name: string | null; decided_at: Date | null;
 }
 
+/**
+ * Persona K6: önerilen VKN ile kesin eşleşen, sözleşmede kullanılabilir tedarikçi kartı (birleştirilmişse hedefi). Aday kart ucu
+ * (`createCandidateSupplier`) aynı VKN'de yeni kart açmaz, bu kartı seçer; ekran düğmeyi buna göre "Mevcut kartı seç" yazar. Yapay zekâ eşleştirmez.
+ */
+async function usableSupplierByVkn(tx: Tx, vkn: string): Promise<{ id: string; legalName: string } | null> {
+  const r = (await tx.query<{ id: string; legal_name: string; status: string; merged_into_id: string | null }>(
+    `SELECT id, legal_name, status, merged_into_id FROM suppliers WHERE country = 'TR' AND tax_id_type = 'VKN' AND tax_id = $1`, [vkn])).rows[0];
+  if (!r || r.status === 'REJECTED' || r.status === 'ARCHIVED') return null;
+  if (r.merged_into_id) {
+    const t = (await tx.query<{ id: string; legal_name: string; status: string }>(`SELECT id, legal_name, status FROM suppliers WHERE id = $1`, [r.merged_into_id])).rows[0];
+    return t && !['MERGED', 'REJECTED', 'ARCHIVED'].includes(t.status) ? { id: t.id, legalName: t.legal_name } : null;
+  }
+  return r.status === 'MERGED' ? null : { id: r.id, legalName: r.legal_name };
+}
+
 /** GET /contracts/:id/extractions: güncel sürümün okuma durumu ve alan önerileri (test sağlayıcısı etiketli). */
 export async function getExtractions(tx: Tx, ctx: TenantContext, familyId: string) {
   const v = await currentVersion(tx, familyId);
@@ -114,11 +129,14 @@ export async function getExtractions(tx: Tx, ctx: TenantContext, familyId: strin
   const order = new Map(CONTRACT_AI_FIELDS.map((f, i) => [f, i]));
   rows.sort((a, b) => order.get(a.field)! - order.get(b.field)!);
   const test = isTestProvider(run?.provider);
+  const vknRow = rows.find((e) => e.field === 'supplierVkn' && e.value);
+  const existing = vknRow ? await usableSupplierByVkn(tx, vknRow.value!) : null;
   return {
     familyId, contractVersionId: v.contract_version_id, documentVersionId: v.document_version_id,
     run: run && { id: run.id, status: run.status, reason: run.reason, provider: run.provider, isTestProvider: test, providerLabel: test ? TEST_PROVIDER_LABEL : null,
       promptVersion: run.prompt_version, responseModel: run.response_model, createdAt: run.created_at, finishedAt: run.finished_at },
     fields: rows.map((e) => ({
+      ...(e.field === 'supplierVkn' ? { existingSupplier: existing } : {}),
       id: e.id, field: e.field, label: AI_FIELD_TR[e.field], value: e.value, page: e.page, evidence: e.evidence, confidence: e.confidence, flags: e.flags,
       requiresHuman: e.requires_human, critical: CRITICAL_AI_FIELDS.includes(e.field), prefill: prefillOf(e.field, e.confidence), decision: e.decision,
       decidedBy: e.decided_by ? { id: e.decided_by, displayName: e.decided_by_name ?? '' } : null, decidedAt: e.decided_at,
@@ -353,6 +371,38 @@ async function familyReviews(tx: Tx, familyId: string) {
 }
 const reviewThreshold = async (tx: Tx) => (await contractSettings(tx)).reviewThreshold;
 
+/** Persona K2: sözleşmeye şablon seçilmediyse inceleme türün güncel şablonunu kendiliğinden kullanır (R7); ekranda bu açıkça söylenir. */
+export const autoTemplateNote = (t: { code: string; versionNo: number }) =>
+  `İncelemede türün güncel şablonu kullanıldı: ${t.code} v${t.versionNo} (sözleşmeye şablon seçilmedi)`;
+async function familyHasTemplate(tx: Tx, familyId: string) {
+  return (await tx.query<{ template_version_id: string | null }>(`SELECT template_version_id FROM contract_families WHERE id = $1`, [familyId])).rows[0]?.template_version_id != null;
+}
+const templateUsage = (r: ReviewRow, selected: boolean) => {
+  const template = r.template_code ? { code: r.template_code, versionNo: r.template_version_no! } : null;
+  const auto = !!template && !selected;
+  return { templateAutoPicked: auto, templateUsageNote: template && auto ? autoTemplateNote(template) : null };
+};
+
+export const REVIEW_ACK_ACTION = 'contract.review_below_threshold_acknowledged';
+/**
+ * Persona K3: eşik canlıdır (inceleme anına bağlı değil); onaycı, gönderenin gönderim anında gördüğü eşik altı uyarıyı onaylayarak gönderdiğini
+ * bu kayıttan görür. Yalnız SON gönderimin olayı (aynı işlemde `contract.submitted` ile aynı zaman damgası); yoksa null. Puan ve eşik o anki değerdir.
+ */
+export async function submitAcknowledgement(tx: Tx, familyId: string) {
+  const r = (await tx.query<{ data: { reviewId?: string; score?: number; threshold?: number; isTestProvider?: boolean }; at: Date; actor_user_id: string | null;
+      display_name: string | null }>(
+    `SELECT a.data, a.at, a.actor_user_id, u.display_name FROM audit_events a LEFT JOIN users u ON u.id = a.actor_user_id
+     WHERE a.entity_type = 'contract_family' AND a.entity_id = $1 AND a.action = $2
+       AND a.at >= (SELECT max(s.at) FROM audit_events s WHERE s.entity_type = 'contract_family' AND s.entity_id = $1 AND s.action = 'contract.submitted')
+     ORDER BY a.at DESC, a.id DESC LIMIT 1`, [familyId, REVIEW_ACK_ACTION])).rows[0];
+  if (!r || typeof r.data.score !== 'number' || typeof r.data.threshold !== 'number') return null;
+  return {
+    reviewId: r.data.reviewId ?? null, score: r.data.score, threshold: r.data.threshold, isTestProvider: !!r.data.isTestProvider, at: r.at,
+    by: r.actor_user_id ? { id: r.actor_user_id, displayName: r.display_name ?? '' } : null,
+    text: `Gönderen, eşik altı puanı (${r.data.score} / eşik ${r.data.threshold}) onaylayarak gönderdi.`,
+  };
+}
+
 /**
  * Sözleşmenin inceleme özeti (GET …/v2 ve gönderim denetimi). Güncel = en son inceleme; yeni belge sürümü ya da yeni şablon sürümü onu
  * "güncel değil" yapar (R9). Eşik karşılaştırması yalnız güncel olmayan değil (stale=false) incelemede yapılır; puan hiçbir şeyi engellemez.
@@ -368,8 +418,10 @@ export async function reviewSummary(tx: Tx, familyId: string) {
   return {
     id: latest.id, score: latest.score, threshold, belowThreshold: !stale && belowThreshold(latest.score, threshold), stale,
     template: latest.template_code ? { code: latest.template_code, versionNo: latest.template_version_no! } : null, modelId: latest.model_id,
+    ...templateUsage(latest, await familyHasTemplate(tx, familyId)),
     isTestProvider: test, providerLabel: test ? TEST_PROVIDER_LABEL : null, createdAt: latest.created_at, disclaimer: AI_DISCLAIMER,
     advice: !stale && belowThreshold(latest.score, threshold) ? BELOW_THRESHOLD_ADVICE : null,
+    submitAcknowledgement: await submitAcknowledgement(tx, familyId),
   };
 }
 
@@ -387,6 +439,7 @@ export async function getContractReviews(tx: Tx, ctx: TenantContext, familyId: s
       stale: isStale(r), createdAt: r.created_at };
   };
   const cur = all[0];
+  const selected = await familyHasTemplate(tx, familyId);
   let current = null;
   if (cur) {
     const findings = (await tx.query<{ id: string; category: ReviewCategory; kind: string; severity: string; title: string; quote: string | null; page: number | null;
@@ -395,7 +448,7 @@ export async function getContractReviews(tx: Tx, ctx: TenantContext, familyId: s
     current = {
       ...base(cur), subScores: cur.sub_scores,
       subScoreList: REVIEW_CATEGORIES.map((c) => ({ category: c, label: REVIEW_CATEGORY_TR[c], score: cur.sub_scores[c] ?? null })),
-      summary: cur.summary, templateNote: cur.template_code ? null : NO_TEMPLATE_NOTE,
+      summary: cur.summary, templateNote: cur.template_code ? null : NO_TEMPLATE_NOTE, ...templateUsage(cur, selected),
       findings: findings.map((f) => ({ id: f.id, category: f.category, categoryLabel: REVIEW_CATEGORY_TR[f.category], kind: f.kind, severity: f.severity, title: f.title,
         quote: f.quote, page: f.page, templateRef: f.template_ref, suggestion: f.suggestion, verified: f.verified, sourceLabel: f.verified ? null : UNVERIFIED_FINDING_LABEL })),
     };
@@ -415,6 +468,7 @@ export async function getContractReviews(tx: Tx, ctx: TenantContext, familyId: s
       promptVersion: run.prompt_version, responseModel: run.response_model, createdAt: run.created_at, finishedAt: run.finished_at },
     history: all.slice(1).map(base),
     threshold, belowThreshold: below, advice: below ? BELOW_THRESHOLD_ADVICE : null, disclaimer: AI_DISCLAIMER,
+    submitAcknowledgement: await submitAcknowledgement(tx, familyId),
     can: { request: can(ctx.roles, 'contract.ai.request') && familyWritable(ctx, v.department_id) },
   };
 }
@@ -427,7 +481,7 @@ export async function auditReviewAtSubmit(tx: Tx, ctx: TenantContext, familyId: 
   const s = await reviewSummary(tx, familyId);
   if (!s || !s.belowThreshold) return null;
   const data = { reviewId: s.id, score: s.score, threshold: s.threshold, rubricVersion: REVIEW_RUBRIC_VERSION, isTestProvider: s.isTestProvider };
-  await audit(tx, ctx, 'contract.review_below_threshold_acknowledged', 'contract_family', familyId, data);
+  await audit(tx, ctx, REVIEW_ACK_ACTION, 'contract_family', familyId, data);
   return data;
 }
 

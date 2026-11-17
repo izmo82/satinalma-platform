@@ -354,6 +354,8 @@ struct ReviewSummaryRow: View {
                     Text("Ön inceleme: \(r.score) / 100")
                     Text("Eşik \(r.threshold)\(r.belowThreshold ? " · eşiğin altında" : "")\(r.stale ? " · güncel değil" : "") · yalnız bilgi")
                         .font(.footnote).foregroundStyle(.secondary)
+                    if let a = r.submitAcknowledgement { Text(a.text).font(.footnote).foregroundStyle(.orange) }
+                    if let n = r.templateUsageNote, !r.stale { Text(n).font(.footnote).foregroundStyle(.secondary) }
                     Text(r.disclaimer).font(.footnote).foregroundStyle(.secondary)
                     if r.isTestProvider { TestProviderTag(label: r.providerLabel) }
                 } else {
