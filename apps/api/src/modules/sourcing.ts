@@ -15,7 +15,7 @@ import * as approvals from './approvals.ts';
 import { resolveDepartment } from './departments.ts';
 import { queueRoundInvites, roundInviteEmails } from './portal.ts';
 import { coiSummary, completionState, ensureCoiTask, ensureCoiTasksFor } from './projectCompletion.ts';
-import { enqueueErpOutbound } from './erpWrite.ts';
+import { enqueueErpOutboundSafe } from './erpWrite.ts';
 
 /**
  * Faz 2: proje → RFQ turu (görev ayrılıklı yayın onayı) → tedarikçi portalı (mühürlü teklif, sunucu saati)
@@ -567,7 +567,7 @@ export async function decideAward(tx: Tx, ctx: TenantContext, awardId: string, b
   await closeTasks(tx, `award:${awardId}`);
   await audit(tx, ctx, body.approve ? 'award.approved' : 'award.rejected', 'award', awardId, { projectId: a.project_id }, body.note);
   // v2 Faz 8 Görev 6 (R3, R7): kazanan seçildi → ERP satınalma talebi; yazma kapalıyken hiçbir şey yazılmaz.
-  if (body.approve) await enqueueErpOutbound(tx, ctx, 'REQUISITION', 'PROJECT', a.project_id);
+  if (body.approve) await enqueueErpOutboundSafe(tx, ctx, 'REQUISITION', 'PROJECT', a.project_id);
   await ensureCoiTasksFor(tx, ctx, a.project_id, ctx.userId);
   return { status: body.approve ? 'APPROVED' : 'REJECTED' };
 }

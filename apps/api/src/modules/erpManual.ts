@@ -7,7 +7,7 @@ import { ERP_FEATURE_CATALOG, can, type ErpFeature } from '@sp/domain';
 import type { TenantContext, Tx } from '../db.ts';
 import { audit } from '../audit.ts';
 import { conflict, notFound, unprocessable } from '../errors.ts';
-import { ERP_ENTITY_TYPE, ERP_WRITE_FEATURES, isWriteFeature, type WriteFeature } from './erpWrite.ts';
+import { ALREADY_IN_ERP_PREFIX, ERP_ENTITY_TYPE, ERP_WRITE_FEATURES, ERP_WRITE_JOB, ERP_WRITE_LIMITS, isWriteFeature, type WriteFeature } from './erpWrite.ts';
 import { PROTECTED_DEMO_INVOICES } from './erpRead.ts';
 import { ERP_PAYMENT_STATUS_TR } from './invoices.ts';
 
@@ -36,8 +36,17 @@ export async function supplierErpCode(tx: Tx, ctx: TenantContext, supplierId: st
   const s = (await tx.query<{ erp_supplier_code: string | null; erp_supplier_code_source: string | null }>(
     `SELECT erp_supplier_code, erp_supplier_code_source FROM suppliers WHERE id = $1`, [supplierId])).rows[0];
   if (!s) throw notFound();
-  return { supplierId, code: s.erp_supplier_code, source: s.erp_supplier_code_source, sourceLabel: s.erp_supplier_code_source ? SOURCE_TR[s.erp_supplier_code_source] : null,
-    canEdit: can(ctx.roles, 'erp.manual.record') };
+  // ERP kaynaklı kodun sağlayıcısı: kodu yazan son ERP okuması/yazması denetim kaydında (mock bayrağı) — taklit sonucu gerçek gibi gösterilmez.
+  let mock = false;
+  if (s.erp_supplier_code_source === 'ERP') {
+    const a = (await tx.query<{ mock: string | null }>(`SELECT data->>'mock' AS mock FROM audit_events WHERE entity_type = 'supplier' AND entity_id = $1
+      AND action = 'supplier.erp_code_set' AND data->>'source' = 'ERP' AND data->>'to' = $2 ORDER BY id DESC LIMIT 1`, [supplierId, s.erp_supplier_code])).rows[0];
+    mock = a?.mock === 'true';
+  }
+  const src = s.erp_supplier_code_source;
+  return { supplierId, code: s.erp_supplier_code, source: src, sourceLabel: src ? (src === 'ERP' && mock ? 'ERP (taklit)' : SOURCE_TR[src]) : null,
+    provider: src === 'ERP' ? (mock ? { kind: 'TAKLIT', label: PROVIDER_TR.TAKLIT, real: false } : { kind: 'ORACLE_EBS', label: PROVIDER_TR.ORACLE_EBS, real: true }) : null,
+    mock, canEdit: can(ctx.roles, 'erp.manual.record') };
 }
 
 /** `PUT /suppliers/:id/erp-code { code }` — elle kod (kaynak MANUAL); `code: null` kodu temizler. Aynı kod başka kartta olamaz. */
@@ -131,10 +140,12 @@ const OUT_SQL = `SELECT o.id, o.feature, o.entity_type, o.entity_id, o.status, o
 
 function outView(r: OutRow) {
   const mock = r.provider_kind === 'TAKLIT';
-  const base = OUTBOUND_STATUS_TR[r.status] ?? r.status;
+  // Kayıt ERP'de zaten vardı (ör. tedarikçi kodu okumayla geldi): istek atılmadı; "gönderildi" denmez.
+  const alreadyInErp = r.status === 'SENT' && (r.last_error ?? '').startsWith(ALREADY_IN_ERP_PREFIX);
+  const base = alreadyInErp ? 'ERP\'de zaten kayıtlı (yeni kayıt yazılmadı)' : OUTBOUND_STATUS_TR[r.status] ?? r.status;
   return {
     id: r.id, feature: r.feature, featureLabel: ERP_FEATURE_CATALOG[r.feature].label, entityType: r.entity_type, entityId: r.entity_id,
-    status: r.status, statusLabel: mock && r.status !== 'MANUAL' ? `${base} (${MOCK_NOTE})` : base,
+    status: r.status, statusLabel: mock && r.status !== 'MANUAL' && !alreadyInErp ? `${base} (${MOCK_NOTE})` : base, alreadyInErp,
     provider: r.provider_kind ? { kind: r.provider_kind, label: PROVIDER_TR[r.provider_kind], real: r.provider_kind === 'ORACLE_EBS' } : null,
     mock, externalRef: r.external_ref, attempts: r.attempts, lastError: r.last_error,
     manual: r.status === 'MANUAL' ? { by: r.manual_by ? { id: r.manual_by, name: r.manual_by_name } : null, at: r.manual_at?.toISOString() ?? null, note: r.manual_note } : null,
@@ -185,6 +196,12 @@ export async function recordManualOutbound(tx: Tx, ctx: TenantContext, body: { f
     throw conflict('already_sent', 'Bu kayıt ERP\'ye zaten gönderildi; elle iletildi kaydı açılmadı.', { outboundId: latest.id });
   }
   if (latest?.status === 'MANUAL') throw conflict('already_recorded', 'Bu kayıt için "ERP\'ye elle iletildi" zaten kayıtlı.', { outboundId: latest.id });
+  // İşçi şu an bu kaydı ERP'ye gönderiyorsa elle kapatılmaz (ikisi birden ERP'ye girmesin); bitince yeniden deneyin.
+  if (latest) {
+    const busy = (await tx.query<{ id: string }>(`SELECT id FROM jobs WHERE kind = $1 AND status = 'RUNNING' AND payload->>'outboundId' = $2
+      AND updated_at > now() - make_interval(mins => $3) LIMIT 1`, [ERP_WRITE_JOB, latest.id, ERP_WRITE_LIMITS.inFlightMinutes])).rows[0];
+    if (busy) throw conflict('write_in_progress', 'Bu kayıt şu an ERP\'ye gönderiliyor; sonuç gelince yeniden bakın.', { outboundId: latest.id, jobId: busy.id });
+  }
   let id: string;
   let closedPending = false;
   if (latest) {

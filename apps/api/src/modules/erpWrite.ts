@@ -81,6 +81,26 @@ export async function enqueueErpOutbound(tx: Tx, ctx: TenantContext, feature: Wr
   return { outboundId, created: true };
 }
 
+/** "ERP'de zaten kayıtlı" notunun öneki (detay etiketi bunu tanır). */
+export const ALREADY_IN_ERP_PREFIX = 'ERP\'de zaten kayıtlı';
+
+/**
+ * Olay noktası için güvenli sarmalayıcı: kuyruğa alma SAVEPOINT içinde çalışır; veritabanı hatasında yalnız bu kısım geri alınır ve
+ * günlüğe kod yazılır — iş akışı (kazanan seçimi, zincir onayı, tedarikçi onayı) hiçbir zaman ERP kuyruğu yüzünden geri alınmaz.
+ */
+export async function enqueueErpOutboundSafe(tx: Tx, ctx: TenantContext, feature: WriteFeature, entityType: string, entityId: string) {
+  await tx.query('SAVEPOINT erp_outbound_enqueue');
+  try {
+    const r = await enqueueErpOutbound(tx, ctx, feature, entityType, entityId);
+    await tx.query('RELEASE SAVEPOINT erp_outbound_enqueue');
+    return r;
+  } catch (e) {
+    await tx.query('ROLLBACK TO SAVEPOINT erp_outbound_enqueue');
+    console.error('erp outbound enqueue failed', feature, entityId, (e as { code?: string })?.code ?? (e as Error)?.name ?? 'error');
+    return null;
+  }
+}
+
 const entityTypeAudit = (t: string) => (t === 'PROJECT' ? 'project' : t === 'CONTRACT_FAMILY' ? 'contract_family' : 'supplier');
 
 /** Sürüm: sözleşmede onaylı zincir sayısı (yeni sürüm yeniden onaylanınca yeni başlık), talepte onaylı seçim sayısı, tedarikçide 1. */
@@ -96,7 +116,7 @@ async function revisionOf(tx: Tx, feature: WriteFeature, entityId: string): Prom
 
 // ---------- Yük kuruluşu ----------
 
-type Built = { ok: true; values: Record<string, string | null>; recordKey: string } | { ok: false; code: string; message: string; skip?: boolean };
+type Built = { ok: true; values: Record<string, string | null>; recordKey: string } | { ok: false; code: string; message: string; skip?: boolean; existingRef?: string };
 
 /** Uygulama alanları (katalog anahtarları). Banka bilgisi hiçbir yükte yoktur (D93). */
 export async function buildPayload(tx: Tx, feature: WriteFeature, entityId: string): Promise<Built> {
@@ -105,7 +125,10 @@ export async function buildPayload(tx: Tx, feature: WriteFeature, entityId: stri
       contact_phone: string | null; erp_supplier_code: string | null; status: string }>(
       `SELECT legal_name, tax_id, address, contact_name, contact_email, contact_phone, erp_supplier_code, status FROM suppliers WHERE id = $1`, [entityId])).rows[0];
     if (!s) return { ok: false, code: 'entity_not_found', message: 'Tedarikçi bulunamadı; ERP\'ye istek atılmadı.' };
-    if (s.erp_supplier_code) return { ok: false, skip: true, code: 'supplier_already_in_erp', message: `Tedarikçinin ERP kodu zaten var (${s.erp_supplier_code}); ERP'ye yeni tedarikçi yazılmadı.` };
+    if (s.erp_supplier_code) {
+      return { ok: false, skip: true, existingRef: s.erp_supplier_code, code: 'supplier_already_in_erp',
+        message: `${ALREADY_IN_ERP_PREFIX} (ERP kodu ${s.erp_supplier_code}); yeni tedarikçi yazılmadı.` };
+    }
     return { ok: true, recordKey: s.tax_id ?? entityId, values: { taxId: s.tax_id, legalName: s.legal_name, address: s.address, contactName: s.contact_name,
       contactEmail: s.contact_email, contactPhone: s.contact_phone, erpSupplierCode: null } };
   }
@@ -259,14 +282,22 @@ async function prepareWrite(tx: Tx, ctx: TenantContext, jobId: string, deps: Erp
     auth_type: ResolvedEndpoint['authType'] | null; username: string | null; client_id: string | null; token_url: string | null; field_map: FieldMap; timeout_ms: number }>(
     `SELECT id, enabled, write_enabled, provider_kind, base_url, resource_path, auth_type, username, client_id, token_url, field_map, timeout_ms
      FROM integration_endpoints WHERE feature = $1`, [feature])).rows[0];
-  const refuse = async (code: string, message: string, opts: { skip?: boolean } = {}): Promise<Prepared> => {
-    await tx.query(`UPDATE erp_outbound_records SET ${opts.skip ? `status = 'FAILED', ` : ''}last_error = $2, updated_at = now() WHERE id = $1`, [outboundId, clip(message, 500)]);
+  const refuse = async (code: string, message: string, opts: { skip?: boolean; existingRef?: string; providerKind?: ErpProviderKind } = {}): Promise<Prepared> => {
+    if (opts.skip && opts.existingRef && opts.providerKind) {
+      // Kayıt ERP'de zaten var (ör. tedarikçi kodu okumayla geldi): son durum SENT + mevcut ERP referansı, not last_error'da (istek atılmadı).
+      // FAILED gösterilmez ve WRITE_RETRY tarafından yeniden denenmez.
+      await tx.query(`UPDATE erp_outbound_records SET status = 'SENT', provider_kind = $3, external_ref = coalesce(external_ref, $4), last_error = $2, updated_at = now()
+        WHERE id = $1`, [outboundId, clip(message, 500), opts.providerKind, clip(opts.existingRef, 120)]);
+    } else {
+      await tx.query(`UPDATE erp_outbound_records SET ${opts.skip ? `status = 'FAILED', ` : ''}last_error = $2, updated_at = now() WHERE id = $1`, [outboundId, clip(message, 500)]);
+    }
     if (opts.skip) await finishJob(tx, jobId, job, runId, 'skipped', { outboundId, refused: code, requestSent: false }, null);
     else await tx.query(`UPDATE jobs SET status = 'FAILED', error_code = $2, result = $3, updated_at = now() WHERE id = $1`,
       [jobId, clip(code.toUpperCase(), 80), JSON.stringify({ outboundId, refused: code, requestSent: false })]);
     if (runId) await accountRetryRun(tx, ctx, runId, jobId, opts.skip ? 'skipped' : 'failed', { code, message, recordKey: rec.entity_id });
-    await audit(tx, ctx, 'erp.outbound.refused', entityTypeAudit(rec.entity_type), rec.entity_id, { feature, outboundId, reason: code, requestSent: false });
-    return { kind: 'done', result: { outboundId, status: opts.skip ? 'FAILED' : rec.status, outcome: 'refused', requestSent: false } };
+    await audit(tx, ctx, opts.skip ? 'erp.outbound.skipped' : 'erp.outbound.refused', entityTypeAudit(rec.entity_type), rec.entity_id,
+      { feature, outboundId, reason: code, requestSent: false, ...(opts.existingRef ? { externalRef: opts.existingRef } : {}) });
+    return { kind: 'done', result: { outboundId, status: opts.skip ? (opts.existingRef ? 'SENT' : 'FAILED') : rec.status, outcome: opts.skip ? 'skipped' : 'refused', requestSent: false } };
   };
   if (!ep || !ep.enabled) return refuse('feature_disabled', 'Özellik kapalı; ERP\'ye istek atılmadı. Elle iletebilirsiniz.');
   if (!ep.write_enabled) return refuse('write_not_enabled', 'ERP\'ye yazma kapalı (R3); istek atılmadı. Elle iletebilirsiniz.');
@@ -280,7 +311,7 @@ async function prepareWrite(tx: Tx, ctx: TenantContext, jobId: string, deps: Erp
   const missing = missingMappings(feature, ep.field_map ?? {});
   if (missing.length) return refuse('mapping_incomplete', `Zorunlu alan eşlenmemiş (${missing.join(', ')}); istek atılmadı.`);
   const built = await buildPayload(tx, feature, rec.entity_id);
-  if (!built.ok) return refuse(built.code, built.message, { skip: built.skip });
+  if (!built.ok) return refuse(built.code, built.message, { skip: built.skip, existingRef: built.existingRef, providerKind: provider.kind });
   const mapped = toErpPayload(feature, ep.field_map ?? {}, built.values);
   if (!('payload' in mapped)) {
     const parts = [...mapped.missing.map((k) => `${k} boş`), ...mapped.invalid.map((k) => `${k} biçimi geçersiz`)];
@@ -379,7 +410,8 @@ async function recordWrite(tx: Tx, ctx: TenantContext, p: Extract<Prepared, { ki
   } else if (!RETRYABLE.includes(cur.status)) {
     // Çağrı sürerken kayıt elle iletildi ya da başka yoldan gönderildi: üzerine yazılmaz (MANUAL/CONFIRMED değişmez).
     outcome = 'skipped';
-    notes.push({ code: 'record_closed_elsewhere', message: `Kayıt çağrı sürerken başka yoldan kapandı (${cur.status}); sonuç yazılmadı.` });
+    notes.push({ code: 'record_closed_elsewhere', message: `Kayıt çağrı sürerken başka yoldan kapandı (${cur.status}); sonuç yazılmadı.`
+      + (r.outcome === 'sent' ? ` ERP'nin döndürdüğü referans: ${clip(r.externalRef.trim(), 120)}${r.viaFind ? ' (aramayla bulundu)' : ''}.` : '') });
   } else if (r.outcome === 'sent') {
     outcome = 'sent';
     status = 'SENT';

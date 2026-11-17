@@ -448,7 +448,8 @@ export async function requestRun(tx: Tx, ctx: TenantContext, config: ErpCfg, fea
     return { runId, status: 'NOT_CONFIGURED', statusLabel: RUN_STATUS_LABEL.NOT_CONFIGURED, reason, queued: 0 };
   }
 
-  const running = await tx.query<{ id: string }>(`SELECT id FROM integration_runs WHERE feature = $1 AND status = 'RUNNING' AND trigger <> 'TEST'
+  // Olay güdümlü tek kayıt yazma çalışmaları (trigger EVENT, Görev 6) "Şimdi çalıştır"ı engellemez.
+  const running = await tx.query<{ id: string }>(`SELECT id FROM integration_runs WHERE feature = $1 AND status = 'RUNNING' AND trigger NOT IN ('TEST','EVENT')
     AND started_at > now() - interval '30 minutes' ORDER BY started_at DESC LIMIT 1`, [feature]);
   if (running.rows[0]) throw conflict('run_in_progress', 'Bu özellik için bir çalışma sürüyor; bitince yeniden deneyin.', { runId: running.rows[0].id });
 

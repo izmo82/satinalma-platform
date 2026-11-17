@@ -10,7 +10,7 @@ import type { ErpConfig } from '../src/config.ts';
 import { withTenant, type TenantContext } from '../src/db.ts';
 import { erpProvider, type ErpProvider, type ErpProviderKind } from '../src/erp/providers.ts';
 import { resetTaklitStore } from '../src/erp/taklit.ts';
-import { ERP_WRITE_LIMITS, enqueueErpOutbound, reapAllStaleErpWrites, runErpWriteJob } from '../src/modules/erpWrite.ts';
+import { ERP_WRITE_LIMITS, enqueueErpOutbound, enqueueErpOutboundSafe, reapAllStaleErpWrites, runErpWriteJob } from '../src/modules/erpWrite.ts';
 import { PROTECTED_DEMO_INVOICES } from '../src/modules/erpRead.ts';
 import { laneKinds } from '../src/worker.ts';
 import { makeHarness } from './harness.ts';
@@ -223,6 +223,43 @@ describe('R3 sağlanınca taklitle yazma (gerçek Oracle değil)', () => {
     expect(await withTenant(h.pool, ctxOf(h.world.users.masterData.id, ['PROCUREMENT']), (tx) =>
       enqueueErpOutbound(tx, ctxOf(h.world.users.masterData.id, ['PROCUREMENT']), 'SUPPLIER', 'SUPPLIER', s.id))).toBeNull();
     expect(await outboundFor(s.id)).toHaveLength(1);
+    // M6: taklitle yazılan kod kartta "ERP (taklit)" görünür (gerçek başarı gibi değil).
+    const code = await h.call('buyer', 'GET', `/api/v1/suppliers/${s.id}/erp-code`);
+    expect(code.body).toMatchObject({ code: after!.external_ref, source: 'ERP', sourceLabel: 'ERP (taklit)', mock: true, provider: { kind: 'TAKLIT', real: false } });
+  });
+
+  it('M1: olay noktasındaki kuyruğa alma DB hatası iş akışını geri almaz (SAVEPOINT)', async () => {
+    const ctx = ctxOf(h.world.users.masterData.id, ['PROCUREMENT']);
+    const marker = randomUUID();
+    await withTenant(h.pool, ctx, async (tx) => {
+      // Geçersiz kimlik: tedarikçi sorgusu 22P02 verir (SUPPLIER yazması açık) → yalnız kuyruk kısmı geri alınır.
+      expect(await enqueueErpOutboundSafe(tx, ctx, 'SUPPLIER', 'SUPPLIER', 'gecersiz-kimlik')).toBeNull();
+      await tx.query(`INSERT INTO audit_events (tenant_id, actor_user_id, action, entity_type, entity_id, data) VALUES ($1,$2,'test.after_enqueue','supplier',$3,'{}')`,
+        [h.world.tenantA, ctx.userId, marker]);
+    });
+    expect(await audits('test.after_enqueue', marker)).toHaveLength(1);
+  });
+
+  it('M3: tedarikçinin ERP kodu bu arada geldiyse istek atılmaz; kayıt SENT + mevcut kod, "ERP\'de zaten kayıtlı", yeniden denenmez', async () => {
+    resetSpy();
+    const s = await candidate();
+    await approveSupplier(s.id);
+    const [rec] = await outboundFor(s.id);
+    await h.owner.query(`UPDATE suppliers SET erp_supplier_code = 'ELLE-77', erp_supplier_code_source = 'MANUAL' WHERE id = $1`, [s.id]);
+    const r = await runJob((await writeJobsFor(rec!.id))[0]!.id);
+    expect(r).toMatchObject({ outcome: 'skipped', status: 'SENT', requestSent: false });
+    expect(spy).toMatchObject({ find: 0, write: 0 });
+    const after = (await outboundFor(s.id))[0]!;
+    expect(after).toMatchObject({ status: 'SENT', external_ref: 'ELLE-77', provider_kind: 'TAKLIT' });
+    expect(after.last_error).toMatch(/^ERP'de zaten kayıtlı/);
+    expect((await writeJobsFor(rec!.id))[0]!.status).toBe('SUCCEEDED');
+    const g = await h.call('buyer', 'GET', `/api/v1/erp/outbound?entityType=SUPPLIER&entityId=${s.id}`);
+    expect(g.body.items[0]).toMatchObject({ status: 'SENT', alreadyInErp: true, statusLabel: 'ERP\'de zaten kayıtlı (yeni kayıt yazılmadı)' });
+    // WRITE_RETRY bu kaydı yeniden denemez.
+    const retry = await h.call('tenantAdmin', 'POST', url('SUPPLIER', '/run'), { body: { target: 'WRITE_RETRY' } });
+    expect(retry.status).toBe(202);
+    expect((await rows(`SELECT 1 FROM jobs WHERE payload->>'runId' = $1 AND payload->>'outboundId' = $2`, [retry.body.runId, rec!.id]))).toHaveLength(0);
+    expect((await audits('erp.outbound.skipped', s.id))[0]!.data).toMatchObject({ reason: 'supplier_already_in_erp', externalRef: 'ELLE-77' });
   });
 
   it('CONTRACT_HEADER: zincir APPROVED → SENT; yük sözleşme kodu, tedarikçi ERP kodu, proje, tarih, tutar (decimal string), para birimi', async () => {
@@ -406,6 +443,18 @@ describe('bayat yazma işleri ve çalışmaları (işçi çöktü)', () => {
     expect(spy).toMatchObject({ find: 1, write: 1 });
     expect((await outboundFor(p))[0]!.status).toBe('SENT');
     expect(ERP_WRITE_LIMITS.staleJobMinutes).toBe(15);
+  });
+});
+
+describe('M5: olay yazma çalışması "Şimdi çalıştır"ı engellemez', () => {
+  it('RUNNING EVENT çalışması varken WRITE_RETRY 409 değil', async () => {
+    const ep = await one<{ id: string }>(`SELECT id FROM integration_endpoints WHERE tenant_id = $1 AND feature = 'CONTRACT_HEADER'`, [h.world.tenantA]);
+    const ev = (await one<{ id: string }>(`INSERT INTO integration_runs (tenant_id, endpoint_id, feature, trigger, provider_kind, mock, status, counts)
+      VALUES ($1,$2,'CONTRACT_HEADER','EVENT','TAKLIT',true,'RUNNING','{"mode":"WRITE"}') RETURNING id`, [h.world.tenantA, ep.id])).id;
+    const r = await h.call('tenantAdmin', 'POST', url('CONTRACT_HEADER', '/run'), { body: { target: 'WRITE_RETRY' } });
+    expect(r.status, JSON.stringify(r.body)).toBe(202);
+    expect(r.body.status).toBe('SUCCESS'); // bekleyen kayıt yok
+    await h.owner.query(`UPDATE integration_runs SET status = 'FAILED', finished_at = now() WHERE id = $1`, [ev]);
   });
 });
 

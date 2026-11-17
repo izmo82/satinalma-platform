@@ -155,6 +155,23 @@ describe('"ERP\'ye elle iletildi" (Satınalma) ve detay durumu', () => {
   });
 });
 
+describe('I1: işçi gönderirken elle kapatma', () => {
+  it('kaydın RUNNING erp.write işi varken 409 write_in_progress; kayıt değişmez', async () => {
+    const key = `erp:REQUISITION:${projectId}:inflight-${rand()}`;
+    const p2 = (await one<{ id: string }>(`INSERT INTO projects (tenant_id, company_id, code, title, category, owner_user_id, created_by, department_id)
+      VALUES ($1,$2,$3,'ERP elle projesi 2 (SENTETİK)','Genel',$4,$4,$5) RETURNING id`, [h.world.tenantA, h.world.companyA1.id, `PRJ-EM-${rand()}`, h.world.users.buyer.id, h.world.departments.bt])).id;
+    const outId = (await one<{ id: string }>(`INSERT INTO erp_outbound_records (tenant_id, feature, entity_type, entity_id, idempotency_key, status, attempts)
+      VALUES ($1,'REQUISITION','PROJECT',$2,$3,'PENDING',1) RETURNING id`, [h.world.tenantA, p2, key])).id;
+    await h.owner.query(`INSERT INTO jobs (tenant_id, kind, idempotency_key, payload, status, attempts, updated_at) VALUES ($1,'erp.write',$2,$3,'RUNNING',1,now())`,
+      [h.world.tenantA, key, JSON.stringify({ feature: 'REQUISITION', outboundId: outId })]);
+    const r = await h.call('buyer', 'POST', '/api/v1/erp/outbound/manual', { body: { feature: 'REQUISITION', entityType: 'PROJECT', entityId: p2, externalRef: 'REQ-X' } });
+    expect(r.status).toBe(409);
+    expect(r.body.error.code).toBe('write_in_progress');
+    expect(await one(`SELECT status, external_ref FROM erp_outbound_records WHERE id = $1`, [outId])).toEqual({ status: 'PENDING', external_ref: null });
+    await h.owner.query(`UPDATE jobs SET status = 'FAILED' WHERE idempotency_key = $1 AND tenant_id = $2`, [key, h.world.tenantA]);
+  });
+});
+
 describe('fatura ERP ödeme durumu (elle bilgi, Satınalma)', () => {
   it('elle değer yazılır ve sonraki ERP okumasında korunur (CONFLICT_MANUAL); demo fatura 409; Departman kullanıcısı 403; geçersiz tarih 422', async () => {
     const u = `/api/v1/invoices/${invoiceId}/erp-payment-status`;
