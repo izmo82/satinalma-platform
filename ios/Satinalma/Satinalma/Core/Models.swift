@@ -279,6 +279,16 @@ enum ContractLabels {
 
 struct SupplierRow: Decodable, Identifiable, Sendable, Hashable {
     let id: String; let status: String; let taxIdType: String?; let taxId: String?; let legalName: String; let identityReviewRequired: Bool
+    /// v2 Faz 5 (R1): türetilmiş aşama; eski sunucu yanıtında yoksa nil (satır eski görünümle kalır).
+    var stage: String? = nil; var stageLabel: String? = nil
+    /// `EXPIRED` / `EXPIRING` / nil: en güncel belgenin geçerliliği (R12).
+    var documentAlert: String? = nil
+    var responsibleDepartment: Ref? = nil
+    struct Ref: Decodable, Sendable, Hashable { let id: String; let name: String }
+    /// Eski sunucu yanıtında `stage` yoksa durumdan türetilir (R1, yalnız süzgeç için).
+    static func stage(forStatus s: String) -> String {
+        switch s { case "CANDIDATE": "CANDIDATE"; case "ACTIVE", "CONDITIONAL": "APPROVED"; case "SUSPENDED", "ARCHIVED": "PASSIVE"; case "REJECTED": "REJECTED"; default: s }
+    }
     /// Vergi kimliğinin yalnız son 4 hanesi gösterilir (mobilde yeni veri açılmaz).
     var taxIdTail: String? {
         guard let taxId, !identityReviewRequired else { return nil }
@@ -286,6 +296,37 @@ struct SupplierRow: Decodable, Identifiable, Sendable, Hashable {
     }
 }
 struct SupplierList: Decodable, Sendable { let items: [SupplierRow] }
+
+/// Tedarikçi kartı (`GET /api/v1/suppliers/:id`) — salt okunur özet için gereken alanlar (R16); yeni alanlar isteğe bağlı.
+struct SupplierCardV2: Decodable, Sendable {
+    let id: String; let status: String; let legalName: String
+    let taxIdType: String?; let taxId: String?; let identityReviewRequired: Bool?
+    let stage: String?; let stageLabel: String?
+    let profile: Profile?
+    let supplierDocuments: [Doc]?
+    let requiredMissing: [Missing]?
+    let offboarding: Offboarding?
+    var taxIdTail: String? {
+        guard let taxId, identityReviewRequired != true else { return nil }
+        return "\(taxIdType ?? "VKN") ••••\(taxId.suffix(4))"
+    }
+    struct Profile: Decodable, Sendable {
+        let contactName: String?; let contactEmail: String?; let contactPhone: String?; let address: String?
+        let responsibleDepartment: Ref?; let vpnAccessLabel: String?
+    }
+    struct Ref: Decodable, Sendable { let id: String; let name: String? }
+    struct Doc: Decodable, Identifiable, Sendable {
+        let id: String; let typeName: String; let validUntil: String?; let validity: String; let validityLabel: String
+        let daysLeft: Int?; let current: Bool; let supersededLabel: String?; let quarantined: Bool?; let avScanLabel: String?
+    }
+    struct Missing: Decodable, Sendable { let name: String?; let reason: String?; let reasonLabel: String? }
+    struct Offboarding: Decodable, Sendable {
+        let completed: Bool; let status: String?; let statusLabel: String?; let reason: String?; let startedAt: String?
+        let items: [Item]
+        struct Item: Decodable, Identifiable, Sendable { let id: String; let label: String; let state: String; let stateLabel: String }
+        var openCount: Int { items.filter { $0.state == "OPEN" }.count }
+    }
+}
 
 // MARK: Olay
 

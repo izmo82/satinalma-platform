@@ -15,7 +15,7 @@ struct TasksView: View {
             Loadable(value: tasks, error: error, retry: load) { items in
                 if items.isEmpty { ContentUnavailableView("Bekleyen işiniz yok", systemImage: "tray", description: Text("Rolünüze atanmış işler burada görünür.")) }
                 ForEach(items) { task in
-                    if TaskDestination.opensOnMobile(task.entityType) {
+                    if TaskDestination.opensOnMobile(task) {
                         NavigationLink(value: task) { TaskRow(task: task) }
                     } else {
                         // Mobil ekranı olmayan ya da bilinmeyen tür: gezinme yok, açıklama satırın içinde (çökme yok).
@@ -69,6 +69,9 @@ struct TaskRow: View {
     static let kindLabel: [String: String] = [
         "contract_approval": "Sözleşme onayı", "contract_rejected": "Reddedilen sözleşme", "contract_resubmit": "Yeniden onaya gönderin",
         "contract_reminder": "Sözleşme bitişi",
+        "supplier_application_review": "Tedarikçi başvurusu", "supplier_document_expired": "Tedarikçi belgesi", "supplier_document_renewed": "Tedarikçi belgesi",
+        "supplier_document_av_error": "Tedarikçi belgesi", "supplier_offboarding": "Tedarikçi ayrılışı", "supplier_no_portal_user": "Portal kullanıcısı yok",
+        "supplier_profile_change_request": "Tedarikçi değişiklik isteği",
     ]
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -93,10 +96,34 @@ struct TaskRow: View {
 /// Fatura görevi salt okunur fatura ayrıntısını açar (v2: iOS fatura onayı kalktı).
 struct TaskDestination: View {
     let task: TaskItem
+    /// v2 Faz 5: web'de yapılan tedarikçi görevleri; dokunulunca "Bu iş web'de yapılır" bilgisi (R16).
+    static let webOnlySupplierKinds: Set<String> = [
+        "supplier_application_review", "supplier_document_expired", "supplier_document_av_error", "supplier_document_renewed",
+        "supplier_offboarding", "supplier_no_portal_user", "supplier_profile_change_request", "portal_access",
+    ]
+    static func opensOnMobile(_ task: TaskItem) -> Bool { webOnlySupplierKinds.contains(task.kind) || opensOnMobile(task.entityType) }
     static func opensOnMobile(_ entityType: String) -> Bool {
         ["contract_version", "invoice", "incident", "document_version", "contract_approval_step", "contract_rejection", "contract_family", "contract_reminder"].contains(entityType)
     }
     var body: some View {
+        if Self.webOnlySupplierKinds.contains(task.kind) { webOnly } else { mobile }
+    }
+    /// Başvuru incelemesi, belge yenileme, ayrılış ve portal kullanıcısı işleri web'de; kayıt tedarikçiyse salt okunur özet açılabilir.
+    private var webOnly: some View {
+        List {
+            Section {
+                Label("Bu iş web'de yapılır", systemImage: "desktopcomputer").font(.headline)
+                Text(task.title).font(.body.weight(.semibold))
+                Text(task.reason).font(.subheadline).foregroundStyle(.secondary)
+                Text("Bu işlem için mobil ekran yok; aynı görev web uygulamasında açıktır.").font(.footnote).foregroundStyle(.secondary)
+            }
+            if task.entityType == "supplier" {
+                Section { NavigationLink { SupplierSummaryView(supplierId: task.entityId, title: task.title) } label: { Label("Tedarikçi özetini gör", systemImage: "building.2") } }
+            }
+        }
+        .navigationTitle("İş").navigationBarTitleDisplayMode(.inline)
+    }
+    @ViewBuilder private var mobile: some View {
         switch task.entityType {
         case "contract_version": SignatureView(contractVersionId: task.entityId)
         case "invoice": InvoiceView(invoiceId: task.entityId)
