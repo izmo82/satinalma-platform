@@ -48,7 +48,15 @@ export interface Config {
   av?: AvConfig;
   /** v2 Faz 5 (R4a): girişsiz başvuru uçlarının adres başına sınırı; her ortamda açık (`PUBLIC_APPLY_PER_HOUR`, `PUBLIC_TOKEN_PER_HOUR`). */
   publicRateLimit?: PublicRateLimitConfig;
+  /**
+   * v2 Faz 8 (D113): ERP entegrasyon sağlayıcısı. `none` (varsayılan) = bağlı değil. `taklit` = "Taklit Oracle (gerçek değil)", üretimde yasak.
+   * `oracle-ebs` = Oracle E-Business Suite REST (R1). `secretKey` uç nokta sırlarının zarf şifreleme anahtarı (R5); `allowedHosts` taban
+   * adres listesi (R12). Mevcut `erpAdapter` (fatura aktarımı) bundan ayrıdır. Anahtar yanıta/günlüğe/iletiye yazılmaz.
+   */
+  erp?: ErpConfig;
 }
+
+export type ErpConfig = { provider: 'none' | 'taklit' | 'oracle-ebs'; secretKey: Buffer | null; allowedHosts: string[] };
 
 export type MailConfig =
   | { kind: 'none'; sender?: undefined }
@@ -133,6 +141,26 @@ export function loadAv(vars: NodeJS.ProcessEnv = process.env): AvConfig {
   throw new Error('AV_SCANNER geçersiz: clamav ya da none olmalı');
 }
 
+/**
+ * R5/R12: hata iletisi yalnız değişken adını içerir; anahtar ve geçersiz sağlayıcı değeri iletiye kopyalanmaz.
+ * Verilen anahtar her ortamda geçerli olmalı (base64, çözülünce ≥32 bayt); üretimde oracle-ebs için zorunlu.
+ */
+export function loadErp(env: Config['env'], vars: NodeJS.ProcessEnv = process.env): ErpConfig {
+  const provider = vars.ERP_PROVIDER || 'none';
+  if (provider !== 'none' && provider !== 'taklit' && provider !== 'oracle-ebs') throw new Error('ERP_PROVIDER geçersiz: none, taklit ya da oracle-ebs olmalı');
+  if (provider === 'taklit' && env === 'production') throw new Error('ERP_PROVIDER=taklit is forbidden in production');
+  const raw = (vars.INTEGRATION_SECRET_KEY ?? '').trim();
+  let secretKey: Buffer | null = null;
+  if (raw) {
+    const decoded = /^[A-Za-z0-9+/]+={0,2}$/.test(raw) && raw.length % 4 === 0 ? Buffer.from(raw, 'base64') : null;
+    if (!decoded || decoded.length < 32) throw new Error('INTEGRATION_SECRET_KEY geçersiz: base64 olmalı ve çözülünce en az 32 bayt olmalı');
+    secretKey = decoded;
+  }
+  if (provider === 'oracle-ebs' && env === 'production' && !secretKey) throw new Error('Missing required env INTEGRATION_SECRET_KEY (ERP_PROVIDER=oracle-ebs in production)');
+  const allowedHosts = (vars.INTEGRATION_ALLOWED_HOSTS ?? '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
+  return { provider, secretKey, allowedHosts };
+}
+
 export const DEFAULT_AI_MODEL_ID = 'claude-sonnet-5-5';
 
 /** R1: başlangıçta reddedilen yapılandırmalar; hata iletisi yalnız değişken adını içerir (anahtar değeri asla). */
@@ -208,6 +236,7 @@ export function loadConfig(): Config {
     mail: loadMail(),
     av: loadAv(),
     publicRateLimit: loadPublicRateLimit(),
+    erp: loadErp(env),
     session: {
       secret: process.env.SESSION_SECRET || null,
       // Üretimde çerez yalnız HTTPS'te; web kökeni https ise yerelde de Secure.
