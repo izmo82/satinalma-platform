@@ -160,6 +160,18 @@ export const PERMISSIONS = {
   'template.manage': ['ADMIN', 'PROCUREMENT'],
   'reminder.settings': ['ADMIN'],
   'supplier.candidate.create': ['PROCUREMENT', 'DEPARTMENT_USER'],
+  // v2 Faz 5 (R3, R11–R14): tedarikçi başvurusu, belge, envanter, ayrılış, portal kullanıcıları; e-posta kutusu; portal ekranları.
+  'supplier.application.review': ['PROCUREMENT'],
+  'supplier.application.settings': ['ADMIN'],
+  'supplier.application.settings.view': ['ADMIN', 'PROCUREMENT'],
+  'supplier.profile.edit': ['PROCUREMENT'],
+  'supplier.offboard': ['PROCUREMENT'],
+  'supplier.portal_users.manage': ['PROCUREMENT'],
+  'supplier.documents.manage': ['PROCUREMENT'],
+  'email.outbox.read': ['ADMIN'],
+  'portal.documents': ['SUPPLIER'],
+  'portal.standing': ['SUPPLIER'],
+  'portal.profile': ['SUPPLIER'],
 } as const satisfies Record<string, readonly Role[]>;
 
 export type Permission = keyof typeof PERMISSIONS;
