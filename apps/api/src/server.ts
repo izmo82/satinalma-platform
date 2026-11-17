@@ -48,7 +48,7 @@ import { directoryProvider, type DirectoryProvider } from './directory/provider.
 import * as emailOutbox from './modules/emailOutbox.ts';
 import { configureMailChannel } from './mail/index.ts';
 import { taskRoleSql, visibleTaskSql } from './tasks.ts';
-import { decisionSummaryPdf, evaluationWorkbook } from './reports.ts';
+import { complianceReportPdf, decisionSummaryPdf, evaluationWorkbook } from './reports.ts';
 import { RateLimiter, rateLimited } from './rateLimit.ts';
 import { DEFAULT_PUBLIC_RATE_LIMIT, PublicRateLimiter } from './publicRateLimit.ts';
 import { avScanner } from './av/index.ts';
@@ -57,6 +57,7 @@ import * as supplierCard from './modules/supplierCard.ts';
 import * as offboarding from './modules/supplierOffboarding.ts';
 import * as completion from './modules/projectCompletion.ts';
 import * as procurementRules from './modules/procurementRules.ts';
+import * as compliance from './modules/compliance.ts';
 
 export interface AppDeps {
   config: Config;
@@ -1364,6 +1365,27 @@ export async function buildApp(deps: AppDeps) {
       await deps.store.delete(prepared.storageKey).catch(() => req.log.warn({ key: prepared.storageKey }, 'compliance evidence cleanup failed'));
       throw err;
     }
+  });
+  // --- v2 Faz 7 (D112) Görev 6: uyum denetimi raporu, yeniden koşu, elle işaret, Denetçi listesi, PDF (önbellek içeriği hiçbir uçta yok) ---
+  app.get('/api/v1/projects/:id/compliance', { schema: { tags: ['projects'], params: idParams } }, async (req) =>
+    scoped(req, 'compliance.read', (tx, ctx) => compliance.projectCompliance(tx, ctx, (req.params as { id: string }).id)));
+  app.post('/api/v1/projects/:id/compliance-audits', { schema: { tags: ['projects'], params: idParams } }, async (req, reply) =>
+    reply.status(202).send(await scoped(req, 'compliance.run', (tx, ctx) => compliance.requestRerun(tx, ctx, (req.params as { id: string }).id))));
+  app.post('/api/v1/projects/:id/compliance-marks', { schema: { tags: ['projects'], params: idParams, body: { type: 'object', additionalProperties: false,
+    required: ['ruleCode', 'result', 'note', 'documentVersionId'], properties: { ruleCode: { type: 'string', minLength: 1, maxLength: 40 },
+      result: { type: 'string', enum: ['PASS', 'FAIL'] }, note: { type: 'string', maxLength: 4000 }, documentVersionId: uuid } } } }, async (req, reply) =>
+    reply.status(201).send(await scoped(req, 'compliance.mark', (tx, ctx) => compliance.addMark(tx, ctx, (req.params as { id: string }).id,
+      req.body as { ruleCode: string; result: 'PASS' | 'FAIL'; note: string; documentVersionId: string }))));
+  app.get('/api/v1/compliance-audits', { schema: { tags: ['compliance'], querystring: { type: 'object', additionalProperties: false, properties: {
+    verdict: { type: 'string', enum: ['COMPLIANT', 'NONCOMPLIANT', 'NO_RULES', 'NO_RULESET', 'FAILED'] }, departmentId: uuid } } } }, async (req) =>
+    scoped(req, 'compliance.read', (tx) => compliance.listAudits(tx, req.query as { verdict?: string; departmentId?: string })));
+  app.get('/api/v1/compliance-audits/:id/pdf', { schema: { tags: ['compliance'], params: idParams } }, async (req, reply) => {
+    const a = await scoped(req, 'compliance.read', (tx) => compliance.auditForPdf(tx, (req.params as { id: string }).id));
+    const buf = await complianceReportPdf(a);
+    const name = compliance.pdfFilename(a.project.code, a.runNo);
+    return reply.header('content-type', 'application/pdf')
+      .header('content-disposition', `attachment; filename="${compliance.asciiFilename(name)}"; filename*=UTF-8''${encodeURIComponent(name).replace(/['()*]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase())}`)
+      .header('cache-control', 'no-store').send(buf);
   });
   // --- Onay politikası (kurallı onay motoru) ---
   const amount2 = { type: 'string', pattern: '^\\d{1,18}(\\.\\d{1,2})?$' } as const;

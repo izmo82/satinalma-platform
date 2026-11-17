@@ -105,6 +105,14 @@ export async function ruleSetForDay(tx: Tx, day: string) {
   return { id: pick.id, versionNo: pick.version_no, effectiveFrom: pick.effective_from!, rules };
 }
 
+/** Görev 6 (R6): yeniden koşu önceki koşunun setini kullanır (aynı gün yeni sürüm yayımlansa da). Yalnız yayımlı set; yoksa null. */
+export async function ruleSetById(tx: Tx, id: string) {
+  const s = (await publishedSets(tx)).find((x) => x.id === id);
+  if (!s) return null;
+  const rules = (await tx.query<RuleRow>(`${RULE_SELECT} WHERE rule_set_id = $1 ORDER BY sort_order, code`, [s.id])).rows.map(toComplianceRule);
+  return { id: s.id, versionNo: s.version_no, effectiveFrom: s.effective_from!, rules };
+}
+
 export async function listRuleSets(tx: Tx) {
   const day = await today(tx);
   const rows = (await tx.query<SetRow>(`${SET_SELECT} ORDER BY s.version_no DESC`)).rows;

@@ -186,3 +186,100 @@ export async function decisionSummaryPdf(e: EvalForReport, awards: AwardForRepor
   doc.end();
   return done;
 }
+
+/** v2 Faz 7 (D112) Görev 6: uyum denetimi raporunun girdisi (`compliance.auditForPdf`). */
+export interface ComplianceReportForPdf {
+  id: string; runNo: number; triggerLabel: string; status: string; statusLabel: string; score: number | null; verdict: string | null; verdictLabel: string;
+  ruleSet: { versionNo: number | null; effectiveFrom: string | null } | null; providerLabel: string; aiProviderIsTest: boolean; runBy: string | null; createdAt: Date;
+  summary: string | null; summarySourceLabel: string | null;
+  failedMandatory: { code: string; name: string; resultLabel: string }[];
+  results: { code: string; name: string; checkTypeLabel: string; weight: number; mandatory: boolean; resultLabel: string; methodLabel: string | null; finding: string | null;
+    evidence: unknown }[];
+  project: { code: string; title: string; completedOn: string | null; departmentName: string | null };
+}
+
+/**
+ * PDF uyum denetimi raporu (R8, R10): başlıkta proje, kural seti sürümü, koşu no ve yapay zekâ sağlayıcı etiketi (test sağlayıcısı
+ * "Test sağlayıcısı — gerçek değil"). Deterministik: yalnız kayıtlı koşudan üretilir, model çağrısı yoktur; aynı koşu aynı baytları verir.
+ */
+export async function complianceReportPdf(a: ComplianceReportForPdf): Promise<Buffer> {
+  const { default: PDFDocument } = await import('pdfkit');
+  const { createRequire } = await import('node:module');
+  const req = createRequire(import.meta.url);
+  const created = new Date(a.createdAt);
+  const doc = new PDFDocument({ size: 'A4', margins: { top: 56, bottom: 64, left: 56, right: 56 }, bufferPages: true,
+    info: { Title: `${a.project.code} uyum denetimi koşu ${a.runNo}`, Author: 'Satınalma ve Sözleşme', Subject: 'Uyum denetimi raporu', CreationDate: created, ModDate: created } });
+  doc.registerFont('r', req.resolve(`${FONT_DIR}/400Regular/SourceSans3_400Regular.ttf`));
+  doc.registerFont('b', req.resolve(`${FONT_DIR}/600SemiBold/SourceSans3_600SemiBold.ttf`));
+  const chunks: Buffer[] = [];
+  doc.on('data', (c: Buffer) => chunks.push(c));
+  const done = new Promise<Buffer>((res) => doc.on('end', () => res(Buffer.concat(chunks))));
+  const INK = '#1d2230', MUTED = '#4c5262', LINE = '#ddd6c6', DANGER = '#a8372a', OK = '#2f6b3a';
+  const W = doc.page.width - 112;
+  const h2 = (t: string) => { doc.moveDown(0.8); doc.font('b').fontSize(12).fillColor(INK).text(t); doc.moveDown(0.3); };
+  const para = (t: string, color = MUTED) => doc.font('r').fontSize(9.5).fillColor(color).text(t, { width: W });
+  function table(head: string[], widths: number[], rows: string[][], align: ('left' | 'right')[] = []) {
+    const ws = widths.map((w) => (w / widths.reduce((x, y) => x + y, 0)) * W);
+    const draw = (cells: string[], bold: boolean) => {
+      doc.font(bold ? 'b' : 'r').fontSize(9);
+      const h = Math.max(...cells.map((c, i) => doc.heightOfString(c, { width: ws[i]! - 8 }))) + 8;
+      if (doc.y + h > doc.page.height - 72) { doc.addPage(); if (!bold) draw(head, true); }
+      const y = doc.y; let x = 56;
+      cells.forEach((c, i) => { doc.fillColor(bold ? MUTED : INK).text(c, x + 4, y + 4, { width: ws[i]! - 8, align: align[i] ?? 'left' }); x += ws[i]!; });
+      doc.moveTo(56, y + h).lineTo(56 + W, y + h).lineWidth(0.5).strokeColor(LINE).stroke();
+      doc.x = 56; doc.y = y + h;
+    };
+    draw(head, true);
+    rows.forEach((r) => draw(r, false));
+  }
+  const day = (d: string | null) => (d ? `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}` : '—');
+  const setText = a.ruleSet ? `Kural seti sürüm ${a.ruleSet.versionNo} (yürürlük ${day(a.ruleSet.effectiveFrom)})` : 'Kural seti yok';
+
+  doc.font('b').fontSize(18).fillColor(INK).text('Uyum denetimi raporu');
+  doc.font('r').fontSize(11).fillColor(INK).text(`${a.project.code} · ${a.project.title}`);
+  doc.moveDown(0.3);
+  para(`${setText} · Koşu ${a.runNo} (${a.triggerLabel}) · ${dt(a.createdAt)}${a.runBy ? ` · ${a.runBy}` : ''}`);
+  para(`Departman: ${a.project.departmentName ?? '—'} · Tamamlanma: ${day(a.project.completedOn)}`);
+  doc.moveDown(0.3);
+  doc.font('b').fontSize(10).fillColor(a.aiProviderIsTest ? DANGER : MUTED).text(`Yapay zekâ sağlayıcısı: ${a.providerLabel}`, { width: W });
+  doc.moveDown(0.5);
+  const verdictColor = a.verdict === 'COMPLIANT' ? OK : a.verdict === 'NONCOMPLIANT' ? DANGER : INK;
+  doc.font('b').fontSize(14).fillColor(verdictColor).text(`${a.verdictLabel}${a.score !== null ? ` · ${a.score}/100` : ' · puan yok'}`);
+  if (a.status !== 'DONE') para(a.statusLabel, DANGER);
+  if (a.failedMandatory.length) {
+    doc.moveDown(0.3);
+    para(`Karşılanmayan zorunlu kurallar: ${a.failedMandatory.map((f) => `${f.code} ${f.name} (${f.resultLabel})`).join('; ')}`, DANGER);
+  }
+  doc.moveDown(0.3);
+  para('Puan ve hüküm kodla hesaplanır (karşılanan ağırlık ÷ uygulanan ağırlık). Zorunlu kural karşılanmazsa proje puandan bağımsız olarak uyumsuzdur. Yapay zekâ yalnız kanıt belgesinin kuralı karşılayıp karşılamadığını alıntıyla önerir; alıntı belgede birebir doğrulanmazsa öneri sayılmaz.');
+
+  h2('Kural sonuçları');
+  if (!a.results.length) para('Bu koşuda kural sonucu yok.');
+  else table(['Kural', 'Tür', 'Ağırlık', 'Sonuç', 'Yöntem'], [4.6, 2, 1, 2, 1.6],
+    a.results.map((r) => [`${r.code} ${r.name}${r.mandatory ? ' (zorunlu)' : ''}`, r.checkTypeLabel, String(r.weight), r.resultLabel, r.methodLabel ?? '—']),
+    ['left', 'left', 'right', 'left', 'left']);
+
+  h2('Bulgular ve kanıt');
+  for (const r of a.results) {
+    doc.font('b').fontSize(9.5).fillColor(INK).text(`${r.code} ${r.name} — ${r.resultLabel}`, { width: W });
+    if (r.finding) para(r.finding);
+    const quotes = Array.isArray(r.evidence) ? (r.evidence as { type?: string; page?: number; text?: string }[]).filter((e) => e.type === 'quote') : [];
+    for (const q of quotes) para(`Alıntı (sayfa ${q.page}): «${q.text}»`, INK);
+    doc.moveDown(0.4);
+  }
+
+  h2(a.summarySourceLabel ?? 'Özet');
+  para(a.summary ?? '—', INK);
+
+  const range = doc.bufferedPageRange();
+  for (let i = 0; i < range.count; i++) {
+    doc.switchToPage(range.start + i);
+    const bottom = doc.page.margins.bottom;
+    doc.page.margins.bottom = 0;
+    doc.font('r').fontSize(7.5).fillColor(MUTED)
+      .text(`${a.project.code} · ${setText} · Koşu ${a.runNo} · ${a.providerLabel} · sayfa ${i + 1}/${range.count}`, 56, doc.page.height - 44, { width: W, lineBreak: false });
+    doc.page.margins.bottom = bottom;
+  }
+  doc.end();
+  return done;
+}

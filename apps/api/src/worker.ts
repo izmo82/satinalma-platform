@@ -18,6 +18,8 @@ import { EXPIRE_JOB, processApplicationExpiry, processApplicationSubmitted, SUBM
 import { dailyRiskSchedules, processRiskJob, RISK_JOB_KINDS } from './modules/riskCycle.ts';
 import { dailyDocumentReminders, DOC_REMINDER_JOB, processDocumentReminderJob } from './modules/supplierDocReminders.ts';
 import { enqueueDueErpReads, ERP_READ_JOB, runErpReadJob, type ProviderResolver } from './modules/erpRead.ts';
+import { AUDIT_JOB } from './modules/projectCompletion.ts';
+import { processComplianceAudit } from './modules/compliance.ts';
 import type { Config } from './config.ts';
 
 /** İsteğe bağlı işçi bağımlılıkları; eski çağrılar etkilenmez. */
@@ -32,6 +34,8 @@ export interface WorkerOptions {
   erp?: Pick<Config, 'env' | 'erp'> | null;
   /** YALNIZ TEST: sağlayıcı seçimi (casus sağlayıcı); verilmezse yapılandırmadan. */
   erpProvider?: ProviderResolver;
+  /** v2 Faz 7 (D112): uyum denetiminin kanıt okumalarında kullanılan model (API ile aynı `config.ai.modelId`); verilmezse varsayılan. */
+  aiModelId?: string;
 }
 
 /**
@@ -45,7 +49,7 @@ export async function processJobs(pool: pg.Pool, store: ObjectStore, detectorPro
   // Kiracı dışa aktarımı saatler sürebilir: ayrı şeritte tek tek çalışır, ihbar/imza/silme işlerini bekletmez.
   const short = ['signature.detect', 'contract.notice_reminder', 'contract.end_reminder', 'contract.reminder_backfill', 'contract.obligation_due', 'retention.purge', ...(erpAdapterName ? ['erp.export'] : []), ...(hasAiProviders() ? ['ai.run'] : []),
     ...(directory ? ['directory.sync'] : []), ...(sender ? [DISPATCH_JOB] : []), SUBMITTED_JOB, EXPIRE_JOB, ...RISK_JOB_KINDS, DOC_REMINDER_JOB,
-    ...(opts.erp ? [ERP_READ_JOB] : [])];
+    ...(opts.erp ? [ERP_READ_JOB] : []), AUDIT_JOB];
   const kinds = lane === 'export' ? ['tenant.export'] : lane === 'short' ? short : [...short, 'tenant.export'];
   const claimed = await withoutTenant(pool, async (c) =>
     (await c.query<{ id: string; tenant_id: string; company_id: string | null; kind: string; requested_by: string | null }>(
@@ -99,6 +103,8 @@ export async function processJobs(pool: pg.Pool, store: ObjectStore, detectorPro
       if (job.kind === 'contract.notice_reminder') await withTenant(pool, ctx, (tx) => processNoticeReminder(tx, ctx, job.id));
       else if (job.kind === 'erp.export') await withTenant(pool, ctx, (tx) => processErpExport(tx, ctx, job.id, erpAdapterName));
       else if (job.kind === 'ai.run') await processAiRun(pool, ctx, store, job.id);
+      // v2 Faz 7 (D112): uyum denetimi isteyenin güncel üyeliğiyle (tüm departman bağlamı); Görev 4'te kuyruğa girmiş işler de işlenir.
+      else if (job.kind === AUDIT_JOB) await processComplianceAudit(pool, ctx, store, job.id, opts.aiModelId ? { modelId: opts.aiModelId } : {});
       else if (job.kind === 'tenant.export') await processTenantExport(pool, ctx, store, job.id);
       else if (job.kind === 'contract.obligation_due') await withTenant(pool, ctx, (tx) => processObligationDue(tx, ctx, job.id));
       else await withTenant(pool, ctx, (tx) => processSignatureJob(tx, ctx, store, job.id, detectorProvider));
@@ -152,7 +158,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
           await enqueueDueErpReads(pool, new Date(), config).catch((e) => console.error('erp read enqueue failed', (e as { code?: string })?.code ?? 'error'));
         }
       }
-      const n = await processJobs(pool, store, config.signatureDetectorProvider, 10, config.erpAdapter ?? null, lane, { directoryProvider: directory, mailSender: mail, webOrigin: config.webOrigin, erp: config });
+      const n = await processJobs(pool, store, config.signatureDetectorProvider, 10, config.erpAdapter ?? null, lane, { directoryProvider: directory, mailSender: mail, webOrigin: config.webOrigin, erp: config,
+        ...(config.ai?.modelId ? { aiModelId: config.ai.modelId } : {}) });
       if (n === 0) await new Promise((r) => setTimeout(r, 2000));
     }
   };
