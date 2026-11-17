@@ -4,6 +4,8 @@
 <dict>
 	<key>SPApiBaseURL</key>
 	<string>$(SP_API_BASE_URL)</string>
+	<key>SPWebBaseURL</key>
+	<string>$(SP_WEB_BASE_URL)</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Fatura, sözleşme ve teslim belgelerini taramak için kamera kullanılır. Görüntüler yalnız siz yükleyince kurumunuzun sunucusuna gönderilir.</string>
 	<key>NSAppTransportSecurity</key>

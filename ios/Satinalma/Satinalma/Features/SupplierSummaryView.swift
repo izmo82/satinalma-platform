@@ -8,6 +8,7 @@ struct SupplierSummaryView: View {
     @Environment(SessionStore.self) private var session
     @State private var card: SupplierCardV2?
     @State private var error: Notice?
+    @State private var annualRisk: AnnualRisk?
 
     init(supplier: SupplierRow) { supplierId = supplier.id; titleHint = supplier.legalName }
     init(supplierId: String, title: String = "Tedarikçi") { self.supplierId = supplierId; titleHint = title }
@@ -36,6 +37,7 @@ struct SupplierSummaryView: View {
                     row("Adres", c.profile?.address ?? "—")
                 }
                 documents(c)
+                SupplierAnnualRiskSection(state: annualRisk)
                 Section { Label("Düzenleme ve onay işlemleri web uygulamasında yapılır.", systemImage: "desktopcomputer").font(.footnote).foregroundStyle(.secondary) }
             }
         }
@@ -75,5 +77,6 @@ struct SupplierSummaryView: View {
 
     private func load() async {
         do { let (c, _): (SupplierCardV2, String?) = try await session.get("/api/v1/suppliers/\(supplierId)"); card = c; error = nil } catch { self.error = Notice.from(error) }
+        annualRisk = await SupplierAnnualRiskSection.load(session: session, supplierId: supplierId)
     }
 }

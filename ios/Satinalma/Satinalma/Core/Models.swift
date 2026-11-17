@@ -449,3 +449,46 @@ enum Fmt {
         return iso
     }
 }
+
+// MARK: v2 Faz 6 — yıllık risk değerlendirmesi (salt okunur özet, R15). Sunucunun atlayabileceği her alan isteğe bağlı.
+
+struct RiskDetail: Decodable, Sendable {
+    struct Ref: Decodable, Sendable { let id: String?; let name: String? }
+    struct Assessment: Decodable, Sendable {
+        let id: String; let year: Int?; let status: String?; let dueOn: String?; let overdue: Bool?
+        let supplier: Ref?; let department: Ref?; let access: String?
+    }
+    struct Criticality: Decodable, Sendable { let value: String?; let display: String?; let column: Int? }
+    struct Score: Decodable, Sendable { let value: String?; let source: String?; let sourceLabel: String? }
+    struct Level: Decodable, Sendable { let level: Int?; let band: Int?; let bandLabel: String?; let label: String? }
+    struct Blocker: Decodable, Sendable { let code: String?; let message: String? }
+    struct Computed: Decodable, Sendable { let criticality: Criticality?; let score: Score?; let level: Level?; let blockers: [Blocker]? }
+    struct Revision: Decodable, Sendable {
+        let criticalityDisplay: String?; let column: Int?; let riskScore: String?; let level: Int?; let levelLabel: String?
+        let scoreSourceLabel: String?; let changedFields: [String]?
+    }
+    struct Prior: Decodable, Sendable { let year: Int?; let revision: Revision? }
+    struct Owner: Decodable, Sendable { let displayName: String? }
+    struct Action: Decodable, Identifiable, Sendable {
+        let id: String; let kind: String?; let controlMethodLabel: String?; let title: String?
+        let owner: Owner?; let ownerText: String?; let dueOn: String?; let status: String?
+    }
+    struct Review: Decodable, Sendable { let period: String?; let outcome: String? }
+    struct Can: Decodable, Sendable { let review: Bool? }
+    let assessment: Assessment
+    let computed: Computed?
+    let prior: Prior?
+    let changed: [String]?
+    let actions: [Action]?
+    let reviews: [Review]?
+    let can: Can?
+}
+
+/// GET /suppliers/:id/risk-history — tedarikçi özetindeki "Yıllık risk" satırı (kartta risk alanı yok).
+struct RiskHistory: Decodable, Sendable {
+    struct Item: Decodable, Identifiable, Sendable {
+        let id: String; let year: Int?; let status: String?; let levelLabel: String?; let level: Int?
+        let riskScore: String?; let criticalityDisplay: String?
+    }
+    let items: [Item]?
+}
