@@ -270,3 +270,47 @@ async function lockSupplier(tx: Tx, id: string, expectedRowVersion: number) {
   }
   return s;
 }
+
+// --- Aday tedarikçi kartı (v2 Faz 3 R9, Görev 4) ---------------------------------
+
+/**
+ * Sözleşme ekleme akışında okunan firma kayıtlı değilse ekleyen en az unvan + VKN (+ iletişim e-postası) ile `CANDIDATE` kart açar.
+ * VKN biçim ve denetim basamağı doğrulanır; aynı VKN kiracıda varsa yeni kart açılmaz, o kart döner (`existing: true`).
+ * Kendi şirketin VKN'si tedarikçi olamaz. Satınalma sonradan tamamlar: mevcut kayıt onayı/aktivasyon akışı aynen kalır.
+ */
+export async function createCandidateSupplier(tx: Tx, ctx: TenantContext, body: { legalName: string; vkn: string; contactEmail?: string | null }) {
+  const legalName = body.legalName.trim();
+  if (legalName.length < 2 || legalName.length > 300) throw unprocessable('validation_failed', 'Unvan 2-300 karakter olmalı.');
+  const norm = normalizeTaxId('TR', 'VKN', body.vkn);
+  if (!norm.ok) throw unprocessable('invalid_tax_id', 'VKN geçersiz (10 hane ve denetim basamağı doğru olmalı).', { reason: norm.reason });
+  const email = body.contactEmail?.trim() || null;
+  if (email && !/^[^@\s]+@[^@\s]+$/.test(email)) throw unprocessable('validation_failed', 'İletişim e-postası geçersiz.');
+  const own = await tx.query(`SELECT 1 FROM legal_entities WHERE country = 'TR' AND tax_id_type = 'VKN' AND tax_id = $1`, [norm.normalized]);
+  if (own.rowCount) throw unprocessable('own_company_tax_id', 'Bu VKN kendi şirketinize ait; tedarikçi olarak eklenemez.');
+  const shape = (r: { id: string; legal_name: string; status: string; tax_id: string; contact_email: string | null }, existing: boolean) =>
+    ({ id: r.id, legalName: r.legal_name, status: r.status, vkn: r.tax_id, contactEmail: r.contact_email, existing });
+  const ins = await tx.query<{ id: string; legal_name: string; status: string; tax_id: string; contact_email: string | null }>(
+    `INSERT INTO suppliers (tenant_id, country, tax_id_type, tax_id, legal_name, contact_email, created_by)
+     VALUES ($1,'TR','VKN',$2,$3,$4,$5)
+     ON CONFLICT (tenant_id, country, tax_id_type, tax_id) WHERE tax_id IS NOT NULL DO NOTHING
+     RETURNING id, legal_name, status, tax_id, contact_email`,
+    [ctx.tenantId, norm.normalized, legalName, email, ctx.userId]);
+  if (!ins.rows[0]) {
+    const ex = (await tx.query<{ id: string; legal_name: string; status: string; tax_id: string; contact_email: string | null; merged_into_id: string | null }>(
+      `SELECT id, legal_name, status, tax_id, contact_email, merged_into_id FROM suppliers WHERE country = 'TR' AND tax_id_type = 'VKN' AND tax_id = $1`, [norm.normalized])).rows[0]!;
+    if (ex.merged_into_id) {
+      const target = (await tx.query<{ id: string; legal_name: string; status: string; tax_id: string; contact_email: string | null }>(
+        `SELECT id, legal_name, status, tax_id, contact_email FROM suppliers WHERE id = $1`, [ex.merged_into_id])).rows[0];
+      if (target) return shape(target, true);
+    }
+    return shape(ex, true);
+  }
+  const s = ins.rows[0];
+  await openTask(tx, ctx, {
+    companyId: null, kind: 'SUPPLIER_CANDIDATE_APPROVAL', entityType: 'supplier', entityId: s.id,
+    title: 'Aday tedarikçi onay bekliyor', reason: 'Sözleşme ekleme akışında kayıtlı olmayan firma için aday kart açıldı.',
+    nextAction: 'Kimlik ve kanıtı inceleyip kartı tamamlayın, kayıt onayı verin.', assigneeRole: 'MASTER_DATA', dedupeKey: `supplier:${s.id}:activation`,
+  });
+  await audit(tx, ctx, 'supplier.candidate.created', 'supplier', s.id, { source: 'contract_intake', contactEmail: !!email });
+  return shape(s, false);
+}

@@ -46,6 +46,8 @@ export async function createContract(tx: Tx, ctx: TenantContext, body: {
   signatureMethod: SignatureMethod; originalCustodyRequired: boolean; effectiveDate?: string | null; parties: PartyInput[];
   /** v2 (D93): bölüm kullanıcısı için zorunlu (kendi departmanı); tüm departmanı görenler için isteğe bağlı. */
   departmentId?: string | null;
+  /** v2 Faz 3 (D108+): ekleme akışı (POST /contract-drafts) taslağı; eski kayıt (LEGACY) ayrımı için. Proje ve şablon sürümü aileye yazılır. */
+  intake?: { projectId: string; templateVersionId: string | null; contractType: string | null };
 }) {
   const dv = await tx.query<{ company_id: string; basic_check_status: string }>(
     `SELECT dv.company_id, dv.basic_check_status FROM document_versions dv JOIN documents d ON d.id = dv.document_id
@@ -55,8 +57,10 @@ export async function createContract(tx: Tx, ctx: TenantContext, body: {
   if (doc.basic_check_status !== 'PASSED') throw unprocessable('document_quarantined', 'Karantinadaki belgeyle sözleşme oluşturulamaz.');
   const departmentId = await resolveDepartment(tx, ctx, body.departmentId);
   const fam = await tx.query<{ id: string }>(
-    `INSERT INTO contract_families (tenant_id, company_id, title, supplier_id, created_by, code, department_id) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
-    [ctx.tenantId, doc.company_id, body.title, body.supplierId ?? null, ctx.userId, await nextCode(tx, ctx, 'contract', 'SZL'), departmentId]);
+    `INSERT INTO contract_families (tenant_id, company_id, title, supplier_id, created_by, code, department_id, intake_flow, project_id, template_version_id, contract_type)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+    [ctx.tenantId, doc.company_id, body.title, body.supplierId ?? null, ctx.userId, await nextCode(tx, ctx, 'contract', 'SZL'), departmentId,
+      !!body.intake, body.intake?.projectId ?? null, body.intake?.templateVersionId ?? null, body.intake?.contractType ?? null]);
   const cv = await tx.query<{ id: string }>(
     `INSERT INTO contract_versions (tenant_id, company_id, family_id, version_no, document_version_id, stage, signature_method,
        original_custody_required, effective_date, created_by)

@@ -18,6 +18,8 @@ export interface TaskInput {
   dedupeKey: string;
   /** Görevin departmanı. Verilmezse bağlı kayıttan çözülür (proje, sözleşme, fatura, değerlendirme ve alt kayıtları); diğerlerinde boş. */
   departmentId?: string | null;
+  /** v2 Faz 3 (D108+): kişiye atanmış görev (onay adımı, yeniden gönderim). Verilmezse rol kuyruğu (NULL). */
+  assigneeUserId?: string | null;
 }
 
 /**
@@ -45,11 +47,11 @@ export async function openTask(tx: Tx, ctx: TenantContext, t: TaskInput): Promis
   const departmentId = t.departmentId !== undefined ? t.departmentId
     : (await tx.query<{ d: string | null }>(`SELECT app_task_department($1, $2) AS d`, [t.entityType, t.entityId])).rows[0]?.d ?? null;
   const ins = await tx.query<{ id: string }>(
-    `INSERT INTO tasks (tenant_id, company_id, kind, entity_type, entity_id, title, reason, next_action, assignee_role, severity, due_at, dedupe_key, department_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+    `INSERT INTO tasks (tenant_id, company_id, kind, entity_type, entity_id, title, reason, next_action, assignee_role, severity, due_at, dedupe_key, department_id, assignee_user_id)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
      ON CONFLICT (tenant_id, dedupe_key) WHERE status = 'OPEN' DO NOTHING RETURNING id`,
     [ctx.tenantId, t.companyId, t.kind, t.entityType, t.entityId, t.title, t.reason, t.nextAction, v2Role(t.assigneeRole),
-      t.severity ?? 'NORMAL', t.dueAt ?? null, t.dedupeKey, departmentId],
+      t.severity ?? 'NORMAL', t.dueAt ?? null, t.dedupeKey, departmentId, t.assigneeUserId ?? null],
   );
   if (ins.rows[0]) return { id: ins.rows[0].id, created: true };
   const existing = await tx.query<{ id: string }>(

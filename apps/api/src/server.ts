@@ -12,7 +12,7 @@ import { ApiError, forbidden, notFound, unprocessable } from './errors.ts';
 import type { ObjectStore } from './storage.ts';
 import { MAX_UPLOAD_BYTES } from './files.ts';
 import { submitSellerIdentity, uploadDocument } from './modules/documents.ts';
-import { activateSupplier, recordApproval, resolveIdentity as resolveSupplierIdentity } from './modules/suppliers.ts';
+import { activateSupplier, createCandidateSupplier, recordApproval, resolveIdentity as resolveSupplierIdentity } from './modules/suppliers.ts';
 import * as tcmb from './modules/tcmb.ts';
 import * as contracts from './modules/contracts.ts';
 import * as sourcing from './modules/sourcing.ts';
@@ -31,6 +31,7 @@ import * as departments from './modules/departments.ts';
 import * as directory from './modules/directory.ts';
 import * as approvers from './modules/approvers.ts';
 import * as templates from './modules/templates.ts';
+import * as intake from './modules/contractIntake.ts';
 import { directoryProvider, type DirectoryProvider } from './directory/provider.ts';
 import { taskRoleSql, visibleTaskSql } from './tasks.ts';
 import { decisionSummaryPdf, evaluationWorkbook } from './reports.ts';
@@ -53,6 +54,10 @@ const departmentFilter = { type: 'object', properties: { departmentId: uuid } } 
 const sigMethod = { type: 'string', enum: ['WET_IMAGE_REVIEW', 'QUALIFIED_ELECTRONIC', 'ELECTRONIC_OTHER', 'HYBRID', 'NOT_REQUIRED', 'PENDING_CLASSIFICATION'] } as const;
 const stage = { type: 'string', enum: ['DRAFT', 'EXECUTION', 'ARCHIVE_IMPORT'] } as const;
 const text = (max = 2000) => ({ type: 'string', minLength: 1, maxLength: max }) as const;
+/** v2 Faz 3 (D108+): sözleşme listesine eklenen alanlar (eski alanlar aynen kalır). */
+const v2Fields = (i: { status: string; statusLabel: string; project: unknown; supplier: unknown; endDate: string | null; indefinite: boolean; amount: string | null; currency: string | null } | undefined) =>
+  ({ status: i?.status ?? null, statusLabel: i?.statusLabel ?? null, project: i?.project ?? null, supplier: i?.supplier ?? null,
+    endDate: i?.endDate ?? null, indefinite: i?.indefinite ?? false, amount: i?.amount ?? null, currency: i?.currency ?? null });
 
 export async function buildApp(deps: AppDeps) {
   const app = Fastify({
@@ -533,13 +538,29 @@ export async function buildApp(deps: AppDeps) {
 
   // --- Sözleşmeler ve imza kontrolü (UX09/UX14) -------------------------------------
   app.get('/api/v1/contracts', { schema: { tags: ['contracts'], querystring: { type: 'object', additionalProperties: false, properties: {
-    limit: { type: 'integer', minimum: 1, maximum: 100 }, offset: { type: 'integer', minimum: 0 }, departmentId: uuid } } } }, async (req) => scoped(req, 'contract.read', async (tx, ctx) => {
-    const { limit = 100, offset = 0, departmentId = null } = req.query as { limit?: number; offset?: number; departmentId?: string };
+    limit: { type: 'integer', minimum: 1, maximum: 100 }, offset: { type: 'integer', minimum: 0 }, departmentId: uuid,
+    // v2 Faz 3 (D108+): türetilmiş durum süzgeci (Tümü/Onayda/Yürürlükte/90 gün içinde biten/Eksik alan); imza süzgeci istemcide kalır.
+    status: { type: 'string', enum: ['ALL', 'IN_APPROVAL', 'ACTIVE', 'ENDING_90', 'INCOMPLETE'] } } } } }, async (req) => scoped(req, 'contract.read', async (tx, ctx) => {
+    const { limit = 100, offset = 0, departmentId = null, status = 'ALL' } = req.query as { limit?: number; offset?: number; departmentId?: string; status?: intake.StatusFilter };
     // İmza durumu satır başına türetilir; sayfa boyutu bu maliyeti sınırlar (D89).
     const deptSql = `($1::uuid IS NULL OR EXISTS (SELECT 1 FROM contract_families f WHERE f.id = cv.family_id AND f.department_id = $1))`;
-    const total = (await tx.query<{ n: number }>(`SELECT count(*)::int AS n FROM contract_versions cv WHERE cv.superseded_by_id IS NULL AND ${deptSql}`, [departmentId])).rows[0]!.n;
-    const r = await tx.query<{ id: string }>(
-      `SELECT cv.id FROM contract_versions cv WHERE cv.superseded_by_id IS NULL AND ${deptSql} ORDER BY cv.created_at DESC, cv.id LIMIT $2 OFFSET $3`, [departmentId, limit, offset]);
+    let total: number;
+    let r: { rows: { id: string; family_id: string }[] };
+    let info: Awaited<ReturnType<typeof intake.listInfo>>;
+    if (status === 'ALL') {
+      total = (await tx.query<{ n: number }>(`SELECT count(*)::int AS n FROM contract_versions cv WHERE cv.superseded_by_id IS NULL AND ${deptSql}`, [departmentId])).rows[0]!.n;
+      r = await tx.query<{ id: string; family_id: string }>(
+        `SELECT cv.id, cv.family_id FROM contract_versions cv WHERE cv.superseded_by_id IS NULL AND ${deptSql} ORDER BY cv.created_at DESC, cv.id LIMIT $2 OFFSET $3`, [departmentId, limit, offset]);
+      info = await intake.listInfo(tx, r.rows.map((x) => x.family_id));
+    } else {
+      // Durum saklanmaz: süzgeç türetilmiş durumla, sayfalamadan önce uygulanır.
+      const all = (await tx.query<{ id: string; family_id: string }>(
+        `SELECT cv.id, cv.family_id FROM contract_versions cv WHERE cv.superseded_by_id IS NULL AND ${deptSql} ORDER BY cv.created_at DESC, cv.id`, [departmentId])).rows;
+      info = await intake.listInfo(tx, all.map((x) => x.family_id));
+      const matched = all.filter((x) => { const i = info.get(x.family_id); return i ? intake.matchesFilter(status, i) : false; });
+      total = matched.length;
+      r = { rows: matched.slice(offset, offset + limit) };
+    }
     const items = [];
     const parties = (await tx.query<{ id: string; names: string[] }>(`SELECT contract_version_id AS id, array_agg(display_name ORDER BY display_name) AS names FROM contract_parties
       WHERE party_role = 'SUPPLIER' AND contract_version_id = ANY($1::uuid[]) GROUP BY contract_version_id`, [r.rows.map((x) => x.id)])).rows;
@@ -554,6 +575,7 @@ export async function buildApp(deps: AppDeps) {
           missingParties: s.status.blockers.filter((b) => b.code === 'SIGNATURE_MISSING').map((b) => b.partyName),
           blockerCount: s.status.blockers.length, hasActiveException: !!s.status.activeExceptionId },
         lastReviewedAt: s.reviews.at(-1)?.reviewedAt ?? null,
+        ...v2Fields(info.get(row.family_id)),
       });
     }
     return { items, total };
@@ -568,6 +590,39 @@ export async function buildApp(deps: AppDeps) {
           properties: { role: { type: 'string', enum: ['BUYER', 'SUPPLIER', 'OTHER'] }, displayName: text(300),
             legalEntityId: { type: ['string', 'null'], format: 'uuid' }, supplierId: { type: ['string', 'null'], format: 'uuid' } } } } } } },
   }, async (req, reply) => reply.status(201).send(await scoped(req, 'contract.manage', (tx, ctx) => contracts.createContract(tx, ctx, req.body as any))));
+
+  // --- Sözleşme ekleme akışı (v2 Faz 3, Görev 4: R1–R5, R9, R10) --------------------------------------------------------
+  const nullable = (schema: Record<string, unknown>) => ({ anyOf: [schema, { type: 'null' }] });
+  const intakeDate = { type: 'string', format: 'date' } as const;
+  app.post('/api/v1/contract-drafts', { schema: { tags: ['contracts'], body: { type: 'object', required: ['documentVersionId'], additionalProperties: false,
+    properties: { documentVersionId: uuid, projectId: nullable(uuid), templateVersionId: nullable(uuid), departmentId: optDepartment } } } }, async (req, reply) =>
+    reply.status(201).send(await scoped(req, 'contract.manage', (tx, ctx) => intake.createDraft(tx, ctx, req.body as any))));
+  app.put('/api/v1/contracts/:id/fields', { schema: { tags: ['contracts'], params: idParams, body: { type: 'object', additionalProperties: false, minProperties: 1, properties: {
+    projectId: uuid, departmentId: uuid, supplierId: nullable(uuid), contractType: nullable({ type: 'string', enum: ['SERVICE', 'HARDWARE', 'MAINTENANCE', 'NDA', 'CONSULTING', 'OTHER'] }),
+    ownerUserId: nullable(uuid), signedOn: nullable(intakeDate), indefinite: { type: 'boolean' }, templateVersionId: nullable(uuid),
+    contractNo: nullable({ type: 'string', maxLength: 100 }), governingCourt: nullable({ type: 'string', maxLength: 200 }), kvkkClause: { type: ['boolean', 'null'] },
+    priceEscalation: nullable({ type: 'string', maxLength: 1000 }),
+    currency: { type: 'string', pattern: '^[A-Z]{3}$' }, valueType: { type: 'string', enum: ['FIXED', 'CEILING', 'UNPRICED'] },
+    amount: nullable({ type: 'string', pattern: '^\\d{1,18}(\\.\\d{1,2})?$' }), limitBasis: { type: 'string', enum: ['NET', 'GROSS'] },
+    startDate: nullable(intakeDate), endDate: nullable(intakeDate), autoRenewal: { type: 'boolean' }, renewalMonths: nullable({ type: 'integer', minimum: 1, maximum: 120 }),
+    noticeAmount: nullable({ type: 'integer', minimum: 0, maximum: 3650 }), noticeUnit: nullable({ type: 'string', enum: ['DAY', 'MONTH'] }),
+    paymentDays: nullable({ type: 'integer', minimum: 0, maximum: 365 }), paymentTerms: { type: 'string', maxLength: 2000 }, sourceRef: { type: 'string', minLength: 3, maxLength: 300 },
+    fxDifference: nullable({ type: 'string', enum: ['ALLOWED', 'NOT_ALLOWED'] }), nonWorkingDay: { type: 'string', enum: ['PREVIOUS_WORKING_DAY', 'AS_IS'] },
+  } } } }, async (req) => scoped(req, 'contract.manage', (tx, ctx) => intake.updateFields(tx, ctx, (req.params as { id: string }).id, req.body as intake.FieldsInput)));
+  app.get('/api/v1/contracts/:id/v2', { schema: { tags: ['contracts'], params: idParams } }, async (req) =>
+    scoped(req, 'contract.read', (tx, ctx) => intake.getContractV2(tx, ctx, (req.params as { id: string }).id)));
+  const previewQuery = { type: 'object', additionalProperties: false, properties: { useDeputyForHead: { type: 'boolean' },
+    extraApproverIds: { type: 'array', maxItems: 10, items: uuid } } } as const;
+  app.get('/api/v1/contracts/:id/approval-preview', { schema: { tags: ['contracts'], params: idParams, querystring: previewQuery } }, async (req) =>
+    scoped(req, 'contract.read', (tx, ctx) => intake.approvalPreview(tx, ctx, (req.params as { id: string }).id, req.query as any)));
+  app.post('/api/v1/contracts/:id/submit', { schema: { tags: ['contracts'], params: idParams, body: { type: 'object', additionalProperties: false, properties: {
+    useDeputyForHead: { type: 'boolean' }, extraApproverIds: { type: 'array', maxItems: 10, items: uuid }, note: nullable({ type: 'string', maxLength: 2000 }) } } } }, async (req) =>
+    scoped(req, 'contract.manage', (tx, ctx) => intake.submitContract(tx, ctx, (req.params as { id: string }).id, (req.body ?? {}) as any)));
+  app.post('/api/v1/suppliers/candidates', { schema: { tags: ['suppliers'], body: { type: 'object', required: ['legalName', 'vkn'], additionalProperties: false,
+    properties: { legalName: text(300), vkn: { type: 'string', minLength: 1, maxLength: 20 }, contactEmail: nullable({ type: 'string', maxLength: 254 }) } } } }, async (req, reply) => {
+    const r = await scoped(req, 'supplier.candidate.create', (tx, ctx) => createCandidateSupplier(tx, ctx, req.body as any));
+    return reply.status(r.existing ? 200 : 201).send(r);
+  });
 
   app.get('/api/v1/contract-versions/:id/signature-status', { schema: { tags: ['signatures'], params: idParams } }, async (req, reply) => {
     const s = await scoped(req, 'contract.read', async (tx, ctx) => {
