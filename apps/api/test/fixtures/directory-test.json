@@ -1,0 +1,8 @@
+{
+  "tenantLabel": "Test dizini (sentetik)",
+  "users": [
+    { "objectId": "00000000-0000-4000-8000-000000000001", "email": "ayse.test@example.test", "displayName": "Ayşe Test (sentetik)", "userPrincipalName": "ayse.test@example.test", "department": "Bilgi Teknolojileri", "jobTitle": "Uzman", "managerObjectId": "00000000-0000-4000-8000-000000000002", "accountEnabled": true, "onPremisesDistinguishedName": "CN=Ayse Test,OU=BT,OU=Merkez,DC=example,DC=test" },
+    { "objectId": "00000000-0000-4000-8000-000000000002", "email": "mehmet.test@example.test", "displayName": "Mehmet Test (sentetik)", "userPrincipalName": "mehmet.test@example.test", "department": "Bilgi  Teknolojileri", "jobTitle": "Müdür", "managerObjectId": null, "accountEnabled": true, "onPremisesDistinguishedName": "CN=Mehmet Test,OU=BT,OU=Merkez,DC=example,DC=test" },
+    { "objectId": "00000000-0000-4000-8000-000000000003", "email": null, "displayName": "Postasız Test (sentetik)", "userPrincipalName": "postasiz.test@example.test", "department": "Finans", "jobTitle": null, "managerObjectId": null, "accountEnabled": false, "onPremisesDistinguishedName": "CN=Postasiz Test,OU=Finans,OU=Merkez,DC=example,DC=test" }
+  ]
+}

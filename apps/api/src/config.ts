@@ -31,6 +31,8 @@ export interface Config {
   session?: SessionConfig;
   /** Yönetim raporu sonuç önbelleği (saniye); 0 = kapalı. Veri anı yanıtta görünür. */
   reportCacheSeconds?: number;
+  /** Entra dizin sağlayıcısı (v2 Faz 2). `none` = bağlı değil. Sır yalnız ortamdan gelir; veritabanına, yanıta, günlüğe yazılmaz. */
+  directory?: { kind: 'graph' | 'test' | 'none'; tenantId?: string; clientId?: string; clientSecret?: string; testFixture?: string };
 }
 
 export interface OidcConfig {
@@ -65,6 +67,17 @@ function req(name: string): string {
   const v = process.env[name];
   if (!v) throw new Error(`Missing required env ${name}`);
   return v;
+}
+
+function loadDirectory(): Config['directory'] {
+  const kind = process.env.DIRECTORY_PROVIDER || 'none';
+  if (kind === 'none') return { kind: 'none' };
+  if (kind === 'test') return { kind: 'test', testFixture: req('DIRECTORY_TEST_FIXTURE') };
+  if (kind === 'graph') {
+    // Eksik değişkenin yalnız adı yazılır; değer (özellikle sır) hiçbir ileti içinde yer almaz.
+    return { kind: 'graph', tenantId: req('ENTRA_TENANT_ID'), clientId: req('ENTRA_CLIENT_ID'), clientSecret: req('ENTRA_CLIENT_SECRET') };
+  }
+  throw new Error('DIRECTORY_PROVIDER geçersiz: graph, test ya da none olmalı');
 }
 
 export function loadConfig(): Config {
@@ -114,6 +127,7 @@ export function loadConfig(): Config {
     extraWebOrigins: (process.env.WEB_EXTRA_ORIGINS ?? '').split(',').map((o) => o.trim()).filter(Boolean),
     trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
     reportCacheSeconds: Number(process.env.REPORT_CACHE_SECONDS ?? 120),
+    directory: loadDirectory(),
     session: {
       secret: process.env.SESSION_SECRET || null,
       // Üretimde çerez yalnız HTTPS'te; web kökeni https ise yerelde de Secure.
