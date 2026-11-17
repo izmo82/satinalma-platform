@@ -42,20 +42,42 @@ describe('Faz 4 düzeltme turu 1', () => {
     expect(get(r, 'autoRenewal')).toMatchObject({ confidence: 'LOW', requiresHuman: true, prefill: false });
     expect(get(r, 'autoRenewal').flags).toContain('UNDERIVABLE');
     const ok = checkContractExtraction({ fields: [f('autoRenewal', false, 1, 'Sözleşme otomatik olarak yenilenmez.')] }, p);
-    expect(get(ok, 'autoRenewal')).toMatchObject({ value: 'false', confidence: 'HIGH', prefill: true });
+    expect(get(ok, 'autoRenewal')).toMatchObject({ value: 'false', confidence: 'HIGH', prefill: false, requiresHuman: true });
   });
   it('limitBasis ve contractType anahtar sözcükle doğrulanır', () => {
     const r = checkContractExtraction({ fields: [f('limitBasis', 'GROSS', 1, 'KDV hariç bedel.'), f('contractType', 'MAINTENANCE', 1, 'Teknik destek ve bakım.'), f('contractType', 'OTHER', 1, 'Hizmet alımı.')] }, p);
     expect(get(r, 'limitBasis').flags).toContain('UNDERIVABLE');
-    expect(get(r, 'contractType')).toMatchObject({ value: 'MAINTENANCE', prefill: true });
+    expect(get(r, 'contractType')).toMatchObject({ value: 'MAINTENANCE', prefill: false, requiresHuman: true });
     const n = checkContractExtraction({ fields: [f('limitBasis', 'NET', 1, 'KDV hariç bedel.')] }, p);
-    expect(get(n, 'limitBasis').prefill).toBe(true);
+    expect(get(n, 'limitBasis')).toMatchObject({ value: 'NET', prefill: false, requiresHuman: true });
   });
   it('ISO para birimi alıntıda aynen geçerse kabul', () => {
     const r = checkContractExtraction({ fields: [f('currency', 'usd', 1, 'Bedel USD cinsindendir.'), f('currency', 'CHF', 1, 'Bedel USD cinsindendir.')] }, p);
     expect(get(r, 'currency').value).toBe('USD');
     const c = checkContractExtraction({ fields: [f('currency', 'CHF', 1, 'Bedel CHF cinsindendir.')] }, ['Bedel CHF cinsindendir.']);
     expect(get(c, 'currency')).toMatchObject({ value: 'CHF', requiresHuman: true, prefill: false });
+  });
+  it('olumsuz kalıplar UNDERIVABLE: yenilenmeyecektir, yenilenmemektedir, KDV dahil değildir, süresiz değildir', () => {
+    const cases: [string, unknown, string][] = [
+      ['autoRenewal', true, 'Sözleşme otomatik yenilenmeyecektir.'],
+      ['autoRenewal', true, 'Sözleşme otomatik olarak yenilenmemektedir.'],
+      ['autoRenewal', false, 'Sözleşme otomatik olarak yenilenmemektedir.'],
+      ['limitBasis', 'GROSS', 'Bedele KDV dahil değildir.'],
+      ['indefinite', true, 'Sözleşme süresiz değildir.'],
+      ['indefinite', false, 'Sözleşme süresiz değildir.'],
+    ];
+    for (const [name, v, q] of cases) {
+      const r = checkContractExtraction({ fields: [f(name, v, 1, q)] }, [q]);
+      expect(get(r, name), q).toMatchObject({ confidence: 'LOW', prefill: false, requiresHuman: true });
+      expect(get(r, name).flags, q).toContain('UNDERIVABLE');
+    }
+    const net = checkContractExtraction({ fields: [f('limitBasis', 'NET', 1, 'Bedele KDV dahil değildir.')] }, ['Bedele KDV dahil değildir.']);
+    expect(get(net, 'limitBasis')).toMatchObject({ value: 'NET', confidence: 'HIGH', prefill: false, requiresHuman: true });
+  });
+  it('kısa alıntı değeri içeriyorsa (tutar/tarih/tam sayı) kabul', () => {
+    const a = checkContractExtraction({ fields: [f('amount', '5000.00', 1, '5.000 TL'), f('noticePeriodDays', '30', 1, '30 gün')] }, ['Ceza 5.000 TL, ihbar 30 gün.']);
+    expect(get(a, 'amount').value).toBe('5000.00');
+    expect(get(a, 'noticePeriodDays').value).toBe('30');
   });
   it('kısa alıntı doğrulanmaz', () => {
     const r = checkContractExtraction({ fields: [f('title', 'SÖZ', 1, 'SÖZ')] }, ['SÖZ']);

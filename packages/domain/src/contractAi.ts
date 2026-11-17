@@ -135,15 +135,27 @@ const KEYWORDS: Partial<Record<ContractAiField, Record<string, RegExp>>> = {
   limitBasis: { NET: KW('kdv\\s+hariç', "kdv'?siz"), GROSS: KW('kdv\\s+dahil') },
   contractType: { SERVICE: KW('hizmet'), HARDWARE: KW('donanım', 'cihaz', 'ekipman'), MAINTENANCE: KW('bakım', 'destek'), NDA: KW('gizlilik'), CONSULTING: KW('danışmanlık') },
 };
-/** bool/enum değeri alıntıdaki anahtar sözcükle uyuşmalı; çelişen ya da anahtarsız alıntı türetilemez (UNDERIVABLE). */
+const NEGATION = /değil\p{L}*|yok\p{L}*|yapılmaz|olmaz|\p{L}+m[ae]y[ae]cek\p{L}*|\p{L}+m[ae]mekte\p{L}*|yenilen(?:me|mi)\p{L}*/u;
+/** Değerin tam olarak o olumsuz kalıptan türetilebildiği tek durumlar (false / NET). */
+const NEGATED_OK: Partial<Record<ContractAiField, Record<string, RegExp>>> = {
+  autoRenewal: { false: /yenilenmez|otomatik\s+yenileme\s+(?:yok|yapılmaz)/gu },
+  limitBasis: { NET: /kdv\s+dahil\s+değil\p{L}*/gu },
+};
+/**
+ * bool/enum değeri alıntıdaki anahtar sözcükle uyuşmalı. Olumsuzluk işareti içeren alıntı, değer tam o olumsuz kalıptan
+ * (false/NET) çıkmıyorsa türetilemez sayılır; emin değilsek UNDERIVABLE.
+ */
 function keywordDerived(field: ContractAiField, value: string, evidence: string): boolean {
   const kw = KEYWORDS[field];
-  const e = norm(evidence);
   if (!kw) return false; // OTHER gibi anahtarı olmayan değer insan seçer
-  const hits = Object.keys(kw).filter((k) => kw[k]!.test(e));
-  // Çelişki: "yenilenmez" aynı zamanda "yenilen" içerir; olumsuz kalıp varsa olumlu sayılmaz.
-  const eff = field === 'autoRenewal' && hits.includes('false') ? ['false'] : hits;
-  return eff.length === 1 && eff[0] === value;
+  let e = norm(evidence);
+  const neg = NEGATED_OK[field]?.[value];
+  const viaNeg = !!neg && new RegExp(neg.source, 'u').test(e);
+  if (neg && viaNeg) e = e.replace(neg, ' ');
+  if (NEGATION.test(e)) return false;
+  const hits = new Set(Object.keys(kw).filter((k) => kw[k]!.test(e)));
+  if (viaNeg) hits.add(value);
+  return hits.size === 1 && hits.has(value);
 }
 const confOf = (c: unknown): AiConfidence => (typeof c === 'number' && c >= 0.85 ? 'HIGH' : typeof c === 'number' && c >= 0.6 ? 'MEDIUM' : 'LOW');
 const isObj = (x: unknown): x is Record<string, unknown> => !!x && typeof x === 'object' && !Array.isArray(x);
@@ -173,10 +185,10 @@ export function checkContractExtraction(raw: unknown, pages: string[]): { fields
     const value = normalizeValue(field, String(e.value));
     const page = Number.isInteger(e.page) ? (e.page as number) : null;
     const evidence = typeof e.evidence === 'string' && e.evidence.trim() !== '' ? e.evidence : null;
-    if (evidence !== null && shortQuote(evidence)) { out.flags.push('MISSING', 'SHORT_QUOTE'); return out; }
     if (value === null) { out.flags.push('MISSING', FIELD_KIND[field] === 'vkn' ? 'INVALID_TAX_ID' : 'INVALID_VALUE'); return out; }
     const text = page !== null && page >= 1 && page <= pages.length ? pages[page - 1]! : null;
     if (text === null || evidence === null) { out.flags.push('MISSING', 'NO_SOURCE'); return out; }
+    if (shortQuote(evidence) && !(['money', 'date', 'int'].includes(FIELD_KIND[field]) && derivable(field, value, evidence))) { out.flags.push('MISSING', 'SHORT_QUOTE'); return out; }
     if (text.trim() === '') {
       // Metin katmanı yok: doğrulanamaz öneri.
       return { ...out, value, page, evidence, confidence: 'LOW', flags: ['UNVERIFIED_SCAN'], requiresHuman: true, prefill: false };
@@ -187,7 +199,8 @@ export function checkContractExtraction(raw: unknown, pages: string[]): { fields
       out.flags.push('MISSING', 'VALUE_NOT_IN_SOURCE'); return out;
     }
     const confidence = confOf(e.confidence);
-    return { ...out, value, page, evidence, confidence, requiresHuman: critical || confidence === 'LOW', prefill: !critical && (confidence === 'HIGH' || confidence === 'MEDIUM') };
+    const suggestOnly = FIELD_KIND[field] === 'bool' || FIELD_KIND[field] === 'enum'; // R5 genişlemesi: yalnız öneri
+    return { ...out, value, page, evidence, confidence, requiresHuman: critical || confidence === 'LOW' || suggestOnly, prefill: !critical && !suggestOnly && (confidence === 'HIGH' || confidence === 'MEDIUM') };
   });
   return { fields, flags };
 }
