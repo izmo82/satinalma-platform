@@ -79,3 +79,16 @@ export async function closeTasks(tx: Tx, dedupePrefix: string): Promise<void> {
   await tx.query(`UPDATE tasks SET status = 'DONE', closed_at = now() WHERE status = 'OPEN' AND dedupe_key LIKE $1`,
     [`${dedupePrefix}%`]);
 }
+
+/**
+ * v2 Faz 6 (D111): yıllık risk değerlendirmesi görev türleri. Tekil anahtarlar: `risk:{id}:due` (departman, son tarihli),
+ * `risk:{id}:department` (Satınalma: sorumlu departmanı seçin), `risk:{id}:escalated` (R7), `risk:{id}:review:{YYYY-Ç}` (R10),
+ * `risk:{id}:high:{revizyon}` (seviye 4–5 tamamlandı, Satınalma bilgi). Görev varlığı `risk_assessment` (departmanı kayıttan, 054).
+ */
+export const RISK_TASKS = {
+  due: 'risk_assessment_due',
+  department: 'risk_assessment_department',
+  escalated: 'risk_assessment_escalated',
+  review: 'risk_quarterly_review',
+  highLevel: 'risk_high_level',
+} as const;
