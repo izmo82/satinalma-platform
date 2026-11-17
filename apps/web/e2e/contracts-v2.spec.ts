@@ -1,3 +1,4 @@
+// v2 Faz 4 (D109): Faz 3'ün "yapay zekâ Faz 4'te / bağlı değil" metinleri yerine dürüst durum metinleri (politika yokken okuma ve inceleme çalışmaz); akış ve beklentiler aynı.
 // v2 Faz 3 (D108) Görev 7: sözleşme listesi (Figma 07), ekleme sihirbazı (08–09), detay (10–11), şablonlar (12), proje Sözleşmeler sekmesi.
 // Önkoşul: geliştirme API'si (4100) ve web (5174). Veri değiştiren adımlar yalnız 1440'ta. Onaycı ataması (BT departman sorumlusu, satınalma
 // sorumlusu ve direktörü) test başında yapılır ve sonunda eski haline döner. Kalıcı olan: eklenen sentetik sözleşmeler, belgeler ve şablonlar
@@ -138,8 +139,8 @@ test.describe('v2 sözleşmeler: veri değiştiren akışlar', () => {
     await page.getByLabel('Dosya').setInputFiles({ name: `e2e-sozlesme-${tag}.pdf`, mimeType: 'application/pdf', buffer: pdf(`E2E hizmet sozlesmesi ${tag}`) });
     await page.getByRole('button', { name: 'Yükle' }).click();
     await expect(page).toHaveURL(/taslak=[0-9a-f-]{36}&adim=3/);
-    // 2 Oku: yapay zekâ bağlı değil; sahte puan yok.
-    await expect(page.getByText('Yapay zekâ okuması bağlı değil (Faz 4); alanları belgeden siz girin.').first()).toBeVisible();
+    // 2 Oku: kiracı politikası yokken yapay zekâ okuması çalışmaz (sebep görünür); sahte puan yok.
+    await expect(page.getByText(/Yapay zekâ okuması (çalışmadı|yapılmadı)/).first()).toBeVisible();
     await expect(page.getByText(/Güven %|\/ 100/)).toHaveCount(0);
     await expect(page.getByRole('group', { name: 'Sayfa 1' })).toBeVisible();
     await expect(page.getByText(/\d+ alan eksik/)).toBeVisible();
@@ -167,7 +168,7 @@ test.describe('v2 sözleşmeler: veri değiştiren akışlar', () => {
     await expect(approvers).toContainText('Kerem Aksoy');
     await expect(approvers).toContainText('Mine Kaya');
     await expect(page.getByText('gönderen siz olursanız')).toBeVisible();
-    await expect(page.getByText("Yapay zekâ ön incelemesi Faz 4'te")).toBeVisible();
+    await expect(page.locator('section[aria-labelledby="review-card-h"]').getByText(/İnceleme yapılmadı|ön inceleme yapılmadı/)).toBeVisible();
     const familyId = new URL(page.url()).searchParams.get('taslak')!;
     const v2 = await (await request.get(`/api/v1/contracts/${familyId}/v2`, { headers: h })).json();
     expect(v2.missing).toEqual([]);
@@ -228,7 +229,7 @@ test.describe('v2 sözleşmeler: veri değiştiren akışlar', () => {
     await page.getByRole('tab', { name: 'Geçmiş' }).click();
     await expect(page.getByText('Onaya gönderildi')).toBeVisible();
     await page.getByRole('tab', { name: 'İnceleme' }).click();
-    await expect(page.getByText("Yapay zekâ ön incelemesi Faz 4'te")).toBeVisible();
+    await expect(page.getByText('Ön inceleme yok')).toBeVisible();
     // Listede: proje bağlı, durum Yürürlükte süzgecinde.
     await page.goto(`/projeler/${project.id}?sekme=sozlesmeler`);
     // Liste ucu aile kodunu vermez (yalnız detay); satır belge adıyla aranır.

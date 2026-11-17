@@ -43,6 +43,13 @@ export interface ContractV2 {
   owner: Person | null;
   document: null | { contractVersionId: string; versionNo: number; stage: string; documentVersionId: string; filename: string | null; mimeType: string; sha256: string; pageCount: number | null; etag: string };
   can: { edit: boolean; submit: boolean; decide: boolean };
+  /** v2 Faz 4 (R10): güncel yapay zekâ ön incelemesinin özeti; `contract.review.read` yoksa ya da inceleme yoksa null. Bilgi amaçlı, onayı etkilemez. */
+  review?: ReviewSummary | null;
+}
+
+export interface ReviewSummary {
+  id: string; score: number; threshold: number; belowThreshold: boolean; stale: boolean; template: { code: string; versionNo: number } | null;
+  modelId: string | null; isTestProvider: boolean; providerLabel: string | null; createdAt: string; disclaimer: string; advice: string | null;
 }
 
 export interface ReminderTask { id: string; status: 'OPEN' | 'DONE'; closedAt: string | null; recipient: { type: 'USER'; userId: string; displayName: string } | { type: 'ROLE'; role: string; label: string } }

@@ -489,41 +489,96 @@ function ReportsContent() {
 
 interface AiOverview {
   tasks: { code: string; name: string; needs: string[]; deterministic: string; human: string }[];
-  models: { id: string; provider: string; modelId: string; modelVersion: string; tasks: string[]; capabilities: Record<string, boolean>; approvedRegions: string[]; trainsOnCustomerData: boolean; enabled: boolean; adapterInstalled: boolean }[];
+  models: { id: string; provider: string; modelId: string; modelVersion: string; tasks: string[]; capabilities: Record<string, boolean>; approvedRegions: string[]; trainsOnCustomerData: boolean; enabled: boolean; adapterInstalled: boolean; isTestProvider?: boolean }[];
   policy: null | { allowedProviders: string[]; allowedRegions: string[]; monthlyBudget: string | null; budgetCurrency: string; dailyCallLimit: number | null; allowUpgrade: boolean };
   usage: { monthSpent: string; todayCalls: number };
-  runs: { id: string; task: string; status: string; reason: string | null; estimatedCost: string | null; actualCost: string | null; costCurrency: string | null; flags: string[]; createdAt: string; provider: string | null; modelId: string | null }[];
-  quality: { status: string; reason: string };
+  runs: { id: string; task: string; status: string; reason: string | null; estimatedCost: string | null; actualCost: string | null; costCurrency: string | null; flags: string[]; createdAt: string; provider: string | null; modelId: string | null;
+    // v2 Faz 4 (R3) defter sütunları
+    requestedBy?: string | null; documentVersionId?: string | null; promptVersion?: string | null; inputTokens?: number | null; outputTokens?: number | null;
+    responseModel?: string | null; finishedAt?: string | null; isTestProvider?: boolean; providerLabel?: string | null }[];
+  quality: { status: string; reason: string; contractAccuracy?: string };
+  provider?: { kind: 'none' | 'test' | 'anthropic'; modelId: string; label: string; external: boolean };
+  contractSettings?: { reviewThreshold: number; defaultThreshold: number; updatedAt: string | null; updatedBy: string | null };
   can: { manage: boolean };
 }
 const RUN_STATUS: Record<string, string> = { QUEUED: 'Kuyrukta', RUNNING: 'Çalışıyor', SUCCEEDED: 'Tamamlandı (öneri)', FAILED: 'Hata', WAITING_QUOTA: 'Kota bekliyor', NO_PROVIDER: 'Sağlayıcı yok', NOT_ALLOWED: 'İzin yok' };
+const TEST_LABEL = 'Test sağlayıcısı — gerçek değil';
+/** Sözleşme görevlerini (AI06 okuma, AI14 inceleme) yeniden yönlendirmek okuma/inceleme istemektir (contract.ai.request). AI15'i isteyen kural yeniden ister. */
+const CONTRACT_TASKS = new Set(['AI06', 'AI14']);
+const FLAG_TR: Record<string, string> = { IGNORED_KEY: 'modelin karar/puan anahtarı yok sayıldı', UNVERIFIED_SCAN: 'taranmış sayfa', SOURCE_NOT_FOUND: 'kaynak bulunamadı', UNDERIVABLE: 'değer türetilemedi' };
+const flagTr = (f: string) => FLAG_TR[f.split(':')[0]!] ?? f;
 
 export function AiPage() {
+  const { me } = useSession();
   const r = useResource<AiOverview>('/api/v1/ai/overview');
   const a = useAct(r.reload);
+  const t = useAct(r.reload);
+  const rr = useAct(r.reload);
   const [editing, setEditing] = useState(false);
+  const [threshold, setThreshold] = useState<string | null>(null);
   if (r.loading && !r.data) return <div className="page"><Loading rows={6} /></div>;
   if (r.error || !r.data) return <div className="page"><ErrorState error={r.error} onRetry={r.reload} /></div>;
   const d = r.data;
   const enabled = d.models.filter((m) => m.enabled);
+  const realEnabled = enabled.filter((m) => !m.isTestProvider);
+  const canContractAi = hasRole(me, 'PROCUREMENT', 'DEPARTMENT_USER');
+  const canRetry = (x: AiOverview['runs'][number]) => ['WAITING_QUOTA', 'NO_PROVIDER', 'NOT_ALLOWED'].includes(x.status) && x.task !== 'AI15' && (!CONTRACT_TASKS.has(x.task) || canContractAi);
+  const thr = threshold ?? String(d.contractSettings?.reviewThreshold ?? '');
+  const thrValid = /^\d{1,3}$/.test(thr) && Number(thr) <= 100;
   return (
     <div className="page">
       <PageHeader title="Yapay zekâ">Önce kural ve yapılandırılmış veri; model yalnız izinli sağlayıcı, bölge ve bütçe kapısından geçerse çalışır. Para, vergi, VKN eşleme, limit, puan ve onay modele verilmez.</PageHeader>
-      {!enabled.length && <Banner tone="neutral" icon="info" title="Etkin AI sağlayıcısı yok">Tüm AI görevleri manuel akışla sürer. Sağlayıcı seçimi ve ücretli kullanım kurum onayı ister.</Banner>}
-      <Banner tone="warn" icon="alert" title="Kalite ölçümü yapılamadı (engelli)">{d.quality.reason}</Banner>
+      {!realEnabled.length && <Banner tone="neutral" icon="info" title="Etkin AI sağlayıcısı yok">{enabled.length ? 'Yalnız test sağlayıcısı etkin (gerçek değil, ücretsiz). ' : ''}Tüm AI görevleri manuel akışla sürer. Sağlayıcı seçimi ve ücretli kullanım kurum onayı ister.</Banner>}
+      <Banner tone="warn" icon="alert" title="Kalite ölçümü yapılamadı: gerçek sözleşmelerle ölçülmedi (NOT_RUN)">{d.quality.reason}</Banner>
+      {d.provider && (
+        <section className="panel mb-5" aria-labelledby="ai-provider-h">
+          <div className="panel-head flex-wrap"><h2 id="ai-provider-h" className="flex-1">Model ve sağlayıcı</h2>
+            {d.provider.kind === 'test' ? <Tag label={{ text: TEST_LABEL, tone: 'warn', icon: 'alert' }} /> : d.provider.kind === 'none' ? <Tag label={{ text: 'Bağlı değil', tone: 'neutral', icon: 'minus' }} /> : <Tag label={{ text: 'Kurum dışı API', tone: 'info', icon: 'info' }} />}</div>
+          <div className="panel-body grid grid-cols-3 gap-x-6 gap-y-3 max-[900px]:grid-cols-1">
+            <div><p className="m-0 text-sm text-ink-muted">Model</p><p className="m-0 mono [overflow-wrap:anywhere]">{d.provider.modelId}</p>
+              <p className="m-0 text-sm text-ink-subtle">Salt okunur. Tek ayar: <span className="mono">AI_MODEL_ID</span> (sunucu yapılandırması).</p></div>
+            <div><p className="m-0 text-sm text-ink-muted">Sağlayıcı</p><p className="m-0">{d.provider.label}</p>
+              <p className="m-0 text-sm text-ink-subtle">{d.provider.external ? 'Sözleşme metni kurum dışına çıkar (KVKK onayı gerekir).' : d.provider.kind === 'test' ? 'Ağ yok, ücret yok; çıktısı gerçek okuma ya da gerçek inceleme değildir.' : 'Yapay zekâ çağrısı yapılmaz; elle akış sürer.'}</p></div>
+            <div><p className="m-0 text-sm text-ink-muted">Bu ay harcanan</p><p className="m-0 tabular">{d.usage.monthSpent} {d.policy?.budgetCurrency ?? ''}</p>
+              <p className="m-0 text-sm text-ink-subtle">Bütçe: {d.policy?.monthlyBudget ? `${d.policy.monthlyBudget} ${d.policy.budgetCurrency}` : d.policy ? 'sınırsız' : 'politika yok (ücretli AI kapalı)'}</p></div>
+          </div>
+        </section>
+      )}
       <div className="grid grid-cols-[minmax(0,1fr)_360px] gap-6 max-[1100px]:grid-cols-1">
-        <div className="grid content-start gap-5">
+        <div className="grid min-w-0 content-start gap-5">
           <section className="panel"><div className="panel-head"><h2>Görev matrisi</h2></div>
             <Table><TableHeader><TableRow className="hover:bg-transparent"><TableHead>Görev</TableHead><TableHead className="max-[900px]:hidden">Önce</TableHead><TableHead>İnsan kontrolü</TableHead></TableRow></TableHeader>
               <TableBody>{d.tasks.map((t) => <TableRow key={t.code}><TableCell><span className="mono text-sm">{t.code}</span> {t.name}</TableCell><TableCell className="text-sm max-[900px]:hidden">{t.deterministic}</TableCell><TableCell className="text-sm">{t.human}</TableCell></TableRow>)}</TableBody></Table></section>
-          <section className="panel"><div className="panel-head"><h2>Son çalıştırmalar</h2><span className="text-sm text-ink-subtle">Çalışmayan istek de sebebiyle kaydedilir.</span></div>
-            <div className="panel-body">{!d.runs.length ? <p className="text-ink-muted">Kayıt yok.</p> : <ul className="grid gap-2">{d.runs.map((x) => (
-              <li key={x.id} className="text-sm"><span className="mono">{x.task}</span> <strong>{RUN_STATUS[x.status] ?? x.status}</strong>{x.provider ? ` · ${x.provider}/${x.modelId}` : ''}
-                {x.estimatedCost && <span className="tabular"> · tahmini {x.estimatedCost} {x.costCurrency}</span>}{x.actualCost && <span className="tabular"> · gerçekleşen {x.actualCost}</span>}
-                {x.reason && <span className="block text-ink-muted">{x.reason}</span>}
-                {['WAITING_QUOTA', 'NO_PROVIDER', 'NOT_ALLOWED'].includes(x.status) && <button type="button" className="underline" disabled={a.busy}
-                  onClick={() => void a.run(() => api(`/api/v1/ai/runs/${x.id}/retry`, { method: 'POST' }), 'İş yeniden yönlendirildi.')}>Yeniden dene</button>}{x.flags.length > 0 && <span className="block text-warn">Denetim: {x.flags.join(', ')}</span>}
-                <span className="block text-ink-subtle">{fmtDateTime(x.createdAt)}</span></li>))}</ul>}</div></section>
+          <section className="panel min-w-0" aria-labelledby="ai-ledger-h"><div className="panel-head flex-wrap"><h2 id="ai-ledger-h" className="flex-1">Çağrı defteri · son çalıştırmalar</h2><span className="text-sm text-ink-subtle">Çalışmayan istek de sebebiyle kaydedilir. İstem ve belge metni saklanmaz.</span></div>
+            {!d.runs.length ? <div className="panel-body"><p className="text-ink-muted">Kayıt yok.</p></div> : (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[960px] text-left text-sm">
+                  <caption className="sr-only">Yapay zekâ çağrı defteri</caption>
+                  <thead className="bg-sunken text-ink-muted"><tr>{['Tarih', 'Kim', 'Görev', 'Belge sürümü', 'Model', 'İstem sürümü', 'Token giriş / çıkış', 'Ücret', 'Durum'].map((h) =>
+                    <th key={h} scope="col" className={cn('px-3 py-2 font-semibold', (h === 'Ücret' || h.startsWith('Token')) && 'text-right')}>{h}</th>)}</tr></thead>
+                  <tbody>{d.runs.map((x) => (
+                    <tr key={x.id} className="border-t border-border align-top">
+                      <td className="tabular whitespace-nowrap px-3 py-2">{fmtDateTime(x.createdAt)}</td>
+                      <td className="px-3 py-2">{x.requestedBy ?? 'Sistem'}</td>
+                      <td className="px-3 py-2"><span className="mono">{x.task}</span></td>
+                      <td className="px-3 py-2">{x.documentVersionId ? <Link to={`/belgeler/${x.documentVersionId}`} className="mono" title={x.documentVersionId}>{x.documentVersionId.slice(0, 8)}</Link> : '—'}</td>
+                      <td className="px-3 py-2"><span className="mono [overflow-wrap:anywhere]">{x.provider ? `${x.provider}/${x.responseModel ?? x.modelId}` : '—'}</span>
+                        {x.isTestProvider && <span className="mt-0.5 block"><Tag label={{ text: x.providerLabel ?? TEST_LABEL, tone: 'warn', icon: 'alert' }} /></span>}</td>
+                      <td className="px-3 py-2"><span className="mono">{x.promptVersion ?? '—'}</span></td>
+                      <td className="tabular whitespace-nowrap px-3 py-2 text-right">{x.inputTokens != null || x.outputTokens != null ? `${x.inputTokens?.toLocaleString('tr-TR') ?? '—'} / ${x.outputTokens?.toLocaleString('tr-TR') ?? '—'}` : '—'}</td>
+                      <td className="tabular whitespace-nowrap px-3 py-2 text-right">{x.actualCost ? `${x.actualCost} ${x.costCurrency ?? ''}` : x.estimatedCost ? `tahmini ${x.estimatedCost} ${x.costCurrency ?? ''}` : '—'}</td>
+                      <td className="px-3 py-2"><strong>{RUN_STATUS[x.status] ?? 'Bilinmeyen durum'}</strong>
+                        {x.reason && <span className="block text-ink-muted">{x.reason}</span>}
+                        {x.flags.length > 0 && <span className="block text-warn">Denetim: {x.flags.map(flagTr).join(', ')}</span>}
+                        {canRetry(x) && <button type="button" className="underline" disabled={rr.busy}
+                          onClick={() => void rr.run(() => api(`/api/v1/ai/runs/${x.id}/retry`, { method: 'POST' }), 'İş yeniden yönlendirildi.')}>Yeniden dene</button>}</td>
+                    </tr>))}</tbody>
+                </table>
+              </div>)}
+            {rr.feedback && <div className="panel-body">{rr.feedback}</div>}</section>
+          <section className="panel" aria-labelledby="ai-quality-h"><div className="panel-head"><h2 id="ai-quality-h" className="flex-1">Doğruluk ölçümü</h2><Tag label={{ text: 'Ölçülmedi (NOT_RUN)', tone: 'neutral', icon: 'minus' }} /></div>
+            <div className="panel-body grid gap-2"><p className="m-0">{d.quality.reason}</p>
+              <p className="m-0 text-sm text-ink-muted">Sözleşme alanı okuma doğruluğu: {d.quality.contractAccuracy === 'NOT_RUN' || !d.quality.contractAccuracy ? 'ölçülmedi' : d.quality.contractAccuracy}. Ölçülmeden "okuyor" denmez; okunan her değer insan kaydıyla sözleşmeye girer.</p></div></section>
         </div>
         <aside className="grid content-start gap-4">
           <section className="panel"><div className="panel-head"><h2>Kiracı politikası</h2>{d.can.manage && !editing && <span className="ml-auto flex gap-1"><Button size="sm" variant="outline" onClick={() => { a.clear(); setEditing(true); }}>Düzenle</Button>
@@ -534,12 +589,29 @@ export function AiPage() {
                 <dt>Aylık bütçe</dt><dd className="tabular">{d.policy.monthlyBudget ? `${d.policy.monthlyBudget} ${d.policy.budgetCurrency}` : 'Sınırsız'}</dd>
                 <dt>Günlük çağrı</dt><dd className="tabular">{d.policy.dailyCallLimit ?? 'Sınırsız'}</dd></dl>}
               {a.feedback}</div></section>
+          {d.contractSettings && (
+            <section className="panel" aria-labelledby="ai-threshold-h"><div className="panel-head"><h2 id="ai-threshold-h">İnceleme eşiği</h2></div>
+              <div className="panel-body grid gap-2">
+                {d.can.manage ? (
+                  <form className="grid gap-2" onSubmit={(e) => { e.preventDefault(); if (!thrValid) return;
+                    void t.run(() => api('/api/v1/ai/contract-settings', { method: 'PUT', json: { reviewThreshold: Number(thr) } }), 'Eşik kaydedildi.').then((ok) => { if (ok) setThreshold(null); }); }}>
+                    <Field label="Ön inceleme eşiği (0–100)" hint={`Varsayılan ${d.contractSettings.defaultThreshold}. Altındaki puanda ek onaycı önerilir; gönderim engellenmez.`}
+                      error={!thrValid && thr !== '' ? '0 ile 100 arasında tam sayı girin.' : null}>
+                      {(x) => <input className="input tabular w-24 text-right" inputMode="numeric" {...x} value={thr} onChange={(e) => { t.clear(); setThreshold(e.target.value.replace(/\D/g, '').slice(0, 3)); }} />}</Field>
+                    <Button type="submit" size="sm" className="justify-self-start" disabled={t.busy || !thrValid || Number(thr) === d.contractSettings.reviewThreshold}>Eşiği kaydet</Button>
+                  </form>
+                ) : <dl className="facts"><dt>Eşik</dt><dd className="tabular">{d.contractSettings.reviewThreshold}</dd></dl>}
+                <p className="m-0 text-sm text-ink-subtle">{d.contractSettings.updatedAt ? `Son değişiklik: ${d.contractSettings.updatedBy ?? '—'} · ${fmtDateTime(d.contractSettings.updatedAt)}` : 'Varsayılan değer kullanılıyor.'}</p>
+                {t.feedback}
+              </div></section>
+          )}
           <section className="panel"><div className="panel-head"><h2>Kullanım</h2></div>
             <div className="panel-body"><dl className="facts"><dt>Bu ay</dt><dd className="tabular">{d.usage.monthSpent} {d.policy?.budgetCurrency ?? ''}</dd><dt>Bugün çağrı</dt><dd className="tabular">{d.usage.todayCalls}</dd></dl>
               <p className="mt-2 text-sm text-ink-subtle">%80'de uyarı; %100'de yeni ücretli iş bekler, manuel iş sürer. Gerçekleşen ücret yoksa tahmin sayılır; bilinmeyen tarife sıfır yazılmaz.</p></div></section>
           <section className="panel"><div className="panel-head"><h2>Model kaydı</h2></div>
             <div className="panel-body">{!d.models.length ? <p className="text-ink-muted">Kayıtlı model yok.</p> : <ul className="grid gap-2">{d.models.map((m) => (
-              <li key={m.id} className="text-sm"><strong>{m.provider}/{m.modelId}</strong> <span className="text-ink-subtle">{m.modelVersion}</span>{!m.enabled && ' · kapalı'}{!m.adapterInstalled && ' · bağdaştırıcı yok'}
+              <li key={m.id} className="text-sm"><strong className="[overflow-wrap:anywhere]">{m.provider}/{m.modelId}</strong> <span className="text-ink-subtle">{m.modelVersion}</span>{!m.enabled && ' · kapalı'}{!m.adapterInstalled && ' · bağdaştırıcı yok'}
+                {m.isTestProvider && <span className="mt-0.5 block"><Tag label={{ text: TEST_LABEL, tone: 'warn', icon: 'alert' }} /></span>}
                 <span className="block text-ink-muted">{m.tasks.join(', ')} · {Object.entries(m.capabilities).filter(([, v]) => v).map(([k]) => k).join(', ')} · bölge {m.approvedRegions.join(', ')}{m.trainsOnCustomerData ? ' · müşteri verisiyle eğitir' : ''}</span></li>))}</ul>}</div></section>
         </aside>
       </div>

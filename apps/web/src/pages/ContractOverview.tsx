@@ -12,6 +12,7 @@ import { DocumentViewer } from '../ui/DocumentViewer.tsx';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { contractFacts, Facts, PlannedList } from './ContractWizard.tsx';
+import { ReviewApprovalNote, ReviewDetail, TEST_PROVIDER_LABEL } from './ContractReview.tsx';
 
 /**
  * v2 Faz 3 (D108, Figma 10–11): sözleşme detayının yeni sekmeleri (Özet, Belge, İnceleme, Onaylar, Hatırlatıcılar, Geçmiş) ve üst bilgi.
@@ -88,7 +89,9 @@ function Summary({ d, savedDraft }: { d: ContractV2; savedDraft: boolean }) {
         <div className="grid content-start gap-5">
           <section className="panel">
             <div className="panel-head"><h2 className="flex-1">Sözleşme bilgileri</h2>{d.can.edit && <Button size="sm" variant="outline" asChild><Link to={wizard}><Icon name="pen" />Alanları düzenle</Link></Button>}</div>
-            <div className="panel-body"><Facts items={[...contractFacts(d), ['Ön inceleme', 'Faz 4\'te (yapay zekâ bağlı değil)']]} /></div>
+            <div className="panel-body"><Facts items={[...contractFacts(d), ['Ön inceleme', d.review
+              ? <Link to="?sekme=inceleme"><span className="tabular">{d.review.score} / 100</span>{d.review.stale ? ' · güncel değil' : d.review.belowThreshold ? ' · eşiğin altında' : ''}{d.review.isTestProvider ? ` · ${TEST_PROVIDER_LABEL}` : ''}</Link>
+              : 'Yapılmadı']]} /></div>
           </section>
           <section className="panel" aria-labelledby="inv-h">
             <div className="panel-head"><h2 id="inv-h">Eşleşen faturalar</h2></div>
@@ -202,6 +205,9 @@ function Steps({ d, compact }: { d: ContractV2; compact?: boolean }) {
 // --- Belge -------------------------------------------------------------------------------------------------------------
 
 export function DocumentTab({ v2 }: { v2: V2State }) {
+  // v2 Faz 4: İnceleme bulgusunun sayfa bağlantısı `?sekme=belge&sayfa=N` ile belgeyi o sayfada açar.
+  const [params] = useSearchParams();
+  const page = Number(params.get('sayfa')) || null;
   return <V2Gate v2={v2}>{(d) => !d.document ? <div className="page"><Empty icon="file" title="Belge yok" /></div> : (
     <div className="flex h-full min-h-[520px] flex-col">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-border bg-surface px-8 py-2 text-sm text-ink-muted max-[900px]:px-4">
@@ -209,23 +215,20 @@ export function DocumentTab({ v2 }: { v2: V2State }) {
         {d.document.pageCount ? <span>{d.document.pageCount} sayfa</span> : null}
         <Link to={`/belgeler/${d.document.documentVersionId}`}>Belge kaydını aç</Link>
       </div>
-      <div className="min-h-0 flex-1"><DocumentViewer versionId={d.document.documentVersionId} mimeType={d.document.mimeType} /></div>
+      <div className="min-h-0 flex-1"><DocumentViewer versionId={d.document.documentVersionId} mimeType={d.document.mimeType} targetPage={page} /></div>
     </div>
   )}</V2Gate>;
 }
 
-// --- İnceleme (Faz 4) ---------------------------------------------------------------------------------------------------
+// --- İnceleme (v2 Faz 4, Figma 10) -----------------------------------------------------------------------------------------
 
-export function ReviewTab() {
-  return (
-    <div className="page">
-      <div className="rounded-md border border-border bg-surface">
-        <Empty icon="sparkles" title="Yapay zekâ ön incelemesi Faz 4'te">
-          Taslakla karşılaştırma, farklar ve bulgular yapay zekâ bağlanınca bu sekmede görünür. Şu an inceleme yapılmaz; puan ya da örnek bulgu gösterilmez. Belgeyi Belge sekmesinden siz inceleyin.
-        </Empty>
-      </div>
-    </div>
-  );
+export function ReviewTab({ v2 }: { v2: V2State }) {
+  const { me } = useSession();
+  // contract.review.read: Yönetici, Satınalma, Departman kullanıcısı, Denetçi (+ onaycı görünürlüğü sunucuda).
+  if (!hasRole(me, 'ADMIN', 'PROCUREMENT', 'DEPARTMENT_USER', 'AUDITOR')) {
+    return <div className="page"><div className="rounded-md border border-border bg-surface"><Empty icon="lock" title="Ön incelemeyi görme yetkiniz yok">Belgeyi Belge sekmesinden inceleyebilirsiniz.</Empty></div></div>;
+  }
+  return <V2Gate v2={v2}>{(d) => <ReviewDetail key={d.family.id} familyId={d.family.id} documentHref={(n) => `?sekme=belge&sayfa=${n}`} />}</V2Gate>;
 }
 
 // --- Onaylar -----------------------------------------------------------------------------------------------------------
@@ -262,6 +265,7 @@ function Approvals({ d, reload }: { d: ContractV2; reload: () => Promise<void> }
     <div className="page grid max-w-[920px] gap-5">
       {params.get('gonderildi') === '1' && c?.status === 'OPEN' && <Banner tone="info" icon="check" title="Onaya gönderildi">İlk onaycıya görev açıldı; karar verildikçe sıradaki onaycıya geçer.</Banner>}
       {msg && <Banner tone={msg.tone} title={msg.text} />}
+      {d.review && <ReviewApprovalNote review={d.review} href="?sekme=inceleme" />}
       {!c ? <div className="rounded-md border border-border bg-surface"><Empty icon="stamp" title={d.legacy ? 'Onay kaydı yok (eski kayıt)' : 'Henüz onaya gönderilmedi'}>
         {d.can.submit && !d.missing.length ? <Link to={`/sozlesmeler/ekle?taslak=${d.family.id}&adim=3`}>Alanları doğrula ve gönder</Link> : d.missing.length ? 'Zorunlu alanlar tamamlanınca onaya gönderilebilir.' : null}</Empty></div> : (
         <section className="panel">
@@ -410,6 +414,7 @@ const ACTION: Record<string, string> = {
   'signature.exception.requested': 'İmza istisnası istendi', 'signature.exception.decided': 'İmza istisnası karara bağlandı', 'signature.exception.expired': 'İmza istisnasının süresi doldu',
   'signature.finalization.reopened': 'İmza kesinleştirmesi yeniden açıldı', 'signature.requirement.defined': 'İmza gereksinimi tanımlandı',
   'signature.review.recorded': 'İmza incelemesi kaydedildi', 'signature.review.finalized': 'İmza kontrolü kesinleşti',
+  'contract.extraction.decided': 'Yapay zekâ önerisine karar verildi', 'contract.review_below_threshold_acknowledged': 'Ön inceleme puanı eşiğin altındayken gönderildi',
   'template.created': 'Şablon yüklendi', 'template.version_added': 'Şablonun yeni sürümü yüklendi', 'template.downloaded': 'Şablon indirildi',
 };
 const actionLabel = (a: string) => ACTION[a] ?? (a.startsWith('signature.') ? 'İmza kontrolü kaydı' : a.startsWith('contract.') ? 'Sözleşme kaydı' : 'Kayıt olayı');

@@ -1,3 +1,4 @@
+// v2 Faz 4 (D109): kalite bandı başlığı "(engelli)" yerine ölçülmediğini söylüyor (NOT_RUN); anlam aynı.
 // v2 Faz 1 (D93/D95): Yapay zekâ Yönetim sekmesine, Olaylar ve performans ağırlıkları Tedarikçiler sekmelerine taşındı; testler yeni yerlerden açar. Sorumlu rol seçicisi yalnız v2 rollerini (tekrarsız) sunar. Değerlendirme başlatma formu departman ister (her rolde zorunlu); portal anketi senaryosu Bilgi Teknolojileri'ni seçer, böylece yanıtı inceleyen departman kullanıcısı (selin) kaydı görür.
 import { expect, test, type Page } from '@playwright/test';
 
@@ -102,7 +103,7 @@ test('AI: sağlayıcı yokken manuel akış; kalite ölçümü BLOCKED; politika
   await login(page, 'tamer.yonetici@example.test');
   await openAi(page);
   await expect(page.getByText('Etkin AI sağlayıcısı yok')).toBeVisible();
-  await expect(page.getByText('Kalite ölçümü yapılamadı (engelli)')).toBeVisible();
+  await expect(page.getByText('Kalite ölçümü yapılamadı: gerçek sözleşmelerle ölçülmedi (NOT_RUN)')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Düzenle' })).toBeVisible();
   await logout(page);
   await login(page, 'kerem.hukuk@example.test');
