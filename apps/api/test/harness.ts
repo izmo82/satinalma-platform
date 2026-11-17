@@ -1,3 +1,4 @@
+// v2 Faz 2 (D105): makeHarness isteğe bağlı dizin sağlayıcısı alır (Görev 4 testleri Graph çağırmaz); var olan çağrılar değişmez.
 import pg from 'pg';
 import { randomUUID } from 'node:crypto';
 import { buildApp } from '../src/server.ts';
@@ -5,6 +6,7 @@ import { DevAuthProvider } from '../src/auth.ts';
 import { createPool } from '../src/db.ts';
 import { S3ObjectStore } from '../src/storage.ts';
 import type { Config } from '../src/config.ts';
+import type { DirectoryProvider } from '../src/directory/provider.ts';
 import { createSyntheticWorld, type SyntheticWorld } from '../src/devdata.ts';
 import { registerDetector, type DetectionOutcome } from '../src/signature/detector.ts';
 import { ErpTimeout, registerErpAdapter } from '../src/erp/adapter.ts';
@@ -38,7 +40,7 @@ registerErpAdapter({
 
 const secret = 'test-secret-'.padEnd(40, 'x');
 
-export async function makeHarness(overrides: Partial<Config> = {}) {
+export async function makeHarness(overrides: Partial<Config> = {}, deps: { directoryProvider?: DirectoryProvider | null } = {}) {
   const config: Config = {
     env: 'test', port: 0, databaseUrl: TEST_APP_URL, databaseOwnerUrl: TEST_OWNER_URL, authMode: 'dev', oidc: null,
     devAuthSecret: secret, dataRegion: 'TR',
@@ -52,7 +54,7 @@ export async function makeHarness(overrides: Partial<Config> = {}) {
   const owner = new pg.Pool({ connectionString: TEST_OWNER_URL, max: 3 });
   const auth = new DevAuthProvider(secret);
   const store = new S3ObjectStore(config.objectStore);
-  const app = await buildApp({ config, pool, auth, store });
+  const app = await buildApp({ config, pool, auth, store, ...('directoryProvider' in deps ? { directoryProvider: deps.directoryProvider } : {}) });
   const world: SyntheticWorld = await createSyntheticWorld(owner, `-${randomUUID().slice(0, 8)}`);
   const tokens = new Map<string, string>();
   for (const [k, u] of Object.entries(world.users)) tokens.set(k, await auth.issue(`dev|${u.email}`));

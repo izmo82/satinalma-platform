@@ -28,6 +28,8 @@ import * as approvals from './modules/approvals.ts';
 import * as search from './modules/search.ts';
 import * as recovery from './modules/recovery.ts';
 import * as departments from './modules/departments.ts';
+import * as directory from './modules/directory.ts';
+import { directoryProvider, type DirectoryProvider } from './directory/provider.ts';
 import { taskRoleSql, visibleTaskSql } from './tasks.ts';
 import { decisionSummaryPdf, evaluationWorkbook } from './reports.ts';
 import { RateLimiter, rateLimited } from './rateLimit.ts';
@@ -37,6 +39,8 @@ export interface AppDeps {
   pool: pg.Pool;
   auth: AuthProvider;
   store: ObjectStore;
+  /** v2 Faz 2 (D105): dizin sağlayıcısı. Verilmezse yapılandırmadan bir kez kurulur; testler sahte sağlayıcı (ya da null) verir. */
+  directoryProvider?: DirectoryProvider | null;
 }
 
 const uuid = { type: 'string', format: 'uuid' } as const;
@@ -74,6 +78,7 @@ export async function buildApp(deps: AppDeps) {
   });
   await app.register(multipart, { limits: { fileSize: MAX_UPLOAD_BYTES, files: 1, fields: 10 } });
 
+  const dirProvider: DirectoryProvider | null = deps.directoryProvider !== undefined ? deps.directoryProvider : directoryProvider(deps.config.directory);
   const sessions = new WebSessions(deps.pool, deps.config.session ?? DEFAULT_SESSION, deps.config.webOrigin, deps.config.oidc, deps.auth, deps.config.extraWebOrigins);
   const limiter = deps.config.rateLimit?.enabled ? new RateLimiter(deps.config.rateLimit) : null;
   app.setErrorHandler((err: any, req, reply) => {
@@ -234,7 +239,11 @@ export async function buildApp(deps: AppDeps) {
 
   // --- Departmanlar (v2 D93) ------------------------------------------------------
   app.get('/api/v1/departments', { schema: { tags: ['departments'] } }, async (req) =>
-    scoped(req, 'department.read', async (tx) => ({ items: await departments.listDepartments(tx) })));
+    scoped(req, 'department.read', async (tx, ctx) => ({ items: await departments.listDepartments(tx, { withAdminFields: can(ctx.roles, 'department.manage') }) })));
+  // v2 Faz 2 (R6, D105): departman birleştirme (geri alınamaz, onay ister).
+  app.post('/api/v1/departments/:id/merge', { schema: { tags: ['departments'], params: idParams,
+    body: { type: 'object', required: ['intoId'], additionalProperties: false, properties: { intoId: uuid, confirm: { type: 'boolean' } } } } }, async (req) =>
+    scoped(req, 'directory.manage', (tx, ctx) => departments.mergeDepartments(tx, ctx, (req.params as { id: string }).id, req.body as { intoId: string; confirm?: boolean })));
   app.post('/api/v1/departments', { schema: { tags: ['departments'], body: { type: 'object', required: ['name'], additionalProperties: false, properties: { name: text(200) } } } },
     async (req, reply) => reply.status(201).send(await scoped(req, 'department.manage', (tx, ctx) => departments.createDepartment(tx, ctx, req.body as { name: string }))));
   // Düzeltme dalgası (C1, D96): departmansız kayıtlar ve departman ataması (Yönetici, Satınalma).
@@ -248,6 +257,34 @@ export async function buildApp(deps: AppDeps) {
   app.put('/api/v1/memberships/:userId/departments', { schema: { tags: ['departments'], params: { type: 'object', required: ['userId'], properties: { userId: uuid } },
     body: { type: 'object', required: ['departmentIds'], additionalProperties: false, properties: { departmentIds: { type: 'array', maxItems: 100, items: uuid } } } } }, async (req) =>
     scoped(req, 'department.manage', (tx, ctx) => departments.setMembershipDepartments(tx, ctx, (req.params as { userId: string }).userId, req.body as { departmentIds: string[] })));
+
+  // --- Dizin (Entra) yönetimi (v2 Faz 2, D105) ----------------------------------------
+  // Sır (ENTRA_CLIENT_SECRET) hiçbir yanıtta yok: sağlayıcıdan yalnız tür ve etiketler döner.
+  app.get('/api/v1/directory/connection', { schema: { tags: ['directory'] } }, async (req) =>
+    scoped(req, 'directory.read', (tx) => directory.getConnection(tx, dirProvider)));
+  app.put('/api/v1/directory/connection', { schema: { tags: ['directory'], body: { type: 'object', required: ['scopeType', 'scopeValue', 'enabled'], additionalProperties: false,
+    properties: { scopeType: { type: 'string', enum: ['GROUP', 'ADMIN_UNIT', 'OU_FILTER'] }, scopeValue: { type: 'string', maxLength: 500 }, enabled: { type: 'boolean' } } } } }, async (req) =>
+    scoped(req, 'directory.manage', (tx, ctx) => directory.setConnection(tx, ctx, dirProvider, req.body as { scopeType: 'GROUP' | 'ADMIN_UNIT' | 'OU_FILTER'; scopeValue: string; enabled: boolean })));
+  app.post('/api/v1/directory/connection/test', { schema: { tags: ['directory'] } }, async (req) => {
+    await scoped(req, 'directory.manage', async () => null);
+    if (!dirProvider) throw directory.notConfigured();
+    // Ağ çağrısı veritabanı işlemi dışında yapılır.
+    return directory.testConnection(dirProvider);
+  });
+  app.post('/api/v1/directory/sync', { schema: { tags: ['directory'] } }, async (req, reply) => {
+    const r = await scoped(req, 'directory.manage', (tx, ctx) => {
+      if (!dirProvider) throw directory.notConfigured();
+      return directory.startManualSync(tx, ctx, dirProvider);
+    });
+    return reply.status(202).send(r);
+  });
+  app.get('/api/v1/directory/runs', { schema: { tags: ['directory'] } }, async (req) =>
+    scoped(req, 'directory.read', async (tx) => ({ items: await directory.listRuns(tx) })));
+  app.get('/api/v1/directory/users', { schema: { tags: ['directory'], querystring: { type: 'object', properties: { q: { type: 'string', maxLength: 200 }, departmentId: uuid } } } },
+    async (req) => scoped(req, 'directory.read', (tx) => directory.listDirectoryUsers(tx, req.query as { q?: string; departmentId?: string })));
+  app.put('/api/v1/directory/users/:id/roles', { schema: { tags: ['directory'], params: idParams, body: { type: 'object', required: ['roles'], additionalProperties: false,
+    properties: { roles: { type: 'array', maxItems: 10, items: { type: 'string', maxLength: 40 } } } } } }, async (req) =>
+    scoped(req, 'role.assign', (tx, ctx) => directory.setDirectoryUserRoles(tx, ctx, (req.params as { id: string }).id, req.body as { roles: string[] })));
 
   // --- İşlerim (UX01) -----------------------------------------------------------
   // --- Üst çubuk: arama, bildirim, kayıtlı görünümler (izin türe göre modül içinde) ---

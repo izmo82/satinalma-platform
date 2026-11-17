@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type pg from 'pg';
-import { normalizeDepartmentName, planMembershipDepartments } from '@sp/domain';
+import { normalizeDepartmentName, normalizeRoles, planMembershipDepartments } from '@sp/domain';
 import { withoutTenant, withTenant, type TenantContext, type Tx } from '../db.ts';
 import { audit } from '../audit.ts';
 import { ApiError, conflict } from '../errors.ts';
@@ -328,4 +328,199 @@ async function reactivate(tx: Tx, ctx: TenantContext, userId: string, runId: str
   if (!r.rowCount) return false;
   await audit(tx, ctx, 'directory.membership_reactivated', 'user', userId, { runId });
   return true;
+}
+
+// --- Görev 4: Yönetim API'si (bağlantı, çalıştırmalar, eşitlenen kullanıcılar, rol ataması) --------------------------------
+
+const ADMIN_MSG = {
+  invalid_scope: 'Kapsam değeri boş olamaz; grup, yönetim birimi ya da OU yolunu girin.',
+  not_configured_provider: 'Dizin sağlayıcısı yapılandırılmamış (DIRECTORY_PROVIDER); bağlantı denenemez ve eşitleme başlatılamaz.',
+  test_failed: 'Dizin bağlantısı denenemedi; yapılandırmayı denetleyin.',
+  role_not_allowed: 'Bu ekrandan yalnız Yönetici, Satınalma, Departman kullanıcısı ve Denetçi rolleri verilir.',
+  email_missing: 'Dizin kaydında e-posta yok; bu kullanıcıya rol verilemez. Entra\'da posta alanını doldurup yeniden eşitleyin.',
+  directory_user_inactive: 'Kullanıcı dizinde kapalı ya da kapsam dışında; rol verilemez.',
+  user_linked_elsewhere: 'Bu e-postadaki kullanıcı başka bir dizin kaydına bağlı; rol verilemez.',
+  supplier_membership: 'Bu e-postadaki kullanıcı bu kurumda tedarikçi portalı kullanıcısı; kurum rolü verilemez.',
+  self_demotion: 'Kendi Yönetici rolünüzü kaldıramazsınız; başka bir Yönetici kaldırabilir.',
+  last_admin: 'Kurumun son etkin Yönetici\'sinin rolü kaldırılamaz; önce başka bir kullanıcıya Yönetici rolü verin.',
+} as const;
+
+/** Rol ataması ekranından verilebilen roller (R3; tedarikçi rolü verilmez). */
+export const ASSIGNABLE_ROLES = ['ADMIN', 'PROCUREMENT', 'DEPARTMENT_USER', 'AUDITOR'] as const;
+/** Eşitlenen kullanıcılar listesinin üst sınırı; aşılırsa yanıtta `truncated: true`. */
+export const DIRECTORY_USERS_LIMIT = 500;
+
+export interface RunView {
+  id: string; status: string; trigger: string; providerKind: string; fetched: number; created: number; updated: number; suspended: number;
+  reactivated: number; warnings: number; errorCode: string | null; errorMessage: string | null; requestedBy: string | null;
+  createdAt: string; startedAt: string | null; finishedAt: string | null;
+}
+const RUN_COLUMNS = `id, status, trigger, provider_kind AS "providerKind", fetched, created, updated, suspended, reactivated, warnings,
+  error_code AS "errorCode", error_message AS "errorMessage", requested_by AS "requestedBy", created_at AS "createdAt", started_at AS "startedAt", finished_at AS "finishedAt"`;
+
+/** Sağlayıcının yanıtta gösterilebilen alanları. Sır (istemci sırrı) sağlayıcı nesnesinde de tutulmaz; burada yalnız etiketler döner. */
+function providerView(p: DirectoryProvider | null) {
+  return p ? { kind: p.kind, label: p.label, tenantLabel: p.tenantLabel, configured: true } : null;
+}
+
+export async function getConnection(tx: Tx, provider: DirectoryProvider | null) {
+  const conn = (await tx.query<Connection>(`SELECT scope_type, scope_value, enabled FROM directory_connections`)).rows[0];
+  const lastRun = (await tx.query<RunView>(`SELECT ${RUN_COLUMNS} FROM directory_sync_runs ORDER BY created_at DESC, id LIMIT 1`)).rows[0] ?? null;
+  return {
+    provider: providerView(provider),
+    scope: conn && conn.scope_value ? { type: conn.scope_type, value: conn.scope_value } : null,
+    enabled: conn?.enabled ?? false,
+    lastRun,
+  };
+}
+
+export async function setConnection(tx: Tx, ctx: TenantContext, provider: DirectoryProvider | null,
+  b: { scopeType: DirectoryScope['type']; scopeValue: string; enabled: boolean }) {
+  const value = b.scopeValue.trim();
+  if (!value) throw new ApiError(422, 'invalid_scope', ADMIN_MSG.invalid_scope);
+  const before = (await tx.query<Connection>(`SELECT scope_type, scope_value, enabled FROM directory_connections FOR UPDATE`)).rows[0] ?? null;
+  await tx.query(`INSERT INTO directory_connections (tenant_id, scope_type, scope_value, enabled, updated_by, updated_at) VALUES ($1, $2, $3, $4, $5, now())
+    ON CONFLICT (tenant_id) DO UPDATE SET scope_type = EXCLUDED.scope_type, scope_value = EXCLUDED.scope_value, enabled = EXCLUDED.enabled,
+      updated_by = EXCLUDED.updated_by, updated_at = now()`, [ctx.tenantId, b.scopeType, value, b.enabled, ctx.userId]);
+  await audit(tx, ctx, 'directory.connection.updated', 'directory_connection', ctx.tenantId, {
+    before: before && { scopeType: before.scope_type, scopeValue: before.scope_value, enabled: before.enabled },
+    after: { scopeType: b.scopeType, scopeValue: value, enabled: b.enabled },
+  });
+  return getConnection(tx, provider);
+}
+
+export function notConfigured(): ApiError {
+  return conflict('not_configured', ADMIN_MSG.not_configured_provider);
+}
+
+/** Sağlayıcının bağlantı denemesi. Beklenmeyen hata iç ayrıntı (sır dahil) taşıyabileceğinden sabit iletiyle döner. */
+export async function testConnection(provider: DirectoryProvider) {
+  let result: { ok: true } | { ok: false; code: string; message: string };
+  try {
+    result = await provider.testConnection();
+  } catch (e) {
+    result = e instanceof DirectoryError ? { ok: false, code: e.code, message: e.message } : { ok: false, code: 'provider_error', message: ADMIN_MSG.test_failed };
+  }
+  return { ...result, provider: { kind: provider.kind, label: provider.label } };
+}
+
+/** "Şimdi eşitle": bağlantı açık ve kapsam dolu olmalı; açık çalıştırma varsa 409 `sync_running` (requestSync). */
+export async function startManualSync(tx: Tx, ctx: TenantContext, provider: DirectoryProvider) {
+  const conn = (await tx.query<Connection>(`SELECT scope_type, scope_value, enabled FROM directory_connections`)).rows[0];
+  if (!conn || !conn.enabled || !conn.scope_value.trim()) throw conflict('not_configured', MSG.not_configured);
+  return requestSync(tx, ctx, 'MANUAL', provider);
+}
+
+export async function listRuns(tx: Tx): Promise<RunView[]> {
+  return (await tx.query<RunView>(`SELECT ${RUN_COLUMNS} FROM directory_sync_runs ORDER BY created_at DESC, id LIMIT 50`)).rows;
+}
+
+export type DirectoryUserStatus = 'ACTIVE' | 'SUSPENDED' | 'NO_MEMBERSHIP' | 'DISABLED';
+export interface DirectoryUserView {
+  id: string; displayName: string; email: string | null; departmentName: string | null; departmentId: string | null;
+  roles: string[] | null; status: DirectoryUserStatus; jobTitle: string | null;
+}
+interface DirUserListRow {
+  id: string; display_name: string; email: string | null; department_name: string | null; department_id: string | null; job_title: string | null;
+  account_enabled: boolean; in_scope: boolean; m_status: string | null; m_roles: string[] | null;
+}
+
+function toView(r: DirUserListRow): DirectoryUserView {
+  const member = r.m_status !== null && r.m_status !== 'REVOKED';
+  const status: DirectoryUserStatus = !r.account_enabled || !r.in_scope ? 'DISABLED'
+    : !member ? 'NO_MEMBERSHIP' : r.m_status === 'SUSPENDED' ? 'SUSPENDED' : 'ACTIVE';
+  return {
+    id: r.id, displayName: r.display_name, email: r.email, departmentName: r.department_name, departmentId: r.department_id,
+    roles: member ? normalizeRoles(r.m_roles ?? []) : null, status, jobTitle: r.job_title,
+  };
+}
+
+const DIR_USER_SELECT = `SELECT du.id, du.display_name, du.email, coalesce(d.name, du.department_name) AS department_name, du.department_id, du.job_title,
+    du.account_enabled, du.in_scope, m.status AS m_status, m.roles AS m_roles
+  FROM directory_users du
+  LEFT JOIN departments d ON d.id = du.department_id
+  LEFT JOIN memberships m ON m.tenant_id = du.tenant_id AND m.user_id = du.user_id AND m.supplier_id IS NULL`;
+
+export async function listDirectoryUsers(tx: Tx, f: { q?: string; departmentId?: string }) {
+  const q = f.q?.trim() ? `%${f.q.trim().replace(/[\\%_]/g, (c) => `\\${c}`)}%` : null;
+  const rows = (await tx.query<DirUserListRow>(`${DIR_USER_SELECT}
+    WHERE ($1::text IS NULL OR du.display_name ILIKE $1 OR du.email ILIKE $1) AND ($2::uuid IS NULL OR du.department_id = $2)
+    ORDER BY du.display_name, du.id LIMIT $3`, [q, f.departmentId ?? null, DIRECTORY_USERS_LIMIT + 1])).rows;
+  const truncated = rows.length > DIRECTORY_USERS_LIMIT;
+  return { items: rows.slice(0, DIRECTORY_USERS_LIMIT).map(toView), truncated, limit: DIRECTORY_USERS_LIMIT };
+}
+
+/**
+ * R3: dizin kullanıcısına rol verir. Kullanıcı yoksa davetli kullanıcı açılır (ilk girişte `auth_link_invited_user` bağlar); aynı
+ * e-postayla var olan kullanıcı (bu kiracıda üye, başka kiracıda OIDC ya da davetli; büyük/küçük harf duyarsız) yeniden kullanılır.
+ * Yeni üyelik: kiracının bütün şirketleri, departman Entra'dan. Boş dizi = üyelik REVOKED.
+ * Review Focus 3: kiracının etkin Yönetici üyelikleri eşitlemeyle aynı sırada (user_id) FOR UPDATE kilitlenir; son Yönetici ve
+ * kendi Yönetici rolünü düşürme reddedilir. Kilit sırası eşitlemeyle aynı: önce dizin kaydı, sonra üyelikler.
+ */
+export async function setDirectoryUserRoles(tx: Tx, ctx: TenantContext, directoryUserId: string, b: { roles: string[] }): Promise<DirectoryUserView> {
+  const roles = [...new Set(b.roles)];
+  const bad = roles.filter((r) => !(ASSIGNABLE_ROLES as readonly string[]).includes(r));
+  if (bad.length) throw new ApiError(422, 'role_not_allowed', ADMIN_MSG.role_not_allowed, { roles: bad });
+  const du = (await tx.query<DirRow>(`SELECT * FROM directory_users WHERE id = $1 FOR UPDATE`, [directoryUserId])).rows[0];
+  if (!du) throw new ApiError(404, 'not_found', 'Kayıt bulunamadı veya erişim yetkiniz yok.');
+  const granting = roles.length > 0;
+  if (granting && (!du.account_enabled || !du.in_scope)) throw conflict('directory_user_inactive', ADMIN_MSG.directory_user_inactive);
+  if (granting && !du.email) throw new ApiError(422, 'email_missing', ADMIN_MSG.email_missing);
+
+  // Kullanıcı: bağlı olan → bu kiracıda e-postası eşleşen üye → (yalnız rol verilirken) başka kiracıdaki ya da yeni davetli kullanıcı.
+  let userId = du.user_id;
+  if (!userId && du.email) userId = await findUserByEmail(tx, ctx, du.email);
+  if (!userId && granting) {
+    userId = (await tx.query<{ id: string }>(`SELECT directory_invite_user($1, $2) AS id`, [du.email, du.display_name])).rows[0]!.id;
+  }
+  if (!userId) return toView(await dirUserRow(tx, directoryUserId)); // üyeliği olmayan kullanıcıdan rol kaldırmak: değişiklik yok
+  if (!du.user_id) {
+    const other = await tx.query(`SELECT 1 FROM directory_users WHERE user_id = $1 AND id <> $2`, [userId, du.id]);
+    if (other.rowCount) throw conflict('user_linked_elsewhere', ADMIN_MSG.user_linked_elsewhere);
+  }
+
+  const admins = (await tx.query<{ user_id: string }>(
+    `SELECT user_id FROM memberships WHERE tenant_id = $1 AND status = 'ACTIVE' AND supplier_id IS NULL AND roles && $2::text[] ORDER BY user_id FOR UPDATE`,
+    [ctx.tenantId, ADMIN_ROLES])).rows.map((r) => r.user_id);
+  const m = (await tx.query<{ roles: string[]; status: string; supplier_id: string | null; department_ids: string[]; directory_department_id: string | null }>(
+    `SELECT roles, status, supplier_id, department_ids, directory_department_id FROM memberships WHERE tenant_id = $1 AND user_id = $2 FOR UPDATE`,
+    [ctx.tenantId, userId])).rows[0];
+  if (m && (m.supplier_id || m.roles.includes('SUPPLIER'))) throw conflict('supplier_membership', ADMIN_MSG.supplier_membership);
+
+  const wasAdmin = !!m && m.status === 'ACTIVE' && m.roles.some((r) => ADMIN_ROLES.includes(r));
+  const willAdmin = roles.includes('ADMIN');
+  if (wasAdmin && !willAdmin) {
+    if (userId === ctx.userId) throw conflict('self_demotion', ADMIN_MSG.self_demotion);
+    if (!admins.some((a) => a !== userId)) throw conflict('last_admin', ADMIN_MSG.last_admin);
+  }
+
+  const before = m ? { roles: m.roles, status: m.status } : null;
+  let after: { roles: string[]; status: string } | null;
+  if (!granting) {
+    if (!m || m.status === 'REVOKED') after = before;
+    else {
+      await tx.query(`UPDATE memberships SET roles = '{}', status = 'REVOKED', suspended_by_directory = false WHERE tenant_id = $1 AND user_id = $2`,
+        [ctx.tenantId, userId]);
+      after = { roles: [], status: 'REVOKED' };
+    }
+  } else if (!m) {
+    const companyIds = (await tx.query<{ id: string }>(`SELECT id FROM legal_entities ORDER BY id`)).rows.map((r) => r.id);
+    await tx.query(`INSERT INTO memberships (tenant_id, user_id, roles, company_ids, department_ids, directory_department_id, status)
+      VALUES ($1, $2, $3, $4, $5, $6, 'ACTIVE')`,
+      [ctx.tenantId, userId, roles, companyIds, du.department_id ? [du.department_id] : [], du.department_id]);
+    after = { roles, status: 'ACTIVE' };
+  } else {
+    // El ile yapılan atama eşitlemenin askı bayrağını temizler (yeniden etkinleşmede eşitleme bu üyeliği askıya almışsa).
+    const depts = planMembershipDepartments(m.department_ids, m.directory_department_id, du.department_id);
+    await tx.query(`UPDATE memberships SET roles = $3, status = 'ACTIVE', suspended_by_directory = false, department_ids = $4, directory_department_id = $5
+      WHERE tenant_id = $1 AND user_id = $2`, [ctx.tenantId, userId, roles, depts, du.department_id]);
+    after = { roles, status: 'ACTIVE' };
+  }
+  if (du.user_id !== userId) await tx.query(`UPDATE directory_users SET user_id = $2, updated_at = now() WHERE id = $1`, [du.id, userId]);
+  await audit(tx, ctx, 'membership.roles.set', 'user', userId, { before, after, directoryUserId: du.id, source: 'directory' });
+  return toView(await dirUserRow(tx, directoryUserId));
+}
+
+async function dirUserRow(tx: Tx, id: string): Promise<DirUserListRow> {
+  return (await tx.query<DirUserListRow>(`${DIR_USER_SELECT} WHERE du.id = $1`, [id])).rows[0]!;
 }

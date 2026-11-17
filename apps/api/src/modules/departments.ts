@@ -1,7 +1,7 @@
 import { normalizeRoles } from '@sp/domain';
 import type { TenantContext, Tx } from '../db.ts';
 import { audit } from '../audit.ts';
-import { ApiError, notFound, unprocessable } from '../errors.ts';
+import { ApiError, conflict, notFound, unprocessable } from '../errors.ts';
 import { rederiveTaskDepartments } from '../tasks.ts';
 import { inheritDepartment } from './invoices.ts';
 
@@ -12,8 +12,16 @@ import { inheritDepartment } from './invoices.ts';
 
 export interface Department { id: string; name: string }
 
-export async function listDepartments(tx: Tx): Promise<Department[]> {
-  return (await tx.query<Department>(`SELECT id, name FROM departments ORDER BY name, id`)).rows;
+/**
+ * Departman listesi ve seçiciler. Birleştirilmiş (merged_into dolu) departman listede yoktur (R6).
+ * v2 Faz 2 (D105): `withAdminFields` (Yönetici) iken `source` (MANUAL/ENTRA) ve `userCount` (departmanı taşıyan etkin üyelik) eklenir;
+ * diğer roller yalnız id ve ad görür (yanıt biçimi Faz 1 ile aynı).
+ */
+export async function listDepartments(tx: Tx, opts: { withAdminFields?: boolean } = {}): Promise<Department[]> {
+  if (!opts.withAdminFields) return (await tx.query<Department>(`SELECT id, name FROM departments WHERE merged_into IS NULL ORDER BY name, id`)).rows;
+  return (await tx.query<Department & { source: string; userCount: number }>(`SELECT d.id, d.name, d.source,
+      (SELECT count(*)::int FROM memberships m WHERE m.status = 'ACTIVE' AND m.supplier_id IS NULL AND d.id = ANY (m.department_ids)) AS "userCount"
+    FROM departments d WHERE d.merged_into IS NULL ORDER BY d.name, d.id`)).rows;
 }
 
 export async function createDepartment(tx: Tx, ctx: TenantContext, b: { name: string }): Promise<Department> {
@@ -25,10 +33,13 @@ export async function createDepartment(tx: Tx, ctx: TenantContext, b: { name: st
   return d;
 }
 
-/** Kiracıdaki departmanlar; listede kiracı dışı ya da olmayan kimlik varsa 422 (RLS başka kiracının departmanını göstermez). */
+/**
+ * Kiracıdaki departmanlar; listede kiracı dışı ya da olmayan kimlik varsa 422 (RLS başka kiracının departmanını göstermez).
+ * Birleştirilmiş departman da bilinmeyen sayılır (R6: seçicilerden düşer, ona yeni kayıt bağlanmaz).
+ */
 export async function assertKnown(tx: Tx, ids: string[]) {
   if (!ids.length) return;
-  const n = (await tx.query<{ n: number }>(`SELECT count(*)::int AS n FROM departments WHERE id = ANY($1::uuid[])`, [ids])).rows[0]!.n;
+  const n = (await tx.query<{ n: number }>(`SELECT count(*)::int AS n FROM departments WHERE id = ANY($1::uuid[]) AND merged_into IS NULL`, [ids])).rows[0]!.n;
   if (n !== ids.length) throw unprocessable('department_unknown', 'Seçilen departman bu kurumda tanımlı değil.');
 }
 
@@ -144,4 +155,63 @@ export async function listUnassigned(tx: Tx, ctx: TenantContext) {
     FROM supplier_assessments a JOIN suppliers s ON s.id = a.supplier_id JOIN questionnaire_templates t ON t.id = a.template_id
     WHERE a.department_id IS NULL ORDER BY a.created_at DESC, a.id LIMIT 500`)).rows;
   return { projects, contracts, assessments, companyScopeEmpty: ctx.companyIds.length === 0 };
+}
+
+// --- Departman birleştirme (v2 Faz 2 R6, D105) ------------------------------------------------------------------------------
+
+/**
+ * `department_id` taşıyan tablolar: tek kaynak. 030 (projects, contract_families, invoices, supplier_assessments), 032 (tasks),
+ * 040 (directory_users, approver_assignments, department_aliases). Yeni tablo departman alırsa buraya eklenir; birleştirme testi
+ * sahip bağlantısıyla information_schema'daki bütün department_id sütunlarını denetler.
+ */
+export const DEPARTMENT_TABLES = ['projects', 'contract_families', 'invoices', 'supplier_assessments', 'tasks', 'directory_users'] as const;
+
+/**
+ * R6: kaynak departmanı hedefe birleştirir (tek işlem, geri alınamaz, `confirm: true` ister). Kaynağın bütün `department_id`
+ * kayıtları, üyelik dizileri (tekilleştirilerek) ve dizin departmanı hedefe geçer; bölüm sorumlusu ataması taşınır (ikisinde de
+ * varsa 409 `approver_conflict`); kaynağın takma adları hedefe yönelir, kaynağın adı da takma ad olur (sonraki eşitlemeler
+ * hedefe yazar); kaynak `merged_into` ile işaretlenir ve listeden düşer. Denetim `department.merged` (tablo başına sayılar).
+ */
+export async function mergeDepartments(tx: Tx, ctx: TenantContext, sourceId: string, b: { intoId: string; confirm?: boolean }) {
+  if (b.confirm !== true) throw unprocessable('confirm_required', 'Birleştirme geri alınamaz; onaylamanız gerekiyor.');
+  if (b.intoId === sourceId) throw unprocessable('same_department', 'Departman kendisiyle birleştirilemez.');
+  // Kiracının bütün şirketleri kapsama alınır: birleştirme, Yönetici'nin şirket kapsamından bağımsız olarak hiçbir kaydı kaynakta bırakmaz.
+  await tx.query(`SELECT set_config('app.company_ids', coalesce((SELECT array_agg(id ORDER BY id) FROM legal_entities), '{}')::text, true),
+    set_config('app.department_scope', 'ALL', true)`);
+  // Eşzamanlı birleştirmelere karşı iki departman kimlik sırasıyla kilitlenir.
+  const rows = (await tx.query<{ id: string; name: string; merged_into: string | null }>(
+    `SELECT id, name, merged_into FROM departments WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE`, [[sourceId, b.intoId]])).rows;
+  const source = rows.find((r) => r.id === sourceId);
+  const target = rows.find((r) => r.id === b.intoId);
+  if (!source || !target) throw notFound();
+  if (source.merged_into) throw unprocessable('already_merged', 'Bu departman zaten birleştirilmiş.');
+  if (target.merged_into) throw unprocessable('target_merged', 'Birleştirilmiş bir departmana birleştirme yapılamaz; güncel departmanı seçin.');
+
+  const heads = (await tx.query<{ department_id: string }>(
+    `SELECT department_id FROM approver_assignments WHERE kind = 'DEPARTMENT_HEAD' AND department_id = ANY($1::uuid[]) FOR UPDATE`, [[sourceId, b.intoId]])).rows;
+  if (heads.some((r) => r.department_id === sourceId) && heads.some((r) => r.department_id === b.intoId)) {
+    throw conflict('approver_conflict', 'İki departmanın da bölüm sorumlusu atanmış; önce birinin atamasını kaldırın ya da hedefte birleştirin.');
+  }
+
+  const counts: Record<string, number> = {};
+  for (const t of DEPARTMENT_TABLES) {
+    counts[t] = (await tx.query(`UPDATE ${t} SET department_id = $2 WHERE department_id = $1`, [sourceId, b.intoId])).rowCount ?? 0;
+  }
+  counts.approver_assignments = (await tx.query(`UPDATE approver_assignments SET department_id = $2, updated_by = $3, updated_at = now() WHERE department_id = $1`,
+    [sourceId, b.intoId, ctx.userId])).rowCount ?? 0;
+  // Üyelik dizileri: kaynak hedefle değişir, sıra korunur, tekilleşir. Dizin departmanı da hedefe geçer.
+  counts.memberships = (await tx.query(`UPDATE memberships m SET
+      department_ids = (SELECT coalesce(array_agg(x ORDER BY o), '{}') FROM (
+        SELECT DISTINCT ON (x) x, o FROM unnest(array_replace(m.department_ids, $1::uuid, $2::uuid)) WITH ORDINALITY u(x, o) ORDER BY x, o) d),
+      directory_department_id = CASE WHEN m.directory_department_id = $1 THEN $2 ELSE m.directory_department_id END
+    WHERE m.tenant_id = $3 AND ($1 = ANY (m.department_ids) OR m.directory_department_id = $1)`, [sourceId, b.intoId, ctx.tenantId])).rowCount ?? 0;
+  // Takma adlar: kaynağa yönelenler hedefe; kaynağın (katlanmış) adı takma ad olur.
+  counts.department_aliases = (await tx.query(`UPDATE department_aliases SET department_id = $2 WHERE department_id = $1`, [sourceId, b.intoId])).rowCount ?? 0;
+  await tx.query(`INSERT INTO department_aliases (tenant_id, normalized_name, department_id) VALUES ($1, sp_normalize_department_name($2), $3)
+    ON CONFLICT (tenant_id, normalized_name) DO UPDATE SET department_id = EXCLUDED.department_id`, [ctx.tenantId, source.name, b.intoId]);
+  await tx.query(`UPDATE departments SET merged_into = $2 WHERE id = $1`, [sourceId, b.intoId]);
+  // Daha önce kaynağa birleştirilmiş departmanlar da doğrudan hedefi gösterir (zincir kısalır).
+  counts.merged_departments = (await tx.query(`UPDATE departments SET merged_into = $2 WHERE merged_into = $1`, [sourceId, b.intoId])).rowCount ?? 0;
+  await audit(tx, ctx, 'department.merged', 'department', sourceId, { sourceName: source.name, intoId: b.intoId, intoName: target.name, counts });
+  return { sourceId, intoId: b.intoId, counts };
 }
