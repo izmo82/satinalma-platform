@@ -97,6 +97,7 @@ export async function buildApp(deps: AppDeps) {
     if (err.code === 'FST_INVALID_MULTIPART_CONTENT_TYPE') return reply.status(415).send({ error: { code: 'multipart_required', message: 'Dosya çok parçalı form (multipart/form-data) ile gönderilmeli.' } });
     // Metinde NUL baytı veya geçersiz UTF-8: veritabanına gitmeden önce yakalanmayan girdi; istemci hatasıdır.
     if (err.code === '22021' || err.code === '22P05') return reply.status(400).send({ error: { code: 'validation_failed', message: 'Girdide geçersiz karakter var.' } });
+    if (err.code === 'FST_FILES_LIMIT' || err.code === 'FST_PARTS_LIMIT' || err.code === 'FST_FIELDS_LIMIT') return reply.status(413).send({ error: { code: 'too_many_parts', message: 'İstekte çok fazla dosya ya da alan var; tek dosya yükleyin.' } });
     if (err.code === 'FST_REQ_FILE_TOO_LARGE') return reply.status(413).send({ error: { code: 'file_too_large', message: 'Dosya 25 MB sınırını aşıyor.' } });
     // PostgreSQL kısıtları: iş kuralı ihlali olarak döner, ayrıntı sızdırmaz.
     if (err.code === '23505') return reply.status(409).send({ error: { code: 'duplicate', message: 'Bu kayıt zaten mevcut.' } });
@@ -353,7 +354,10 @@ export async function buildApp(deps: AppDeps) {
     const fields: Record<string, string> = {};
     let file: templates.TemplateUpload | null = null;
     for await (const part of req.parts()) {
-      if (part.type === 'file') { const body = await part.toBuffer(); if (!file) file = { filename: part.filename, body }; }
+      if (part.type === 'file') {
+        if (file) { part.file.resume(); throw new ApiError(413, 'too_many_files', 'Yalnız tek dosya yüklenebilir.'); }
+        file = { filename: part.filename, body: await part.toBuffer() };
+      }
       else if (typeof part.value === 'string') fields[part.fieldname] = part.value;
     }
     return { fields, file };
@@ -378,7 +382,7 @@ export async function buildApp(deps: AppDeps) {
       .header('Content-Type', meta.mimeType)
       .header('Cache-Control', 'private, no-store')
       .header('X-Content-Type-Options', 'nosniff')
-      .header('Content-Disposition', `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(meta.filename)}`)
+      .header('Content-Disposition', `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(meta.filename).replace(/['()*]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase())}`)
       .send(bytes);
   });
 

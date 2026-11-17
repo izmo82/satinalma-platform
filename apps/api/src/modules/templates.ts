@@ -43,16 +43,11 @@ export function validateDocx(filename: string, body: Buffer): void {
 
 const isDate = (s: unknown): s is string => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(`${s}T00:00:00Z`)) && new Date(`${s}T00:00:00Z`).toISOString().slice(0, 10) === s;
 
-/**
- * Belgeler şirket kapsamlıdır (RLS: company_id ∈ app.company_ids) ama şablon kiracı genelidir: Yönetici şirket kapsamı taşımaz, Departman
- * kullanıcısı yalnız kendi şirketini görür. Şablon işlemi, yalnız bu işlem boyunca kiracının tüm şirketlerini kapsama alır
- * ve belgeyi kiracının ilk şirketine bağlar. Bu yalnız şablon yollarında çağrılır; başka belgeye erişim açmaz (belge kimliği şablon sürümünden gelir).
- */
-async function widenToTenantCompanies(tx: Tx): Promise<string> {
-  const rows = (await tx.query<{ id: string }>(`SELECT id FROM legal_entities ORDER BY created_at, id`)).rows;
-  if (!rows[0]) throw unprocessable('no_company', 'Kiracıda şirket tanımlı değil; şablon belgesi bağlanamıyor.');
-  await tx.query(`SELECT set_config('app.company_ids', $1, true)`, [`{${rows.map((r) => r.id).join(',')}}`]);
-  return rows[0].id;
+/** Belge yazımı şirket kapsamlıdır (RLS WITH CHECK): şablon belgesi, çağıranın kapsamındaki ilk şirkete bağlanır. */
+function uploadCompany(ctx: TenantContext): string {
+  const c = ctx.companyIds[0];
+  if (!c) throw unprocessable('no_company', 'Şablon yüklemek için bir şirket kapsamınız olmalı.');
+  return c;
 }
 
 export interface TemplateUpload { filename: string; body: Buffer }
@@ -80,13 +75,20 @@ export async function createTemplate(tx: Tx, ctx: TenantContext, store: ObjectSt
   if (!input.file) throw new ApiError(400, 'file_required', 'Dosya gerekli.');
   validateDocx(input.file.filename, input.file.body);
 
-  const companyId = await widenToTenantCompanies(tx);
+  const companyId = uploadCompany(ctx);
   const exists = await tx.query(`SELECT 1 FROM contract_templates WHERE code = $1`, [code]);
   if (exists.rowCount) throw conflict('template_exists', 'Bu kodla bir şablon zaten var; yeni sürüm eklemek için sürüm ucunu kullanın.');
-  const t = await tx.query<{ id: string }>(
-    `INSERT INTO contract_templates (tenant_id, code, name, contract_type, created_by) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
-    [ctx.tenantId, code, name, input.contractType, ctx.userId]);
-  const templateId = t.rows[0]!.id;
+  // Eşzamanlı aynı kod: kısıt ihlali tek tek 409'a çevrilir.
+  let templateId: string;
+  try {
+    const t = await tx.query<{ id: string }>(
+      `INSERT INTO contract_templates (tenant_id, code, name, contract_type, created_by) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+      [ctx.tenantId, code, name, input.contractType, ctx.userId]);
+    templateId = t.rows[0]!.id;
+  } catch (e: any) {
+    if (e?.code === '23505') throw conflict('template_exists', 'Bu kodla bir şablon zaten var; yeni sürüm eklemek için sürüm ucunu kullanın.');
+    throw e;
+  }
   const d = await tx.query<{ id: string }>(
     `INSERT INTO documents (tenant_id, company_id, kind, title, created_by, code) VALUES ($1,$2,'TEMPLATE',$3,$4,$5) RETURNING id`,
     [ctx.tenantId, companyId, `${code} ${name}`.slice(0, 200), ctx.userId, await nextCode(tx, ctx, 'document', 'BLG')]);
@@ -106,14 +108,15 @@ export async function addTemplateVersion(tx: Tx, ctx: TenantContext, store: Obje
   const t = await tx.query<{ id: string }>(`SELECT id FROM contract_templates WHERE id = $1`, [templateId]);
   if (!t.rows[0]) throw notFound();
 
-  const companyId = await widenToTenantCompanies(tx);
+  const companyId = uploadCompany(ctx);
   await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`tpl:${templateId}`]);
-  const last = (await tx.query<{ version_no: number; document_id: string; sha256: string }>(
-    `SELECT tv.version_no, dv.document_id, dv.sha256 FROM contract_template_versions tv JOIN document_versions dv ON dv.id = tv.document_version_id
+  // Önceki sürümün belgesi başka şirketteki yükleyiciye RLS ile kapalı olabilir: bilgi kapıdan (app_template_file) okunur.
+  const last = (await tx.query<{ version_no: number; document_id: string }>(
+    `SELECT tv.version_no, f.document_id FROM contract_template_versions tv JOIN LATERAL app_template_file(tv.id) f ON true
      WHERE tv.template_id = $1 ORDER BY tv.version_no DESC LIMIT 1`, [templateId])).rows[0];
   if (!last) throw notFound();
   const sha = createHash('sha256').update(input.file.body).digest('hex');
-  const same = await tx.query(`SELECT 1 FROM document_versions WHERE document_id = $1 AND sha256 = $2`, [last.document_id, sha]);
+  const same = await tx.query(`SELECT 1 FROM contract_template_versions tv JOIN LATERAL app_template_file(tv.id) f ON true WHERE tv.template_id = $1 AND f.sha256 = $2`, [templateId, sha]);
   if (same.rowCount) throw conflict('template_version_duplicate', 'Bu dosya bu şablonun mevcut bir sürümüyle aynı; değişiklik yok.');
   const versionNo = last.version_no + 1;
   const dvId = await storeVersion(tx, ctx, store, companyId, last.document_id, versionNo, input.file);
@@ -127,15 +130,14 @@ export async function addTemplateVersion(tx: Tx, ctx: TenantContext, store: Obje
 }
 
 export async function listTemplates(tx: Tx) {
-  await widenToTenantCompanies(tx);
   const rows = (await tx.query<any>(
     `SELECT t.id, t.code, t.name, t.contract_type AS "contractType", t.created_at AS "createdAt",
             tv.id AS "versionId", tv.version_no AS "versionNo", tv.valid_from::text AS "validFrom", tv.superseded_at AS "supersededAt", tv.created_at AS "uploadedAt",
-            u.display_name AS "uploadedBy", dv.original_filename AS filename, dv.size_bytes AS "sizeBytes",
+            u.display_name AS "uploadedBy", f.original_filename AS filename, f.size_bytes AS "sizeBytes",
             (SELECT count(*)::int FROM contract_families f WHERE f.template_version_id = tv.id) AS "versionUsage"
      FROM contract_templates t
      JOIN contract_template_versions tv ON tv.template_id = t.id
-     JOIN document_versions dv ON dv.id = tv.document_version_id
+     JOIN LATERAL app_template_file(tv.id) f ON true
      JOIN users u ON u.id = tv.uploaded_by
      ORDER BY t.code, tv.version_no DESC`)).rows;
   const byId = new Map<string, any>();
@@ -152,11 +154,8 @@ export async function listTemplates(tx: Tx) {
 }
 
 export async function templateDownload(tx: Tx, ctx: TenantContext, versionId: string) {
-  await widenToTenantCompanies(tx);
   const r = (await tx.query<{ storage_key: string; original_filename: string; mime_type: string; disposed: boolean }>(
-    `SELECT dv.storage_key, dv.original_filename, dv.mime_type,
-            EXISTS (SELECT 1 FROM document_disposals x WHERE x.document_id = dv.document_id) AS disposed
-     FROM contract_template_versions tv JOIN document_versions dv ON dv.id = tv.document_version_id WHERE tv.id = $1`, [versionId])).rows[0];
+    `SELECT * FROM app_template_file($1)`, [versionId])).rows[0];
   if (!r) throw notFound();
   if (r.disposed) throw new ApiError(410, 'disposed', 'Belge saklama süresi sonunda imha edildi; baytlar artık yok.');
   await audit(tx, ctx, 'template.downloaded', 'contract_template_version', versionId, {});

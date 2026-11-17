@@ -45,7 +45,7 @@ async function get(w: SyntheticWorld, who: UserKey, url: string, tenant?: string
   return { status: res.statusCode, body, res };
 }
 const T = '/api/v1/contract-templates';
-const create = async (w: SyntheticWorld, who: UserKey = 'tenantAdmin', over: Record<string, string> = {}, data?: Buffer) =>
+const create = async (w: SyntheticWorld, who: UserKey = 'masterData', over: Record<string, string> = {}, data?: Buffer) =>
   send(w, who, 'POST', T, { code: 'HZM-STD', name: 'Hizmet Sözleşmesi', contractType: 'SERVICE', validFrom: '2026-01-01', ...over }, { name: 'sablon.docx', data: data ?? await docx() });
 
 describe('yükleme ve doğrulama', () => {
@@ -56,7 +56,7 @@ describe('yükleme ve doğrulama', () => {
     expect(r.body).toMatchObject({ code: 'HZM-STD', versionNo: 1, contractType: 'SERVICE' });
     const a = await h.owner.query(`SELECT action FROM audit_events WHERE tenant_id = $1 AND action = 'template.created'`, [w.tenantA]);
     expect(a.rowCount).toBe(1);
-    const l = await get(w, 'tenantAdmin', T);
+    const l = await get(w, 'masterData', T);
     expect(l.body.items).toHaveLength(1);
     expect(l.body.items[0]).toMatchObject({ code: 'HZM-STD', usageCount: 0, currentVersion: { versionNo: 1, validFrom: '2026-01-01', supersededAt: null, filename: 'sablon.docx' } });
     const doc = await h.owner.query(`SELECT d.kind FROM contract_template_versions tv JOIN document_versions dv ON dv.id = tv.document_version_id JOIN documents d ON d.id = dv.document_id WHERE tv.id = $1`, [r.body.versionId]);
@@ -66,14 +66,14 @@ describe('yükleme ve doğrulama', () => {
   it('ZIP olmayan, word/document.xml olmayan ve .docx olmayan dosya 422 invalid_docx; kayıt oluşmaz', async () => {
     const w = await fresh();
     for (const data of [Buffer.from('düz metin değil zip'), await zip({ 'xl/workbook.xml': '<x/>' })]) {
-      const r = await create(w, 'tenantAdmin', {}, data);
+      const r = await create(w, 'masterData', {}, data);
       expect(r.status).toBe(422);
       expect(r.body.error.code).toBe('invalid_docx');
     }
-    const r = await send(w, 'tenantAdmin', 'POST', T, { code: 'A', name: 'A', contractType: 'SERVICE', validFrom: '2026-01-01' }, { name: 'sablon.pdf', data: await docx() });
+    const r = await send(w, 'masterData', 'POST', T, { code: 'A', name: 'A', contractType: 'SERVICE', validFrom: '2026-01-01' }, { name: 'sablon.pdf', data: await docx() });
     expect(r.status).toBe(422);
     expect(r.body.error.code).toBe('invalid_docx');
-    expect((await get(w, 'tenantAdmin', T)).body.items).toHaveLength(0);
+    expect((await get(w, 'masterData', T)).body.items).toHaveLength(0);
   });
 
   it('aynı kod 409 template_exists; tür ve tarih doğrulanır', async () => {
@@ -82,8 +82,8 @@ describe('yükleme ve doğrulama', () => {
     const dup = await create(w, 'buyer', {}, await docx('başka'));
     expect(dup.status).toBe(409);
     expect(dup.body.error.code).toBe('template_exists');
-    expect((await create(w, 'tenantAdmin', { code: 'X1', contractType: 'YOK' })).status).toBe(422);
-    expect((await create(w, 'tenantAdmin', { code: 'X2', validFrom: '2026-13-45' })).status).toBe(422);
+    expect((await create(w, 'masterData', { code: 'X1', contractType: 'YOK' })).status).toBe(422);
+    expect((await create(w, 'masterData', { code: 'X2', validFrom: '2026-13-45' })).status).toBe(422);
   });
 });
 
@@ -91,7 +91,7 @@ describe('sürümler', () => {
   it('yeni sürüm öncekini superseded_at ile kapatır; eski sürüm indirilebilir ve baytları değişmez', async () => {
     const w = await fresh();
     const first = await docx('birinci'), second = await docx('ikinci');
-    const c = await create(w, 'tenantAdmin', {}, first);
+    const c = await create(w, 'masterData', {}, first);
     const v2 = await send(w, 'buyer', 'POST', `${T}/${c.body.id}/versions`, { validFrom: '2026-06-01' }, { name: 'sablon-v2.docx', data: second });
     expect(v2.status).toBe(201);
     expect(v2.body.versionNo).toBe(2);
@@ -112,12 +112,12 @@ describe('sürümler', () => {
   it('aynı içerikli sürüm 409; geçersiz dosya 422; olmayan şablon 404', async () => {
     const w = await fresh();
     const data = await docx('a');
-    const c = await create(w, 'tenantAdmin', {}, data);
-    const same = await send(w, 'tenantAdmin', 'POST', `${T}/${c.body.id}/versions`, { validFrom: '2026-02-01' }, { name: 'a.docx', data });
+    const c = await create(w, 'masterData', {}, data);
+    const same = await send(w, 'masterData', 'POST', `${T}/${c.body.id}/versions`, { validFrom: '2026-02-01' }, { name: 'a.docx', data });
     expect(same.status).toBe(409);
-    const bad = await send(w, 'tenantAdmin', 'POST', `${T}/${c.body.id}/versions`, { validFrom: '2026-02-01' }, { name: 'a.docx', data: Buffer.from('zip değil') });
+    const bad = await send(w, 'masterData', 'POST', `${T}/${c.body.id}/versions`, { validFrom: '2026-02-01' }, { name: 'a.docx', data: Buffer.from('zip değil') });
     expect(bad.status).toBe(422);
-    const none = await send(w, 'tenantAdmin', 'POST', `${T}/${randomUUID()}/versions`, { validFrom: '2026-02-01' }, { name: 'a.docx', data: await docx('z') });
+    const none = await send(w, 'masterData', 'POST', `${T}/${randomUUID()}/versions`, { validFrom: '2026-02-01' }, { name: 'a.docx', data: await docx('z') });
     expect(none.status).toBe(404);
   });
 });
@@ -142,5 +142,52 @@ describe('yetki ve kiracı', () => {
     expect((await get(w, 'buyerB', T, w.tenantB)).body.items).toHaveLength(0);
     expect((await get(w, 'buyerB', `/api/v1/contract-template-versions/${c.body.versionId}/download`, w.tenantB)).status).toBe(404);
     expect((await send(w, 'buyerB', 'POST', `${T}/${c.body.id}/versions`, { validFrom: '2026-02-01' }, { name: 'a.docx', data: await docx('k') }, w.tenantB)).status).toBe(404);
+  });
+});
+
+describe('şirket kapsamı (R8 düzeltme)', () => {
+  it('yalnız A2 kapsamlı kullanıcı yükler; A1 ve A2 deki Departman/Denetçi listeler ve indirir; Yönetici de yükleyebilir', async () => {
+    const w = await fresh();
+    const data = await docx('a2');
+    const c = await create(w, 'multi', {}, data);
+    expect(c.status).toBe(201);
+    await h.owner.query(`UPDATE memberships SET company_ids = ARRAY[$1]::uuid[] WHERE tenant_id = $2 AND user_id = $3`, [w.companyA2.id, w.tenantA, w.users.auditor.id]);
+    for (const who of ['security', 'auditor', 'buyer'] as const) { // security/buyer A1, auditor A2
+      const l = await get(w, who, T);
+      expect(l.body.items, who).toHaveLength(1);
+      expect(l.body.items[0].currentVersion.filename).toBe('sablon.docx');
+      const d = await get(w, who, `/api/v1/contract-template-versions/${c.body.versionId}/download`);
+      expect(d.status, who).toBe(200);
+      expect(Buffer.from(d.res.rawPayload).equals(data), who).toBe(true);
+    }
+    // farklı şirketteki kullanıcı yeni sürüm ekleyebilir
+    const v2 = await send(w, 'masterData', 'POST', `${T}/${c.body.id}/versions`, { validFrom: '2026-07-01' }, { name: 'v2.docx', data: await docx('a2-v2') });
+    expect(v2.status).toBe(201);
+    const adm = await create(w, 'tenantAdmin', { code: 'ADM' });
+    expect(adm.status).toBe(201); // Yönetici bağlamı kiracının şirketlerini taşır
+  });
+
+  it('kullanım sayısı çağıranın görebildiği sözleşmelerle sınırlı: A1 kullanıcısı A2 sözleşmesini saymaz', async () => {
+    const w = await fresh();
+    const c = await create(w, 'multi');
+    await h.owner.query(`INSERT INTO contract_families (tenant_id, company_id, title, created_by, code, template_version_id) VALUES ($1,$2,'A2 sözleşme',$3,$4,$5)`,
+      [w.tenantA, w.companyA2.id, w.users.multi.id, `T-${randomUUID().slice(0, 8)}`, c.body.versionId]);
+    expect((await get(w, 'multi', T)).body.items[0].usageCount).toBe(1);
+    expect((await get(w, 'masterData', T)).body.items[0].usageCount).toBe(1); // A1+A2
+    expect((await get(w, 'security', T)).body.items[0].usageCount).toBe(0); // yalnız A1
+  });
+});
+
+describe('çok parçalı sınırlar', () => {
+  it('25 MB üstü dosya 413; ikinci dosya 413', async () => {
+    const w = await fresh();
+    const big = Buffer.concat([await docx('b'), Buffer.alloc(26 * 1024 * 1024)]);
+    expect((await create(w, 'masterData', { code: 'BIG' }, big)).status).toBe(413);
+    const token = await auth.issue(`dev|${w.users.masterData.email}`);
+    const b = '----sp' + randomUUID();
+    const f = async (n: string) => `--${b}\r\nContent-Disposition: form-data; name="file"; filename="${n}"\r\nContent-Type: ${DOCX_MIME}\r\n\r\n`;
+    const payload = Buffer.concat([Buffer.from(await f('a.docx')), await docx('1'), Buffer.from('\r\n' + await f('b.docx')), await docx('2'), Buffer.from(`\r\n--${b}--\r\n`)]);
+    const res = await h.app.inject({ method: 'POST', url: T, payload, headers: { authorization: `Bearer ${token}`, 'x-tenant-id': w.tenantA, 'content-type': `multipart/form-data; boundary=${b}` } });
+    expect(res.statusCode).toBe(413);
   });
 });
