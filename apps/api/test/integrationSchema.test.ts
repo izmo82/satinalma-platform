@@ -1,3 +1,4 @@
+// v2 Faz 8 (D113): Görev 4 (Ruling 5, 058b) sır satırı kiracı içinde silinebilir; sır tablosundaki DELETE izni beklentisi buna göre güncellendi.
 // v2 Faz 8 (D113) Görev 2: 057/058 şeması — özellik başına ERP uç noktası (varsayılan kapalı, yazma yalnız yazan özellikte ve
 // açıkken), zarf şifreli sır (düz metin sütunu yok), çalışma/hata kaydı (hata değişmez, kapanan çalışma değişmez, taklit ⇒ mock),
 // ERP'ye yazma kaydı, masraf merkezi ve sipariş kopyası, tedarikçi/departman/fatura ERP sütunları (kaynak ERP|MANUAL).
@@ -140,7 +141,7 @@ describe('057 sır', () => {
     expect(ep.filter((c) => /pass|secret|sifre|parola|token$|cipher/i.test(c))).toEqual([]);
   });
 
-  it('secret_rows_tenant_scoped_shape_checked_not_deletable', async () => {
+  it('secret_rows_tenant_scoped_shape_checked_deletable_only_in_own_tenant', async () => {
     const id = await endpoint('SUPPLIER');
     const s = sealed();
     await withTenant(h.pool, admin(), async (tx) => {
@@ -148,7 +149,6 @@ describe('057 sır', () => {
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, [id, h.world.tenantA, s.kek, s.dek, s.dekIv, s.iv, s.ct, h.world.users.tenantAdmin.id]);
       expect((await tx.query(`UPDATE integration_endpoint_secrets SET ciphertext = $2, updated_at = now() WHERE endpoint_id = $1`, [id, randomBytes(30)])).rowCount).toBe(1);
     });
-    await withTenant(h.pool, admin(), (tx) => rejects(tx.query(`DELETE FROM integration_endpoint_secrets WHERE endpoint_id = $1`, [id]), '42501'));
     // Biçim: kek_id 8 hex, IV 12 bayt.
     await withTenant(h.pool, admin(), (tx) => rejects(tx.query(`UPDATE integration_endpoint_secrets SET kek_id = 'parola123' WHERE endpoint_id = $1`, [id]), '23514'));
     await withTenant(h.pool, admin(), (tx) => rejects(tx.query(`UPDATE integration_endpoint_secrets SET secret_iv = $2 WHERE endpoint_id = $1`, [id, randomBytes(16)]), '23514'));
@@ -163,6 +163,13 @@ describe('057 sır', () => {
     await withTenant(h.pool, tenantB(), (tx) => rejects(tx.query(`INSERT INTO integration_endpoint_secrets (endpoint_id, tenant_id, kek_id, wrapped_dek, dek_iv,
       secret_iv, ciphertext, updated_by) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
       [bare, h.world.tenantB, s.kek, s.dek, s.dekIv, s.iv, s.ct, h.world.users.buyerB.id]), '23503'));
+    // 058b (Ruling 5): sır satırı yalnız kendi kiracısında silinir; uç nokta kalır. Başka kiracı ve tedarikçi bağlamı silemez.
+    await withTenant(h.pool, tenantB(), async (tx) => expect((await tx.query(`DELETE FROM integration_endpoint_secrets WHERE endpoint_id = $1`, [id])).rowCount).toBe(0));
+    await withTenant(h.pool, supplierCtx(), async (tx) => expect((await tx.query(`DELETE FROM integration_endpoint_secrets WHERE endpoint_id = $1`, [id])).rowCount).toBe(0));
+    await withTenant(h.pool, admin(), async (tx) => {
+      expect((await tx.query(`DELETE FROM integration_endpoint_secrets WHERE endpoint_id = $1`, [id])).rowCount).toBe(1);
+      expect(await count(tx, `integration_endpoints WHERE id = $1`, [id])).toBe(1);
+    });
   });
 });
 
@@ -286,7 +293,8 @@ describe('057/058 kiracı yalıtımı ve izinler', () => {
   it('no_delete_grant_on_new_tables_and_rls_enabled', async () => {
     const grants = (await h.owner.query<{ table_name: string; privilege_type: string }>(`SELECT table_name, privilege_type FROM information_schema.table_privileges
       WHERE grantee = 'sp_app' AND table_name = ANY ($1)`, [NEW_TABLES])).rows;
-    expect(grants.filter((g) => ['DELETE', 'TRUNCATE', 'UPDATE'].includes(g.privilege_type))).toEqual([]);
+    // 058b (Ruling 5): tek istisna sır tablosundaki DELETE (sır kaldırma); TRUNCATE ve tablo düzeyinde UPDATE hiçbirinde yok.
+    expect(grants.filter((g) => ['DELETE', 'TRUNCATE', 'UPDATE'].includes(g.privilege_type))).toEqual([{ table_name: 'integration_endpoint_secrets', privilege_type: 'DELETE' }]);
     const rls = (await h.owner.query<{ relname: string; relrowsecurity: boolean }>(`SELECT relname, relrowsecurity FROM pg_class WHERE relname = ANY ($1)`, [NEW_TABLES])).rows;
     expect(rls).toHaveLength(NEW_TABLES.length);
     expect(rls.every((r) => r.relrowsecurity)).toBe(true);

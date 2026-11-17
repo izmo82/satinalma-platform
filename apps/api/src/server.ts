@@ -3,7 +3,7 @@ import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import swagger from '@fastify/swagger';
 import type pg from 'pg';
-import { can, canInviteSupplier, dec as decimal, normalizeRoles, PERMISSIONS, supplierOptionLabels, supplierStage, taxIdTail, type Permission, type SupplierStatus } from '@sp/domain';
+import { can, canInviteSupplier, dec as decimal, ERP_FEATURES, normalizeRoles, PERMISSIONS, supplierOptionLabels, supplierStage, taxIdTail, type Permission, type SupplierStatus } from '@sp/domain';
 import type { Config } from './config.ts';
 import { withTenant, type TenantContext, type Tx } from './db.ts';
 import { DevAuthProvider, identityFor, resolveIdentity, tenantContext, type AuthProvider } from './auth.ts';
@@ -24,6 +24,7 @@ import * as ai from './modules/ai.ts';
 import * as kpi from './modules/kpi.ts';
 import * as gov from './modules/governance.ts';
 import * as integration from './modules/integration.ts';
+import * as erpEndpoints from './modules/integrationEndpoints.ts';
 import * as commercial from './modules/commercial.ts';
 import * as approvals from './modules/approvals.ts';
 import * as search from './modules/search.ts';
@@ -1505,6 +1506,43 @@ export async function buildApp(deps: AppDeps) {
   app.post('/api/v1/integration/erp/results', { bodyLimit: 5 * 1024 * 1024, schema: { tags: ['integration'], body: { type: 'object', required: ['csv', 'dryRun'], properties: {
     csv: { type: 'string', minLength: 1, maxLength: 5 * 1024 * 1024 }, dryRun: { type: 'boolean' } } } } }, async (req) =>
     scoped(req, 'integration.replay', (tx, ctx) => integration.applyResultCsv(tx, ctx, req.body as any)));
+
+  // --- v2 Faz 8 (D113): ERP uç noktaları (7 özellik kartı, sır yalnız yazılır, sınama, R3 yazma, çalışmalar) ------------------
+  const erpFeatureParams = { type: 'object', required: ['feature'], properties: { feature: { type: 'string', enum: [...ERP_FEATURES] } } } as const;
+  const fieldMapSchema = { type: 'object', maxProperties: 20, additionalProperties: { type: 'object', required: ['path', 'transform'], additionalProperties: false,
+    properties: { path: { type: 'string', maxLength: 120 }, transform: { type: 'string', maxLength: 20 } } } } as const;
+  app.get('/api/v1/integration/endpoints', { schema: { tags: ['integration'] } }, async (req) =>
+    scoped(req, 'integration.endpoint.read', (tx, ctx) => erpEndpoints.listEndpoints(tx, ctx, deps.config,
+      { manage: can(ctx.roles, 'integration.endpoint.manage'), run: can(ctx.roles, 'integration.endpoint.run') })));
+  app.put('/api/v1/integration/endpoints/:feature', { schema: { tags: ['integration'], params: erpFeatureParams, body: { type: 'object', additionalProperties: false, properties: {
+    enabled: { type: 'boolean' }, baseUrl: nullableText(500), resourcePath: nullableText(200),
+    authType: { anyOf: [{ type: 'string', enum: ['BASIC', 'OAUTH2_CLIENT_CREDENTIALS'] }, { type: 'null' }] },
+    username: nullableText(200), clientId: nullableText(200), tokenUrl: nullableText(500),
+    secret: { anyOf: [{ type: 'string', minLength: 1, maxLength: 4096 }, { type: 'null' }] },
+    schedule: { type: 'object', required: ['mode'], additionalProperties: false, properties: { mode: { type: 'string', enum: ['MANUAL', 'INTERVAL', 'DAILY'] },
+      intervalMinutes: { anyOf: [{ type: 'integer' }, { type: 'null' }] }, dailyTime: nullableText(5) } },
+    fieldMap: fieldMapSchema, timeoutMs: { type: 'integer', minimum: 1000, maximum: 120000 } } } } }, async (req) =>
+    scoped(req, 'integration.endpoint.manage', (tx, ctx) => erpEndpoints.updateEndpoint(tx, ctx, deps.config, (req.params as any).feature, req.body as erpEndpoints.EndpointBody)));
+  app.post('/api/v1/integration/endpoints/:feature/write-enable', { schema: { tags: ['integration'], params: erpFeatureParams,
+    body: { type: 'object', required: ['confirm'], additionalProperties: false, properties: { confirm: { type: 'boolean' } } } } }, async (req) =>
+    scoped(req, 'integration.endpoint.manage', (tx, ctx) => erpEndpoints.enableWrite(tx, ctx, deps.config, (req.params as any).feature, (req.body as any).confirm === true)));
+  app.delete('/api/v1/integration/endpoints/:feature/write-enable', { schema: { tags: ['integration'], params: erpFeatureParams } }, async (req) =>
+    scoped(req, 'integration.endpoint.manage', (tx, ctx) => erpEndpoints.disableWrite(tx, ctx, (req.params as any).feature)));
+  app.post('/api/v1/integration/endpoints/:feature/test', { schema: { tags: ['integration'], params: erpFeatureParams } }, async (req) => {
+    const feature = (req.params as any).feature as string;
+    // Sağlayıcı çağrısı veritabanı işlemi dışında; sonuç ayrı işlemde yazılır. Sır yalnız bu çağrı süresince bellekte.
+    const prepared = await scoped(req, 'integration.endpoint.run', (tx, ctx) => erpEndpoints.prepareTest(tx, ctx, deps.config, feature));
+    const result = await erpEndpoints.executeTest(prepared);
+    return scoped(req, 'integration.endpoint.run', (tx, ctx) => erpEndpoints.recordTest(tx, ctx, feature, prepared.endpointId, result));
+  });
+  // Gövde isteğe bağlı: { target?: 'READ' | 'WRITE_RETRY' } (modülde denetlenir).
+  app.post('/api/v1/integration/endpoints/:feature/run', { schema: { tags: ['integration'], params: erpFeatureParams } }, async (req, reply) =>
+    reply.status(202).send(await scoped(req, 'integration.endpoint.run', (tx, ctx) => erpEndpoints.requestRun(tx, ctx, deps.config, (req.params as any).feature, (req.body as any)?.target))));
+  app.get('/api/v1/integration/endpoints/:feature/runs', { schema: { tags: ['integration'], params: erpFeatureParams,
+    querystring: { type: 'object', properties: { limit: { type: 'integer', minimum: 1, maximum: 100 } } } } }, async (req) =>
+    scoped(req, 'integration.endpoint.read', (tx) => erpEndpoints.listRuns(tx, (req.params as any).feature, (req.query as any).limit ?? 20)));
+  app.get('/api/v1/integration/runs/:id/errors', { schema: { tags: ['integration'], params: idParams } }, async (req) =>
+    scoped(req, 'integration.endpoint.read', (tx) => erpEndpoints.runErrors(tx, (req.params as any).id)));
 
   app.get('/api/v1/supplier-options', { schema: { tags: ['projects'] } }, async (req) => scoped(req, 'supplier.read', async (tx) => {
     const rows = (await tx.query<{ id: string; legalName: string; status: string; taxIdType: string | null; taxId: string | null; identityReviewRequired: boolean }>(
