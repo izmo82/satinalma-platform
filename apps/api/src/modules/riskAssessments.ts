@@ -26,6 +26,8 @@ export interface RiskDraft {
   manualNote?: string | null;
   /** İçe aktarımın (T6) Excel J değeri (0–100); kaynak IMPORT. */
   importScore?: string | null;
+  /** İçe aktarım (T6): Excel K sütunundaki "aksiyon planı yok" sonrası yorum ("Excel notu: …"). */
+  importNote?: string | null;
   /** R10 "Güncelle" ile yeniden açılan kaydın dönemi; tamamlanınca UPDATED gözden geçirmesi yazılır. */
   reviewPeriod?: string | null;
 }

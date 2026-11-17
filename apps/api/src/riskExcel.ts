@@ -2,6 +2,7 @@ import ExcelJS from 'exceljs';
 import { excelRiskToScore, RISK_CRITERIA, RISK_CRITERIA_TR, RISK_MATRIX, scoreToExcelFraction, type CriteriaValues, type RiskCriterion } from '@sp/domain';
 import { unprocessable } from './errors.ts';
 import { safe } from './reports.ts';
+import { readZip, ZipEntryTooLargeError } from './zip.ts';
 
 /**
  * v2 Faz 6 (D111) Görev 6: kurumun `BT Tedarikçi Risk Değerlendirme Tablosu` Excel düzeni — içe aktarım için ayrıştırma (R11) ve
@@ -38,6 +39,42 @@ export const TABLE_NOTES: readonly (string | null)[] = [
   '0-100 arası (Tedarikçi Riski Değerlendirme Şablonu\'ndan gelen sonuç değeri)', 'Açık metin', null,
 ];
 const COL_WIDTHS = [26.54, 44.36, 11.54, 11.54, 11.54, 11.54, 11.54, 11.54, 11.54, 11.54, 25.18, 17.27];
+
+/** I1: yükleme sınırları (bellek DoS). Açılmış toplam boyut, tek girdi boyutu, girdi sayısı ve veri satırı sayısı. */
+export const MAX_UNCOMPRESSED_TOTAL = 80 * 1024 * 1024;
+export const MAX_UNCOMPRESSED_ENTRY = 50 * 1024 * 1024;
+export const MAX_ZIP_ENTRIES = 200;
+export const MAX_DATA_ROWS = 5000;
+
+/** Merkezi dizini tarar (açmadan): bildirilen açılmış boyutlar toplamı ve girdi sayısı. Zip değilse null. */
+function zipCentralStats(buf: Buffer): { entries: number; total: number } | null {
+  const endAt = buf.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+  if (endAt < 0 || endAt + 22 > buf.length) return null;
+  const entries = buf.readUInt16LE(endAt + 10);
+  let p = buf.readUInt32LE(endAt + 16);
+  if (p === 0xffffffff) return { entries: Number.MAX_SAFE_INTEGER, total: Number.MAX_SAFE_INTEGER }; // ZIP64 xlsx beklenmez
+  let total = 0;
+  for (let i = 0; i < entries; i++) {
+    if (p + 46 > buf.length || buf.readUInt32LE(p) !== 0x02014b50) return null;
+    total += buf.readUInt32LE(p + 24);
+    p += 46 + buf.readUInt16LE(p + 28) + buf.readUInt16LE(p + 30) + buf.readUInt16LE(p + 32);
+  }
+  return { entries, total };
+}
+
+/** exceljs'e vermeden önce: sıkıştırma bombası ve aşırı büyük dosya 422 `risk_import_too_large`. Bildirilen boyut yalan olabilir: açma da sınırlıdır. */
+function assertZipWithinLimits(buf: Buffer) {
+  const tooLarge = () => unprocessable('risk_import_too_large', 'Dosya açıldığında çok büyük; en fazla 5.000 satırlık makul bir risk tablosu yükleyin.');
+  const st = zipCentralStats(buf);
+  if (!st) return; // zip değil: exceljs okunamadı hatasını verir
+  if (st.entries > MAX_ZIP_ENTRIES || st.total > MAX_UNCOMPRESSED_TOTAL) throw tooLarge();
+  try {
+    readZip(buf, { maxOutputLength: MAX_UNCOMPRESSED_ENTRY });
+  } catch (e) {
+    if (e instanceof ZipEntryTooLargeError) throw tooLarge();
+    // bozuk zip: exceljs okunamadı hatasını verir
+  }
+}
 
 const normHeader = (s: unknown) => String(s ?? '').toLocaleLowerCase('tr').replace(/^\s*\d+\s*[.)]\s*/, '').replace(/\s+/g, ' ').trim();
 
@@ -105,6 +142,8 @@ export interface ParsedRiskRow {
   excelCriticality: number | null;
   riskScore: string | null;
   actionText: string | null;
+  /** R11 (Karar 8): K'de "aksiyon planı yok" kalıbından sonra yazılan yorum; aksiyon üretmez, nota gider. */
+  commentNote: string | null;
   team: string | null;
   issues: string[];
 }
@@ -115,8 +154,24 @@ export function fractionScaleOf(raws: RawRow[]): boolean {
   return !raws.some((r) => { const n = numberOf(r.J); return n !== null && n > 1; });
 }
 
+/** "aksiyon planı yok(k)tur" kalıbından sonraki yorum metni (varsa); kalıp dışı metinde null. */
+export function noActionComment(text: string | null): string | null {
+  if (!text) return null;
+  const m = /aksiyon plan[ıi]\s+yok+tur\.?/i.exec(text) ?? NO_ACTION_RE.exec(text);
+  if (!m) return null;
+  const rest = text.slice(m.index + m[0].length).replace(/^[\s.,;:\-–—]+/, '').trim();
+  return rest.length >= 2 ? rest : null;
+}
+
+/** Dosyada J değerleri hem ≤ 1 (ve > 0) hem > 1 ise ölçek karışık (R11): tek yanlış hücre bütün dosyanın ölçeğini çevirmesin diye satırlara sorun yazılır. */
+export function mixedScaleOf(raws: RawRow[]): boolean {
+  let small = false, big = false;
+  for (const r of raws) { const n = numberOf(r.J); if (n === null) continue; if (n > 1) big = true; else if (n > 0) small = true; }
+  return small && big;
+}
+
 /** Saklanan ham satırdan alanlar ve satır sorunları (önizleme her okumada aynı sonucu verir). */
-export function rowFromRaw(rowNo: number, raw: RawRow, fractionScale: boolean): ParsedRiskRow {
+export function rowFromRaw(rowNo: number, raw: RawRow, fractionScale: boolean, mixedScale = false): ParsedRiskRow {
   const issues: string[] = [];
   const name = unescapeText(textOf(raw.A));
   if (!name) issues.push('Tedarikçi adı boş.');
@@ -144,6 +199,10 @@ export function rowFromRaw(rowNo: number, raw: RawRow, fractionScale: boolean): 
     }
   }
   let riskScore: string | null = null;
+  if (mixedScale) {
+    const jn = numberOf(raw.J);
+    if (jn !== null && jn > 0) issues.push(`Risk skoru ölçeği belirsiz: dosyada hem 1 ve altı hem 1'den büyük değerler var (bu satır: ${jn}); J sütununu düzeltin.`);
+  }
   if (!isEmpty(raw.J)) {
     const n = numberOf(raw.J);
     if (n === null || n < 0) issues.push(`Risk skoru okunamadı (bulunan: ${String(valueOf(raw.J))}).`);
@@ -153,9 +212,10 @@ export function rowFromRaw(rowNo: number, raw: RawRow, fractionScale: boolean): 
       else riskScore = s;
     }
   }
+  const actionText = unescapeText(textOf(raw.K));
   return {
     rowNo, raw, name, services: unescapeText(textOf(raw.B)), criteria, criteriaComplete, excelCriticality, riskScore,
-    actionText: unescapeText(textOf(raw.K)), team: unescapeText(textOf(raw.L)), issues,
+    actionText, commentNote: noActionComment(actionText), team: unescapeText(textOf(raw.L)), issues,
   };
 }
 
@@ -164,6 +224,7 @@ export function rowFromRaw(rowNo: number, raw: RawRow, fractionScale: boolean): 
  * 422 `risk_import_format` (bulunan başlıklar listeli). Veri 5. satırdan; bütün hücreleri boş satır atlanır.
  */
 export async function parseRiskTable(buf: Buffer): Promise<ParsedRiskTable> {
+  assertZipWithinLimits(buf);
   const wb = new ExcelJS.Workbook();
   try {
     await wb.xlsx.load(buf as unknown as ArrayBuffer);
@@ -182,14 +243,18 @@ export async function parseRiskTable(buf: Buffer): Promise<ParsedRiskTable> {
   const b1 = textOf(plainCell(ws.getCell('B1')));
   const period = b1 && /^\d{4}-[1-4]$/.test(b1) ? b1 : null;
   const raws: { rowNo: number; raw: RawRow }[] = [];
+  const tooMany = () => unprocessable('risk_import_too_large', `Dosyada en fazla ${MAX_DATA_ROWS} veri satırı içe aktarılır.`);
+  if (ws.rowCount > MAX_DATA_ROWS * 4) throw tooMany(); // boş satırlarla şişirilmiş sayfa
   for (let r = 5; r <= ws.rowCount; r++) {
     const row = ws.getRow(r);
     const raw = Object.fromEntries(COLS.map((c, i) => [c, plainCell(row.getCell(i + 1))])) as RawRow;
     if (COLS.every((c) => isEmpty(raw[c]))) continue;
     raws.push({ rowNo: r, raw });
+    if (raws.length > MAX_DATA_ROWS) throw tooMany();
   }
   const fractionScale = fractionScaleOf(raws.map((x) => x.raw));
-  return { period, fractionScale, sheetNames, rows: raws.map((x) => rowFromRaw(x.rowNo, x.raw, fractionScale)) };
+  const mixed = mixedScaleOf(raws.map((x) => x.raw));
+  return { period, fractionScale, sheetNames, rows: raws.map((x) => rowFromRaw(x.rowNo, x.raw, fractionScale, mixed)) };
 }
 
 // ---- dışa aktarım (R12) -------------------------------------------------------------------------------------------------------------

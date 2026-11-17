@@ -7,6 +7,7 @@ import { readFileSync } from 'node:fs';
 import ExcelJS from 'exceljs';
 import { criticality, riskLevel, syntheticVkn, type CriteriaValues } from '@sp/domain';
 import { ApiError } from '../src/errors.ts';
+import { ZipStreamWriter } from '../src/zip.ts';
 import { geomean, parseRiskTable } from '../src/riskExcel.ts';
 import { makeHarness } from './harness.ts';
 import { riskWorkbook, SAMPLE_ROWS, SOURCE_GROUPS, SOURCE_HEADERS, SOURCE_NOTES, type SyntheticRiskRow } from './helpers/riskWorkbook.ts';
@@ -70,6 +71,33 @@ describe('parseRiskTable (yalnız ayrıştırma)', () => {
     expect((await parseRiskTable(await riskWorkbook([{ name: 'X A.Ş.' }], { headers: loose }))).rows).toHaveLength(1);
     const bad = await parseRiskTable(Buffer.from('düz metin')).catch((e) => e);
     expect(bad).toMatchObject({ status: 422, code: 'risk_import_format' });
+  });
+
+
+  it('M3: J değerleri 1 ve altı ile 1 üstü karışıksa satırlara ölçek sorunu yazılır (tek yanlış hücre sessizce ölçeği çevirmez)', async () => {
+    const t = await parseRiskTable(await riskWorkbook([
+      { name: 'A A.Ş.', criteria: [3, 3, 3, 3, 3, 3], j: 0.15 }, { name: 'B A.Ş.', criteria: [3, 3, 3, 3, 3, 3], j: 15 }, { name: 'C A.Ş.', criteria: [3, 3, 3, 3, 3, 3], j: null },
+    ]));
+    expect(t.rows[0]!.issues.join(' ')).toMatch(/ölçeği belirsiz/);
+    expect(t.rows[1]!.issues.join(' ')).toMatch(/ölçeği belirsiz/);
+    expect(t.rows[2]!.issues).toEqual([]);
+    const ok = await parseRiskTable(await riskWorkbook([{ name: 'A A.Ş.', j: 0.15 }, { name: 'B A.Ş.', j: 0.2 }]));
+    expect(ok.rows.every((r) => r.issues.every((i) => !/ölçeği belirsiz/.test(i)))).toBe(true);
+  });
+
+  it('I1: 5.000 satırdan fazlası ve açılınca çok büyük (sıkıştırma bombası) dosya 422 risk_import_too_large', async () => {
+    const many = await parseRiskTable(await riskWorkbook(Array.from({ length: 5001 }, (_, i) => ({ name: `Satır ${i} A.Ş.` })))).catch((e) => e);
+    expect(many).toMatchObject({ status: 422, code: 'risk_import_too_large' });
+    const okEdge = await parseRiskTable(await riskWorkbook(Array.from({ length: 5000 }, (_, i) => ({ name: `Satır ${i} A.Ş.` }))));
+    expect(okEdge.rows).toHaveLength(5000);
+    const parts: Buffer[] = [];
+    const zw = new ZipStreamWriter({ write: async (c) => { parts.push(c); } });
+    const e = await zw.entry('xl/bomb.bin');
+    for (let i = 0; i < 60; i++) await e.write(Buffer.alloc(1024 * 1024));
+    await e.close();
+    await zw.finish();
+    const bomb = await parseRiskTable(Buffer.concat(parts)).catch((x) => x);
+    expect(bomb).toMatchObject({ status: 422, code: 'risk_import_too_large' });
   });
 
   const realPath = process.env.RISK_XLSX_PATH;
@@ -291,6 +319,68 @@ describe('içe aktarım ve dışa aktarım API (R11/R12)', () => {
     const s = await one(`SELECT id, status, tax_id, identity_review_required FROM suppliers WHERE tenant_id = $1 AND legal_name = 'Yepyeni Aday Bilişim A.Ş.'`, [h.world.tenantA]);
     expect(s).toMatchObject({ status: 'CANDIDATE', tax_id: null, identity_review_required: true });
     expect((await assessmentOf(s.id, 2025)).status).toBe('COMPLETED');
+  });
+
+
+  describe('düzeltme turu 1 (I2, M1, M2, M5)', () => {
+    const dsup = async (n: string) => supplier(n);
+    it('I2: K\'de "aksiyon planı yok" sonrası yorum aksiyon üretmez; tamamlananda score_note, açıkta taslakta "Excel notu"', async () => {
+      const a = await dsup('Not Bir A.Ş.'), b = await dsup('Not İki A.Ş.');
+      const up = await upload('buyer', await riskWorkbook([
+        sampleRow(5, { name: 'Not Bir A.Ş.', k: 'Ek bir aksiyon planı yokktur. Not: sözleşme yenilemesi bekleniyor' }),
+        sampleRow(54, { name: 'Not İki A.Ş.', k: 'Aksiyon planı yoktur - tedarikçi ile toplantı yapıldı' }),
+      ], { period: '2024-2' }));
+      expect(up.status, JSON.stringify(up.body)).toBe(201);
+      expect(up.body.rows[0]).toMatchObject({ createsAction: false, commentNote: 'Not: sözleşme yenilemesi bekleniyor' });
+      expect(up.body.rows[1]).toMatchObject({ createsAction: false, commentNote: 'tedarikçi ile toplantı yapıldı' });
+      const r = await h.call('buyer', 'POST', `/api/v1/risk/imports/${up.body.batch.id}/apply`);
+      expect(r.status, JSON.stringify(r.body)).toBe(200);
+      expect(r.body.result).toMatchObject({ completed: 1, open: 1, actions: 0 });
+      const a1 = await assessmentOf(a, 2024), a2 = await assessmentOf(b, 2024);
+      const rev = await one(`SELECT score_note FROM risk_assessment_revisions WHERE assessment_id = $1`, [a1.id]);
+      expect(rev.score_note).toMatch(/^Excel içe aktarımı: risk-tablosu\.xlsx, satır 5\. Excel notu: Not: sözleşme yenilemesi bekleniyor$/);
+      expect(a2).toMatchObject({ status: 'OPEN', draft: { importNote: 'Excel notu: tedarikçi ile toplantı yapıldı' } });
+      expect(await rows(`SELECT 1 FROM risk_actions WHERE assessment_id = ANY($1::uuid[])`, [[a1.id, a2.id]])).toHaveLength(0);
+    });
+
+    it('M2: ekibi eşlenmeyen satır tamamlanmış açılsa da Satınalma\'ya "Sorumlu departmanı seçin" görevi', async () => {
+      const a = await dsup('Departmansız Tamam A.Ş.');
+      const up = await upload('buyer', await riskWorkbook([sampleRow(5, { name: 'Departmansız Tamam A.Ş.', team: 'Eşlenmeyen Ekip (sentetik)' })], { period: '2024-3' }));
+      const r = await h.call('buyer', 'POST', `/api/v1/risk/imports/${up.body.batch.id}/apply`);
+      expect(r.body.result).toMatchObject({ completed: 1, open: 0, needsDepartment: 1 });
+      const x = await assessmentOf(a, 2024);
+      expect(x).toMatchObject({ status: 'COMPLETED', department_id: null });
+      expect(await rows(`SELECT assignee_role FROM tasks WHERE dedupe_key = $1 AND status = 'OPEN'`, [`risk:${x.id}:department`])).toEqual([{ assignee_role: 'PROCUREMENT' }]);
+    });
+
+    it('M5: satır başka karta taşınınca eski birincil işaret yeni grubun birincilini çalmaz', async () => {
+      const a = await dsup('Taşınan Satır A.Ş.'), b = await dsup('Hedef Kart A.Ş.');
+      const up = await upload('buyer', await riskWorkbook([
+        sampleRow(54, { name: 'Taşınan Satır A.Ş.' }), sampleRow(9, { name: 'Hedef Kart A.Ş.' }), sampleRow(19, { name: 'Hedef Kart A.Ş.' }),
+      ], { period: '2024-4' }));
+      const id = up.body.batch.id;
+      const row = (body: any, n: number) => body.rows.find((x: any) => x.rowNo === n);
+      expect(row(up.body, 5)).toMatchObject({ supplier: { id: a }, primary: true });
+      expect(row(up.body, 6)).toMatchObject({ supplier: { id: b }, primary: true });
+      const put = await h.call('buyer', 'PUT', `/api/v1/risk/imports/${id}`, { body: { rows: [{ rowNo: 5, supplierId: b }] } });
+      expect(put.status, JSON.stringify(put.body)).toBe(200);
+      expect(row(put.body, 6)).toMatchObject({ decision: 'CREATE', primary: true });
+      expect(row(put.body, 5)).toMatchObject({ decision: 'MERGE', primary: false });
+      expect(row(put.body, 7)).toMatchObject({ decision: 'MERGE', primary: false });
+      expect(await one(`SELECT count(*)::int AS n FROM risk_import_rows WHERE batch_id = $1 AND primary_row AND supplier_id = $2`, [id, b])).toEqual({ n: 1 });
+    });
+
+    it('M1: aynı dosyanın iki partisi eşzamanlı uygulanınca biri 200, diğeri already_imported', async () => {
+      await dsup('Eşzamanlı Uygulama A.Ş.');
+      const buf = await riskWorkbook([sampleRow(5, { name: 'Eşzamanlı Uygulama A.Ş.' })], { period: '2023-1' });
+      const u1 = await upload('buyer', buf), u2 = await upload('buyer', buf);
+      const [r1, r2] = await Promise.all([
+        h.call('buyer', 'POST', `/api/v1/risk/imports/${u1.body.batch.id}/apply`), h.call('buyer', 'POST', `/api/v1/risk/imports/${u2.body.batch.id}/apply`)]);
+      const codes = [r1.status, r2.status].sort();
+      expect(codes, JSON.stringify([r1.body, r2.body])).toEqual([200, 409]);
+      const loser = r1.status === 409 ? r1 : r2;
+      expect(loser.body.error.code).toBe('already_imported');
+    });
   });
 
   describe('dışa aktarım', () => {

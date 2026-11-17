@@ -7,7 +7,7 @@ import type { TenantContext, Tx } from '../db.ts';
 import { audit } from '../audit.ts';
 import { conflict, notFound, unprocessable } from '../errors.ts';
 import { openTask, RISK_TASKS } from '../tasks.ts';
-import { NO_ACTION_RE, parseRiskTable, riskTableWorkbook, rowFromRaw, type ParsedRiskRow, type RawRow, type RiskExportRow } from '../riskExcel.ts';
+import { mixedScaleOf, NO_ACTION_RE, parseRiskTable, riskTableWorkbook, rowFromRaw, type ParsedRiskRow, type RawRow, type RiskExportRow } from '../riskExcel.ts';
 import { compute, CONTROL_METHOD_TR, istanbulToday, openDueTask, SCORE_SOURCE_TR, type RiskDraft, type ScoreSource } from './riskAssessments.ts';
 import { getRiskSettings } from './riskQuestions.ts';
 
@@ -66,8 +66,8 @@ interface Calc {
   criticality: { value: string; display: string; column: number } | null;
   level: { level: RiskLevelNo; band: RiskLevelNo; label: string } | null;
 }
-function calcRow(r: { row_no: number; raw: RawRow }, fractionScale: boolean): Calc {
-  const parsed = rowFromRaw(r.row_no, r.raw, fractionScale);
+function calcRow(r: { row_no: number; raw: RawRow }, fractionScale: boolean, mixed = false): Calc {
+  const parsed = rowFromRaw(r.row_no, r.raw, fractionScale, mixed);
   const crit = parsed.criteriaComplete ? criticality(parsed.criteria as CriteriaValues) : null;
   const lv = crit && parsed.riskScore !== null ? riskLevel(parsed.riskScore, crit.column) : null;
   return { parsed, criticality: crit, level: lv ? { ...lv, label: RISK_LEVEL_TR[lv.level] } : null };
@@ -93,10 +93,11 @@ function groupKey(r: { decision: ImportDecision; supplier_id: string | null }, c
  */
 async function normalizeGroups(tx: Tx, batch: BatchRow) {
   const rows = await loadRows(tx, batch.id);
+  const mixed = mixedScaleOf(rows.map((r) => r.raw));
   const groups = new Map<string, { r: ImportRow; c: Calc }[]>();
   const updates: { id: string; decision: ImportDecision; primary: boolean }[] = [];
   for (const r of rows) {
-    const c = calcRow(r, batch.fraction_scale);
+    const c = calcRow(r, batch.fraction_scale, mixed);
     const key = groupKey(r, c);
     if (!key) { if (r.primary_row || (r.decision !== 'SKIP')) updates.push({ id: r.id, decision: 'SKIP', primary: false }); continue; }
     groups.set(key, [...(groups.get(key) ?? []), { r, c }]);
@@ -134,8 +135,9 @@ export async function getImport(tx: Tx, ctx: TenantContext, id: string) {
     ? (await tx.query(`SELECT 1 FROM risk_import_batches WHERE file_sha256 = $1 AND status = 'APPLIED'`, [b.file_sha256])).rowCount! > 0 : false;
 
   const teamCounts = new Map<string, number>();
+  const mixed = mixedScaleOf(rows.map((r) => r.raw));
   const items = rows.map((r) => {
-    const c = calcRow(r, b.fraction_scale);
+    const c = calcRow(r, b.fraction_scale, mixed);
     const p = c.parsed;
     if (p.team) teamCounts.set(p.team, (teamCounts.get(p.team) ?? 0) + 1);
     const departmentId = p.team ? (b.team_mapping[p.team] ?? null) : null;
@@ -150,7 +152,7 @@ export async function getImport(tx: Tx, ctx: TenantContext, id: string) {
     return {
       rowNo: r.row_no, name: p.name, services: p.services, criteria: p.criteria, criteriaComplete: p.criteriaComplete,
       criticality: c.criticality, excelCriticality: p.excelCriticality, riskScore: p.riskScore, level: c.level,
-      actionText: p.actionText, createsAction: !!p.actionText && !NO_ACTION_RE.test(p.actionText) && p.actionText.trim().length >= 2,
+      actionText: p.actionText, commentNote: p.commentNote, createsAction: !!p.actionText && !NO_ACTION_RE.test(p.actionText) && p.actionText.trim().length >= 2,
       team: p.team, department: departmentId ? { id: departmentId, name: deptName.get(departmentId) ?? null } : null,
       supplier: r.supplier_id ? { id: r.supplier_id, name: r.supplier_name, status: r.supplier_status } : null,
       decision: r.decision, primary: r.primary_row, outcome, outcomeLabel: OUTCOME_TR[outcome], issues, assessmentId: r.assessment_id, raw: r.raw,
@@ -283,10 +285,14 @@ export async function updateImport(tx: Tx, ctx: TenantContext, id: string, body:
     }
     if (decision === 'CREATE' && !supplierId) throw unprocessable('supplier_required', `Değerlendirme için tedarikçi kartı seçin (satır ${p.rowNo}).`);
     if (decision === 'MERGE') decision = supplierId ? 'CREATE' : 'NEW_CANDIDATE';
-    const primary = p.primary ?? (decision === 'SKIP' ? false : r.primary_row);
+    const rc = calcRow(r, b.fraction_scale);
+    const newKey = groupKey({ decision, supplier_id: supplierId }, rc);
+    // Satır başka karta (gruba) taşındıysa eski birincil işareti yeni grubun birincilini çalmaz; açıkça istenmedikçe false.
+    const groupChanged = newKey !== groupKey(r, rc);
+    const primary = p.primary ?? (decision === 'SKIP' || groupChanged ? false : r.primary_row);
     if (primary) {
       // Aynı gruptaki diğer birincil işaretleri kalkar.
-      const key = groupKey({ decision, supplier_id: supplierId }, calcRow(r, b.fraction_scale));
+      const key = newKey;
       for (const o of rows) if (o.id !== r.id && o.primary_row && groupKey(o, calcRow(o, b.fraction_scale)) === key) {
         await tx.query(`UPDATE risk_import_rows SET primary_row = false WHERE id = $1`, [o.id]);
         o.primary_row = false;
@@ -321,7 +327,8 @@ export async function applyImport(tx: Tx, ctx: TenantContext, id: string) {
   }
   await normalizeGroups(tx, b);
   const rows = await loadRows(tx, id);
-  const calcs = new Map(rows.map((r) => [r.id, calcRow(r, b.fraction_scale)]));
+  const mixed = mixedScaleOf(rows.map((r) => r.raw));
+  const calcs = new Map(rows.map((r) => [r.id, calcRow(r, b.fraction_scale, mixed)]));
   const today = istanbulToday();
   const dueDays = (await getRiskSettings(tx)).dueDays;
   const dueOn = (await tx.query<{ d: string }>(`SELECT ($1::date + $2::int)::text AS d`, [today, dueDays])).rows[0]!.d;
@@ -357,7 +364,10 @@ export async function applyImport(tx: Tx, ctx: TenantContext, id: string) {
     const services = [...new Set([primary, ...others].map((r) => calcs.get(r.id)!.parsed.services).filter((s): s is string => !!s))];
     const departmentId = p.team ? (b.team_mapping[p.team] ?? null) : null;
     const complete = willComplete(c);
-    const draft: RiskDraft = { criteria: { ...p.criteria }, importScore: p.riskScore };
+    // Karar 8: K'de "aksiyon planı yok" sonrası yorum aksiyon üretmez; Excel notu olarak taslakta görünür, tamamlanan revizyonda score_note'a gider.
+    const notes = [...new Set(list.map((r) => calcs.get(r.id)!.parsed.commentNote).filter((n): n is string => !!n))];
+    const excelNote = notes.length ? `Excel notu: ${notes.join(' | ')}` : null;
+    const draft: RiskDraft = { criteria: { ...p.criteria }, importScore: p.riskScore, ...(excelNote ? { importNote: clip(excelNote, 2000) } : {}) };
     const assessmentId = (await tx.query<{ id: string }>(
       `INSERT INTO risk_assessments (tenant_id, supplier_id, year, department_id, responsible_team, services, source, due_on, draft, opened_by)
        VALUES ($1,$2,$3,$4,$5,$6,'IMPORT',$7,$8,$9) ON CONFLICT (tenant_id, supplier_id, year) DO NOTHING RETURNING id`,
@@ -385,7 +395,8 @@ export async function applyImport(tx: Tx, ctx: TenantContext, id: string) {
         `INSERT INTO risk_assessment_revisions (tenant_id, assessment_id, revision_no, criteria, criticality, criticality_column, answers, score_source,
            risk_score, score_note, level, method_version, changed_fields, created_by)
          VALUES ($1,$2,1,$3,$4,$5,'{}','IMPORT',$6,$7,$8,$9,'{}',$10)`,
-        [ctx.tenantId, assessmentId, p.criteria, crit.value, crit.column, p.riskScore, `Excel içe aktarımı: ${clip(b.file_name, 200)}, satır ${primary.row_no}`,
+        [ctx.tenantId, assessmentId, p.criteria, crit.value, crit.column, p.riskScore,
+          clip(`Excel içe aktarımı: ${clip(b.file_name, 200)}, satır ${primary.row_no}${excelNote ? `. ${excelNote}` : ''}`, 2000),
           lv.level, RISK_METHOD_VERSION, ctx.userId]);
       await tx.query(`UPDATE risk_assessments SET status = 'COMPLETED', completed_at = now(), completed_by = $2 WHERE id = $1`, [assessmentId, ctx.userId]);
       res.completed++;
@@ -401,14 +412,15 @@ export async function applyImport(tx: Tx, ctx: TenantContext, id: string) {
           actions: actions.map((x) => ({ kind: x.kind, ownerUserId: x.owner_user_id, dueOn: x.due_on, status: x.status })) });
       }
       if (departmentId) await openDueTask(tx, ctx, { id: assessmentId, supplierName, year: b.year, dueOn });
-      else {
-        res.needsDepartment++;
-        await openTask(tx, ctx, { companyId: null, kind: RISK_TASKS.department, entityType: 'risk_assessment', entityId: assessmentId, departmentId: null,
-          title: `Sorumlu departmanı seçin: ${supplierName} (${b.year})`,
-          reason: 'İçe aktarılan risk tablosu satırının ekibi bir departmana eşlenmedi.',
-          nextAction: 'Değerlendirmeyi açıp sorumlu departmanı seçin.', assigneeRole: 'PROCUREMENT', dedupeKey: `risk:${assessmentId}:department` });
-      }
       rowResults.push({ rowNo: primary.row_no, outcome: blockers ? 'completion_blocked' : 'OPEN', assessmentId, ...(blockers ? { blockers } : {}) });
+    }
+    // M2: departmansız her değerlendirme (tamamlanmış dahil) Satınalma'ya "Sorumlu departmanı seçin" görevi açar.
+    if (!departmentId) {
+      res.needsDepartment++;
+      await openTask(tx, ctx, { companyId: null, kind: RISK_TASKS.department, entityType: 'risk_assessment', entityId: assessmentId, departmentId: null,
+        title: `Sorumlu departmanı seçin: ${supplierName} (${b.year})`,
+        reason: 'İçe aktarılan risk tablosu satırının ekibi bir departmana eşlenmedi.',
+        nextAction: 'Değerlendirmeyi açıp sorumlu departmanı seçin.', assigneeRole: 'PROCUREMENT', dedupeKey: `risk:${assessmentId}:department` });
     }
     for (const r of others) rowResults.push({ rowNo: r.row_no, outcome: 'MERGE', assessmentId });
     for (const r of list) await tx.query(`UPDATE risk_import_rows SET assessment_id = $2 WHERE id = $1`, [r.id, assessmentId]);
@@ -417,7 +429,15 @@ export async function applyImport(tx: Tx, ctx: TenantContext, id: string) {
       level: c.level?.level ?? null });
   }
   rowResults.sort((a, b2) => a.rowNo - b2.rowNo);
-  await tx.query(`UPDATE risk_import_batches SET status = 'APPLIED', summary = $2, applied_by = $3, applied_at = now() WHERE id = $1`, [id, res, ctx.userId]);
+  try {
+    await tx.query(`UPDATE risk_import_batches SET status = 'APPLIED', summary = $2, applied_by = $3, applied_at = now() WHERE id = $1`, [id, res, ctx.userId]);
+  } catch (e) {
+    // M1: aynı dosyanın eşzamanlı ikinci uygulaması tekillik dizinine çarpar → genel "duplicate" yerine already_imported.
+    if ((e as { code?: string; constraint?: string }).code === '23505' && (e as { constraint?: string }).constraint === 'risk_import_batches_applied_once') {
+      throw conflict('already_imported', 'Bu dosya daha önce içe aktarıldı; aynı dosya ikinci kez uygulanamaz.');
+    }
+    throw e;
+  }
   await audit(tx, ctx, 'risk.import.applied', 'risk_import_batch', id, { fileName: b.file_name, year: b.year, ...res });
   return { ...(await getImport(tx, ctx, id)), result: res, rowResults };
 }
