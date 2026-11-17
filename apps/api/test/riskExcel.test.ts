@@ -350,6 +350,17 @@ describe('içe aktarım ve dışa aktarım API (R11/R12)', () => {
       expect(rev.score_note).toMatch(/^Excel içe aktarımı: risk-tablosu\.xlsx, satır 5\. Excel notu: Not: sözleşme yenilemesi bekleniyor$/);
       expect(a2).toMatchObject({ status: 'OPEN', draft: { importNote: 'Excel notu: tedarikçi ile toplantı yapıldı' } });
       expect(await rows(`SELECT 1 FROM risk_actions WHERE assessment_id = ANY($1::uuid[])`, [[a1.id, a2.id]])).toHaveLength(0);
+      // Bütün faz incelemesi I1: açık içe aktarılan kayıt taslak görünümünde importNote taşır; tamamlanınca revizyonun score_note'unda "Excel notu" kalır.
+      const det = await h.call('buyer', 'GET', `/api/v1/risk/assessments/${a2.id}`);
+      expect(det.body.draft.importNote).toBe('Excel notu: tedarikçi ile toplantı yapıldı');
+      for (const body of [{ kind: 'MITIGATION', title: 'Sentetik azaltım', ownerUserId: h.world.users.buyer.id, dueOn: '2099-06-30' },
+        { kind: 'CONTROL', title: 'Sentetik kontrol', controlMethod: 'DESK', ownerUserId: h.world.users.buyer.id, dueOn: '2099-06-30' }]) {
+        expect((await h.call('buyer', 'POST', `/api/v1/risk/assessments/${a2.id}/actions`, { body })).status).toBe(201);
+      }
+      const done = await h.call('buyer', 'POST', `/api/v1/risk/assessments/${a2.id}/complete`);
+      expect(done.status, JSON.stringify(done.body)).toBe(200);
+      expect(done.body.revisions[0]).toMatchObject({ scoreSource: 'IMPORT', scoreNote: 'Excel notu: tedarikçi ile toplantı yapıldı' });
+      expect((await one(`SELECT score_note FROM risk_assessment_revisions WHERE assessment_id = $1`, [a2.id])).score_note).toContain('Excel notu');
     });
 
     it('M2: ekibi eşlenmeyen satır tamamlanmış açılsa da Satınalma\'ya "Sorumlu departmanı seçin" görevi', async () => {

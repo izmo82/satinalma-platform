@@ -401,7 +401,7 @@ export async function buildApp(deps: AppDeps) {
                   JOIN contract_families f ON f.id = c.family_id WHERE s.id = t.entity_id)
               END AS "refNo"
        FROM tasks t WHERE t.status = 'OPEN' AND ${taskRoleSql('$1')} AND ${visibleTaskSql()}
-         AND (t.entity_type <> 'contract_approval_step' OR t.assignee_user_id = $3)
+         AND (t.entity_type NOT IN ('contract_approval_step', 'risk_action') OR t.assignee_user_id = $3)
          AND (t.entity_type NOT IN ('contract_reminder', 'contract_rejection') OR t.assignee_user_id IS NULL OR t.assignee_user_id = $3)
          AND (t.kind <> 'coi_declaration' OR t.assignee_user_id = $3)
          AND ($2 <> 'overdue' OR (t.due_at IS NOT NULL AND t.due_at < now()))
@@ -416,14 +416,14 @@ export async function buildApp(deps: AppDeps) {
       `SELECT count(*) FILTER (WHERE assignee_user_id IS NULL OR assignee_user_id = $2)::int AS mine,
               count(*) FILTER (WHERE due_at IS NOT NULL AND due_at < now())::int AS overdue, count(*)::int AS "all"
        FROM tasks t WHERE t.status = 'OPEN' AND ${taskRoleSql('$1')} AND ${visibleTaskSql()}
-         AND (t.entity_type <> 'contract_approval_step' OR t.assignee_user_id = $2)
+         AND (t.entity_type NOT IN ('contract_approval_step', 'risk_action') OR t.assignee_user_id = $2)
          AND (t.entity_type NOT IN ('contract_reminder', 'contract_rejection') OR t.assignee_user_id IS NULL OR t.assignee_user_id = $2)
          AND (t.kind <> 'coi_declaration' OR t.assignee_user_id = $2)`, [ctx.roles, ctx.userId])).rows[0]!;
     // Menü sayaçları (modül başına "Benden beklenen"): listeden değil sayımdan; 200 sınırı ve sayfalama sayacı kısaltmaz.
     const byType = (await tx.query<{ entityType: string; n: number }>(
       `SELECT t.entity_type AS "entityType", count(*)::int AS n FROM tasks t WHERE t.status = 'OPEN' AND ${taskRoleSql('$1')} AND ${visibleTaskSql()}
          AND (t.assignee_user_id IS NULL OR t.assignee_user_id = $2)
-         AND (t.entity_type <> 'contract_approval_step' OR t.assignee_user_id = $2)
+         AND (t.entity_type NOT IN ('contract_approval_step', 'risk_action') OR t.assignee_user_id = $2)
        GROUP BY t.entity_type`, [ctx.roles, ctx.userId])).rows;
     const total = c[view as keyof typeof c];
     const nextOffset = offset + r.rows.length < total && r.rows.length === limit ? offset + r.rows.length : null;
@@ -893,6 +893,9 @@ export async function buildApp(deps: AppDeps) {
       controlMethod: { anyOf: [method, { type: 'null' }] }, supplierVisible: { type: 'boolean' } } } } }, async (req, reply) =>
       reply.status(201).send(await scoped(req, 'risk.assess', (tx, ctx) => riskAssessments.addAction(tx, ctx, id(req), req.body as riskAssessments.ActionInput))));
     // Aksiyon sahibi başka departmanda olabilir (054a): okuma izniyle girer, modül sahibi yalnız durum/not ile sınırlar.
+    // Bütün faz incelemesi I2: aksiyon sahibinin (başka departmanda olsa da, Ruling 6) kendi aksiyonları; İşlerim görevi buraya götürür.
+    app.get('/api/v1/risk/actions/mine', { schema: { tags: ['risk'] } }, async (req) =>
+      scoped(req, 'risk.read', (tx, ctx) => riskAssessments.myActions(tx, ctx)));
     app.patch('/api/v1/risk/actions/:id', { schema: { tags: ['risk'], params: idParams, body: { type: 'object', minProperties: 1, additionalProperties: false, properties: {
       title: { type: 'string', maxLength: 1000 }, description: nullable({ type: 'string', maxLength: 4000 }), ownerUserId: { anyOf: [uuid, { type: 'null' }] },
       ownerText: nullable({ type: 'string', maxLength: 200 }), dueOn: nullable({ type: 'string', maxLength: 10 }), controlMethod: method, supplierVisible: { type: 'boolean' },

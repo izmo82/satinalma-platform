@@ -83,7 +83,8 @@ export async function closeTasks(tx: Tx, dedupePrefix: string): Promise<void> {
 /**
  * v2 Faz 6 (D111): yıllık risk değerlendirmesi görev türleri. Tekil anahtarlar: `risk:{id}:due` (departman, son tarihli),
  * `risk:{id}:department` (Satınalma: sorumlu departmanı seçin), `risk:{id}:escalated:{due_on}` (R7; son tarih döngüsü başına, tamamlama `risk:{id}:escalated` önekini kapatır), `risk:{id}:review:{YYYY-Ç}` (R10),
- * `risk:{id}:high:{revizyon}` (seviye 4–5 tamamlandı, Satınalma bilgi). Görev varlığı `risk_assessment` (departmanı kayıttan, 054).
+ * `risk:{id}:high:{revizyon}` (seviye 4–5 tamamlandı, Satınalma bilgi). Görev varlığı `risk_assessment` (departmanı kayıttan, 054);
+ * aksiyon sahibi görevi `risk:{id}:action:{aksiyon}` varlığı `risk_action` (departmansız, yalnız atanan kişiye listelenir).
  */
 export const RISK_TASKS = {
   due: 'risk_assessment_due',
@@ -91,4 +92,6 @@ export const RISK_TASKS = {
   escalated: 'risk_assessment_escalated',
   review: 'risk_quarterly_review',
   highLevel: 'risk_high_level',
+  /** Aksiyon/kontrol sahibine kişisel görev (`risk:{assessmentId}:action:{actionId}`, varlık `risk_action`, departmansız: başka departmandaki sahip de görür). */
+  action: 'risk_action_owner',
 } as const;

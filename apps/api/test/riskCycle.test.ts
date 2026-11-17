@@ -229,6 +229,10 @@ describe('R10: çeyreklik gözden geçirme görevleri', () => {
       expect((await h.call('techEval', 'POST', `/api/v1/risk/assessments/${id}/complete`)).status).toBe(200);
     }
     const period = `${Y}-2`;
+    // M6 (bütün faz incelemesi): ilk revizyonun çeyreğinden önceki döneme görev açılmaz. Test yılı geçmişte, revizyon bugün yazıldı;
+    // revizyonlar yılın başına çekilir (yalnız test; değişmezlik tetikleyicisi süper kullanıcı oturumunda replica moduyla atlanır).
+    await h.owner.query(`BEGIN; SET LOCAL session_replication_role = replica;
+      UPDATE risk_assessment_revisions SET created_at = '${Y}-01-15T12:00:00+03:00' WHERE assessment_id IN ('${done}', '${otherYear}'); COMMIT;`);
     const ctx = sys();
     const r = await withTenant(h.pool, ctx, (tx) => openQuarterlyReviews(tx, ctx, period));
     expect(r).toEqual({ period, opened: 1, existing: 0 });

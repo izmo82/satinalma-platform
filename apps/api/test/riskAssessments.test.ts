@@ -81,7 +81,19 @@ async function contract(department: string, supplier: string) {
   const c = (await one<{ id: string }>(`INSERT INTO contract_approval_chains (tenant_id, family_id, version_id, terms_id, submitted_by) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
     [w.tenantA, familyId, cvId, termsId, w.users.buyer.id])).id;
   await h.owner.query(`UPDATE contract_approval_chains SET closed_at = now(), outcome = 'APPROVED' WHERE id = $1`, [c]);
+  return familyId;
 }
+
+/**
+ * M6 için: ilk revizyonun oluşturulma anını değerlendirme yılına çeker (testler geçmiş yıllarla çalışır; revizyon bugün yazılır).
+ * Revizyon değişmezlik tetikleyicisi yalnız bu yardımcıda, süper kullanıcı oturumunda replica moduyla atlanır (uygulama yolu değil).
+ */
+async function backdateFirstRevision(assessmentId: string, at: string) {
+  if (!/^[0-9a-f-]{36}$/.test(assessmentId) || !/^\d{4}-\d{2}-\d{2}$/.test(at)) throw new Error('bad input');
+  await h.owner.query(`BEGIN; SET LOCAL session_replication_role = replica;
+    UPDATE risk_assessment_revisions SET created_at = '${at}T12:00:00+03:00' WHERE assessment_id = '${assessmentId}' AND revision_no = 1; COMMIT;`);
+}
+const tasksOf = async (who: Who) => (await call(who, 'GET', '/api/v1/tasks?view=all')).body.items as any[];
 
 // Excel satır 5 ve satır 54 ölçütleri.
 const ROW5 = { businessImpact: 3, dataSensitivity: 5, continuity: 1, integration: 3, regulation: 5, serviceType: 5 };
@@ -214,7 +226,7 @@ describe('R9: seviye 4–5 aksiyon ve kontrol planı; revizyon değişmez; R10 g
     const past = await call('techEval', 'PATCH', `/api/v1/risk/actions/${mit.body.id}`, { ownerUserId: extra.tc!.id, dueOn: '2020-01-01' });
     expect(past.status, JSON.stringify(past.body)).toBe(200);
     expect((await call('techEval', 'POST', `/api/v1/risk/assessments/${a.id}/complete`)).body.error.details.blockers.map((b: any) => b.code)).toEqual(['action_due_past']);
-    await call('techEval', 'PATCH', `/api/v1/risk/actions/${mit.body.id}`, { dueOn: '2099-05-31' });
+    { const r = await call('techEval', 'PATCH', `/api/v1/risk/actions/${mit.body.id}`, { dueOn: '2099-05-31' }); expect(r.status, JSON.stringify(r.body)).toBe(200); }
 
     const c = await call('techEval', 'POST', `/api/v1/risk/assessments/${a.id}/complete`);
     expect(c.status, JSON.stringify(c.body)).toBe(200);
@@ -244,6 +256,27 @@ describe('R9: seviye 4–5 aksiyon ve kontrol planı; revizyon değişmez; R10 g
     const mit = det.actions.find((x: any) => x.kind === 'MITIGATION');
     expect(mit.owner.id).toBe(extra.tc!.id);
     expect((await call('tc', 'GET', `/api/v1/risk/assessments/${a.id}`)).status).toBe(404);
+    // I2: sahibe kişisel görev (departmansız risk_action; yalnız atanan kişi görür; tarih güncellemesi göreve yansır).
+    const key = `risk:${a.id}:action:${mit.id}`;
+    // Tarih 2020 → 2099 değişince ilk görev iptal edildi, yenisi açıldı (görev başlık/tarih sütunları sp_app'e güncellenemez).
+    expect((await h.owner.query(`SELECT 1 FROM tasks WHERE tenant_id = $1 AND dedupe_key = $2 AND status = 'CANCELLED'`, [h.world.tenantA, key])).rowCount).toBe(1);
+    expect(await one(`SELECT kind, entity_type, entity_id, department_id, assignee_user_id, assignee_role, status, due_at FROM tasks WHERE tenant_id = $1 AND dedupe_key = $2 AND status = 'OPEN'`,
+      [h.world.tenantA, key])).toEqual({ kind: 'risk_action_owner', entity_type: 'risk_action', entity_id: mit.id, department_id: null, assignee_user_id: extra.tc!.id,
+      assignee_role: 'DEPARTMENT_USER', status: 'OPEN', due_at: new Date('2099-05-31T23:59:59+03:00') });
+    expect((await tasksOf('tc')).filter((t) => t.entityId === mit.id).map((t) => [t.kind, t.entityType])).toEqual([['risk_action_owner', 'risk_action']]);
+    expect((await tasksOf('techEval')).some((t) => t.entityId === mit.id)).toBe(false);
+    expect((await tasksOf('ik')).some((t) => t.entityId === mit.id)).toBe(false);
+    const mine = await call('tc', 'GET', '/api/v1/risk/actions/mine');
+    expect(mine.status, JSON.stringify(mine.body)).toBe(200);
+    const sup1 = await one<{ legal_name: string }>(`SELECT legal_name FROM suppliers WHERE id = $1`, [h.world.suppliers.s1]);
+    expect(mine.body.items.find((x: any) => x.id === mit.id)).toEqual({ id: mit.id, assessmentId: a.id, assessmentVisible: false,
+      supplier: { id: h.world.suppliers.s1, name: sup1.legal_name }, year: a.year, kind: 'MITIGATION', controlMethod: null, controlMethodLabel: null,
+      title: 'Sentetik azaltım aksiyonu', description: 'İç açıklama (sentetik)', dueOn: '2099-05-31', overdue: false, status: 'OPEN', completionNote: null,
+      completedAt: null, can: { close: true } });
+    for (const k of ['criteria', 'answers', 'opinions', 'riskScore']) expect(mine.raw).not.toContain(k);
+    // Başkasının aksiyonu listede yok; tedarikçi oturumu 403.
+    expect((await call('techEval', 'GET', '/api/v1/risk/actions/mine')).body.items.some((x: any) => x.id === mit.id)).toBe(false);
+    expect((await call('supplier1', 'GET', '/api/v1/risk/actions/mine')).status).toBe(403);
     const f = await call('tc', 'PATCH', `/api/v1/risk/actions/${mit.id}`, { title: 'Sahip başlığı değiştiremez' });
     expect([f.status, f.body.error?.code]).toEqual([403, 'owner_fields_only']);
     const f2 = await call('tc', 'PATCH', `/api/v1/risk/actions/${mit.id}`, { status: 'DONE', supplierVisible: false, completionNote: 'Sentetik' });
@@ -255,6 +288,9 @@ describe('R9: seviye 4–5 aksiyon ve kontrol planı; revizyon değişmez; R10 g
     expect(ok.status, JSON.stringify(ok.body)).toBe(200);
     expect(ok.body).toMatchObject({ status: 'DONE', completionNote: 'Sentetik tamamlama notu', completedBy: extra.tc!.id });
     expect(await audits('risk.action.done', mit.id)).toBe(1);
+    expect(await taskStatus(key)).toBe('DONE');
+    expect((await call('tc', 'GET', '/api/v1/risk/actions/mine')).body.items.find((x: any) => x.id === mit.id))
+      .toMatchObject({ status: 'DONE', completionNote: 'Sentetik tamamlama notu', can: { close: false } });
     // Tamamlanmış aksiyon yalnız doğrulanır (sahip doğrulayamaz; sorumlu departman doğrular).
     expect((await call('tc', 'PATCH', `/api/v1/risk/actions/${mit.id}`, { status: 'VERIFIED' })).status).toBe(403);
     expect((await call('techEval', 'PATCH', `/api/v1/risk/actions/${mit.id}`, { title: 'Değişmez' })).status).toBe(409);
@@ -280,6 +316,13 @@ describe('R9: seviye 4–5 aksiyon ve kontrol planı; revizyon değişmez; R10 g
 
   it('R10: "Değişiklik yok" aynı dönemde ikinci kez 409; "Güncelle" yeniden açar, tamamlanınca yeni revizyon, eski revizyon aynı', async () => {
     const url = `/api/v1/risk/assessments/${a.id}/reviews`;
+    // M6 (bütün faz incelemesi): ilk revizyonun çeyreğinden önceki dönem gözden geçirilemez. Test yılı geçmişte, revizyon bugün yazıldı;
+    // ilk revizyon değerlendirme yılının 2. çeyreğine çekilir (önceden bu test her dönemi kabul ediyordu).
+    await backdateFirstRevision(a.id, `${a.year}-04-15`);
+    expect((await call('techEval', 'GET', `/api/v1/risk/assessments/${a.id}`)).body.assessment.firstReviewablePeriod).toBe(`${a.year}-2`);
+    const early = await call('techEval', 'POST', url, { period: `${a.year}-1`, outcome: 'NO_CHANGE' });
+    expect([early.status, early.body.error?.code, early.body.error?.details]).toEqual([422, 'period_before_assessment', { firstReviewablePeriod: `${a.year}-2` }]);
+    expect(early.body.error.message).toContain(`${a.year}-Ç2`);
     await task(a.id, `risk:${a.id}:review:${a.year}-2`, 'risk_quarterly_review');
     expect((await call('techEval', 'POST', url, { period: `${a.year + 1}-2`, outcome: 'NO_CHANGE' })).body.error?.code).toBe('invalid_period');
     expect((await call('auditor', 'POST', url, { period: `${a.year}-2`, outcome: 'NO_CHANGE' })).status).toBe(403);
@@ -388,6 +431,12 @@ describe('R5: departman yalıtımı, katkıcı görüşü, sorumlu departman se�
     expect((await call('techEval', 'GET', `/api/v1/risk/assessments/${a.id}`)).status).toBe(404);
     expect((await call('techEval', 'PUT', `/api/v1/risk/assessments/${a.id}/department`, { departmentId: h.world.departments.bt })).status).toBe(403);
     expect((await call('buyer', 'PUT', `/api/v1/risk/assessments/${a.id}/department`, { departmentId: randomUUID() })).body.error?.code).toBe('invalid_department');
+    // M5: birleştirilmiş departman seçilemez.
+    const merged = (await one<{ id: string }>(`INSERT INTO departments (tenant_id, name, merged_into) VALUES ($1, $2, $3) RETURNING id`,
+      [h.world.tenantA, `Birleşmiş departman ${rand()} (SENTETİK)`, h.world.departments.bt])).id;
+    const mg = await call('buyer', 'PUT', `/api/v1/risk/assessments/${a.id}/department`, { departmentId: merged });
+    expect([mg.status, mg.body.error?.code, mg.body.error?.details]).toEqual([422, 'department_merged', { mergedInto: h.world.departments.bt }]);
+    expect(await one(`SELECT department_id FROM risk_assessments WHERE id = $1`, [a.id])).toEqual({ department_id: null });
     const s = await call('masterData', 'PUT', `/api/v1/risk/assessments/${a.id}/department`, { departmentId: h.world.departments.bt });
     expect(s.status, JSON.stringify(s.body)).toBe(200);
     expect(s.body.assessment.department.id).toBe(h.world.departments.bt);
@@ -398,5 +447,49 @@ describe('R5: departman yalıtımı, katkıcı görüşü, sorumlu departman se�
     expect(g.status).toBe(200);
     expect(g.body.can.edit).toBe(true);
     expect(await audits('risk.department_set', a.id)).toBe(1);
+  });
+});
+
+describe('bütün faz incelemesi: aksiyon sahibi görevi (I2) ve tedarikçi oturumunda sözleşme yürürlüğü (M4)', () => {
+  it('sahip değişince eski görev kapanır, yenisine açılır; başlık/tarih güncellenir; iptal kapatır; sahipsiz satıra görev yok', async () => {
+    const a = await assessment({ supplier: h.world.suppliers.s3 });
+    const x = await call('techEval', 'POST', `/api/v1/risk/assessments/${a.id}/actions`, { kind: 'CONTROL', title: 'Sentetik yerinde kontrol', controlMethod: 'ON_SITE',
+      ownerUserId: extra.tc!.id, dueOn: '2099-01-31' });
+    expect(x.status, JSON.stringify(x.body)).toBe(201);
+    const key = `risk:${a.id}:action:${x.body.id}`;
+    const open = async () => (await h.owner.query(`SELECT assignee_user_id, title, due_at FROM tasks WHERE tenant_id = $1 AND dedupe_key = $2 AND status = 'OPEN'`,
+      [h.world.tenantA, key])).rows;
+    expect((await open()).map((t) => t.assignee_user_id)).toEqual([extra.tc!.id]);
+    expect((await open())[0].title).toMatch(/^Risk kontrolü: Sentetik yerinde kontrol \(.+, \d{4}\)$/);
+    const none = await call('techEval', 'POST', `/api/v1/risk/assessments/${a.id}/actions`, { kind: 'MITIGATION', title: 'Sahipsiz sentetik aksiyon' });
+    expect(await taskStatus(`risk:${a.id}:action:${none.body.id}`)).toBeUndefined();
+
+    expect((await call('techEval', 'PATCH', `/api/v1/risk/actions/${x.body.id}`, { title: 'Sentetik yerinde kontrol 2', dueOn: '2099-02-28' })).status).toBe(200);
+    expect(await open()).toMatchObject([{ assignee_user_id: extra.tc!.id, due_at: new Date('2099-02-28T23:59:59+03:00') }]);
+    expect((await open())[0].title).toContain('Sentetik yerinde kontrol 2');
+
+    expect((await call('techEval', 'PATCH', `/api/v1/risk/actions/${x.body.id}`, { ownerUserId: extra.ik!.id })).status).toBe(200);
+    expect((await open()).map((t) => t.assignee_user_id)).toEqual([extra.ik!.id]);
+    expect((await h.owner.query(`SELECT 1 FROM tasks WHERE tenant_id = $1 AND dedupe_key = $2 AND status = 'CANCELLED' AND assignee_user_id = $3`,
+      [h.world.tenantA, key, extra.tc!.id])).rowCount).toBe(2); // başlık/tarih değişikliği + sahip değişikliği
+    expect((await tasksOf('ik')).some((t) => t.entityId === x.body.id)).toBe(true);
+    expect((await tasksOf('tc')).some((t) => t.entityId === x.body.id)).toBe(false);
+    expect((await call('tc', 'GET', '/api/v1/risk/actions/mine')).body.items.some((i: any) => i.id === x.body.id)).toBe(false);
+
+    expect((await call('techEval', 'PATCH', `/api/v1/risk/actions/${x.body.id}`, { ownerUserId: null })).status).toBe(200);
+    expect(await open()).toEqual([]);
+    expect((await call('techEval', 'PATCH', `/api/v1/risk/actions/${x.body.id}`, { ownerUserId: extra.tc!.id })).status).toBe(200);
+    expect((await open()).map((t) => t.assignee_user_id)).toEqual([extra.tc!.id]);
+    expect((await call('techEval', 'PATCH', `/api/v1/risk/actions/${x.body.id}`, { status: 'CANCELLED' })).status).toBe(200);
+    expect(await open()).toEqual([]);
+  });
+
+  it('M4: app_contract_in_force tedarikçi oturumunda false; iç oturumda true', async () => {
+    const familyId = await contract(h.world.departments.ik, h.world.suppliers.s1);
+    const base = { tenantId: h.world.tenantA, companyIds: [h.world.companyA1.id], departmentIds: [], correlationId: 'risk-m4' };
+    const inForce = (ctx: Parameters<typeof withTenant>[1]) =>
+      withTenant(h.pool, ctx, async (tx) => (await tx.query<{ v: boolean }>(`SELECT app_contract_in_force($1) AS v`, [familyId])).rows[0]!.v);
+    expect(await inForce({ ...base, userId: h.world.users.buyer.id, roles: ['PROCUREMENT'], allDepartments: true })).toBe(true);
+    expect(await inForce({ ...base, userId: h.world.users.supplier1.id, roles: ['SUPPLIER'], supplierId: h.world.suppliers.s1, allDepartments: false })).toBe(false);
   });
 });

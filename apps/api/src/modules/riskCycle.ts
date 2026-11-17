@@ -8,7 +8,7 @@ import { openTask, RISK_TASKS } from '../tasks.ts';
 import { currentApprovers } from './approvers.ts';
 import { withTenantWideScope } from './contractChain.ts';
 import { istanbulDay, SYSTEM_USER, systemContext } from './contractReminders.ts';
-import { openDueTask, type RiskDraft } from './riskAssessments.ts';
+import { FIRST_REVIEWABLE_SQL, openDueTask, type RiskDraft } from './riskAssessments.ts';
 import { getRiskSettings } from './riskQuestions.ts';
 
 /**
@@ -185,6 +185,7 @@ export async function escalateOverdueRisk(tx: Tx, ctx: TenantContext, today: str
 /**
  * `period` (YYYY-Ç) yılının COMPLETED değerlendirmelerine, o dönem gözden geçirmesi yoksa görev (`risk:{id}:review:{period}`,
  * son tarih çeyrek sonu). "Değişiklik yok" ya da "Güncelle" → tamamlama görevi kapatır (riskAssessments.review/complete).
+ * İlk tamamlanmış revizyonun çeyreğinden önceki döneme görev açılmaz (M6; review() o dönemi reddeder).
  */
 export async function openQuarterlyReviews(tx: Tx, ctx: TenantContext, period: string): Promise<{ period: string; opened: number; existing: number }> {
   const m = /^(\d{4})-([1-4])$/.exec(period);
@@ -194,6 +195,7 @@ export async function openQuarterlyReviews(tx: Tx, ctx: TenantContext, period: s
   const rows = (await tx.query<{ id: string; year: number; supplier_name: string }>(
     `SELECT a.id, a.year, s.legal_name AS supplier_name FROM risk_assessments a JOIN suppliers s ON s.id = a.supplier_id
      WHERE a.status = 'COMPLETED' AND a.year = $1 AND NOT EXISTS (SELECT 1 FROM risk_reviews v WHERE v.assessment_id = a.id AND v.period = $2)
+       AND coalesce(${FIRST_REVIEWABLE_SQL('a')} <= $2, false)
      ORDER BY s.legal_name, a.id`, [Number(m[1]), period])).rows;
   let opened = 0, existing = 0;
   for (const a of rows) {

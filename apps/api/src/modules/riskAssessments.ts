@@ -178,6 +178,16 @@ function blockersFor(c: Computed, draft: RiskDraft, actions: ActionRow[], today:
 
 // ---- okuma ----------------------------------------------------------------------------------------------------------------------
 
+/**
+ * M6: çeyreklik gözden geçirmenin en erken dönemi = ilk tamamlanmış revizyonun (revision_no 1) oluşturulduğu çeyrek (İstanbul).
+ * Değerlendirme o tarihten önce yoktu; önceki çeyrek gözden geçirilemez. Revizyon yoksa null.
+ */
+export const FIRST_REVIEWABLE_SQL = (a = 'a') => `(SELECT to_char(min(r.created_at) AT TIME ZONE 'Europe/Istanbul', 'YYYY') || '-' ||
+    to_char(min(r.created_at) AT TIME ZONE 'Europe/Istanbul', 'Q') FROM risk_assessment_revisions r WHERE r.assessment_id = ${a}.id)`;
+async function firstReviewablePeriod(tx: Tx, id: string): Promise<string | null> {
+  return (await tx.query<{ p: string | null }>(`SELECT ${FIRST_REVIEWABLE_SQL('a')} AS p FROM risk_assessments a WHERE a.id = $1`, [id])).rows[0]?.p ?? null;
+}
+
 export async function getAssessment(tx: Tx, ctx: TenantContext, id: string) {
   const a = await loadAssessment(tx, id);
   const draft = a.draft ?? {};
@@ -195,6 +205,7 @@ export async function getAssessment(tx: Tx, ctx: TenantContext, id: string) {
        FROM risk_reviews v LEFT JOIN users u ON u.id = v.decided_by WHERE v.assessment_id = $1 ORDER BY v.period DESC`, [id])).rows;
   const prior = await priorOf(tx, a);
   const sets = await publishedSets(tx);
+  const firstReviewable = await firstReviewablePeriod(tx, id);
   const responsible = isResponsible(ctx, a);
   const contributor = !responsible && !ctx.allDepartments;
   const editable = canEdit(ctx, a);
@@ -207,11 +218,12 @@ export async function getAssessment(tx: Tx, ctx: TenantContext, id: string) {
       department: a.department_id ? { id: a.department_id, name: a.department_name } : null, responsibleTeam: a.responsible_team, services: a.services,
       status: a.status, source: a.source, dueOn: a.due_on, overdue: a.status === 'OPEN' && !!a.due_on && a.due_on < today,
       openedAt: a.opened_at, completedAt: a.completed_at, completedBy: a.completed_by, priorAssessmentId: a.prior_assessment_id,
-      pendingReviewPeriod: draft.reviewPeriod ?? null, access: responsible ? 'RESPONSIBLE' : contributor ? 'CONTRIBUTOR' : 'READ',
+      pendingReviewPeriod: draft.reviewPeriod ?? null, firstReviewablePeriod: firstReviewable, access: responsible ? 'RESPONSIBLE' : contributor ? 'CONTRIBUTOR' : 'READ',
     },
     draft: {
       criteria: draft.criteria ?? {}, questionSetId: draft.questionSetId ?? null, answers: draft.answers ?? {},
       manualScore: draft.manualScore ?? null, manualNote: draft.manualNote ?? null, importScore: draft.importScore ?? null,
+      importNote: draft.importNote ?? null,
     },
     computed: {
       criticality: c.criticality, score: c.score && { ...c.score, sourceLabel: SCORE_SOURCE_TR[c.score.source] }, level: c.level,
@@ -391,6 +403,10 @@ export async function saveDraft(tx: Tx, ctx: TenantContext, id: string, input: D
 
 // ---- tamamlama ------------------------------------------------------------------------------------------------------------------
 
+/** Revizyonun score_note'u: elle sonuçta dayanak notu; içe aktarımda Excel notu (Ruling 8: "Excel notu: …" görünür kalır). */
+const scoreNoteOf = (source: ScoreSource, draft: RiskDraft): string | null =>
+  source === 'MANUAL_RESULT' ? (draft.manualNote ?? null) : source === 'IMPORT' ? (draft.importNote?.trim() || 'Excel içe aktarımı') : null;
+
 export async function complete(tx: Tx, ctx: TenantContext, id: string) {
   const a = await loadForEdit(tx, ctx, id);
   if (a.status !== 'OPEN') throw conflict('not_open', 'Yalnız açık değerlendirme tamamlanır.');
@@ -414,7 +430,7 @@ export async function complete(tx: Tx, ctx: TenantContext, id: string) {
        score_source, risk_score, score_note, level, method_version, changed_fields, created_by)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`,
     [ctx.tenantId, id, revisionNo, fullCriteria(draft.criteria), crit.value, crit.column, score.source === 'QUESTIONS' ? draft.questionSetId : null, answers,
-      score.source, score.value, score.source === 'MANUAL_RESULT' ? draft.manualNote : null, level.level, RISK_METHOD_VERSION, changed, ctx.userId])).rows[0]!.id;
+      score.source, score.value, scoreNoteOf(score.source, draft), level.level, RISK_METHOD_VERSION, changed, ctx.userId])).rows[0]!.id;
 
   const period = draft.reviewPeriod ?? null;
   const nextDraft: RiskDraft = { ...draft };
@@ -451,10 +467,33 @@ function dateOrNull(v: unknown, field: string): string | null {
   return v;
 }
 /** Sahip: kurumun etkin iç kullanıcısı ve risk değerlendirme ya da görüş yetkisi olan (yalnız Denetçi/Yönetici sahip olamaz). */
-async function assertOwner(tx: Tx, userId: string) {
+async function ownerRoleOf(tx: Tx, userId: string): Promise<string | null> {
   const rows = (await tx.query<{ roles: string[] }>(`SELECT m.roles FROM memberships m WHERE m.user_id = $1 AND m.tenant_id = app_tenant_id() AND m.status = 'ACTIVE' AND m.supplier_id IS NULL`, [userId])).rows;
-  const ok = rows.some((r) => { const roles = normalizeRoles(r.roles); return can(roles, 'risk.assess') || can(roles, 'risk.opinion'); });
-  if (!ok) throw unprocessable('invalid_owner', 'Sorumlu kişi kurumun etkin, risk değerlendirme ya da görüş yetkisi olan bir iç kullanıcısı olmalı.');
+  // Dönen rol: sahibin görev kuyruğu rolü (risk yetkisi olan ilk rolü; İşlerim rol + kişi ile süzer).
+  for (const r of rows) {
+    const role = normalizeRoles(r.roles).find((x) => can([x], 'risk.assess') || can([x], 'risk.opinion'));
+    if (role) return role;
+  }
+  return null;
+}
+async function assertOwner(tx: Tx, userId: string): Promise<string> {
+  const role = await ownerRoleOf(tx, userId);
+  if (role) return role;
+  throw unprocessable('invalid_owner', 'Sorumlu kişi kurumun etkin, risk değerlendirme ya da görüş yetkisi olan bir iç kullanıcısı olmalı.');
+}
+
+/**
+ * I2 (Ruling 6): aksiyon sahibine kişisel görev. Varlık `risk_action` departmansızdır (görev RLS'i başka departmandaki sahibe gizlemez);
+ * İşlerim yalnız atanan kişiye listeler (server.ts). Tekil anahtar `risk:{değerlendirme}:action:{aksiyon}`; sahip değişince eski kapanır.
+ */
+const actionTaskKey = (assessmentId: string, actionId: string) => `risk:${assessmentId}:action:${actionId}`;
+async function openActionTask(tx: Tx, ctx: TenantContext, o: { assessmentId: string; actionId: string; kind: 'MITIGATION' | 'CONTROL'; title: string;
+  ownerUserId: string; ownerRole: string; dueOn: string | null; supplierName: string; year: number }) {
+  await openTask(tx, ctx, { companyId: null, kind: RISK_TASKS.action, entityType: 'risk_action', entityId: o.actionId, departmentId: null,
+    title: `${o.kind === 'CONTROL' ? 'Risk kontrolü' : 'Risk aksiyonu'}: ${o.title} (${o.supplierName}, ${o.year})`.slice(0, 500),
+    reason: `${o.supplierName} ${o.year} yıllık risk değerlendirmesinde bu ${o.kind === 'CONTROL' ? 'kontrolün' : 'aksiyonun'} sorumlusu sizsiniz.`,
+    nextAction: 'Tamamlayınca "Tamamlandı" işaretleyip notunuzu yazın.', assigneeRole: o.ownerRole, assigneeUserId: o.ownerUserId,
+    dueAt: o.dueOn ? new Date(`${o.dueOn}T23:59:59+03:00`) : null, dedupeKey: actionTaskKey(o.assessmentId, o.actionId) });
 }
 
 export interface ActionInput {
@@ -468,13 +507,16 @@ export async function addAction(tx: Tx, ctx: TenantContext, assessmentId: string
   if (title.length < 2 || title.length > 500) throw unprocessable('validation_failed', 'Başlık 2-500 karakter olmalı.');
   if (b.kind === 'CONTROL' && !b.controlMethod) throw unprocessable('control_method_required', 'Denetim/kontrol satırında yöntem seçilmeli.');
   if (b.kind === 'MITIGATION' && b.controlMethod) throw unprocessable('validation_failed', 'Aksiyon satırında kontrol yöntemi olmaz.');
-  if (b.ownerUserId) await assertOwner(tx, b.ownerUserId);
+  const ownerRole = b.ownerUserId ? await assertOwner(tx, b.ownerUserId) : null;
   const dueOn = dateOrNull(b.dueOn, 'Tarih');
   const x = (await tx.query<{ id: string }>(
     `INSERT INTO risk_actions (tenant_id, assessment_id, kind, control_method, title, description, owner_user_id, owner_text, due_on, supplier_visible, created_by)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
     [ctx.tenantId, assessmentId, b.kind, b.kind === 'CONTROL' ? b.controlMethod : null, title, b.description?.trim() || null, b.ownerUserId ?? null,
       b.ownerText?.trim() || null, dueOn, b.supplierVisible ?? false, ctx.userId])).rows[0]!.id;
+  if (b.ownerUserId && ownerRole) {
+    await openActionTask(tx, ctx, { assessmentId, actionId: x, kind: b.kind, title, ownerUserId: b.ownerUserId, ownerRole, dueOn, supplierName: a.supplier_name, year: a.year });
+  }
   await audit(tx, ctx, 'risk.action.created', 'risk_action', x, { assessmentId, kind: b.kind, ownerUserId: b.ownerUserId ?? null, dueOn, supplierVisible: b.supplierVisible ?? false });
   return actionView((await tx.query<ActionRow>(`${X_SELECT} WHERE x.id = $1`, [x])).rows[0]!);
 }
@@ -520,7 +562,8 @@ export async function patchAction(tx: Tx, ctx: TenantContext, actionId: string, 
     put('title', t);
   }
   if (b.description !== undefined) put('description', b.description?.trim() || null);
-  if (b.ownerUserId !== undefined) { if (b.ownerUserId) await assertOwner(tx, b.ownerUserId); put('owner_user_id', b.ownerUserId); }
+  let ownerRole: string | null = null;
+  if (b.ownerUserId !== undefined) { if (b.ownerUserId) ownerRole = await assertOwner(tx, b.ownerUserId); put('owner_user_id', b.ownerUserId); }
   if (b.ownerText !== undefined) put('owner_text', b.ownerText?.trim() || null);
   if (b.dueOn !== undefined) put('due_on', dateOrNull(b.dueOn, 'Tarih'));
   if (b.controlMethod !== undefined) {
@@ -566,9 +609,50 @@ export async function patchAction(tx: Tx, ctx: TenantContext, actionId: string, 
     }
   }
   await tx.query(`UPDATE risk_actions SET ${set.join(', ')} WHERE id = $1`, p);
+  // I2: sahibin görevi. Tamamlandı → DONE, İptal → CANCELLED; sahip, başlık ya da son tarih değişince eskisi iptal, (sahip varsa) yenisi açılır.
+  // Görev başlığı ve son tarihi sütunları sp_app'e güncellenemez (001 en dar GRANT): değişince eski görev iptal edilip yenisi açılır.
+  const key = actionTaskKey(x.assessment_id, actionId);
+  const after = (await tx.query<ActionRow>(`${X_SELECT} WHERE x.id = $1`, [actionId])).rows[0]!;
+  const cancelTask = () => tx.query(`UPDATE tasks SET status = 'CANCELLED', closed_at = now() WHERE status = 'OPEN' AND dedupe_key = $1`, [key]);
+  if (after.status === 'DONE' || after.status === 'VERIFIED') await closeTasks(tx, key);
+  else if (after.status === 'CANCELLED') await cancelTask();
+  else if (a && (after.owner_user_id !== x.owner_user_id || after.title !== x.title || after.due_on !== x.due_on)) {
+    await cancelTask();
+    const role = after.owner_user_id ? (ownerRole ?? await ownerRoleOf(tx, after.owner_user_id)) : null;
+    if (after.owner_user_id && role) {
+      await openActionTask(tx, ctx, { assessmentId: x.assessment_id, actionId, kind: after.kind, title: after.title, ownerUserId: after.owner_user_id, ownerRole: role,
+        dueOn: after.due_on, supplierName: a.supplier_name, year: a.year });
+    }
+  }
   const action = b.status === 'DONE' ? 'risk.action.done' : b.status === 'VERIFIED' ? 'risk.action.verified' : b.status === 'CANCELLED' ? 'risk.action.cancelled' : 'risk.action.updated';
   await audit(tx, ctx, action, 'risk_action', actionId, { assessmentId: x.assessment_id, fields, byOwner: !manager });
-  return actionView((await tx.query<ActionRow>(`${X_SELECT} WHERE x.id = $1`, [actionId])).rows[0]!);
+  return actionView(after);
+}
+
+/**
+ * I2: oturumdaki kullanıcının sahibi olduğu aksiyon/kontrol satırları (054c app_my_risk_actions(): değerlendirmeyi göremeyen başka
+ * departmandaki sahip de tedarikçi adı ve yılı görür; kriter, cevap, görüş dönmez). Açıklar önce, son tarihe göre.
+ * `assessmentVisible`: kullanıcı değerlendirmeyi açabilir mi (değilse istemci değerlendirmeye bağlantı göstermez).
+ */
+export async function myActions(tx: Tx, ctx: TenantContext) {
+  if (ctx.supplierId) throw notFound();
+  const rows = (await tx.query<{ id: string; assessment_id: string; supplier_id: string; supplier_name: string; year: number; kind: 'MITIGATION' | 'CONTROL';
+    control_method: keyof typeof CONTROL_METHOD_TR | null; title: string; description: string | null; due_on: string | null; status: string;
+    completion_note: string | null; completed_at: Date | null; visible: boolean }>(
+    `SELECT m.id, m.assessment_id, m.supplier_id, m.supplier_name, m.year, m.kind, m.control_method, m.title, m.description, m.due_on::text AS due_on,
+       m.status, m.completion_note, m.completed_at, EXISTS (SELECT 1 FROM risk_assessments a WHERE a.id = m.assessment_id) AS visible
+     FROM app_my_risk_actions() m`)).rows;
+  const today = istanbulToday();
+  const canClose = can(ctx.roles, 'risk.assess') || can(ctx.roles, 'risk.opinion');
+  return {
+    items: rows.map((r) => ({
+      id: r.id, assessmentId: r.assessment_id, assessmentVisible: r.visible, supplier: { id: r.supplier_id, name: r.supplier_name }, year: r.year,
+      kind: r.kind, controlMethod: r.control_method, controlMethodLabel: r.control_method ? CONTROL_METHOD_TR[r.control_method] : null,
+      title: r.title, description: r.description, dueOn: r.due_on, overdue: r.status === 'OPEN' && !!r.due_on && r.due_on < today,
+      status: r.status, completionNote: r.completion_note, completedAt: r.completed_at,
+      can: { close: canClose && r.status === 'OPEN' },
+    })),
+  };
 }
 
 // ---- görüş ----------------------------------------------------------------------------------------------------------------------
@@ -609,8 +693,10 @@ export async function openDueTask(tx: Tx, ctx: TenantContext, a: { id: string; s
 export async function setDepartment(tx: Tx, ctx: TenantContext, id: string, departmentId: string) {
   const a = await loadAssessment(tx, id, true);
   if (a.status === 'CANCELLED') throw conflict('cancelled', 'İptal edilmiş değerlendirme değişmez.');
-  const d = (await tx.query<{ id: string }>(`SELECT id FROM departments WHERE id = $1`, [departmentId])).rows[0];
+  const d = (await tx.query<{ id: string; merged_into: string | null }>(`SELECT id, merged_into FROM departments WHERE id = $1`, [departmentId])).rows[0];
   if (!d) throw unprocessable('invalid_department', 'Departman bulunamadı.');
+  // Birleştirilmiş departmana kayıt atanmaz (yalnız birleştirildiği departman seçilir).
+  if (d.merged_into) throw unprocessable('department_merged', 'Bu departman başka bir departmanla birleştirildi; birleştirildiği departmanı seçin.', { mergedInto: d.merged_into });
   await tx.query(`UPDATE risk_assessments SET department_id = $2 WHERE id = $1`, [id, departmentId]);
   await rederiveTaskDepartments(tx, `t.entity_type = 'risk_assessment' AND t.entity_id = $1`, [id]);
   await closeTasks(tx, `risk:${id}:department`);
@@ -632,6 +718,10 @@ export async function review(tx: Tx, ctx: TenantContext, id: string, b: { period
   if (exists) throw conflict('review_exists', 'Bu dönemin gözden geçirmesi zaten yapıldı.');
   const rev = await latestRevision(tx, id);
   if (!rev) throw conflict('not_completed', 'Değerlendirmenin revizyonu yok.');
+  const floor = await firstReviewablePeriod(tx, id);
+  if (floor && b.period < floor) {
+    throw unprocessable('period_before_assessment', `Dönem, değerlendirmenin ilk tamamlandığı dönemden (${floor.replace('-', '-Ç')}) önce olamaz.`, { firstReviewablePeriod: floor });
+  }
   if (b.outcome === 'NO_CHANGE') {
     const actions = await actionsOf(tx, id);
     const blockers = completionBlockers({ criteria: rev.criteria as Partial<CriteriaValues>, score: rev.risk_score, level: rev.level, today: istanbulToday(),
@@ -646,7 +736,8 @@ export async function review(tx: Tx, ctx: TenantContext, id: string, b: { period
     const draft: RiskDraft = {
       criteria: rev.criteria, questionSetId: rev.question_set_id, answers: rev.answers,
       manualScore: rev.score_source === 'MANUAL_RESULT' ? rev.risk_score : null, manualNote: rev.score_source === 'MANUAL_RESULT' ? rev.score_note : null,
-      importScore: rev.score_source === 'IMPORT' ? rev.risk_score : null, reviewPeriod: b.period,
+      importScore: rev.score_source === 'IMPORT' ? rev.risk_score : null, importNote: rev.score_source === 'IMPORT' ? rev.score_note : null,
+      reviewPeriod: b.period,
     };
     // Yeniden açılan kayda yeni son tarih: bugün (İstanbul) + kiracı ayarı (varsayılan 90 gün); eski son tarih gecikme saydırmaz.
     const dueDays = (await getRiskSettings(tx)).dueDays;
