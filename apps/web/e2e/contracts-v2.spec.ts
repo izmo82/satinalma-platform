@@ -241,9 +241,18 @@ test.describe('v2 sözleşmeler: veri değiştiren akışlar', () => {
   test('red gerekçesiyle ekleyene döner; düzenleyip yeniden gönderince yeni tur başlar', async ({ page, request }) => {
     test.setTimeout(120_000);
     const c = await submittedContract(request, `${Date.now()}`);
-    // İşlerim listesi en fazla 200 iş döner; sayaç sınırsızdır: red görevinin açıldığı sayaçtan doğrulanır.
+    // v2 izleme (e2e-failures-investigation §3): kiracı geneli sayaç paralel koşularda kayıyordu; bu ailenin red görevi kimliğiyle aranır
+    // (İşlerim sayfaları offset ile sonuna dek gezilir). Doğrulanan davranış aynı: red görevi açılır, yeniden gönderimde kapanır.
+    const rejectionTask = async () => {
+      for (let offset: number | null = 0; offset !== null;) {
+        const page = await (await request.get(`/api/v1/tasks?view=mine&offset=${offset}`, { headers: c.h })).json() as { items: { entityType: string; entityId: string }[]; nextOffset?: number | null };
+        if (page.items.some((t) => t.entityType === 'contract_rejection' && t.entityId === c.familyId)) return true;
+        offset = page.nextOffset ?? null;
+      }
+      return false;
+    };
     const openCount = async () => (await (await request.get('/api/v1/tasks?view=mine', { headers: c.h })).json()).counts.mine as number;
-    const before = await openCount();
+    expect(await rejectionTask(), 'red öncesi bu ailenin red görevi yok').toBe(false);
     await login(page, 'selin.guvenlik@example.test');
     await page.goto(`${c.url}?sekme=onaylar`);
     await page.getByRole('button', { name: 'Reddet' }).click();
@@ -253,7 +262,7 @@ test.describe('v2 sözleşmeler: veri değiştiren akışlar', () => {
     await page.getByRole('button', { name: 'Reddi kaydet' }).click();
     await expect(page.getByText('Reddedildi; sözleşme ekleyene döndü.')).toBeVisible();
     await logout(page);
-    expect(await openCount(), 'ekleyene red görevi açılır').toBe(before + 1);
+    expect(await rejectionTask(), 'ekleyene red görevi açılır').toBe(true);
 
     await login(page, 'alper.satinalma@example.test');
     // Red görevi ekleyene açılır (aile kimliğiyle). İşlerim en fazla 200 iş listeler ve geliştirme verisinde Alper'in 200'den fazla işi
@@ -273,9 +282,10 @@ test.describe('v2 sözleşmeler: veri değiştiren akışlar', () => {
     await page.getByRole('button', { name: 'Onaya gönder' }).click();
     await expect(page).toHaveURL(/sekme=onaylar/);
     await expect(page.getByText(/2\. onay turu/)).toBeVisible();
-    expect(await openCount(), 'yeniden gönderimde red görevi kapanır').toBe(before);
-    // Persona K4: menü sayacı yeniden gönderimden sonra sunucu sayısını gösterir (yenilemeden).
-    await expect(page.getByRole('navigation', { name: 'Ana menü' }).getByRole('link', { name: /İşlerim/ })).toContainText(String(before));
+    expect(await rejectionTask(), 'yeniden gönderimde red görevi kapanır').toBe(false);
+    // Persona K4: menü sayacı yeniden gönderimden sonra sunucu sayısını gösterir (yenilemeden). Sunucu sayısı o anki değerdir
+    // (paralel koşular sabit "önce" değerini kaydırabilir).
+    await expect(page.getByRole('navigation', { name: 'Ana menü' }).getByRole('link', { name: /İşlerim/ })).toContainText(String(await openCount()));
     await expect(page.getByText('Departman sorumlusu onayında').first()).toBeVisible();
   });
 

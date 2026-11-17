@@ -101,7 +101,15 @@ test('Arama ve olay detayı: sipariş sonuç grubu ve sipariş bağlantısı yok
 test('Belge detayı: satıcı kimliği formunda IBAN alanı yok (banka değişikliği doğrulaması kaldırma listesinde, W-15-08)', async ({ page }) => {
   await login(page, 'leyla.hukuk@example.test');
   await page.getByRole('tab', { name: /Rolümdeki tüm işler/ }).click();
-  await page.getByRole('link', { name: 'Fatura alanları girilmeli' }).filter({ visible: true }).first().click();
+  // v2 izleme (e2e-failures-investigation §1): görev ilk 200 işin dışında kalabilir; "Daha fazla yükle" görev görünene dek tıklanır.
+  const task = page.getByRole('link', { name: 'Fatura alanları girilmeli' }).filter({ visible: true }).first();
+  const more = page.getByRole('button', { name: 'Daha fazla yükle' });
+  await expect(page.getByRole('link', { name: 'İşi aç' }).or(page.getByText('Bekleyen işiniz yok')).first()).toBeVisible();
+  while (!(await task.isVisible()) && await more.isVisible()) {
+    await more.click();
+    await expect(more).not.toHaveText('Yükleniyor…');
+  }
+  await task.click();
   await expect(page.getByRole('heading', { name: 'Satıcı kimliğini girin' })).toBeVisible();
   await expect(page.getByLabel('Vergi kimliği')).toBeVisible();
   await expect(page.getByLabel(/IBAN/)).toHaveCount(0);

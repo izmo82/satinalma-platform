@@ -26,7 +26,10 @@ test('satınalma: işlerim, tedarikçi sekmeleri, olaylar', async ({ page }) => 
   await audit(page, 'İşlerim');
   await nav(page, 'Tedarikçiler');
   // Aynı ünvanlı, kimliği doğrulanmamış aday (T06) listede bulunabilir; kimliği doğrulanmış kayıt açılır (D82).
-  await page.getByRole('link', { name: /Anadolu Bilişim/ }).filter({ hasNotText: 'doğrulanmadı' }).click();
+  // v2 izleme: görev başlıkları artık tedarikçi unvanını içerir (Faz 5 D4); İşlerim'deki "… — Anadolu Bilişim" bağlantısı seçilmesin diye
+  // önce Tedarikçiler sayfası beklenir. Dev verisinde aynı adı içeren birden çok doğrulanmış kart olabilir; ilki açılır (diğer spec'lerle aynı).
+  await expect(page.getByRole('heading', { name: 'Tedarikçiler', level: 1 })).toBeVisible();
+  await page.getByRole('link', { name: /Anadolu Bilişim/ }).filter({ hasNotText: 'doğrulanmadı' }).first().click();
   for (const tab of ['Değerlendirme ve risk', 'Olaylar', 'Performans karnesi']) {
     await page.getByRole('tab', { name: tab }).click();
     await page.waitForLoadState('networkidle');
