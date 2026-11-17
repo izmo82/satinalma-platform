@@ -91,7 +91,7 @@ export async function createTemplate(tx: Tx, ctx: TenantContext, store: ObjectSt
   }
   const d = await tx.query<{ id: string }>(
     `INSERT INTO documents (tenant_id, company_id, kind, title, created_by, code) VALUES ($1,$2,'TEMPLATE',$3,$4,$5) RETURNING id`,
-    [ctx.tenantId, companyId, `${code} ${name}`.slice(0, 200), ctx.userId, await nextCode(tx, ctx, 'document', 'BLG')]);
+    [ctx.tenantId, companyId, `${code} ${name} v1`.slice(0, 200), ctx.userId, await nextCode(tx, ctx, 'document', 'BLG')]);
   const dvId = await storeVersion(tx, ctx, store, companyId, d.rows[0]!.id, 1, input.file);
   const tv = await tx.query<{ id: string }>(
     `INSERT INTO contract_template_versions (tenant_id, template_id, version_no, document_version_id, valid_from, uploaded_by) VALUES ($1,$2,1,$3,$4,$5) RETURNING id`,
@@ -105,21 +105,25 @@ export async function addTemplateVersion(tx: Tx, ctx: TenantContext, store: Obje
   if (!isDate(input.validFrom)) throw unprocessable('validation_failed', 'Geçerlilik tarihi YYYY-AA-GG olmalı.');
   if (!input.file) throw new ApiError(400, 'file_required', 'Dosya gerekli.');
   validateDocx(input.file.filename, input.file.body);
-  const t = await tx.query<{ id: string }>(`SELECT id FROM contract_templates WHERE id = $1`, [templateId]);
+  const t = await tx.query<{ id: string; code: string; name: string }>(`SELECT id, code, name FROM contract_templates WHERE id = $1`, [templateId]);
   if (!t.rows[0]) throw notFound();
 
   const companyId = uploadCompany(ctx);
   await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`tpl:${templateId}`]);
   // Önceki sürümün belgesi başka şirketteki yükleyiciye RLS ile kapalı olabilir: bilgi kapıdan (app_template_file) okunur.
-  const last = (await tx.query<{ version_no: number; document_id: string }>(
-    `SELECT tv.version_no, f.document_id FROM contract_template_versions tv JOIN LATERAL app_template_file(tv.id) f ON true
+  const last = (await tx.query<{ version_no: number }>(
+    `SELECT tv.version_no FROM contract_template_versions tv JOIN LATERAL app_template_file(tv.id) f ON true
      WHERE tv.template_id = $1 ORDER BY tv.version_no DESC LIMIT 1`, [templateId])).rows[0];
   if (!last) throw notFound();
   const sha = createHash('sha256').update(input.file.body).digest('hex');
   const same = await tx.query(`SELECT 1 FROM contract_template_versions tv JOIN LATERAL app_template_file(tv.id) f ON true WHERE tv.template_id = $1 AND f.sha256 = $2`, [templateId, sha]);
   if (same.rowCount) throw conflict('template_version_duplicate', 'Bu dosya bu şablonun mevcut bir sürümüyle aynı; değişiklik yok.');
   const versionNo = last.version_no + 1;
-  const dvId = await storeVersion(tx, ctx, store, companyId, last.document_id, versionNo, input.file);
+  // Her şablon sürümü yükleyenin şirketinde kendi belgesidir (belge ve sürümü aynı şirkette; saklama/imha tutarlı).
+  const d = await tx.query<{ id: string }>(
+    `INSERT INTO documents (tenant_id, company_id, kind, title, created_by, code) VALUES ($1,$2,'TEMPLATE',$3,$4,$5) RETURNING id`,
+    [ctx.tenantId, companyId, `${t.rows[0]!.code} ${t.rows[0]!.name} v${versionNo}`.slice(0, 200), ctx.userId, await nextCode(tx, ctx, 'document', 'BLG')]);
+  const dvId = await storeVersion(tx, ctx, store, companyId, d.rows[0]!.id, 1, input.file);
   const closed = await tx.query(`UPDATE contract_template_versions SET superseded_at = now() WHERE template_id = $1 AND superseded_at IS NULL RETURNING id`, [templateId]);
   const tv = await tx.query<{ id: string }>(
     `INSERT INTO contract_template_versions (tenant_id, template_id, version_no, document_version_id, valid_from, uploaded_by) VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
@@ -134,7 +138,7 @@ export async function listTemplates(tx: Tx) {
     `SELECT t.id, t.code, t.name, t.contract_type AS "contractType", t.created_at AS "createdAt",
             tv.id AS "versionId", tv.version_no AS "versionNo", tv.valid_from::text AS "validFrom", tv.superseded_at AS "supersededAt", tv.created_at AS "uploadedAt",
             u.display_name AS "uploadedBy", f.original_filename AS filename, f.size_bytes AS "sizeBytes",
-            (SELECT count(*)::int FROM contract_families f WHERE f.template_version_id = tv.id) AS "versionUsage"
+            (SELECT count(*)::int FROM contract_families cf WHERE cf.template_version_id = tv.id) AS "versionUsage"
      FROM contract_templates t
      JOIN contract_template_versions tv ON tv.template_id = t.id
      JOIN LATERAL app_template_file(tv.id) f ON true

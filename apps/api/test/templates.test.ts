@@ -163,6 +163,12 @@ describe('şirket kapsamı (R8 düzeltme)', () => {
     // farklı şirketteki kullanıcı yeni sürüm ekleyebilir
     const v2 = await send(w, 'masterData', 'POST', `${T}/${c.body.id}/versions`, { validFrom: '2026-07-01' }, { name: 'v2.docx', data: await docx('a2-v2') });
     expect(v2.status).toBe(201);
+    const rows = (await h.owner.query(`SELECT dv.company_id AS dvc, d.company_id AS dc, dv.version_no FROM contract_template_versions tv
+      JOIN document_versions dv ON dv.id = tv.document_version_id JOIN documents d ON d.id = dv.document_id WHERE tv.template_id = $1 ORDER BY tv.version_no`, [c.body.id])).rows;
+    expect(rows).toHaveLength(2);
+    for (const r of rows) expect(r.dvc).toBe(r.dc);
+    expect(rows[0].dc).toBe(w.companyA2.id);
+    expect(rows[1].dc).toBe(w.companyA1.id); // masterData A1 ilk şirketi
     const adm = await create(w, 'tenantAdmin', { code: 'ADM' });
     expect(adm.status).toBe(201); // Yönetici bağlamı kiracının şirketlerini taşır
   });
