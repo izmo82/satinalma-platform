@@ -107,10 +107,11 @@ export function DocActions({ d, label }: { d: SupplierDoc; label: string }) {
     setErr(null); setBusy(true);
     // Açılır pencere engellenmesin diye sekme tıklamayla hemen açılır, içerik gelince yüklenir.
     const w = window.open('', '_blank');
+    if (w) { try { w.opener = null; } catch { /* aynı kökenli boş sekme; engellenirse sürer */ } }
     try {
       const blob = await apiBlob(d.contentUrl);
       const href = URL.createObjectURL(new Blob([blob], { type: d.mimeType }));
-      if (!w) { window.location.assign(href); return; }
+      if (!w) { URL.revokeObjectURL(href); await downloadDoc(d.contentUrl, d.originalFilename); return; } // açılır pencere engellendi: uygulamadan ayrılmadan indir
       // Boş sekmeye önizleme gömülür (başlık dosya adı); PDF tarayıcının görüntüleyicisinde, görsel doğrudan açılır.
       const doc = w.document;
       doc.title = d.originalFilename;

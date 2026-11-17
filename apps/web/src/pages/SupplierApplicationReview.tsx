@@ -14,16 +14,16 @@ interface Application {
   id: string; status: string; statusLabel: string; rowVersion: number; legalName: string; country: string; taxIdType: string; taxId: string;
   taxIdCheck: { valid: boolean; label: string }; contactName: string; contactEmail: string; contactPhone: string | null; address: string | null;
   categories: string[]; services: string | null; createdAt: string; verifiedAt: string | null; submittedAt: string | null;
-  requestedDocuments: string[] | null; requestedNote: string | null; completionTokenExpiresAt: string | null;
+  requestedDocuments: string[] | null; requestedNote: string | null; completionTokenExpiresAt: string | null; completionLinkExpired?: boolean;
   decidedAt: string | null; decisionReason: string | null; supplierId: string | null;
   existingSupplier: { id: string; legalName: string; stage: string; stageLabel: string; contactEmail: string | null; portalUserCount: number; blocksApproval: boolean; blockReason: string | null } | null;
   documents: SupplierDoc[]; missingRequired: { code: string; name: string; reasonLabel: string }[];
   history: { code: string; label: string; at: string; actor: string | null; note: string | null }[];
-  can: { decide: boolean; approve: boolean; requestDocuments: boolean };
+  can: { decide: boolean; approve: boolean; requestDocuments: boolean; resendLink?: boolean };
 }
 interface DecisionResult {
   status: string; statusLabel: string; supplier?: { id: string; stageLabel: string; linkedToExisting: boolean };
-  portalUser?: { status: string; message: string | null }; emails?: { kind: string; status: string }[]; portalAccessNote?: string;
+  portalUser?: { status: string; message: string | null }; resent?: boolean; completionTokenExpiresAt?: string; emails?: { kind: string; status: string }[]; portalAccessNote?: string;
 }
 const HISTORY: Record<string, string> = { CREATED: 'Başvuru alındı', VERIFIED: 'E-posta doğrulandı', 'supplier_application.approved': 'Onaylandı',
   'supplier_application.documents_requested': 'Eksik belge istendi', 'supplier_application.rejected': 'Reddedildi' };
@@ -33,7 +33,7 @@ const TAX_TYPE: Record<string, string> = { VKN: 'VKN', TCKN: 'TCKN', FOREIGN: 'Y
 export function SupplierApplicationReview() {
   const { id } = useParams();
   const r = useResource<Application>(`/api/v1/supplier-applications/${id}`);
-  const [dialog, setDialog] = useState<null | 'approve' | 'documents' | 'reject'>(null);
+  const [dialog, setDialog] = useState<null | 'approve' | 'documents' | 'reject' | 'resend'>(null);
   const [result, setResult] = useState<DecisionResult | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   if (r.loading && !r.data) return <div className="page"><Loading rows={6} /></div>;
@@ -48,6 +48,7 @@ export function SupplierApplicationReview() {
     } catch (e) { setError(e as ApiError); setDialog(null); if ((e as ApiError).status === 409) await r.reload(); }
   }
   const unsent = result?.emails?.some((e) => e.status === 'NOT_CONFIGURED');
+  const resendNow = () => decide({ action: 'REQUEST_DOCUMENTS' });
 
   return (
     <div className="page">
@@ -61,12 +62,13 @@ export function SupplierApplicationReview() {
       </div>
 
       {result && (
-        <Banner tone="info" icon="check" title={`Karar kaydedildi: ${result.statusLabel}`}>
+        <Banner tone="info" icon="check" title={result.resent ? 'Tamamlama bağlantısı yeniden gönderildi' : `Karar kaydedildi: ${result.statusLabel}`}>
+          {result.resent && result.completionTokenExpiresAt && <span className="block">Yeni bağlantı {fmtDateTime(result.completionTokenExpiresAt)} tarihine kadar geçerli; önceki bağlantı geçersiz oldu.</span>}
           {result.supplier && <span className="block">{result.supplier.linkedToExisting ? 'Başvuru mevcut tedarikçi kartına bağlandı; kartın durumu değişmedi.' : `Tedarikçi kartı açıldı (${result.supplier.stageLabel}).`}{' '}
             <Link to={`/tedarikciler/${result.supplier.id}`}>Tedarikçi kartını aç</Link></span>}
           {result.portalUser?.message && <span className="block">{result.portalUser.message}</span>}
           {result.emails?.map((e, i) => <span key={i} className="block">{EMAIL_KIND[e.kind] ?? 'E-posta'}: {emailTag(e.status).text}</span>)}
-          {unsent && <strong className="block">Başvurana e-posta gönderilemedi — kanal yapılandırılmadı. İleti Yönetim &gt; E-posta kutusunda görünür.</strong>}
+          {unsent && <strong className="block">{result?.resent ? 'Gönderilmedi — e-posta kanalı yapılandırılmadı.' : 'Başvurana e-posta gönderilemedi — kanal yapılandırılmadı.'} İleti Yönetim &gt; E-posta kutusunda görünür.</strong>}
           {result.portalAccessNote && <span className="block text-sm">{result.portalAccessNote}</span>}
         </Banner>
       )}
@@ -93,7 +95,7 @@ export function SupplierApplicationReview() {
                 <Banner tone={a.existingSupplier.blocksApproval ? 'danger' : 'warn'} title="Bu vergi kimliğiyle kayıtlı tedarikçi kartı var">
                   <Link to={`/tedarikciler/${a.existingSupplier.id}`}>{a.existingSupplier.legalName}</Link> · {a.existingSupplier.stageLabel}
                   {a.existingSupplier.blocksApproval ? <span className="block">{a.existingSupplier.blockReason}</span>
-                    : <span className="block">Onaylarsanız yeni kart açılmaz; başvuru bu karta bağlanır ve kartın durumu değişmez. Portal kullanıcısı kart doğrulandıktan sonra karttan eklenir.</span>}
+                    : <span className="block">Onaylarsanız yeni kart açılmaz; başvuru bu karta bağlanır ve kartın durumu değişmez. Başvurunun belgeleri o karta taşınır ve kartın portal kullanıcıları bu belgeleri görebilir. Portal kullanıcısı kart doğrulandıktan sonra karttan eklenir.</span>}
                 </Banner>
               )}
             </div>
@@ -121,7 +123,8 @@ export function SupplierApplicationReview() {
           {a.status === 'NEEDS_DOCUMENTS' && (
             <Banner tone="info" title="Başvurandan eksik belge istendi">
               <RequestedNames codes={a.requestedDocuments ?? []} />{a.requestedNote ? ` · Not: ${a.requestedNote}` : ''}
-              {a.completionTokenExpiresAt && <span className="block">Tamamlama bağlantısı {fmtDateTime(a.completionTokenExpiresAt)} tarihine kadar geçerli.</span>}
+              {a.completionLinkExpired ? <strong className="block">Bağlantının süresi doldu{a.completionTokenExpiresAt ? ` (${fmtDateTime(a.completionTokenExpiresAt)})` : ''}; başvuran belge yükleyemez. Bağlantıyı yeniden gönderin.</strong>
+                : a.completionTokenExpiresAt && <span className="block">Tamamlama bağlantısı {fmtDateTime(a.completionTokenExpiresAt)} tarihine kadar geçerli.</span>}
             </Banner>
           )}
 
@@ -139,6 +142,7 @@ export function SupplierApplicationReview() {
               <p className="text-sm text-ink-muted">Kararı siz verirsiniz. Onayda tedarikçi aday kart olur; Onaylı yapmak için ikinci bir Satınalma kullanıcısının kayıt onayı ve aktivasyonu gerekir.</p>
               {a.status === 'SUBMITTED' && <Button disabled={!a.can.approve} onClick={() => setDialog('approve')}>Onayla (Aday yap)</Button>}
               {a.can.requestDocuments && <Button variant="outline" onClick={() => setDialog('documents')}>Eksik belge iste</Button>}
+              {a.can.resendLink && <Button variant="outline" onClick={() => a.completionLinkExpired ? void resendNow() : setDialog('resend')}>Bağlantıyı yeniden gönder</Button>}
               <Button variant="outline" className="border-[#dcb3aa] text-danger" onClick={() => setDialog('reject')}>Başvuruyu reddet</Button>
               {a.status === 'NEEDS_DOCUMENTS' && <p className="text-sm text-ink-muted">Başvuran belgeleri tamamlayınca başvuru yeniden "İnceleme bekliyor" olur ve onaylanabilir.</p>}
             </> : a.status === 'APPROVED' || a.status === 'REJECTED' ? <>
@@ -152,6 +156,8 @@ export function SupplierApplicationReview() {
 
       {dialog === 'approve' && <ApproveDialog a={a} onClose={() => setDialog(null)} onSubmit={() => decide({ action: 'APPROVE' })} />}
       {dialog === 'documents' && <DocumentsDialog onClose={() => setDialog(null)} onSubmit={(documents, note) => decide({ action: 'REQUEST_DOCUMENTS', documents, note: note || null })} />}
+      {dialog === 'resend' && <Modal title="Bağlantıyı yeniden gönder" onClose={() => setDialog(null)} footer={<><Button variant="outline" onClick={() => setDialog(null)}>Vazgeç</Button>
+        <Button onClick={() => void resendNow()}>Yeniden gönder</Button></>}><p>Mevcut bağlantı geçersiz olur. Yeni bağlantı gönderilsin mi?</p></Modal>}
       {dialog === 'reject' && <RejectDialog onClose={() => setDialog(null)} onSubmit={(reason) => decide({ action: 'REJECT', reason })} />}
     </div>
   );
@@ -169,7 +175,7 @@ function ApproveDialog({ a, onClose, onSubmit }: { a: Application; onClose: () =
   return (
     <Modal title="Başvuruyu onayla" onClose={onClose} footer={<><Button variant="outline" onClick={onClose}>Vazgeç</Button>
       <Button disabled={busy} onClick={() => { setBusy(true); void onSubmit().finally(() => setBusy(false)); }}>{busy ? 'Kaydediliyor…' : 'Onayla (Aday yap)'}</Button></>}>
-      {a.existingSupplier ? <p>Başvuru mevcut <strong>{a.existingSupplier.legalName}</strong> kartına bağlanır; kartın durumu ({a.existingSupplier.stageLabel}) değişmez. Portal kullanıcısı açılmaz.</p>
+      {a.existingSupplier ? <p>Başvuru mevcut <strong>{a.existingSupplier.legalName}</strong> kartına bağlanır; kartın durumu ({a.existingSupplier.stageLabel}) değişmez. Başvurunun belgeleri o karta taşınır ve kartın portal kullanıcıları bu belgeleri görebilir. Portal kullanıcısı açılmaz.</p>
         : <p><strong>{a.legalName}</strong> için aday tedarikçi kartı açılır, belgeler karta taşınır ve <span className="mono">{a.contactEmail}</span> adresi portal kullanıcısı olarak davet edilir.</p>}
       <p className="mt-2 text-sm text-ink-muted">Onaylı yapmak için ikinci bir Satınalma kullanıcısının kayıt onayı ve aktivasyonu gerekir (görev ayrılığı).</p>
     </Modal>
@@ -206,7 +212,7 @@ function RejectDialog({ onClose, onSubmit }: { onClose: () => void; onSubmit: (r
   return (
     <Modal title="Başvuruyu reddet" onClose={onClose} footer={<><Button variant="outline" onClick={onClose}>Vazgeç</Button>
       <Button variant="destructive" disabled={busy} onClick={() => { if (reason.trim().length < 10) { setErr('Gerekçe en az 10 karakter olmalı.'); return; } setBusy(true); void onSubmit(reason.trim()).finally(() => setBusy(false)); }}>{busy ? 'Kaydediliyor…' : 'Reddet'}</Button></>}>
-      <Field label="Gerekçe" hint="Başvurana gönderilen iletiye eklenir ve denetim izine yazılır." error={err}>{(p) => <textarea className="input" rows={3} maxLength={2000} {...p} value={reason} onChange={(e) => setReason(e.target.value)} />}</Field>
+      <Field label="Gerekçe" hint="Gerekçe başvurana e-postayla iletilir. Ayrıca denetim izine yazılır." error={err}>{(p) => <textarea className="input" rows={3} maxLength={2000} {...p} value={reason} onChange={(e) => setReason(e.target.value)} />}</Field>
     </Modal>
   );
 }
