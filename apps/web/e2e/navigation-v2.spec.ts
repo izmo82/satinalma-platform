@@ -1,3 +1,5 @@
+// v2 Faz 2 (D105): Denetçi Kullanıcılar ve Entra ile Onaycılar sekmelerini salt okunur görür (directory.read, approver.read); Onaycılar artık
+// gerçek ekran ("Faz 2'de gelir" boş durumu kalktı); sekme açıklaması Entra bağlantı durumunu söyler.
 // v2 Faz 1 (D93/D95): yedi girişli menü, Yönetim sekmeleri, taşınan girişlerin yeni yerleri ve kaldırılan adreslerin açıklama ekranı.
 import { expect, test, type Page } from '@playwright/test';
 
@@ -24,7 +26,7 @@ const ALL_TABS = ['Kullanıcılar ve Entra', 'Onaycılar', 'Şablonlar', 'Satın
 const ROLES: [string, string, string[], string[] | null][] = [
   ['Yönetici', 'tamer.yonetici@example.test', MENU, ALL_TABS],
   ['Satınalma', 'leyla.hukuk@example.test', MENU, ALL_TABS],
-  ['Denetçi', 'deniz.denetci@example.test', MENU, ['Entegrasyonlar', 'Yapay zekâ', 'Denetim izi']],
+  ['Denetçi', 'deniz.denetci@example.test', MENU, ['Kullanıcılar ve Entra', 'Onaycılar', 'Entegrasyonlar', 'Yapay zekâ', 'Denetim izi']],
   // Departman kullanıcısı rapor okumaz (report.read) ve Yönetim'i görmez: 5 giriş.
   ['Departman kullanıcısı', 'tolga.teknik@example.test', MENU.filter((m) => m !== 'Yönetim' && m !== 'Raporlar'), null],
 ];
@@ -64,9 +66,12 @@ test('Yönetim: departmanlar ve sonraki fazların boş durumları', async ({ pag
   await expect(page.getByRole('heading', { name: 'Departmanlar' })).toBeVisible();
   await expect(page.getByText('Bilgi Teknolojileri').first()).toBeVisible();
   await expect(page.getByLabel('Departman adı')).toBeVisible();
-  await expect(page.getByText(/Entra eşitlemesi.*Faz 2/).first()).toBeVisible();
+  await expect(page.getByText(/Entra bağlantısı yapılandırılmadı|Microsoft Entra ID'den alınır/).first()).toBeVisible();
   const tabs = page.getByRole('navigation', { name: 'Yönetim sekmeleri' });
-  for (const [tab, phase] of [['Onaycılar', 'Faz 2'], ['Şablonlar', 'Faz 3'], ['Satınalma kuralları', 'Faz 7']] as const) {
+  await tabs.getByRole('link', { name: 'Onaycılar' }).click();
+  await expect(page.getByRole('heading', { name: 'Onaycılar', level: 1 })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Departman sorumluları' })).toBeVisible();
+  for (const [tab, phase] of [['Şablonlar', 'Faz 3'], ['Satınalma kuralları', 'Faz 7']] as const) {
     await tabs.getByRole('link', { name: tab }).click();
     await expect(page.getByRole('heading', { name: tab, level: 1 })).toBeVisible();
     await expect(page.getByText(new RegExp(phase)).first()).toBeVisible();

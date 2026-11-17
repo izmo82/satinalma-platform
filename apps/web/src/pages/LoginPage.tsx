@@ -40,7 +40,10 @@ export function LoginPage() {
       <div className="grid w-full max-w-[960px] grid-cols-[minmax(0,1fr)_minmax(0,460px)] overflow-hidden rounded-lg border border-border bg-surface shadow-[0_1px_2px_rgba(29,34,48,.06),0_12px_32px_rgba(29,34,48,.08)] max-[860px]:grid-cols-1">
         <section className="flex flex-col gap-6 bg-rail p-8 max-[860px]:p-5">
           <h1 className="text-[1.75rem] leading-tight">Satınalma ve Sözleşme</h1>
-          <p className="max-w-[44ch] text-md text-ink-muted">Her harcamanın hangi onaylı karara, sürüme ve yükümlülüğe dayandığı tek zincirde. Kanıtın kökeni mürekkebinden okunur.</p>
+          {/* v2 Faz 2 (D105, Figma 01 Giriş (Entra)): kurumsal (OIDC) girişte Figma alt başlığı; geliştirme girişi değişmez. */}
+          <p className="max-w-[44ch] text-md text-ink-muted">{cfg?.mode === 'oidc'
+            ? 'Satınalma, sözleşme ve tedarikçi süreçlerinizi tek yerden yürütün.'
+            : 'Her harcamanın hangi onaylı karara, sürüme ve yükümlülüğe dayandığı tek zincirde. Kanıtın kökeni mürekkebinden okunur.'}</p>
           <dl className="grid gap-3 max-[860px]:hidden">
             <div className="flex items-center gap-3"><dt><Tag label={{ text: 'İnsan kararı', tone: 'human', icon: 'stamp' }} /></dt><dd className="text-sm text-ink-muted">Onay, kurul kararı, imza teyidi</dd></div>
             <div className="flex items-center gap-3"><dt><Tag label={{ text: 'Kural ile doğrulandı', tone: 'ok', icon: 'check' }} /></dt><dd className="text-sm text-ink-muted">VKN sağlaması, e-Fatura XML</dd></div>
@@ -67,12 +70,17 @@ function EnterpriseLogin({ cfg }: { cfg: Extract<AuthConfig, { mode: 'oidc' }> }
   return (
     <div className="grid gap-4">
       <h2 className="text-lg">Oturum açın</h2>
-      <p className="text-ink-muted">Kurumunuzun kimlik sağlayıcısına yönlendirileceksiniz. Erişim, kurum yöneticinizin verdiği davet ve rollerle sınırlıdır.</p>
       <Button size="lg" disabled={busy}
         onClick={() => { setBusy(true); beginLogin(loginReturnPath()); }}>
-        {busy ? 'Yönlendiriliyor…' : 'Kurumsal hesapla giriş yap'}
+        {busy ? 'Yönlendiriliyor…' : 'Microsoft Entra ile giriş yap'}
       </Button>
+      <p className="text-ink-muted">Kurum hesabınızla oturum açarsınız. Kullanıcı ve departman bilginiz Entra'dan gelir; ayrı parola tutulmaz.</p>
       <p className="text-sm text-ink-subtle">Kimlik sağlayıcı: <span className="mono">{host}</span></p>
+      {/* Tedarikçi portalı girişi aynı oturum hizmetinden geçer; giriş sonrası portal açılır (D79: tedarikçi yalnız portal yollarını görür). */}
+      <p className="border-t border-border pt-4 text-sm text-ink-muted">Tedarikçi misiniz?{' '}
+        <a href="/portal" className="font-semibold text-ink underline underline-offset-2"
+          onClick={(e) => { e.preventDefault(); if (busy) return; setBusy(true); beginLogin('/portal'); }}>Tedarikçi portalına gidin</a>
+      </p>
     </div>
   );
 }

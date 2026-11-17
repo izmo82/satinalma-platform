@@ -240,4 +240,14 @@
     .viewer { height: 70vh; }
     .hide-narrow { display: none; }
   }
+
+  /* v2 Faz 2 (D105): dar ekranda tablo satırı yığılmış kart olur; sütun adı hücrenin üstünde (data-label). */
+  @media (max-width: 760px) {
+    table.data.stack-narrow thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+    table.data.stack-narrow, table.data.stack-narrow tbody, table.data.stack-narrow tr, table.data.stack-narrow td { display: block; width: 100%; }
+    table.data.stack-narrow tr { padding: 8px 0; border-bottom: 1px solid var(--rule-line); }
+    table.data.stack-narrow tr:last-child { border-bottom: 0; }
+    table.data.stack-narrow td { border-bottom: 0; padding: 4px 12px; }
+    table.data.stack-narrow td[data-label]::before { content: attr(data-label); display: block; font-size: var(--text-xs); font-weight: 600; color: var(--ink-muted); }
+  }
 }

@@ -1,4 +1,4 @@
-import { lazy, useState, type ReactNode } from 'react';
+import { lazy, useCallback, useEffect, useReducer, useState, type ReactNode } from 'react';
 import { Link, Navigate, Outlet } from 'react-router-dom';
 import { api, ApiError } from '../lib/api.ts';
 import { hasRole, useSession, type Me } from '../lib/session.tsx';
@@ -7,6 +7,8 @@ import { useResource } from '../lib/useApi.ts';
 import { Banner, Empty, ErrorState, Field, Loading, PageHeader } from '../ui/kit.tsx';
 import { SectionTabs } from '../ui/SectionTabs.tsx';
 import { Button } from '@/components/ui/button';
+import { ApproversPage } from './ApproversPage.tsx';
+import { ConnectionCard, DirectoryUsersCard, EntraDepartmentList, useDirectorySync, type AdminDepartment, type DirectoryConnection } from './DirectoryAdmin.tsx';
 
 // v2 Faz 1 (D93): Yönetim merkezi. Sekme sırası onaylı Figma ekranlarıyla aynı. Sonraki fazların sekmeleri yalnız hangi fazda
 // geleceğini söyleyen boş durumdur; sahte denetim (düğme, form) yoktur. Denetçi yalnız okunur sekmeleri görür.
@@ -15,8 +17,9 @@ const ErpReconciliationPage = lazy(() => import('./GovernancePages.tsx').then((m
 
 type TabKey = 'kullanicilar' | 'onaycilar' | 'sablonlar' | 'satinalma-kurallari' | 'entegrasyonlar' | 'yapay-zeka' | 'denetim-izi';
 const TABS: { key: TabKey; label: string; roles: string[] }[] = [
-  { key: 'kullanicilar', label: 'Kullanıcılar ve Entra', roles: ['ADMIN', 'PROCUREMENT'] },
-  { key: 'onaycilar', label: 'Onaycılar', roles: ['ADMIN', 'PROCUREMENT'] },
+  // v2 Faz 2 (D105): Denetçi dizini (directory.read) ve onaycıları (approver.read) salt okunur görür.
+  { key: 'kullanicilar', label: 'Kullanıcılar ve Entra', roles: ['ADMIN', 'PROCUREMENT', 'AUDITOR'] },
+  { key: 'onaycilar', label: 'Onaycılar', roles: ['ADMIN', 'PROCUREMENT', 'AUDITOR'] },
   { key: 'sablonlar', label: 'Şablonlar', roles: ['ADMIN', 'PROCUREMENT'] },
   { key: 'satinalma-kurallari', label: 'Satınalma kuralları', roles: ['ADMIN', 'PROCUREMENT'] },
   { key: 'entegrasyonlar', label: 'Entegrasyonlar', roles: ['ADMIN', 'PROCUREMENT', 'AUDITOR'] },
@@ -69,11 +72,8 @@ function Planned({ title, heading, children }: { title: string; heading: string;
   );
 }
 
-export const ApproversTab = () => (
-  <Planned title="Onaycılar" heading="Onaycı ataması Faz 2'de gelir">
-    Sözleşme onay zincirindeki üç unvan (departman sorumlusu, satınalma sorumlusu, satınalma direktörü) için kişi ataması bu sekmede yapılacak. Şu an bu sekmede ayar yok.
-  </Planned>
-);
+/** v2 Faz 2 (D105): onaycı ataması (Figma 21). Faz 1'deki "Faz 2'de gelir" boş durumu yerine gerçek ekran. */
+export const ApproversTab = () => <ApproversPage />;
 
 export const TemplatesTab = () => (
   <Planned title="Şablonlar" heading="Sözleşme şablonları Faz 3'te gelir">
@@ -271,14 +271,34 @@ function UnassignedRecords({ deps }: { deps: Department[] }) {
   );
 }
 
-/** Kullanıcılar ve Entra (Faz 1): departmanlar, Yönetici için departman ekleme; kullanıcılar ve departman ataması. */
+/**
+ * Kullanıcılar ve Entra. Faz 1 bölümleri (departman listesi + Yönetici için departman ekleme, kullanıcıların departman ataması,
+ * Departmansız kayıtlar) her durumda aynen kalır. v2 Faz 2 (D105, Figma 20): dizin sağlayıcısı yapılandırılmışsa ve rol dizini
+ * okuyabiliyorsa (Yönetici, Denetçi) "Bağlantı ve kapsam", "Eşitlenen kullanıcılar" ve departman sayıları/birleştirme eklenir;
+ * sağlayıcı yoksa Faz 1 düzeni ve "Entra bağlantısı yapılandırılmadı" açıklaması.
+ */
 export function UsersTab() {
   const { me } = useSession();
   const admin = hasRole(me, 'ADMIN');
-  const deps = useResource<{ items: Department[] }>('/api/v1/departments');
+  const canAssign = hasRole(me, 'ADMIN', 'PROCUREMENT'); // department.assign: Departmansız kayıtlar
+  const canDirectory = hasRole(me, 'ADMIN', 'AUDITOR'); // directory.read
+  const conn = useResource<DirectoryConnection>(canDirectory ? '/api/v1/directory/connection' : null);
+  const deps = useResource<{ items: AdminDepartment[] }>('/api/v1/departments');
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ tone: 'info' | 'danger'; text: string } | null>(null);
+  // Eşitleme ya da rol ataması üyelikleri değiştirir: Faz 1 kullanıcı listesi ve Departmansız kayıtlar yeniden yüklenir.
+  const [version, bump] = useReducer((x: number) => x + 1, 0);
+  const reloadConn = conn.reload;
+  const reloadDeps = deps.reload;
+  const refreshAll = useCallback(async () => { bump(); await Promise.all([reloadConn(), reloadDeps()]); }, [reloadConn, reloadDeps]);
+  const sync = useDirectorySync(() => { void refreshAll(); });
+  const provider = conn.data?.provider ?? null;
+  const entra = !!provider;
+  // Sayfa açıldığında süren eşitleme varsa izlenir.
+  const openRun = conn.data?.lastRun && (conn.data.lastRun.status === 'QUEUED' || conn.data.lastRun.status === 'RUNNING') ? conn.data.lastRun.id : null;
+  const watch = sync.watch;
+  useEffect(() => { if (openRun && sync.state.phase === 'idle') void watch(openRun); }, [openRun, sync.state.phase, watch]);
 
   async function create(e: React.FormEvent) {
     e.preventDefault();
@@ -292,49 +312,89 @@ export function UsersTab() {
     finally { setBusy(false); }
   }
 
+  if (canDirectory && conn.loading && !conn.data) return <div className="page"><PageHeader title="Kullanıcılar ve Entra" /><Loading rows={6} /></div>;
+
+  const depItems = deps.data?.items ?? [];
+  const syncing = sync.state.phase === 'starting' || sync.state.phase === 'running';
+  const canSync = !!conn.data?.enabled && !!conn.data.scope;
+  const description = entra
+    ? "Kullanıcılar ve departmanlar Microsoft Entra ID'den alınır; yalnız seçilen kapsam eşitlenir."
+    : canDirectory
+      ? 'Departmanlar ve kurumdaki kullanıcılar. Entra bağlantısı yapılandırılmadı; kullanıcılar davetle eklenir. Departmanlar ve atamalar burada yapılır.'
+      : 'Departmanlar ve kurumdaki kullanıcılar. Kullanıcıları, rollerini ve Entra eşitlemesini Yönetici yönetir; departmanlar ve atamalar burada görünür.';
+
+  const departmentsPanel = (
+    <section className="panel">
+      <div className="panel-head"><h2>Departmanlar</h2></div>
+      <div className="panel-body grid gap-4">
+        {deps.loading && !deps.data ? <Loading rows={3} /> : deps.error ? <ErrorState error={deps.error} onRetry={deps.reload} />
+          : !depItems.length ? <p className="text-ink-muted">Henüz departman tanımlı değil.</p>
+          : entra ? <EntraDepartmentList deps={depItems} admin={admin} onMerged={async (text) => { setMsg({ tone: 'info', text }); await refreshAll(); }} />
+          : <ul className="grid gap-1">{depItems.map((d) => <li key={d.id} className="border-b border-border py-1.5 last:border-0">{d.name}</li>)}</ul>}
+        {admin && (
+          <form onSubmit={create} className="grid gap-1 border-t border-border pt-4">
+            <Field label="Departman adı" hint={entra
+              ? "Kurum içinde benzersiz olmalı. Buradan eklenen departman Entra dışı departman olarak görünür; Entra'dan gelen departmanlar eşitlemeyle eklenir."
+              : 'Kurum içinde benzersiz olmalı. Kayıtlar (proje, sözleşme, fatura) departmana göre görünür.'}>
+              {(p) => <input className="input" {...p} value={name} maxLength={200} onChange={(e) => setName(e.target.value)} />}
+            </Field>
+            <div><Button type="submit" disabled={busy || !name.trim()}>{busy ? 'Ekleniyor…' : 'Departman ekle'}</Button></div>
+          </form>
+        )}
+        <div aria-live="polite">{msg && <Banner tone={msg.tone} icon={msg.tone === 'info' ? 'check' : undefined} title={msg.text} />}</div>
+      </div>
+    </section>
+  );
+
+  const membersPanel = (
+    <section className="panel">
+      <div className="panel-head"><h2>Kullanıcılar</h2></div>
+      <div className="panel-body grid gap-3">
+        {admin ? <>
+          <p className="text-sm text-ink-muted">Departman kullanıcısı yalnız atandığı departmanların kayıtlarını görür. Yönetici, Satınalma ve Denetçi bütün departmanları görür. Tedarikçi kullanıcıları bu listede yer almaz.</p>
+          {deps.data ? <MembersAdmin key={version} deps={deps.data.items} /> : deps.error ? null : <Loading rows={4} />}
+        </> : <>
+          <p className="text-sm text-ink-muted">Kullanıcıların departman atamasını Yönetici değiştirir. Departman kullanıcısı yalnız atandığı departmanların kayıtlarını görür; Yönetici, Satınalma ve Denetçi bütün departmanları görür. Tedarikçi kullanıcıları bu listede yer almaz.</p>
+          <MembersReadOnly key={version} />
+        </>}
+      </div>
+    </section>
+  );
+
   return (
     <div className="page">
-      <PageHeader title="Kullanıcılar ve Entra">
-        Departmanlar ve kurumdaki kullanıcılar. Entra eşitlemesi (kullanıcıların ve departmanların Entra'dan alınması) Faz 2'de gelir; o zamana kadar departmanlar ve atamalar burada yapılır.
+      <PageHeader title="Kullanıcılar ve Entra"
+        actions={admin && entra && (
+          <div className="grid justify-items-end gap-1">
+            <Button disabled={syncing || !canSync} onClick={() => void sync.start()}>{syncing ? 'Eşitleniyor…' : 'Şimdi eşitle'}</Button>
+            {!canSync && <span className="text-xs text-ink-muted">Önce kapsamı kaydedip eşitlemeyi açın.</span>}
+          </div>
+        )}>
+        {description}
       </PageHeader>
-      <div className="grid items-start gap-5 min-[1100px]:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
-        <section className="panel">
-          <div className="panel-head"><h2>Departmanlar</h2></div>
-          <div className="panel-body grid gap-4">
-            {deps.loading && !deps.data ? <Loading rows={3} /> : deps.error ? <ErrorState error={deps.error} onRetry={deps.reload} />
-              : !deps.data?.items.length ? <p className="text-ink-muted">Henüz departman tanımlı değil.</p>
-              : <ul className="grid gap-1">{deps.data.items.map((d) => <li key={d.id} className="border-b border-border py-1.5 last:border-0">{d.name}</li>)}</ul>}
-            {admin && (
-              <form onSubmit={create} className="grid gap-1 border-t border-border pt-4">
-                <Field label="Departman adı" hint="Kurum içinde benzersiz olmalı. Kayıtlar (proje, sözleşme, fatura) departmana göre görünür.">
-                  {(p) => <input className="input" {...p} value={name} maxLength={200} onChange={(e) => setName(e.target.value)} />}
-                </Field>
-                <div><Button type="submit" disabled={busy || !name.trim()}>{busy ? 'Ekleniyor…' : 'Departman ekle'}</Button></div>
-              </form>
-            )}
-            <div aria-live="polite">{msg && <Banner tone={msg.tone} icon={msg.tone === 'info' ? 'check' : undefined} title={msg.text} />}</div>
-          </div>
-        </section>
-        <section className="panel">
-          <div className="panel-head"><h2>Kullanıcılar</h2></div>
-          <div className="panel-body grid gap-3">
-            {admin ? <>
-              <p className="text-sm text-ink-muted">Departman kullanıcısı yalnız atandığı departmanların kayıtlarını görür. Yönetici, Satınalma ve Denetçi bütün departmanları görür. Tedarikçi kullanıcıları bu listede yer almaz.</p>
-              {deps.data ? <MembersAdmin deps={deps.data.items} /> : deps.error ? null : <Loading rows={4} />}
-            </> : <>
-              <p className="text-sm text-ink-muted">Kullanıcıların departman atamasını Yönetici değiştirir. Departman kullanıcısı yalnız atandığı departmanların kayıtlarını görür; Yönetici, Satınalma ve Denetçi bütün departmanları görür. Tedarikçi kullanıcıları bu listede yer almaz.</p>
-              <MembersReadOnly />
-            </>}
-          </div>
-        </section>
-      </div>
-      <section className="panel mt-5" aria-labelledby="unassigned-h">
-        <div className="panel-head"><h2 id="unassigned-h">Departmansız kayıtlar</h2></div>
-        <div className="panel-body grid gap-3">
-          <p className="text-sm text-ink-muted">Departmanı atanmamış eski kayıtları Departman kullanıcıları göremez. Kayıtları seçip departman atayın; kaydın görevleri de aynı departmana geçer, sözleşmeye bağlı faturalar departmanı sözleşmeden alır. Her atama denetim izine yazılır.</p>
-          {deps.data ? <UnassignedRecords deps={deps.data.items} /> : deps.error ? null : <Loading rows={3} />}
+      {canDirectory && !!conn.error && <Banner tone="danger" title="Entra bağlantı bilgisi alınamadı">{conn.error instanceof ApiError ? conn.error.message : 'Yeniden deneyin.'}</Banner>}
+      {entra && conn.data ? <>
+        <div className="grid items-start gap-5 min-[1100px]:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+          <ConnectionCard conn={conn.data} admin={admin} sync={sync.state} onSaved={async () => { await conn.reload(); }} />
+          {departmentsPanel}
         </div>
-      </section>
+        <div className="mt-5"><DirectoryUsersCard admin={admin} deps={depItems} version={version} onChanged={refreshAll} /></div>
+        <div className="mt-5">{membersPanel}</div>
+      </> : (
+        <div className="grid items-start gap-5 min-[1100px]:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
+          {departmentsPanel}
+          {membersPanel}
+        </div>
+      )}
+      {canAssign && (
+        <section className="panel mt-5" aria-labelledby="unassigned-h">
+          <div className="panel-head"><h2 id="unassigned-h">Departmansız kayıtlar</h2></div>
+          <div className="panel-body grid gap-3">
+            <p className="text-sm text-ink-muted">Departmanı atanmamış eski kayıtları Departman kullanıcıları göremez. Kayıtları seçip departman atayın; kaydın görevleri de aynı departmana geçer, sözleşmeye bağlı faturalar departmanı sözleşmeden alır. Her atama denetim izine yazılır.</p>
+            {deps.data ? <UnassignedRecords key={version} deps={deps.data.items} /> : deps.error ? null : <Loading rows={3} />}
+          </div>
+        </section>
+      )}
     </div>
   );
 }
