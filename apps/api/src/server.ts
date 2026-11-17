@@ -3,7 +3,7 @@ import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import swagger from '@fastify/swagger';
 import type pg from 'pg';
-import { can, dec as decimal, normalizeRoles, PERMISSIONS, supplierOptionLabels, taxIdTail, type Permission } from '@sp/domain';
+import { can, canInviteSupplier, dec as decimal, normalizeRoles, PERMISSIONS, supplierOptionLabels, supplierStage, taxIdTail, type Permission, type SupplierStatus } from '@sp/domain';
 import type { Config } from './config.ts';
 import { withTenant, type TenantContext, type Tx } from './db.ts';
 import { DevAuthProvider, identityFor, resolveIdentity, tenantContext, type AuthProvider } from './auth.ts';
@@ -46,6 +46,8 @@ import { RateLimiter, rateLimited } from './rateLimit.ts';
 import { DEFAULT_PUBLIC_RATE_LIMIT, PublicRateLimiter } from './publicRateLimit.ts';
 import { avScanner } from './av/index.ts';
 import * as applications from './modules/supplierApplications.ts';
+import * as supplierCard from './modules/supplierCard.ts';
+import * as offboarding from './modules/supplierOffboarding.ts';
 
 export interface AppDeps {
   config: Config;
@@ -523,10 +525,12 @@ export async function buildApp(deps: AppDeps) {
 
   // --- Tedarikçiler (UX07/UX08) ----------------------------------------------------
   app.get('/api/v1/suppliers', {
-    schema: { tags: ['suppliers'], querystring: { type: 'object', properties: { status: { type: 'string' }, q: { type: 'string', maxLength: 100 } } } },
+    // v2 Faz 5 (R1): `stage` süzgeci ve sayımlar eklendi; eski `status` süzgeci ve satır alanları aynen.
+    schema: { tags: ['suppliers'], querystring: { type: 'object', properties: { status: { type: 'string' }, q: { type: 'string', maxLength: 100 },
+      stage: { type: 'string', enum: [...supplierCard.LIST_STAGES] } } } },
   }, async (req) => scoped(req, 'supplier.read', async (tx) => {
-    const { status, q } = req.query as { status?: string; q?: string };
-    const r = await tx.query(
+    const { status, q, stage } = req.query as { status?: string; q?: string; stage?: supplierCard.ListStage };
+    const r = await tx.query<{ id: string }>(
       `SELECT s.id, s.status, s.country, s.tax_id_type AS "taxIdType", s.tax_id AS "taxId", s.legal_name AS "legalName",
               s.identity_review_required AS "identityReviewRequired", s.created_at AS "createdAt", s.row_version AS "rowVersion",
               (SELECT count(*)::int FROM supplier_document_links l WHERE l.supplier_id = s.id) AS "documentCount",
@@ -534,8 +538,10 @@ export async function buildApp(deps: AppDeps) {
        FROM suppliers s
        WHERE ($1::text IS NULL OR s.status = $1) AND s.status <> 'MERGED'
          AND ($2::text IS NULL OR s.legal_name ILIKE '%' || $2 || '%' OR s.tax_id = $2)
-       ORDER BY s.created_at DESC LIMIT 200`, [status ?? null, q ?? null]);
-    return { items: r.rows };
+         AND ($3::text[] IS NULL OR s.status = ANY($3::text[]))
+       ORDER BY s.created_at DESC LIMIT 200`, [status ?? null, q ?? null, supplierCard.stageFilterStatuses(stage)]);
+    const extras = await supplierCard.listExtras(tx, r.rows.map((x) => x.id));
+    return { items: r.rows.map((x) => ({ ...x, ...extras.get(x.id)! })), ...(await supplierCard.listCounts(tx, q ?? null)) };
   }));
 
   app.get('/api/v1/suppliers/:id', { schema: { tags: ['suppliers'], params: idParams } }, async (req) =>
@@ -559,9 +565,94 @@ export async function buildApp(deps: AppDeps) {
       const banks = await tx.query(`SELECT id, iban, currency, status FROM supplier_bank_accounts WHERE supplier_id = $1`, [id]);
       const bankChanges = await tx.query(
         `SELECT id, proposed_iban AS "proposedIban", source, status, created_at AS "createdAt" FROM bank_change_requests WHERE supplier_id = $1 ORDER BY created_at DESC`, [id]);
+      // v2 Faz 5 (R1, R10–R14): eski alanlar aynen; `documents` (bağlı fatura/sözleşme belgeleri) korunur, tedarikçi belgeleri `supplierDocuments`.
+      const v2 = await supplierCard.cardExtras(tx, ctx, id);
+      const { documents: supplierDocuments, ...rest } = v2;
       return { ...s.rows[0], isCreator: s.rows[0].createdBy === ctx.userId, documents: docs.rows, approvals: approvals.rows,
-        bankAccounts: banks.rows, bankChangeRequests: bankChanges.rows };
+        bankAccounts: banks.rows, bankChangeRequests: bankChanges.rows, ...rest, supplierDocuments };
     }));
+
+  // --- v2 Faz 5 (D110) Görev 5: kart envanteri, belgeler, pasife alma, portal kullanıcıları ---------------------------
+  const nullableText = (max: number) => ({ anyOf: [{ type: 'string', maxLength: max }, { type: 'null' }] }) as const;
+  app.put('/api/v1/suppliers/:id/profile', { schema: { tags: ['suppliers'], params: idParams, body: { type: 'object', required: ['expectedRowVersion'], additionalProperties: false,
+    properties: { expectedRowVersion: { type: 'integer' }, contactName: nullableText(200), contactEmail: nullableText(254), contactPhone: nullableText(40),
+      address: nullableText(1000), serviceCategories: { type: 'array', maxItems: 50, items: { type: 'string', maxLength: 100 } }, servicesOffered: nullableText(4000),
+      serviceScope: nullableText(4000), responsibleDepartmentId: { anyOf: [uuid, { type: 'null' }] }, supplierManagerUserId: { anyOf: [uuid, { type: 'null' }] },
+      vpnAccess: { type: 'string', enum: ['YES', 'NO', 'UNKNOWN'] }, slaSummary: nullableText(2000), supportChannel: nullableText(500) } } } }, async (req) =>
+    scoped(req, 'supplier.profile.edit', (tx, ctx) => supplierCard.updateProfile(tx, ctx, (req.params as { id: string }).id, req.body as supplierCard.ProfileInput)));
+
+  app.post('/api/v1/suppliers/:id/documents', { schema: { tags: ['suppliers'], params: idParams, consumes: ['multipart/form-data'] } }, async (req, reply) => {
+    const id = (req.params as { id: string }).id;
+    // İzin dosya okunmadan önce denetlenir (yetkisiz istekte gövde işlenmez).
+    await scoped(req, 'supplier.documents.manage', async () => undefined);
+    const fields: Record<string, string> = {};
+    let file: { filename: string; mimetype: string; body: Buffer } | null = null;
+    try {
+      for await (const part of req.parts({ limits: { fileSize: supplierCard.SUPPLIER_DOC_MAX_BYTES, files: 1, fields: 10, fieldSize: 2000 } })) {
+        if (part.type === 'file') file = { filename: part.filename, mimetype: part.mimetype, body: await part.toBuffer() };
+        else fields[part.fieldname] = String(part.value ?? '');
+      }
+    } catch (err: any) {
+      if (err?.code === 'FST_REQ_FILE_TOO_LARGE') throw unprocessable('file_too_large', 'Dosya 10 MB sınırını aşıyor.');
+      throw err;
+    }
+    if (!file) throw unprocessable('file_required', 'Dosya seçin.');
+    const upload = { ...file, fields };
+    const prepared = await scoped(req, 'supplier.documents.manage', async (_tx, ctx) => supplierCard.prepareInternalUpload(upload, ctx.tenantId, scanner));
+    await deps.store.put(prepared.storageKey, file.body, prepared.mimeType);
+    try {
+      return reply.status(201).send(await scoped(req, 'supplier.documents.manage', (tx, ctx) => supplierCard.addInternalDocument(tx, ctx, id, upload, prepared)));
+    } catch (err) {
+      await deps.store.delete(prepared.storageKey).catch(() => req.log.warn({ key: prepared.storageKey }, 'supplier document cleanup failed'));
+      throw err;
+    }
+  });
+  app.get('/api/v1/supplier-documents/:id/content', { schema: { tags: ['suppliers'], params: idParams } }, async (req, reply) => {
+    const meta = await scoped(req, null, async (tx, ctx) => {
+      // İç kullanıcı (`supplier.read`) ya da sahibi tedarikçi (RLS yalnız kendi kartının belgelerini açar; başvuru belgeleri ona kapalı).
+      if (!ctx.supplierId && !can(ctx.roles, 'supplier.read')) throw forbidden('supplier.read');
+      return supplierCard.documentForDownload(tx, ctx, (req.params as { id: string }).id);
+    });
+    const bytes = await deps.store.get(meta.storage_key);
+    return reply.header('Content-Type', meta.mime_type).header('Cache-Control', 'private, no-store').header('X-Content-Type-Options', 'nosniff')
+      .header('Content-Disposition', `attachment; filename="${meta.original_filename.replace(/[^\w.\-]/g, '_')}"`).send(bytes);
+  });
+
+  const reasonBody = { type: 'object', required: ['reason', 'expectedRowVersion'], additionalProperties: false,
+    properties: { reason: { type: 'string', maxLength: 2000 }, expectedRowVersion: { type: 'integer' } } } as const;
+  app.post('/api/v1/suppliers/:id/deactivate', { schema: { tags: ['suppliers'], params: idParams, body: reasonBody } }, async (req) =>
+    scoped(req, 'supplier.offboard', (tx, ctx) => offboarding.deactivateSupplier(tx, ctx, (req.params as { id: string }).id, req.body as { reason: string; expectedRowVersion: number })));
+  app.post('/api/v1/suppliers/:id/reactivate', { schema: { tags: ['suppliers'], params: idParams, body: reasonBody } }, async (req) =>
+    scoped(req, 'supplier.offboard', (tx, ctx) => offboarding.reactivateSupplier(tx, ctx, (req.params as { id: string }).id, req.body as { reason: string; expectedRowVersion: number })));
+  app.put('/api/v1/supplier-offboarding-items/:id', { schema: { tags: ['suppliers'], params: idParams, body: { type: 'object', additionalProperties: false,
+    properties: { done: { type: 'boolean', const: true }, notApplicable: { type: 'boolean', const: true }, note: nullableText(2000) } } } }, async (req) =>
+    scoped(req, 'supplier.offboard', (tx, ctx) => offboarding.decideOffboardingItem(tx, ctx, (req.params as { id: string }).id, req.body as { done?: boolean; notApplicable?: boolean; note?: string })));
+
+  app.post('/api/v1/suppliers/:id/portal-users', { schema: { tags: ['suppliers'], params: idParams, body: { type: 'object', required: ['name', 'email'], additionalProperties: false,
+    properties: { name: { type: 'string', maxLength: 200 }, email: { type: 'string', maxLength: 254 } } } } }, async (req, reply) =>
+    reply.status(201).send(await scoped(req, 'supplier.portal_users.manage', (tx, ctx) =>
+      supplierCard.addPortalUser(tx, ctx, (req.params as { id: string }).id, req.body as { name: string; email: string }, deps.config.webOrigin))));
+  const portalUserParams = { type: 'object', required: ['id', 'userId'], properties: { id: uuid, userId: uuid } } as const;
+  for (const action of ['suspend', 'reactivate'] as const) {
+    app.post(`/api/v1/suppliers/:id/portal-users/:userId/${action}`, { schema: { tags: ['suppliers'], params: portalUserParams } }, async (req) =>
+      scoped(req, 'supplier.portal_users.manage', (tx, ctx) => {
+        const p = req.params as { id: string; userId: string };
+        return supplierCard.setPortalUserStatus(tx, ctx, p.id, p.userId, action);
+      }));
+  }
+
+  // --- v2 Faz 5 (D110) Görev 5: başvuru inceleme (okuma supplier.read, karar Satınalma) -------------------------------
+  app.get('/api/v1/supplier-applications', { schema: { tags: ['suppliers'], querystring: { type: 'object', additionalProperties: false,
+    properties: { status: { type: 'string', enum: ['UNVERIFIED', 'SUBMITTED', 'NEEDS_DOCUMENTS', 'APPROVED', 'REJECTED', 'EXPIRED'] } } } } }, async (req) =>
+    scoped(req, 'supplier.read', async (tx, ctx) => ({ ...(await applications.listApplications(tx, req.query as { status?: any })),
+      can: { decide: can(ctx.roles, 'supplier.application.review') } })));
+  app.get('/api/v1/supplier-applications/:id', { schema: { tags: ['suppliers'], params: idParams } }, async (req) =>
+    scoped(req, 'supplier.read', (tx, ctx) => applications.getApplication(tx, ctx, (req.params as { id: string }).id)));
+  app.post('/api/v1/supplier-applications/:id/decision', { schema: { tags: ['suppliers'], params: idParams, body: { type: 'object', required: ['action', 'expectedRowVersion'],
+    additionalProperties: false, properties: { action: { type: 'string', enum: ['APPROVE', 'REQUEST_DOCUMENTS', 'REJECT'] }, reason: nullableText(2000),
+      documents: { type: 'array', maxItems: 20, items: { type: 'string', maxLength: 40 } }, note: nullableText(2000), expectedRowVersion: { type: 'integer' } } } } }, async (req) =>
+    scoped(req, 'supplier.application.review', (tx, ctx) =>
+      applications.decideApplication(tx, ctx, (req.params as { id: string }).id, req.body as applications.DecisionInput, deps.config.webOrigin)));
 
   app.post('/api/v1/suppliers/:id/approvals', {
     schema: { tags: ['suppliers'], params: idParams, body: { type: 'object', required: ['kind', 'decision', 'rationale', 'expectedRowVersion'], additionalProperties: false,
@@ -1385,8 +1476,13 @@ export async function buildApp(deps: AppDeps) {
          FROM suppliers WHERE status IN ('ACTIVE','CONDITIONAL','CANDIDATE') ORDER BY legal_name, created_at LIMIT 500`)).rows;
     // Aynı adlı kayıtlar listede ayırt edilsin (D82); tam vergi kimliği dönmez, yalnız son 4 hane.
     const labels = supplierOptionLabels(rows);
-    return { items: rows.map((r) => ({ id: r.id, legalName: r.legalName, status: r.status, label: labels.get(r.id)!,
-      taxIdTail: taxIdTail(r.taxIdType, r.taxId), identityVerified: !r.identityReviewRequired && !!r.taxId })) };
+    // v2 Faz 5 (R9): adaylar listede kalır ama seçilemez (`eligibleForInvite: false`, nedenli).
+    return { items: rows.map((r) => {
+      const eligible = canInviteSupplier(r.status as SupplierStatus);
+      return { id: r.id, legalName: r.legalName, status: r.status, label: labels.get(r.id)!,
+        taxIdTail: taxIdTail(r.taxIdType, r.taxId), identityVerified: !r.identityReviewRequired && !!r.taxId,
+        stageLabel: supplierStage(r.status as SupplierStatus).label, eligibleForInvite: eligible, ineligibleReason: eligible ? null : supplierCard.SUPPLIER_NOT_APPROVED_MSG };
+    }) };
   }));
 
   // Tedarikçi portalı (UX04): yalnız SUPPLIER rolü ve davet edildiği turlar.

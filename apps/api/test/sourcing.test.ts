@@ -1,3 +1,4 @@
+// v2 Faz 5 (D110): R9 — yeni tura aday (CANDIDATE) davet edilemez; T10–T12 turunda aday Kuzey'in daveti R9 öncesi verilmiş açık tur daveti olarak (sahip bağlantısıyla) eklenir; aday daveti 422 supplier_not_approved sınanır
 // v2 Faz 1 (D93/D95): TenantContext departmentIds/allDepartments ister; teknik değerlendirici bölüm kullanıcısı, T10–T12 projesi onun departmanında (Bilgi Teknolojileri)
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
@@ -30,10 +31,15 @@ async function newProject(title = `BT altyapı bakım hizmeti ${randomUUID().sli
   return r.body as { id: string; code: string; etag: string };
 }
 const project = async (id: string, who: 'buyer' | 'legal2' = 'buyer') => (await h.call(who, 'GET', `/api/v1/projects/${id}`)).body;
-async function publish(id: string, suppliers: string[]) {
+async function publish(id: string, suppliers: string[], legacyCandidates: string[] = []) {
   const p = await project(id);
   const req = await h.call('buyer', 'POST', `/api/v1/projects/${id}/rounds`, { body: { closesAt: inHours(48), supplierIds: suppliers }, headers: { 'if-match': p.project.etag } });
   expect(req.status).toBe(201);
+  // v2 Faz 5 (R9): R9 öncesi verilmiş aday daveti (açık turdaki davet etkilenmez); API artık adayı yeni tura almaz.
+  for (const s of legacyCandidates) {
+    await h.owner.query(`INSERT INTO rfq_invitations (tenant_id, company_id, project_id, round_id, supplier_id, invited_by)
+      SELECT tenant_id, company_id, project_id, id, $2, requested_by FROM rfq_rounds WHERE id = $1`, [req.body.roundId, s]);
+  }
   const dec = await h.call('legal2', 'POST', `/api/v1/rfq-rounds/${req.body.roundId}/decision`, { body: { approve: true } });
   expect(dec.status).toBe(200);
   return req.body.roundId as string;
@@ -199,7 +205,12 @@ describe('T10–T12 karşılaştırma, eskime ve bölünmüş tahsis', () => {
     projectId = (await newProject()).id;
     // v2: teknik puanı bölüm kullanıcısı (techEval, Bilgi Teknolojileri) verir; departmansız kayıt ona kapalıdır (RLS gevşetilmez).
     await h.owner.query(`UPDATE projects SET department_id = $2 WHERE id = $1`, [projectId, h.world.departments.bt]);
-    roundId = await publish(projectId, [h.world.suppliers.s1, h.world.suppliers.s2, h.world.suppliers.s3]);
+    // v2 Faz 5 (R9): aday Kuzey yeni tura davet edilemez (422 supplier_not_approved); turdaki daveti R9 öncesi verilmiş davettir.
+    const snap = await project(projectId);
+    const refused = await h.call('buyer', 'POST', `/api/v1/projects/${projectId}/rounds`, { body: { closesAt: inHours(48), supplierIds: [h.world.suppliers.s1, h.world.suppliers.s2, h.world.suppliers.s3] }, headers: { 'if-match': snap.project.etag } });
+    expect(refused.status).toBe(422);
+    expect(refused.body.error.code).toBe('supplier_not_approved');
+    roundId = await publish(projectId, [h.world.suppliers.s1, h.world.suppliers.s2], [h.world.suppliers.s3]);
     // Tasarruf bazı teklifler açılmadan önerilir ve ikinci kişi (finans) onaylar; rapor yalnız onaylı bazla seçim tutarını karşılaştırır.
     const base = await h.call('buyer', 'POST', `/api/v1/projects/${projectId}/savings-baselines`, { body: { basis: 'PREVIOUS_PRICE', amount: '1100000.00', source: 'Önceki dönem sözleşme bedeli (sentetik).' } });
     expect((await h.call('finance', 'POST', `/api/v1/savings-baselines/${base.body.id}/decision`, { body: { approve: true } })).body.status).toBe('APPROVED');

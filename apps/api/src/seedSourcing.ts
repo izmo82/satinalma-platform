@@ -91,7 +91,10 @@ export async function ensureSourcingDemo(owner: pg.Pool, app: App, auth: DevAuth
   const p1 = (await call('alper.satinalma', 'POST', '/api/v1/projects', { companyId: company, title: 'BT altyapı bakım hizmeti 2027', category: 'BT hizmetleri',
     need: 'Merkez veri odası ve iki şube için yıllık bakım ve destek (sentetik).', currency: 'TRY', budget: '1900000.00', budgetVerified: true, costCenter: 'MM-410',
     deliveryLocation: 'Gebze Lojistik Merkezi', lines, criteria, departmentId: dept.bt })).body;
-  const r1 = (await call('alper.satinalma', 'POST', `/api/v1/projects/${p1.id}/rounds`, { closesAt: at(72), supplierIds: [s1, s2, s3] }, { 'if-match': p1.etag })).body;
+  // v2 Faz 5 (R9, D110): aday (Kuzey) yeni tura API'den davet edilemez; demo hikâyesindeki daveti R9 öncesi verilmiş açık tur daveti olarak yazılır.
+  const r1 = (await call('alper.satinalma', 'POST', `/api/v1/projects/${p1.id}/rounds`, { closesAt: at(72), supplierIds: [s1, s2] }, { 'if-match': p1.etag })).body;
+  await owner.query(`INSERT INTO rfq_invitations (tenant_id, company_id, project_id, round_id, supplier_id, invited_by)
+    SELECT tenant_id, company_id, project_id, id, $2, requested_by FROM rfq_rounds WHERE id = $1 ON CONFLICT DO NOTHING`, [r1.roundId, s3]);
   await call('kerem.hukuk', 'POST', `/api/v1/rfq-rounds/${r1.roundId}/decision`, { approve: true, note: 'Bütçe ve kriterler uygun.' });
   const lid = (await call('alper.satinalma', 'GET', `/api/v1/projects/${p1.id}`)).body.lines.map((l: any) => l.id);
   const bid = (who: string, prices: string[], l3: { unit: string; quantity: string } = { unit: 'kullanıcı', quantity: '250' }, costs: unknown[] = []) =>

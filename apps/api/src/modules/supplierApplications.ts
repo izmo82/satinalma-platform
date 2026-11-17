@@ -1,16 +1,20 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type pg from 'pg';
 import type { Multipart } from '@fastify/multipart';
-import { normalizeTaxId, requiredDocumentTypes, verificationEmail, type DocType, type TaxIdType } from '@sp/domain';
+import {
+  APPLICATION_STATUS_TR, applicationDecisionEmail, can, documentsRequestedEmail, nextApplicationStatus, normalizeTaxId, portalAccessEmail, requiredDocumentTypes,
+  supplierStage, verificationEmail, type ApplicationStatus, type DocType, type SupplierStatus, type TaxIdType,
+} from '@sp/domain';
 import { withoutTenant, withTenant, type TenantContext, type Tx } from '../db.ts';
 import { ApiError, notFound, unprocessable } from '../errors.ts';
 import { inspectUpload } from '../files.ts';
 import type { ObjectStore } from '../storage.ts';
 import { scanStatus, type AvScanner, type AvScanStatus } from '../av/index.ts';
-import { enqueueEmailDispatch, type MailChannel } from '../mail/index.ts';
+import { enqueueEmailDispatch, queueEmail, type MailChannel } from '../mail/index.ts';
 import { audit } from '../audit.ts';
 import { clientAddressKey, DEFAULT_PUBLIC_RATE_LIMIT } from '../publicRateLimit.ts';
-import { openTask } from '../tasks.ts';
+import { closeTasks, openTask } from '../tasks.ts';
+import { DOC_SELECT, documentView, ensurePortalUser, PORTAL_ACCESS_NOTE, PORTAL_INVITE_ERRORS, requiredMissing, today as cardToday, type DocRow } from './supplierCard.ts';
 
 /**
  * v2 Faz 5 (D110) Görev 4: girişsiz tedarikçi başvurusu (R2–R5) ve başvuru ayarları (R3).
@@ -508,4 +512,204 @@ export async function updateDocumentType(tx: Tx, ctx: TenantContext, id: string,
     [id, name, body.required ?? before.required, requiredCategories, body.expiryRequired ?? before.expiryRequired, body.active ?? before.active])).rows[0]!;
   await audit(tx, ctx, 'supplier_document_type.saved', 'supplier_document_type', id, { action: 'updated', before, after: row });
   return row;
+}
+
+// ---------- Görev 5: başvuru inceleme ve karar (R2, R10, R11, R14) ----------
+
+/** `supplier_applications` sütunları açıkça listelenir (belirteç özeti ve adres özeti sp_app'e kapalıdır; SELECT * yok). */
+const APP_COLS = `a.id, a.status, a.legal_name, a.country, a.tax_id_type, a.tax_id, a.contact_name, a.contact_email, a.contact_phone, a.address, a.categories,
+  a.services, a.token_purpose, a.token_expires_at, a.verified_at, a.submitted_at, a.requested_documents, a.requested_note, a.decided_by, a.decided_at,
+  a.decision_reason, a.supplier_id, a.created_at, a.row_version`;
+interface AppRow {
+  id: string; status: ApplicationStatus; legal_name: string; country: string; tax_id_type: TaxIdType; tax_id: string; contact_name: string; contact_email: string;
+  contact_phone: string | null; address: string | null; categories: string[]; services: string | null; token_purpose: string | null; token_expires_at: Date | null;
+  verified_at: Date | null; submitted_at: Date | null; requested_documents: string[]; requested_note: string | null; decided_by: string | null; decided_at: Date | null;
+  decision_reason: string | null; supplier_id: string | null; created_at: Date; row_version: number;
+}
+const REVIEW_STATUSES = ['UNVERIFIED', 'SUBMITTED', 'NEEDS_DOCUMENTS', 'APPROVED', 'REJECTED', 'EXPIRED'] as const;
+
+export async function listApplications(tx: Tx, f: { status?: ApplicationStatus }) {
+  const rows = (await tx.query<AppRow & { document_count: number; supplier_name: string | null }>(
+    `SELECT ${APP_COLS}, (SELECT count(*)::int FROM supplier_documents d WHERE d.application_id = a.id) AS document_count, s.legal_name AS supplier_name
+       FROM supplier_applications a LEFT JOIN suppliers s ON s.id = a.supplier_id
+      WHERE ($1::text IS NULL OR a.status = $1) ORDER BY coalesce(a.submitted_at, a.created_at) DESC LIMIT 200`, [f.status ?? null])).rows;
+  const counts = Object.fromEntries(REVIEW_STATUSES.map((s) => [s, 0])) as Record<ApplicationStatus, number>;
+  for (const r of (await tx.query<{ status: ApplicationStatus; n: number }>(`SELECT status, count(*)::int AS n FROM supplier_applications GROUP BY status`)).rows) counts[r.status] = r.n;
+  return {
+    items: rows.map((r) => ({ id: r.id, status: r.status, statusLabel: APPLICATION_STATUS_TR[r.status], legalName: r.legal_name, country: r.country,
+      taxIdType: r.tax_id_type, taxId: r.tax_id, contactName: r.contact_name, contactEmail: r.contact_email, categories: r.categories,
+      documentCount: r.document_count, createdAt: r.created_at, submittedAt: r.submitted_at, decidedAt: r.decided_at,
+      supplier: r.supplier_id ? { id: r.supplier_id, legalName: r.supplier_name } : null })),
+    counts,
+  };
+}
+
+async function loadApplication(tx: Tx, id: string, lock = false): Promise<AppRow> {
+  const a = (await tx.query<AppRow>(`SELECT ${APP_COLS} FROM supplier_applications a WHERE a.id = $1${lock ? ' FOR UPDATE' : ''}`, [id])).rows[0];
+  if (!a) throw notFound();
+  return a;
+}
+
+/** Aynı kimlikli kart (birleştirilmişse hedefi). */
+async function sameIdentitySupplier(tx: Tx, a: Pick<AppRow, 'country' | 'tax_id_type' | 'tax_id'>, lock = false) {
+  const s = (await tx.query<{ id: string; legal_name: string; status: SupplierStatus; merged_into_id: string | null }>(
+    `SELECT id, legal_name, status, merged_into_id FROM suppliers WHERE country = $1 AND tax_id_type = $2 AND tax_id = $3${lock ? ' FOR UPDATE' : ''}`,
+    [a.country, a.tax_id_type, a.tax_id])).rows[0];
+  if (!s?.merged_into_id) return s ?? null;
+  return (await tx.query<{ id: string; legal_name: string; status: SupplierStatus; merged_into_id: string | null }>(
+    `SELECT id, legal_name, status, merged_into_id FROM suppliers WHERE id = $1${lock ? ' FOR UPDATE' : ''}`, [s.merged_into_id])).rows[0] ?? null;
+}
+const INACTIVE_FOR_LINK = new Set<SupplierStatus>(['SUSPENDED', 'ARCHIVED', 'REJECTED']);
+const SUPPLIER_INACTIVE_MSG = 'Bu VKN ile kayıtlı kart pasif ya da reddedilmiş; başvuru bu karta bağlanamaz. Kartı önce yeniden açın ya da başvuruyu reddedin.';
+
+const HISTORY_TR: Record<string, string> = {
+  'supplier_application.approved': 'Onaylandı', 'supplier_application.documents_requested': 'Eksik belge istendi', 'supplier_application.rejected': 'Reddedildi',
+};
+
+/** İnceleme ekranı (Figma 15). Departman kullanıcısı görür; karar yalnız Satınalma (`can.decide`). */
+export async function getApplication(tx: Tx, ctx: TenantContext, id: string) {
+  const a = await loadApplication(tx, id);
+  const day = cardToday();
+  const tax = normalizeTaxId(a.country, a.tax_id_type, a.tax_id);
+  const existing = await sameIdentitySupplier(tx, a);
+  const docRows = (await tx.query<DocRow>(`${DOC_SELECT} WHERE d.application_id = $1 ORDER BY d.type_code, d.created_at`, [id])).rows;
+  const missing = await requiredMissing(tx, a.categories, docRows.map((r) => ({ typeCode: r.type_code, validUntil: r.valid_until, supersededById: r.superseded_by_id })), day);
+  const events = (await tx.query<{ action: string; at: Date; actor: string | null; reason: string | null; data: Record<string, unknown> }>(
+    `SELECT e.action, e.at, u.display_name AS actor, e.reason, e.data FROM audit_events e LEFT JOIN users u ON u.id = e.actor_user_id
+      WHERE e.entity_type = 'supplier_application' AND e.entity_id = $1 ORDER BY e.at, e.id`, [id])).rows;
+  const history = [
+    { code: 'CREATED', label: 'Başvuru alındı', at: a.created_at, actor: null as string | null, note: null as string | null },
+    ...(a.verified_at ? [{ code: 'VERIFIED', label: 'E-posta doğrulandı', at: a.verified_at, actor: null, note: null }] : []),
+    ...events.map((e) => ({ code: e.action, label: HISTORY_TR[e.action] ?? e.action, at: e.at, actor: e.actor, note: e.reason })),
+  ].sort((x, y) => +new Date(x.at) - +new Date(y.at));
+  const stage = existing ? supplierStage(existing.status) : null;
+  const decidable = a.status === 'SUBMITTED' || a.status === 'NEEDS_DOCUMENTS';
+  return {
+    id: a.id, status: a.status, statusLabel: APPLICATION_STATUS_TR[a.status], rowVersion: a.row_version,
+    legalName: a.legal_name, country: a.country, taxIdType: a.tax_id_type, taxId: a.tax_id,
+    taxIdCheck: tax.ok ? { valid: true, normalized: tax.normalized, reason: null, label: 'Vergi kimliği denetim basamağı doğru' }
+      : { valid: false, normalized: null, reason: tax.reason, label: 'Vergi kimliği denetimi başarısız' },
+    contactName: a.contact_name, contactEmail: a.contact_email, contactPhone: a.contact_phone, address: a.address, categories: a.categories, services: a.services,
+    createdAt: a.created_at, verifiedAt: a.verified_at, submittedAt: a.submitted_at,
+    requestedDocuments: a.requested_documents, requestedNote: a.requested_note, completionTokenExpiresAt: a.token_purpose === 'COMPLETE' ? a.token_expires_at : null,
+    decidedAt: a.decided_at, decisionReason: a.decision_reason, supplierId: a.supplier_id,
+    existingSupplier: existing ? { id: existing.id, legalName: existing.legal_name, status: existing.status, stage: stage!.code, stageLabel: stage!.label,
+      blocksApproval: INACTIVE_FOR_LINK.has(existing.status), blockReason: INACTIVE_FOR_LINK.has(existing.status) ? SUPPLIER_INACTIVE_MSG : null } : null,
+    documents: docRows.map((r) => documentView(r, day)), missingRequired: missing, history,
+    can: { decide: can(ctx.roles, 'supplier.application.review') && decidable,
+      approve: can(ctx.roles, 'supplier.application.review') && a.status === 'SUBMITTED' && !(existing && INACTIVE_FOR_LINK.has(existing.status)),
+      requestDocuments: can(ctx.roles, 'supplier.application.review') && a.status === 'SUBMITTED' },
+  };
+}
+
+export interface DecisionInput {
+  action: 'APPROVE' | 'REQUEST_DOCUMENTS' | 'REJECT'; reason?: string | null; documents?: string[]; note?: string | null; expectedRowVersion: number;
+}
+const ACTION_OF = { APPROVE: 'APPROVE', REQUEST_DOCUMENTS: 'REQUEST_DOCUMENTS', REJECT: 'REJECT' } as const;
+
+export async function decideApplication(tx: Tx, ctx: TenantContext, id: string, b: DecisionInput, webOrigin: string) {
+  const a = await loadApplication(tx, id, true);
+  if (a.row_version !== b.expectedRowVersion) {
+    throw new ApiError(409, 'version_conflict', 'Başvuru siz incelerken değişti. Güncel bilgileri gözden geçirin.', { currentRowVersion: a.row_version });
+  }
+  const to = nextApplicationStatus(a.status, ACTION_OF[b.action]);
+  if (typeof to !== 'string') {
+    throw new ApiError(409, 'invalid_transition', `Başvuru bu durumda (${APPLICATION_STATUS_TR[a.status]}) bu işleme açık değil.`, { status: a.status });
+  }
+  const origin = webOrigin.replace(/\/$/, '');
+  const note = (b.note ?? '').trim() || null;
+  if (note && note.length > 2000) throw unprocessable('invalid_field', 'Not en çok 2000 karakter olabilir.', { field: 'note' });
+  let result: Record<string, unknown>;
+  if (b.action === 'APPROVE') result = await approve(tx, ctx, a, note, origin);
+  else if (b.action === 'REQUEST_DOCUMENTS') result = await requestDocuments(tx, ctx, a, b.documents ?? [], note, origin);
+  else result = await reject(tx, ctx, a, b.reason ?? '');
+  // İnceleme görevi kapanır (tamamlamada işçi yeni görev açar).
+  await closeTasks(tx, `application:${a.id}:review`);
+  const after = await loadApplication(tx, id);
+  return { id, status: after.status, statusLabel: APPLICATION_STATUS_TR[after.status], rowVersion: after.row_version, ...result };
+}
+
+async function approve(tx: Tx, ctx: TenantContext, a: AppRow, note: string | null, origin: string) {
+  const own = await tx.query(`SELECT 1 FROM legal_entities WHERE country = $1 AND tax_id_type = $2 AND tax_id = $3`, [a.country, a.tax_id_type, a.tax_id]);
+  if (own.rowCount) throw unprocessable('own_company_tax_id', 'Bu vergi kimliği kendi şirketinize ait; tedarikçi olarak eklenemez.');
+  let existing = await sameIdentitySupplier(tx, a, true);
+  if (existing && INACTIVE_FOR_LINK.has(existing.status)) {
+    throw new ApiError(409, 'supplier_inactive', SUPPLIER_INACTIVE_MSG, { supplierId: existing.id, status: existing.status });
+  }
+  let supplierId: string;
+  let linked = false;
+  if (!existing) {
+    // R10: kartı açan (created_by) başvuruyu onaylayan Satınalma kullanıcısıdır; Onaylı yapmak ikinci kişi ister.
+    const ins = await tx.query<{ id: string }>(`INSERT INTO suppliers (tenant_id, country, tax_id_type, tax_id, legal_name, contact_email, created_by)
+      VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (tenant_id, country, tax_id_type, tax_id) WHERE tax_id IS NOT NULL DO NOTHING RETURNING id`,
+      [ctx.tenantId, a.country, a.tax_id_type, a.tax_id, a.legal_name, a.contact_email, ctx.userId]);
+    if (!ins.rows[0]) {
+      existing = await sameIdentitySupplier(tx, a, true);
+      if (!existing || INACTIVE_FOR_LINK.has(existing.status)) throw new ApiError(409, 'supplier_inactive', SUPPLIER_INACTIVE_MSG);
+    } else supplierId = ins.rows[0].id;
+  }
+  if (existing) { supplierId = existing.id; linked = true; }
+  supplierId = supplierId!;
+  // R14: kart envanteri başvurudan dolar; var olan kartta yalnız boş alanlar doldurulur (kartın durumu değişmez, R2).
+  await tx.query(`UPDATE suppliers SET contact_name = coalesce(contact_name, $2), contact_email = coalesce(contact_email, $3), contact_phone = coalesce(contact_phone, $4),
+      address = coalesce(address, $5), service_categories = CASE WHEN cardinality(service_categories) = 0 THEN $6 ELSE service_categories END,
+      services_offered = coalesce(services_offered, $7), application_id = coalesce(application_id, $8), row_version = row_version + 1 WHERE id = $1`,
+    [supplierId, a.contact_name.slice(0, 200), a.contact_email, a.contact_phone, a.address, a.categories, a.services, a.id]);
+  const moved = (await tx.query(`UPDATE supplier_documents SET supplier_id = $1 WHERE application_id = $2 AND supplier_id IS NULL`, [supplierId, a.id])).rowCount ?? 0;
+  await tx.query(`UPDATE supplier_applications SET status = 'APPROVED', decided_by = $2, decided_at = now(), decision_reason = $3, supplier_id = $4,
+      token_hash = NULL, token_purpose = NULL, token_expires_at = NULL, row_version = row_version + 1 WHERE id = $1`, [a.id, ctx.userId, note, supplierId]);
+
+  // R11: portal kullanıcısı (davetli) + SUPPLIER üyeliği. Başka kurumdaki e-posta onayı engellemez; kartta elle eklenir.
+  const portal = await ensurePortalUser(tx, ctx, supplierId, a.contact_name, a.contact_email);
+  const emails: { kind: string; status: string }[] = [];
+  if (portal.status === 'CREATED' || portal.status === 'EXISTS') {
+    const m = portalAccessEmail({ name: a.contact_name, link: `${origin}/portal` });
+    emails.push({ kind: 'portal_access', status: (await queueEmail(tx, ctx, { toUserId: portal.userId, toEmail: a.contact_email, subject: m.subject, body: m.body,
+      relatedType: 'supplier_application', relatedId: a.id })).status });
+  }
+  const d = applicationDecisionEmail({ legalName: a.legal_name, decision: 'APPROVED' });
+  emails.push({ kind: 'decision', status: (await queueEmail(tx, ctx, { toEmail: a.contact_email, subject: d.subject, body: d.body, relatedType: 'supplier_application', relatedId: a.id })).status });
+
+  const s = (await tx.query<{ status: SupplierStatus }>(`SELECT status FROM suppliers WHERE id = $1`, [supplierId])).rows[0]!;
+  if (s.status === 'CANDIDATE') {
+    await openTask(tx, ctx, { companyId: null, kind: 'SUPPLIER_CANDIDATE_APPROVAL', entityType: 'supplier', entityId: supplierId, title: 'Aday tedarikçi onay bekliyor',
+      reason: `${a.legal_name} başvurusu onaylandı; aday kart açıldı. Onaylı yapmak başvuruyu onaylayan kişiden başka bir Satınalma kullanıcısı ister.`,
+      nextAction: 'Kimlik ve belgeleri inceleyip kayıt onayı verin ve kartı Onaylı yapın.', assigneeRole: 'PROCUREMENT', dedupeKey: `supplier:${supplierId}:activation` });
+  }
+  await audit(tx, ctx, 'supplier_application.approved', 'supplier_application', a.id,
+    { supplierId, linkedToExisting: linked, documentsMoved: moved, portalUser: portal.status, emails }, note ?? undefined);
+  const stage = supplierStage(s.status);
+  return { supplier: { id: supplierId, status: s.status, stage: stage.code, stageLabel: stage.label, linkedToExisting: linked }, documentsMoved: moved,
+    portalUser: { status: portal.status, userId: portal.userId,
+      message: portal.status === 'USER_IN_OTHER_TENANT' || portal.status === 'USER_HAS_OTHER_MEMBERSHIP' ? PORTAL_INVITE_ERRORS[portal.status] : null },
+    emails, portalAccessNote: PORTAL_ACCESS_NOTE };
+}
+
+async function requestDocuments(tx: Tx, ctx: TenantContext, a: AppRow, documents: string[], note: string | null, origin: string) {
+  const codes = [...new Set(documents.map((c) => c.trim()).filter(Boolean))];
+  if (!codes.length) throw unprocessable('documents_required', 'İstenecek en az bir belge türü seçin.');
+  const types = (await tx.query<{ code: string; name: string }>(`SELECT code, name FROM supplier_document_types WHERE active AND code = ANY($1::text[])`, [codes])).rows;
+  const unknown = codes.filter((c) => !types.some((t) => t.code === c));
+  if (unknown.length) throw unprocessable('document_type', 'Belge türü tanımlı ya da etkin değil.', { codes: unknown });
+  const { token, hash } = newToken();
+  // Belirteç yalnız özetle saklanır; bağlantıda `#token=` parçasında (sunucu günlüğüne, yönlendirene düşmez).
+  await tx.query(`UPDATE supplier_applications SET status = 'NEEDS_DOCUMENTS', token_hash = $2, token_purpose = 'COMPLETE', token_expires_at = now() + interval '24 hours',
+      requested_documents = $3, requested_note = $4, row_version = row_version + 1 WHERE id = $1`, [a.id, hash, codes, note]);
+  const names = codes.map((c) => types.find((t) => t.code === c)!.name);
+  const m = documentsRequestedEmail({ legalName: a.legal_name, documents: names, note, link: `${origin}/basvuru/tamamla#token=${token}` });
+  const out = await queueEmail(tx, ctx, { toEmail: a.contact_email, subject: m.subject, body: m.body, relatedType: 'supplier_application', relatedId: a.id });
+  await audit(tx, ctx, 'supplier_application.documents_requested', 'supplier_application', a.id, { documents: codes, emailStatus: out.status }, note ?? undefined);
+  return { requestedDocuments: codes, emails: [{ kind: 'documents_requested', status: out.status }] };
+}
+
+async function reject(tx: Tx, ctx: TenantContext, a: AppRow, rawReason: string) {
+  const reason = (rawReason ?? '').trim();
+  if (reason.length < 10) throw unprocessable('reason_required', 'Red gerekçesi en az 10 karakter olmalı.');
+  if (reason.length > 2000) throw unprocessable('invalid_field', 'Gerekçe en çok 2000 karakter olabilir.', { field: 'reason' });
+  await tx.query(`UPDATE supplier_applications SET status = 'REJECTED', decided_by = $2, decided_at = now(), decision_reason = $3,
+      token_hash = NULL, token_purpose = NULL, token_expires_at = NULL, row_version = row_version + 1 WHERE id = $1`, [a.id, ctx.userId, reason]);
+  const m = applicationDecisionEmail({ legalName: a.legal_name, decision: 'REJECTED', reason });
+  const out = await queueEmail(tx, ctx, { toEmail: a.contact_email, subject: m.subject, body: m.body, relatedType: 'supplier_application', relatedId: a.id });
+  await audit(tx, ctx, 'supplier_application.rejected', 'supplier_application', a.id, { emailStatus: out.status }, reason);
+  return { emails: [{ kind: 'decision', status: out.status }] };
 }

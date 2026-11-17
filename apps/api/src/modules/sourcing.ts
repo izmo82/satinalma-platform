@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import {
-  compareBids, evaluationBasis, validateAward, validateCriteria, isDecimal,
+  canInviteSupplier, compareBids, evaluationBasis, validateAward, validateCriteria, isDecimal, type SupplierStatus,
   type AwardAllocation, type Bid, type Comparison, type Criterion, type FxRate, type ProjectLine, type Score,
 } from '@sp/domain';
 import type { TenantContext, Tx } from '../db.ts';
@@ -166,6 +166,12 @@ export async function requestPublish(tx: Tx, ctx: TenantContext, id: string, ifM
   if (sup.rowCount !== ids.length) throw unprocessable('unknown_supplier', 'Davet listesinde bulunamayan tedarikçi var.');
   const bad = sup.rows.filter((s) => !['ACTIVE', 'CONDITIONAL', 'CANDIDATE'].includes(s.status));
   if (bad.length) throw unprocessable('supplier_not_eligible', `Davet edilemez: ${bad.map((s) => s.legal_name).join(', ')} (askıda, reddedilmiş veya arşivde).`);
+  // v2 Faz 5 (R9, D110): yeni tura yalnız onaylı (ACTIVE/CONDITIONAL) tedarikçi davet edilir. Açık turlar ve verilmiş davetler etkilenmez.
+  const candidates = sup.rows.filter((s) => !canInviteSupplier(s.status as SupplierStatus));
+  if (candidates.length) {
+    throw unprocessable('supplier_not_approved', `Aday tedarikçi önce onaylanmalı: ${candidates.map((s) => s.legal_name).join(', ')}.`,
+      { suppliers: candidates.map((s) => ({ id: s.id, legalName: s.legal_name })) });
+  }
   // Kurum politikası (onay motoru): onay adımları, en az davetli ve en az teklif süresi. Altında kalmak onaylı istisna ister.
   const { policyId, plan } = await approvals.planFor(tx, { action: 'RFQ_PUBLISH', companyId: p.company_id, category: p.category, currency: p.currency, amount: p.budget });
   const usable = (kind: string) => tx.query<{ id: string; details: { supplierId?: string } }>(`SELECT id, details FROM sourcing_exceptions WHERE project_id = $1 AND kind = $2 AND status = 'APPROVED' FOR UPDATE`, [id, kind]).then((x) => x.rows[0] ?? null);
