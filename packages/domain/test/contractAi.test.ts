@@ -35,6 +35,53 @@ describe('tr-TR ayrıştırıcılar', () => {
   });
 });
 
+describe('Faz 4 düzeltme turu 1', () => {
+  const p = ['Sözleşme otomatik olarak yenilenmez. KDV hariç bedel. Süresiz değildir. Hizmet alımı. Teknik destek ve bakım. Bedel USD cinsindendir.'];
+  it('bool/enum değeri alıntıyla çelişirse UNDERIVABLE: LOW, önceden doldurulmaz', () => {
+    const r = checkContractExtraction({ fields: [f('autoRenewal', true, 1, 'Sözleşme otomatik olarak yenilenmez.')] }, p);
+    expect(get(r, 'autoRenewal')).toMatchObject({ confidence: 'LOW', requiresHuman: true, prefill: false });
+    expect(get(r, 'autoRenewal').flags).toContain('UNDERIVABLE');
+    const ok = checkContractExtraction({ fields: [f('autoRenewal', false, 1, 'Sözleşme otomatik olarak yenilenmez.')] }, p);
+    expect(get(ok, 'autoRenewal')).toMatchObject({ value: 'false', confidence: 'HIGH', prefill: true });
+  });
+  it('limitBasis ve contractType anahtar sözcükle doğrulanır', () => {
+    const r = checkContractExtraction({ fields: [f('limitBasis', 'GROSS', 1, 'KDV hariç bedel.'), f('contractType', 'MAINTENANCE', 1, 'Teknik destek ve bakım.'), f('contractType', 'OTHER', 1, 'Hizmet alımı.')] }, p);
+    expect(get(r, 'limitBasis').flags).toContain('UNDERIVABLE');
+    expect(get(r, 'contractType')).toMatchObject({ value: 'MAINTENANCE', prefill: true });
+    const n = checkContractExtraction({ fields: [f('limitBasis', 'NET', 1, 'KDV hariç bedel.')] }, p);
+    expect(get(n, 'limitBasis').prefill).toBe(true);
+  });
+  it('ISO para birimi alıntıda aynen geçerse kabul', () => {
+    const r = checkContractExtraction({ fields: [f('currency', 'usd', 1, 'Bedel USD cinsindendir.'), f('currency', 'CHF', 1, 'Bedel USD cinsindendir.')] }, p);
+    expect(get(r, 'currency').value).toBe('USD');
+    const c = checkContractExtraction({ fields: [f('currency', 'CHF', 1, 'Bedel CHF cinsindendir.')] }, ['Bedel CHF cinsindendir.']);
+    expect(get(c, 'currency')).toMatchObject({ value: 'CHF', requiresHuman: true, prefill: false });
+  });
+  it('kısa alıntı doğrulanmaz', () => {
+    const r = checkContractExtraction({ fields: [f('title', 'SÖZ', 1, 'SÖZ')] }, ['SÖZ']);
+    expect(get(r, 'title')).toMatchObject({ value: null, confidence: 'MISSING' });
+    expect(get(r, 'title').flags).toContain('SHORT_QUOTE');
+  });
+  it('belirsiz tutar biçimleri null', () => {
+    expect(parseTrAmount('1,250')).toBeNull();
+    expect(parseTrAmount('1250.000')).toBeNull();
+    expect(parseTrAmount('12.345,678')).toBeNull();
+    expect(parseTrAmount('1,250,000')).toBe('1250000.00');
+    expect(parseTrAmount('1,250.50')).toBe('1250.50');
+    expect(parseTrAmount('1250,5')).toBe('1250.50');
+  });
+  it('tarih deseninde sol sınır: 131.12.2028 içinden tarih çıkmaz', () => {
+    const r = checkContractExtraction({ fields: [f('endDate', '2028-12-31', 1, 'Bitiş no 131.12.2028 tarihli')] }, ['Bitiş no 131.12.2028 tarihli']);
+    expect(get(r, 'endDate').value).toBeNull();
+  });
+  it('kanıt cevabında kısa alıntı UNCLEAR, fazla anahtar işaretli', () => {
+    const r = checkEvidenceOutput({ answers: [{ questionId: 'q1', answer: 'YES', quote: 'Ege', page: 1, extra: 1 }] }, pages, ['q1']);
+    expect(r.answers[0]).toMatchObject({ answer: 'UNCLEAR' });
+    expect(r.answers[0]!.flags).toContain('SHORT_QUOTE');
+    expect(r.flags).toContain('IGNORED_KEY:extra');
+  });
+});
+
 describe('checkContractExtraction (R4/R5)', () => {
   it('kanıtla doğrulanan tutar HIGH, yine de kritik: insan şart, önceden doldurulmaz', () => {
     const r = checkContractExtraction({ fields: [f('amount', '1250000.00', 2, 'Toplam bedel 1.250.000,00 TL (KDV hariç)')] }, pages);
@@ -115,10 +162,17 @@ describe('checkReviewOutput ve reviewScore (R7/R8)', () => {
     const r = checkReviewOutput({ findings: [fnd({ quote: 'olmayan metin' }), fnd({ page: 3, quote: 'x' }), fnd({ page: 9 })] }, pages, tpl);
     expect(r.findings.map((x) => x.verified)).toEqual([false, false, false]);
   });
-  it('geçersiz kategori/tür/önem düşürülür ve işaretlenir', () => {
-    const r = checkReviewOutput({ findings: [fnd({ category: 'NOPE' }), fnd({ severity: 'CRITICAL' })] }, pages, tpl);
-    expect(r.findings).toHaveLength(0);
-    expect(r.flags.filter((x) => x.startsWith('DROPPED_FINDING'))).toHaveLength(2);
+  it('geçersiz kategori düşürülür; geçersiz tür/önem verified=false INVALID_FORMAT ile kalır, puana girmez', () => {
+    const r = checkReviewOutput({ findings: [fnd({ category: 'NOPE' }), fnd({ severity: 'CRITICAL' }), fnd({ kind: 'X' })] }, pages, tpl);
+    expect(r.findings).toHaveLength(2);
+    expect(r.findings.every((x) => !x.verified && x.flags.includes('INVALID_FORMAT'))).toBe(true);
+    expect(r.flags).toContain('DROPPED_FINDING:category');
+    expect(reviewScore(r.findings, true).score).toBe(100);
+  });
+  it('kısa alıntı (<8 karakter) doğrulanmaz', () => {
+    const r = checkReviewOutput({ findings: [fnd({ quote: 'bedel', page: 2 }), fnd({ kind: 'MISSING_CLAUSE', quote: 'Madde 7', page: null })] }, pages, tpl);
+    expect(r.findings.map((x) => x.verified)).toEqual([false, false]);
+    expect(r.findings[0]!.flags).toContain('SHORT_QUOTE');
   });
   const mk = (category: string, severity: string, verified = true): CheckedFinding => ({ category, kind: 'UNFAVORABLE', severity, title: '', quote: '', page: 1, templateRef: null, recommendation: null, verified, flags: [] }) as CheckedFinding;
   it('bulgusuz 100; sürüm sabiti', () => {
@@ -155,7 +209,7 @@ describe('checkEvidenceOutput (R14)', () => {
   it('doğrulanmayan alıntı UNCLEAR\'a düşer; eksik soru UNCLEAR', () => {
     const r = checkEvidenceOutput({ answers: [
       { questionId: 'q1', answer: 'YES', quote: 'Tedarikçi: Ege Yazılım A.Ş.', page: 1, explanation: 'e' },
-      { questionId: 'q2', answer: 'NO', quote: 'uydurma', page: 1, explanation: 'e' },
+      { questionId: 'q2', answer: 'NO', quote: 'uydurma metin', page: 1, explanation: 'e' },
       { questionId: 'zz', answer: 'YES', quote: 'x', page: 1, explanation: '' },
     ], approve: true }, pages, ['q1', 'q2', 'q3']);
     expect(r.answers.map((a) => [a.questionId, a.answer])).toEqual([['q1', 'YES'], ['q2', 'UNCLEAR'], ['q3', 'UNCLEAR']]);

@@ -65,7 +65,7 @@ export function parseTrDate(s: string): string | null {
 function findDates(text: string): string[] {
   const out: string[] = [];
   const t = text.toLocaleLowerCase('tr-TR');
-  for (const re of [/\d{4}-\d{2}-\d{2}/g, /\d{1,2}[./]\d{1,2}[./]\d{4}/g, /\d{1,2}\s+\p{L}+\s+\d{4}/gu]) {
+  for (const re of [/(?<![\d-])\d{4}-\d{2}-\d{2}(?!\d)/g, /(?<![\d./])\d{1,2}[./]\d{1,2}[./]\d{4}(?!\d)/g, /(?<![\d./])\d{1,2}\s+\p{L}+\s+\d{4}(?!\d)/gu]) {
     for (const m of t.matchAll(re)) { const d = parseTrDate(m[0]); if (d) out.push(d); }
   }
   return out;
@@ -77,9 +77,13 @@ export function parseTrAmount(s: string): string | null {
   let intPart: string; let frac = '';
   let m: RegExpExecArray | null;
   if ((m = /^(\d{1,3}(?:\.\d{3})+)(?:,(\d+))?$/.exec(t))) { intPart = m[1]!.replace(/\./g, ''); frac = m[2] ?? ''; }
-  else if ((m = /^(\d{1,3}(?:,\d{3})+)(?:\.(\d+))?$/.exec(t))) { intPart = m[1]!.replace(/,/g, ''); frac = m[2] ?? ''; }
+  else if ((m = /^(\d{1,3}(?:,\d{3})+)(?:\.(\d+))?$/.exec(t))) {
+    if (/^\d{1,3},\d{3}$/.test(t)) return null; // "1,250": binlik mi ondalık mı belirsiz
+    intPart = m[1]!.replace(/,/g, ''); frac = m[2] ?? '';
+  }
   else if ((m = /^(\d+)(?:[,.](\d+))?$/.exec(t))) { intPart = m[1]!; frac = m[2] ?? ''; }
   else return null;
+  if (frac.length > 2) return null; // kuruştan ince ya da belirsiz biçim
   intPart = intPart.replace(/^0+(?=\d)/, '');
   return `${intPart}.${frac.padEnd(2, '0')}`;
 }
@@ -95,7 +99,7 @@ const CURRENCIES: Record<string, string[]> = {
 function normCurrency(v: string): string | null {
   const t = v.trim().toLocaleLowerCase('tr-TR');
   for (const [code, al] of Object.entries(CURRENCIES)) if (al.includes(t)) return code;
-  return null;
+  return /^[a-z]{3}$/.test(t) ? t.toUpperCase() : null; // ISO 4217 biçimi; kodun alıntıda aynen geçmesi derivable'da aranır
 }
 const ENUMS: Partial<Record<ContractAiField, readonly string[]>> = { contractType: CONTRACT_TYPES, limitBasis: ['NET', 'GROSS'] };
 
@@ -118,14 +122,32 @@ function derivable(field: ContractAiField, value: string, evidence: string): boo
     case 'date': return findDates(evidence).includes(value);
     case 'money': return findAmounts(evidence).includes(value);
     case 'vkn': return containsToken(evidence.replace(/[\s.\-]/g, ''), value);
-    case 'currency': { const e = evidence.toLocaleLowerCase('tr-TR'); return (CURRENCIES[value] ?? []).some((a) => (/^[\p{L}\s]+$/u.test(a) ? containsToken(e, a) : e.includes(a))); }
+    case 'currency': { const e = evidence.toLocaleLowerCase('tr-TR'); return containsToken(e, value.toLowerCase()) || (CURRENCIES[value] ?? []).some((a) => (/^[\p{L}\s]+$/u.test(a) ? containsToken(e, a) : e.includes(a))); }
     case 'int': return containsToken(norm(evidence), value);
     case 'text': return norm(evidence).includes(norm(value));
-    default: return true;
+    case 'bool': case 'enum': return keywordDerived(field, value, evidence);
   }
+}
+const KW = (...w: string[]) => new RegExp(w.join('|'), 'u');
+const KEYWORDS: Partial<Record<ContractAiField, Record<string, RegExp>>> = {
+  autoRenewal: { false: KW('yenilenmez', 'otomatik\\s+yenileme\\s+(?:yok|yapılmaz)', 'otomatik\\s+olarak\\s+yenilenmez'), true: KW('otomatik(?:\\s+olarak)?\\s+yenilen') },
+  indefinite: { true: KW('süresiz', 'belirsiz\\s+süreli'), false: KW('belirli\\s+süre') },
+  limitBasis: { NET: KW('kdv\\s+hariç', "kdv'?siz"), GROSS: KW('kdv\\s+dahil') },
+  contractType: { SERVICE: KW('hizmet'), HARDWARE: KW('donanım', 'cihaz', 'ekipman'), MAINTENANCE: KW('bakım', 'destek'), NDA: KW('gizlilik'), CONSULTING: KW('danışmanlık') },
+};
+/** bool/enum değeri alıntıdaki anahtar sözcükle uyuşmalı; çelişen ya da anahtarsız alıntı türetilemez (UNDERIVABLE). */
+function keywordDerived(field: ContractAiField, value: string, evidence: string): boolean {
+  const kw = KEYWORDS[field];
+  const e = norm(evidence);
+  if (!kw) return false; // OTHER gibi anahtarı olmayan değer insan seçer
+  const hits = Object.keys(kw).filter((k) => kw[k]!.test(e));
+  // Çelişki: "yenilenmez" aynı zamanda "yenilen" içerir; olumsuz kalıp varsa olumlu sayılmaz.
+  const eff = field === 'autoRenewal' && hits.includes('false') ? ['false'] : hits;
+  return eff.length === 1 && eff[0] === value;
 }
 const confOf = (c: unknown): AiConfidence => (typeof c === 'number' && c >= 0.85 ? 'HIGH' : typeof c === 'number' && c >= 0.6 ? 'MEDIUM' : 'LOW');
 const isObj = (x: unknown): x is Record<string, unknown> => !!x && typeof x === 'object' && !Array.isArray(x);
+const shortQuote = (q: string): boolean => q.replace(/\s+/g, '').length < 8;
 const pushOnce = (a: string[], x: string) => { if (!a.includes(x)) a.push(x); };
 
 /**
@@ -151,6 +173,7 @@ export function checkContractExtraction(raw: unknown, pages: string[]): { fields
     const value = normalizeValue(field, String(e.value));
     const page = Number.isInteger(e.page) ? (e.page as number) : null;
     const evidence = typeof e.evidence === 'string' && e.evidence.trim() !== '' ? e.evidence : null;
+    if (evidence !== null && shortQuote(evidence)) { out.flags.push('MISSING', 'SHORT_QUOTE'); return out; }
     if (value === null) { out.flags.push('MISSING', FIELD_KIND[field] === 'vkn' ? 'INVALID_TAX_ID' : 'INVALID_VALUE'); return out; }
     const text = page !== null && page >= 1 && page <= pages.length ? pages[page - 1]! : null;
     if (text === null || evidence === null) { out.flags.push('MISSING', 'NO_SOURCE'); return out; }
@@ -159,7 +182,10 @@ export function checkContractExtraction(raw: unknown, pages: string[]): { fields
       return { ...out, value, page, evidence, confidence: 'LOW', flags: ['UNVERIFIED_SCAN'], requiresHuman: true, prefill: false };
     }
     if (!norm(text).includes(norm(evidence))) { out.flags.push('MISSING', 'SOURCE_NOT_FOUND'); return out; }
-    if (!derivable(field, value, evidence)) { out.flags.push('MISSING', 'VALUE_NOT_IN_SOURCE'); return out; }
+    if (!derivable(field, value, evidence)) {
+      if (FIELD_KIND[field] === 'bool' || FIELD_KIND[field] === 'enum') return { ...out, value, page, evidence, confidence: 'LOW', flags: ['UNDERIVABLE'], requiresHuman: true, prefill: false };
+      out.flags.push('MISSING', 'VALUE_NOT_IN_SOURCE'); return out;
+    }
     const confidence = confOf(e.confidence);
     return { ...out, value, page, evidence, confidence, requiresHuman: critical || confidence === 'LOW', prefill: !critical && (confidence === 'HIGH' || confidence === 'MEDIUM') };
   });
@@ -208,11 +234,13 @@ export function checkReviewOutput(raw: unknown, contractPages: string[], templat
     const category = (REVIEW_CATEGORIES as readonly unknown[]).includes(e.category) ? (e.category as ReviewCategory) : null;
     const kind = (FINDING_KINDS as readonly unknown[]).includes(e.kind) ? (e.kind as FindingKind) : null;
     const severity = (FINDING_SEVERITIES as readonly unknown[]).includes(e.severity) ? (e.severity as FindingSeverity) : null;
-    if (!category || !kind || !severity) { flags.push(`DROPPED_FINDING:${!category ? 'category' : !kind ? 'kind' : 'severity'}`); continue; }
+    if (!category) { flags.push('DROPPED_FINDING:category'); continue; }
     const quote = str(e.quote);
     const page = Number.isInteger(e.page) ? (e.page as number) : null;
-    const f: CheckedFinding = { category, kind, severity, title: str(e.title) ?? '', quote, page, templateRef: str(e.templateRef), recommendation: str(e.recommendation), verified: false, flags: [] };
-    if (!quote) f.flags.push('NO_SOURCE');
+    const f: CheckedFinding = { category, kind: kind ?? 'LEGAL_RISK', severity: severity ?? 'INFO', title: str(e.title) ?? '', quote, page, templateRef: str(e.templateRef), recommendation: str(e.recommendation), verified: false, flags: [] };
+    if (!kind || !severity) f.flags.push('INVALID_FORMAT');
+    else if (!quote) f.flags.push('NO_SOURCE');
+    else if (shortQuote(quote)) f.flags.push('SHORT_QUOTE');
     else if (kind === 'MISSING_CLAUSE') {
       if (templateText === null) f.flags.push('TEMPLATE_UNAVAILABLE');
       else if (norm(templateText).includes(norm(quote))) f.verified = true;
@@ -256,7 +284,11 @@ export function checkEvidenceOutput(raw: unknown, pages: string[], questionIds: 
   const obj = isObj(raw) ? raw : {};
   for (const k of Object.keys(obj)) if (k !== 'answers') pushOnce(flags, `IGNORED_KEY:${k}`);
   const list = Array.isArray(obj.answers) ? obj.answers : [];
-  for (const e of list) if (isObj(e) && typeof e.questionId === 'string' && !questionIds.includes(e.questionId)) pushOnce(flags, `IGNORED_ANSWER:${e.questionId}`);
+  for (const e of list) {
+    if (!isObj(e)) continue;
+    for (const k of Object.keys(e)) if (!['questionId', 'answer', 'quote', 'page', 'explanation'].includes(k)) pushOnce(flags, `IGNORED_KEY:${k}`);
+    if (typeof e.questionId === 'string' && !questionIds.includes(e.questionId)) pushOnce(flags, `IGNORED_ANSWER:${e.questionId}`);
+  }
   const answers = questionIds.map((questionId): CheckedEvidenceAnswer => {
     const e = list.find((x): x is Record<string, unknown> => isObj(x) && x.questionId === questionId);
     const out: CheckedEvidenceAnswer = { questionId, answer: 'UNCLEAR', quote: null, page: null, explanation: null, flags: [] };
@@ -264,6 +296,7 @@ export function checkEvidenceOutput(raw: unknown, pages: string[], questionIds: 
     out.explanation = str(e.explanation);
     if (e.answer !== 'YES' && e.answer !== 'NO') return out;
     const quote = str(e.quote); const page = Number.isInteger(e.page) ? (e.page as number) : null;
+    if (quote && shortQuote(quote)) { out.flags.push('SHORT_QUOTE'); return out; }
     if (!quote || page === null || page < 1 || page > pages.length) { out.flags.push('NO_SOURCE'); return out; }
     if (pages[page - 1]!.trim() === '') { out.flags.push('UNVERIFIED_SCAN'); return out; }
     if (!norm(pages[page - 1]!).includes(norm(quote))) { out.flags.push('SOURCE_NOT_FOUND'); return out; }
