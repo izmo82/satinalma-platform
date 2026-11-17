@@ -151,6 +151,12 @@ export const PERMISSIONS = {
   'role.assign': ['ADMIN'],
   'approver.read': ['ADMIN', 'PROCUREMENT', 'AUDITOR'],
   'approver.manage': ['ADMIN'],
+  // v2 Faz 3: sözleşme onayı (karar ucu; adımdaki kişi kontrolü kodda), şablon, hatırlatıcı ayarı, tedarikçi adayı.
+  'contract.approve': ['PROCUREMENT', 'DEPARTMENT_USER'],
+  'template.read': ['ADMIN', 'PROCUREMENT', 'DEPARTMENT_USER', 'AUDITOR'],
+  'template.manage': ['ADMIN', 'PROCUREMENT'],
+  'reminder.settings': ['ADMIN'],
+  'supplier.candidate.create': ['PROCUREMENT', 'DEPARTMENT_USER'],
 } as const satisfies Record<string, readonly Role[]>;
 
 export type Permission = keyof typeof PERMISSIONS;
