@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { api, apiBlob, ApiError } from '../lib/api.ts';
 import { useResource } from '../lib/useApi.ts';
-import { hasRole, useSession } from '../lib/session.tsx';
+import { hasPermission, hasRole, useSession } from '../lib/session.tsx';
 import { statusTag } from '../lib/contractsV2.ts';
 import { fmtDate, fmtDateTime, fmtMoney } from '../lib/format.ts';
 import { costKindLabel, lineState, PROJECT_STAGES, projectStatus, supplierPickHint, type SupplierOption } from '../lib/labels.ts';
@@ -692,14 +692,16 @@ interface ContractRow { id: string; title: string; code?: string | null; status?
 /** Projeye bağlı sözleşmeler: liste ucunun proje süzgeciyle tek istek (sunucuda süzülür). */
 function ProjectContracts({ projectId }: { projectId: string }) {
   const { me } = useSession();
-  const r = useResource<{ items: ContractRow[]; total: number }>(`/api/v1/contracts?projectId=${projectId}&limit=100`);
+  // Final inceleme M8: proje okuma yetkisi olup sözleşme okuma yetkisi olmayan kullanıcı hata paneli yerine açıklama görür.
+  const canRead = hasPermission(me, 'contract.read');
+  const r = useResource<{ items: ContractRow[]; total: number }>(canRead ? `/api/v1/contracts?projectId=${projectId}&limit=100` : null);
   const state = { rows: r.data?.items ?? null, error: r.error, partial: !!r.data && r.data.total > r.data.items.length };
   const canAdd = hasRole(me, 'PROCUREMENT', 'DEPARTMENT_USER');
   return (
     <section className="panel">
       <div className="panel-head"><h2 className="flex-1">Bağlı sözleşmeler</h2>
         {canAdd && <Button size="sm" asChild><Link to={`/sozlesmeler/ekle?proje=${projectId}`}><Icon name="upload" />Bu projeye sözleşme ekle</Link></Button>}</div>
-      {state.error ? <ErrorState error={state.error} onRetry={r.reload} /> : !state.rows ? <Loading rows={3} /> : !state.rows.length ? (
+      {!canRead ? <p className="px-4 py-3 text-ink-muted">Sözleşmeleri görme yetkiniz yok.</p> : state.error ? <ErrorState error={state.error} onRetry={r.reload} /> : !state.rows ? <Loading rows={3} /> : !state.rows.length ? (
         <Empty icon="file" title="Bu projeye bağlı sözleşme yok">{canAdd ? 'Sözleşme eklerken proje seçimi zorunludur; buradan eklenen sözleşmede proje dolu gelir.' : null}</Empty>
       ) : (
         <ul className="divide-y divide-[#ebe6da]" aria-label="Projenin sözleşmeleri">

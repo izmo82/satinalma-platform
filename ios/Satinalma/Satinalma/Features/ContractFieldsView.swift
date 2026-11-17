@@ -175,7 +175,7 @@ struct ContractFieldsView: View {
             // Seçenekler paralel yüklenir; tedarikçi/kişi listesi alınamazsa alan boş kalır ve ipucu gösterilir.
             async let projectsReq: (ProjectOptions, String?) = session.get("/api/v1/projects")
             async let suppliersReq: (SupplierOptions, String?) = session.get("/api/v1/supplier-options")
-            async let membersReq: ([MemberOption], String?) = session.get("/api/v1/members")
+            async let membersReq: ([MemberOption], String?) = session.get("/api/v1/members?active=true")
             let allDepartments = session.me?.allDepartments == true
             async let departmentsReq: (DepartmentOptions, String?)? = allDepartments ? session.get("/api/v1/departments") : nil
             projects = try await projectsReq.0.items

@@ -3,7 +3,7 @@ import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import swagger from '@fastify/swagger';
 import type pg from 'pg';
-import { can, dec as decimal, normalizeRoles, supplierOptionLabels, taxIdTail, type Permission } from '@sp/domain';
+import { can, dec as decimal, normalizeRoles, PERMISSIONS, supplierOptionLabels, taxIdTail, type Permission } from '@sp/domain';
 import type { Config } from './config.ts';
 import { withTenant, type TenantContext, type Tx } from './db.ts';
 import { DevAuthProvider, identityFor, resolveIdentity, tenantContext, type AuthProvider } from './auth.ts';
@@ -229,6 +229,8 @@ export async function buildApp(deps: AppDeps) {
       memberships: identity.memberships.map((m) => ({ tenantId: m.tenantId, tenantName: m.tenantName, roles: m.roles })),
       activeTenantId: active?.tenantId ?? null,
       roles: active?.roles ?? [],
+      // Final inceleme M8: arayüz izinleri rol eşlemesini kopyalamadan buradan okur (ör. proje sayfasında sözleşme sekmesi).
+      permissions: active ? (Object.keys(PERMISSIONS) as Permission[]).filter((p) => can(active!.roles, p)) : [],
       supplierPortal: !!active?.supplierId,
       companies: scope.companies,
       // v2 (D93): aktif üyeliğin departmanları; allDepartments rolden türetilir (Yönetici, Satınalma, Denetçi).
@@ -242,8 +244,11 @@ export async function buildApp(deps: AppDeps) {
   app.get('/api/v1/members', async (req) => scoped(req, null, async (tx, ctx) => {
     internalOnly(ctx);
     // Düzeltme dalgası (Y4): Yönetici listesiyle aynı kapsam — tedarikçi portalı kullanıcıları listelenmez; roller v2 adlarıyla.
+    // Final inceleme M5: kişi seçicileri (sözleşme sorumlusu, ek onaycı) `?active=true` ile yalnız etkin üyeleri alır; API askıdaki
+    // kişiyi 422 ile reddeder. Parametresiz çağıranlar (salt okunur kullanıcı listesi) eskisi gibi tüm üyeleri görür.
+    const activeOnly = (req.query as { active?: string } | undefined)?.active === 'true';
     const rows = (await tx.query<{ id: string; displayName: string; roles: string[] }>(`SELECT u.id, u.display_name AS "displayName", m.roles FROM users u JOIN memberships m ON m.user_id = u.id
-      WHERE m.supplier_id IS NULL ORDER BY u.display_name, u.id`)).rows;
+      WHERE m.supplier_id IS NULL ${activeOnly ? `AND m.status = 'ACTIVE'` : ''} ORDER BY u.display_name, u.id`)).rows;
     return rows.map((r) => ({ ...r, roles: normalizeRoles(r.roles) })).filter((r) => r.roles.length > 0 && !r.roles.includes('SUPPLIER'));
   }));
 

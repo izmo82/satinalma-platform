@@ -305,7 +305,12 @@ const STATE_LABEL: Record<string, { text: string; tone: 'info' | 'neutral' | 'ok
   PLANNED: { text: 'Planlandı', tone: 'neutral', icon: 'clock' }, OPEN: { text: 'Görev açık', tone: 'info', icon: 'bell' }, CLOSED: { text: 'Kapandı', tone: 'ok', icon: 'check' },
   SKIPPED: { text: 'Atlandı', tone: 'neutral', icon: 'minus' }, FAILED: { text: 'Başarısız', tone: 'danger', icon: 'x' },
 };
-const SKIP_REASON: Record<string, string> = { decided: 'karar girildi', obsolete: 'koşullar değişti' };
+const SKIP_REASON: Record<string, string> = {
+  decided: 'karar girildi', obsolete: 'koşullar değişti',
+  reminder_not_visible: 'hatırlatıcı kaydı görünmüyor', contract_not_visible: 'sözleşme görünmüyor',
+};
+/** Bilinmeyen gerekçe kodu ekrana ham çıkmaz (final inceleme M3). */
+const skipReasonLabel = (code: string) => SKIP_REASON[code] ?? 'başka bir nedenle atlandı';
 
 function Reminders({ d }: { d: ContractV2 }) {
   const r = useResource<RemindersRes>(`/api/v1/contracts/${d.family.id}/reminders`);
@@ -348,7 +353,7 @@ function Reminders({ d }: { d: ContractV2 }) {
                     <li key={m.id} className={cn('grid gap-1.5 border-t border-border pt-3 first:border-t-0 first:pt-0', !m.current && 'opacity-70')}>
                       <div className="flex flex-wrap items-center gap-2"><span className="font-semibold">{m.kindLabel} · {m.offset} gün önce</span>
                         <span className="tabular text-ink-muted">{fmtDate(m.dueOn)}</span>
-                        <Tag label={STATE_LABEL[m.state]} />{m.skippedReason && <span className="text-sm text-ink-subtle">({SKIP_REASON[m.skippedReason] ?? m.skippedReason})</span>}
+                        <Tag label={STATE_LABEL[m.state]} />{m.skippedReason && <span className="text-sm text-ink-subtle">({skipReasonLabel(m.skippedReason)})</span>}
                         {!m.current && <span className="text-sm text-ink-subtle">önceki koşullar</span>}</div>
                       {m.tasks.length > 0 && <p className="text-sm">Görev: {m.tasks.map((t) => `${t.recipient.type === 'USER' ? t.recipient.displayName : t.recipient.label} (${t.status === 'OPEN' ? 'açık' : 'kapandı'})`).join(', ')}</p>}
                       {m.emails.length > 0 && <ul className="grid gap-0.5 text-sm text-ink-muted">{m.emails.map((e) => <li key={e.id}>E-posta → {e.toUser?.displayName ?? 'alıcı'}: {e.statusLabel}{e.sentAt ? ` · ${fmtDateTime(e.sentAt)}` : ''}</li>)}</ul>}
@@ -422,7 +427,9 @@ function History({ d }: { d: ContractV2 }) {
   if (d.chain) {
     events.push({ at: d.chain.submittedAt, text: `Onaya gönderildi${d.chainCount > 1 ? ` (${d.chainCount}. tur)` : ''}`, who: actorName(d.chain.submittedBy), note: d.chain.note });
     for (const s of d.chain.steps) if (s.decidedAt) events.push({ at: s.decidedAt, text: `${s.kindLabel}: ${s.decision === 'APPROVED' ? 'onayladı' : 'reddetti'}`, who: actorName(s.decidedBy), note: s.reason });
-    if (d.chain.closedAt && d.chain.status === 'CANCELLED') events.push({ at: d.chain.closedAt, text: 'Onay turu iptal edildi', who: 'Sistem', note: d.chain.cancelReason });
+    if (d.chain.closedAt && d.chain.status === 'CANCELLED') events.push({ at: d.chain.closedAt, text: 'Onay turu iptal edildi',
+      // Kullanıcının değişikliği iptal ettirdiyse o kişi; yalnız sistem kullanıcısı "Sistem"; kaydı olmayan (türetilmiş) iptalde içerik değişikliği.
+      who: d.chain.cancelledBy ? actorName(d.chain.cancelledBy) : 'İçerik değişikliği', note: d.chain.cancelReason });
   }
   events.sort((a, b) => a.at.localeCompare(b.at));
   const audit = [...(fam.data?.items ?? []), ...(ver.data?.items ?? [])].sort((a, b) => a.at.localeCompare(b.at));

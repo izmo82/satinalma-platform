@@ -478,6 +478,18 @@ describe('inceleme düzeltmeleri: sahipsiz adım yok (I2), şirket erişimi (I3)
     expect((await h.owner.query(`SELECT count(*)::int AS n FROM contract_approval_chains WHERE family_id = $1`, [c.familyId])).rows[0].n).toBe(0);
   });
 
+  // v2 Faz 3 (D108): final inceleme M6 — önizleme gönderimle aynı şirket erişimi denetimini yapar ve bildirir.
+  it('M6: önizleme şirkete erişemeyen onaycıyı ok:false ve aynı iletiyle bildirir', async () => {
+    const w = await fresh();
+    await approvers(w, [], { directorUserId: w.users.multi.id });
+    const c = await contract(w, 'techEval', null);
+    const p = await call(w, 'techEval', 'GET', `/api/v1/contracts/${c.familyId}/approval-preview`);
+    expect(p.status, JSON.stringify(p.body)).toBe(200);
+    expect(p.body).toMatchObject({ ok: false, error: 'approver_no_company_access', userId: w.users.multi.id, kind: 'PROCUREMENT_DIRECTOR' });
+    const r = await call(w, 'techEval', 'POST', `/api/v1/contracts/${c.familyId}/submit`, {});
+    expect(r.body.error.message).toBe(p.body.message);
+  });
+
   it('N1: şirkete erişemeyen vekil uygun sayılmaz (zincir iptal); ADMIN+PROCUREMENT kısmi company_ids ile gönderim 409 almaz', async () => {
     const w = await fresh();
     // Satınalma sorumlusu vekili multi yalnız A2'de; sözleşme A1.
@@ -513,5 +525,41 @@ describe('inceleme düzeltmeleri: sahipsiz adım yok (I2), şirket erişimi (I3)
     expect(await taskRow(`contract-approval:${c.chainId}:2`)).toMatchObject({ status: 'OPEN', assignee_user_id: w.users.legal.id });
     expect((await h.owner.query(`SELECT outcome FROM contract_approval_chains WHERE id = $1`, [c.chainId])).rows[0].outcome).toBeNull();
     expect((await decide(w, 'legal', s2!.id, 'APPROVED')).status).toBe(200);
+  });
+});
+
+// v2 Faz 3 (D108): final inceleme M5 (kişi seçicide askıdaki üye yok) ve M8 (/me izin listesi).
+describe('final inceleme: kişi seçici ve izinler', () => {
+  it('M5: /members?active=true askıdaki üyeyi listelemez; parametresiz çağrı eskisi gibi tüm üyeleri döner', async () => {
+    const w = await fresh();
+    await h.owner.query(`UPDATE memberships SET status = 'SUSPENDED' WHERE tenant_id = $1 AND user_id = $2`, [w.tenantA, w.users.buyer.id]);
+    const all = await call(w, 'techEval', 'GET', '/api/v1/members');
+    expect(all.status).toBe(200);
+    expect(all.body.map((m: any) => m.id)).toContain(w.users.buyer.id);
+    const active = await call(w, 'techEval', 'GET', '/api/v1/members?active=true');
+    expect(active.status).toBe(200);
+    expect(active.body.map((m: any) => m.id)).not.toContain(w.users.buyer.id);
+    expect(active.body.map((m: any) => m.id)).toContain(w.users.techEval.id);
+  });
+
+  it('ertelenen #9: kullanıcının değişikliğiyle iptal edilen tur o kişiyi gösterir (cancelledBy)', async () => {
+    const w = await fresh();
+    await approvers(w);
+    const c = await contract(w);
+    expect((await v2(w, 'techEval', c.familyId)).body.chain).toMatchObject({ status: 'OPEN', cancelledBy: null });
+    const put = await call(w, 'techEval', 'PUT', `/api/v1/contracts/${c.familyId}/fields`, { amount: '999.00' });
+    expect(put.status, JSON.stringify(put.body)).toBe(200);
+    const chain = (await v2(w, 'techEval', c.familyId)).body.chain;
+    expect(chain.status).toBe('CANCELLED');
+    expect(chain.cancelledBy).toMatchObject({ id: w.users.techEval.id });
+    expect(chain.cancelledBy.displayName).not.toBe('');
+  });
+
+  it('M8: /me etkin kiracının izinlerini döner', async () => {
+    const w = await fresh();
+    const me = await call(w, 'techEval', 'GET', '/api/v1/me');
+    expect(me.status).toBe(200);
+    expect(me.body.permissions).toContain('contract.read');
+    expect(me.body.permissions).not.toContain('template.manage');
   });
 });

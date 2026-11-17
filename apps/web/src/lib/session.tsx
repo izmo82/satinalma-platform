@@ -7,6 +7,8 @@ export interface Me {
   memberships: { tenantId: string; tenantName: string; roles: string[] }[];
   activeTenantId: string | null;
   roles: string[];
+  /** Etkin kiracıda rollerden türetilen izinler (sunucu, @sp/domain `can`). Eski sunucu yanıtında olmayabilir. */
+  permissions?: string[];
   /** Tedarikçi portalı kullanıcısı: yalnız davet edildiği teklif turlarını görür. */
   supplierPortal: boolean;
   companies: { id: string; name: string; country: string; default_currency: string }[];
@@ -116,6 +118,9 @@ const LEGACY_ROLE: Record<string, string> = {
 };
 export const v2Role = (r: string) => LEGACY_ROLE[r] ?? r;
 /** Oturumdaki rol (v2) verilenlerden biri mi? Eski kodla yazılmış denetimler eşlendiği v2 rolüne göre çalışır. */
+/** Sunucunun bildirdiği izin listesinde var mı. Liste yoksa (eski yanıt) izin varsayılır: sunucu yine yetki denetler. */
+export const hasPermission = (me: Me | null, permission: string) => !!me && (me.permissions ? me.permissions.includes(permission) : true);
+
 export const hasRole = (me: Me | null, ...roles: string[]) => {
   if (!me) return false;
   const wanted = new Set(roles.map(v2Role));

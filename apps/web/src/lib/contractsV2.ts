@@ -13,7 +13,10 @@ export interface ChainStep {
 }
 export interface Chain {
   id: string; status: 'OPEN' | 'APPROVED' | 'REJECTED' | 'CANCELLED'; submittedBy: Person; submittedAt: string; note: string | null;
-  closedAt: string | null; cancelReason: string | null; versionId: string; termsId: string | null; steps: ChainStep[];
+  closedAt: string | null; cancelReason: string | null;
+  /** İptali tetikleyen kişi (denetim izi); sistem kullanıcısı "Sistem" olarak gösterilir; türetilmiş iptalde null. */
+  cancelledBy?: Person | null;
+  versionId: string; termsId: string | null; steps: ChainStep[];
 }
 export interface ContractFields {
   projectId: string | null; supplierId: string | null; contractType: ContractType | null; contractTypeLabel: string | null; ownerUserId: string | null;

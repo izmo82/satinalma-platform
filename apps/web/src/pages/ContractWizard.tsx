@@ -239,7 +239,7 @@ function CompleteStep({ d, reload, onNext, onBack }: { d: ContractV2; reload: ()
   const [msg, setMsg] = useState<{ tone: 'info' | 'warn' | 'danger'; text: string } | null>(null);
   const projects = useResource<{ items: ProjectRow[] }>('/api/v1/projects');
   const suppliers = useResource<{ items: SupplierOption[] }>('/api/v1/supplier-options');
-  const members = useResource<Member[]>('/api/v1/members');
+  const members = useResource<Member[]>('/api/v1/members?active=true');
   const deps = useDepartments();
   const [candidate, setCandidate] = useState<{ legalName: string; vkn: string; contactEmail: string } | null>(null);
   const set = (k: string, v: string | boolean) => setF((x) => ({ ...x, [k]: v }));
@@ -279,7 +279,10 @@ function CompleteStep({ d, reload, onNext, onBack }: { d: ContractV2; reload: ()
   }
 
   const missing = d.missing;
-  const owners = (members.data ?? []).filter((m) => m.roles.some((r) => r === 'PROCUREMENT' || r === 'DEPARTMENT_USER'));
+  // Seçici yalnız etkin üyeleri listeler (M5); kayıtlı sorumlu artık etkin değilse adı kaybolmaz, ayrıca işaretlenir.
+  const activeOwners = (members.data ?? []).filter((m) => m.roles.some((r) => r === 'PROCUREMENT' || r === 'DEPARTMENT_USER'));
+  const owners = d.owner && members.data && !activeOwners.some((m) => m.id === d.owner!.id)
+    ? [{ id: d.owner.id, displayName: `${d.owner.displayName} (etkin değil)`, roles: [] as string[] }, ...activeOwners] : activeOwners;
   const sel = (k: string, label: string, opts: [string, string][], hint?: string, empty = 'Seçin') => (
     <Field label={label} hint={hint}>{(p) => <select className="input" disabled={ro} {...p} value={String(f[k])} onChange={(e) => set(k, e.target.value)}>
       <option value="">{empty}</option>{opts.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>}</Field>
@@ -424,7 +427,7 @@ export function PlannedList({ d }: { d: ContractV2 }) {
 
 function ReviewStep({ d, reload, onBack }: { d: ContractV2; reload: () => Promise<void>; onBack: () => void }) {
   const navigate = useNavigate();
-  const members = useResource<Member[]>('/api/v1/members');
+  const members = useResource<Member[]>('/api/v1/members?active=true');
   const [useDeputy, setUseDeputy] = useState(false);
   const [extra, setExtra] = useState<string[]>([]);
   const [adding, setAdding] = useState('');

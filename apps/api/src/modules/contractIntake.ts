@@ -394,10 +394,30 @@ async function plan(tx: Tx, ctx: TenantContext, f: FamilyRow, opts: { useDeputyF
   };
 }
 
+/**
+ * Görev 5 inceleme I3: adıma atanan her kişi (vekil kullanıldıysa vekil) sözleşmenin şirketini görmeli; yoksa sözleşmeyi açamaz,
+ * karar veremez ve zincir kilitlenir. Şirket kapsamı üyelikteki company_ids'tir (tüm şirketler = hepsi listede). Kural eligibleStepDeputy
+ * ile aynı (membershipCoversSql: 039 Yönetici kuralı ve geçerlilik aralığı). Gönderim ve önizleme aynı denetimi kullanır (final inceleme M6).
+ */
+async function companyAccessBlock(tx: Tx, ctx: TenantContext, f: { company_id: string },
+  steps: { userId: string; displayName: string; kind: StepKind; kindLabel: string }[]) {
+  const ids = [...new Set(steps.map((s) => s.userId))];
+  const covered = new Set((await tx.query<{ user_id: string }>(`SELECT m.user_id FROM memberships m WHERE m.tenant_id = $1 AND m.user_id = ANY($2::uuid[])
+    AND m.supplier_id IS NULL AND ${membershipCoversSql('m', '$3::uuid')}`, [ctx.tenantId, ids, f.company_id])).rows.map((x) => x.user_id));
+  const blocked = steps.find((s) => !covered.has(s.userId));
+  if (!blocked) return null;
+  return {
+    error: 'approver_no_company_access' as const, userId: blocked.userId, displayName: blocked.displayName, kind: blocked.kind, kindLabel: blocked.kindLabel,
+    message: `${blocked.displayName || 'Onaycı'} (${blocked.kindLabel}) bu sözleşmenin şirketine erişemiyor; onaya gönderilemez. Yöneticinizden kişinin şirket erişimini ya da onaycı atamasını düzeltmesini isteyin.`,
+  };
+}
+
 export async function approvalPreview(tx: Tx, ctx: TenantContext, familyId: string, opts: { useDeputyForHead?: boolean; extraApproverIds?: string[] }) {
   const f = await loadFamily(tx, familyId);
   const r = await plan(tx, ctx, f, opts);
   if (!r.ok) return r;
+  const blocked = await companyAccessBlock(tx, ctx, f, r.steps);
+  if (blocked) return { ok: false as const, ...blocked };
   return { ok: true as const, departmentId: r.departmentId, steps: r.steps.map(({ deputyUserId: _d, ...s }) => s) };
 }
 
@@ -429,18 +449,8 @@ export async function submitContract(tx: Tx, ctx: TenantContext, familyId: strin
   if (!f.version_id || !f.terms_id) throw unprocessable('missing_fields', 'Koşullar girilmemiş.', { missing: [] });
   const r = await plan(tx, ctx, f, body);
   if (!r.ok) throw conflict(r.error, r.message, { kind: r.kind, kindLabel: r.kindLabel });
-  // Görev 5 inceleme I3: adıma atanan her kişi (vekil kullanıldıysa vekil) sözleşmenin şirketini görmeli; yoksa sözleşmeyi açamaz,
-  // karar veremez ve zincir kilitlenir. Şirket kapsamı üyelikteki company_ids'tir (tüm şirketler = hepsi listede).
-  const ids = [...new Set(r.steps.map((s) => s.userId))];
-  // Kural eligibleStepDeputy ile aynı (membershipCoversSql: 039 Yönetici kuralı ve geçerlilik aralığı).
-  const covered = new Set((await tx.query<{ user_id: string }>(`SELECT m.user_id FROM memberships m WHERE m.tenant_id = $1 AND m.user_id = ANY($2::uuid[])
-    AND m.supplier_id IS NULL AND ${membershipCoversSql('m', '$3::uuid')}`, [ctx.tenantId, ids, f.company_id])).rows.map((x) => x.user_id));
-  const blocked = r.steps.find((s) => !covered.has(s.userId));
-  if (blocked) {
-    throw conflict('approver_no_company_access',
-      `${blocked.displayName || 'Onaycı'} (${blocked.kindLabel}) bu sözleşmenin şirketine erişemiyor; onaya gönderilemez. Yöneticinizden kişinin şirket erişimini ya da onaycı atamasını düzeltmesini isteyin.`,
-      { userId: blocked.userId, displayName: blocked.displayName, kind: blocked.kind, kindLabel: blocked.kindLabel });
-  }
+  const blocked = await companyAccessBlock(tx, ctx, f, r.steps);
+  if (blocked) throw conflict(blocked.error, blocked.message, { userId: blocked.userId, displayName: blocked.displayName, kind: blocked.kind, kindLabel: blocked.kindLabel });
   const note = body.note?.trim() || null;
   const chain = (await tx.query<{ id: string }>(`INSERT INTO contract_approval_chains (tenant_id, family_id, version_id, terms_id, submitted_by, note)
     VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`, [ctx.tenantId, familyId, f.version_id, f.terms_id, ctx.userId, note])).rows[0]!;
@@ -511,6 +521,12 @@ export async function getContractV2(tx: Tx, ctx: TenantContext, familyId: string
   const scheduled = (await tx.query<{ id: string; kind: 'END' | 'NOTICE'; offset_days: number; due_on: string }>(
     `SELECT id, kind, offset_days, due_on::text FROM contract_reminders WHERE family_id = $1 ORDER BY due_on, kind`, [familyId])).rows;
 
+  // Final inceleme (ertelenen #9): iptal edilmiş turu kimin değişikliği iptal ettirdi — denetim izindeki eylemi yapan (sistem bağlamında
+  // sistem kullanıcısı). Onaylı tur içerik değiştiği için türetilmiş olarak iptal sayılıyorsa denetim kaydı yoktur: null.
+  const cancelledBy = latest?.outcome === 'CANCELLED' ? (await tx.query<{ id: string; display_name: string | null }>(
+    `SELECT a.actor_user_id AS id, u.display_name FROM audit_events a LEFT JOIN users u ON u.id = a.actor_user_id
+     WHERE a.action = 'contract.approval.cancelled' AND a.entity_type = 'contract_family' AND a.entity_id = $1 AND a.data->>'chainId' = $2
+     ORDER BY a.id DESC LIMIT 1`, [familyId, latest.id])).rows[0] ?? null : null;
   const canEdit = editAllowed(ctx, f) && !approvedCurrent(f, chains);
   const openChain = chains.some((c) => !c.closed_at);
   const person = (id: string | null, name: string | null) => (id ? { id, displayName: name ?? '' } : null);
@@ -532,7 +548,8 @@ export async function getContractV2(tx: Tx, ctx: TenantContext, familyId: string
     legacy: st.legacy,
     chain: latest && {
       id: latest.id, status: latest.closed_at ? latest.outcome! : 'OPEN', submittedBy: person(latest.submitted_by, latest.submitted_by_name),
-      submittedAt: latest.submitted_at, note: latest.note, closedAt: latest.closed_at, cancelReason: latest.cancel_reason, versionId: latest.version_id, termsId: latest.terms_id,
+      submittedAt: latest.submitted_at, note: latest.note, closedAt: latest.closed_at, cancelReason: latest.cancel_reason,
+      cancelledBy: cancelledBy ? person(cancelledBy.id, cancelledBy.display_name) : null, versionId: latest.version_id, termsId: latest.terms_id,
       steps: steps.map((s) => ({ id: s.id, order: s.step_order, kind: s.kind, kindLabel: STEP_KIND_TR[s.kind], assignedUser: person(s.assigned_user_id, s.assigned_name),
         viaDeputy: s.via_deputy, deputyUser: person(s.deputy_user_id, s.deputy_name), decision: s.decision, decidedAt: s.decided_at,
         decidedBy: person(s.decided_by, s.decided_name), reason: s.reason, current: currentStep?.id === s.id })),

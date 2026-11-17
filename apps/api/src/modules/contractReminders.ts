@@ -29,6 +29,10 @@ export const EMAIL_NOT_CONFIGURED_LABEL = 'Gönderilmedi — e-posta kanalı yap
 const EMAIL_STATUS_TR: Record<string, string> = {
   NOT_CONFIGURED: EMAIL_NOT_CONFIGURED_LABEL, QUEUED: 'Kuyrukta (henüz gönderilmedi)', SENT: 'Gönderildi', FAILED: 'Gönderilemedi',
 };
+/** Rol kuyruğu adı; bilinmeyen rol ham kod olarak gösterilmez (final inceleme M3). */
+const ROLE_QUEUE_TR: Record<string, string> = {
+  PROCUREMENT: 'Satınalma', DEPARTMENT_USER: 'Departman kullanıcıları', LEGAL: 'Hukuk', FINANCE: 'Finans', ADMIN: 'Yönetici', AUDITOR: 'Denetçi',
+};
 const KIND_TR: Record<'END' | 'NOTICE', string> = { END: 'Bitiş hatırlatıcısı', NOTICE: 'Fesih ihbarı hatırlatıcısı' };
 export const DECISION_TR: Record<string, string> = {
   RENEW: 'Yenilenecek', TERMINATE: 'Sonlandırılacak', RENEGOTIATE: 'Yeniden müzakere edilecek', NEW_PROJECT: 'Yeni proje açıldı',
@@ -346,7 +350,7 @@ export async function getReminders(tx: Tx, ctx: TenantContext, familyId: string)
       skippedReason: state === 'SKIPPED' ? (r.job_result?.skipped as string | undefined) ?? null : null,
       tasks: ts.map((t) => ({ id: t.id, status: t.status, closedAt: t.closed_at,
         recipient: t.assignee_user_id ? { type: 'USER' as const, userId: t.assignee_user_id, displayName: t.name ?? '' }
-          : { type: 'ROLE' as const, role: t.assignee_role, label: t.assignee_role === 'PROCUREMENT' ? 'Satınalma' : t.assignee_role } })),
+          : { type: 'ROLE' as const, role: t.assignee_role, label: ROLE_QUEUE_TR[t.assignee_role] ?? 'Rol kuyruğu' } })),
       emails: mails.filter((m) => m.related_id === r.id).map((m) => ({ id: m.id, toUser: m.to_user_id ? { id: m.to_user_id, displayName: m.name ?? '' } : null,
         status: m.status, statusLabel: EMAIL_STATUS_TR[m.status] ?? m.status, createdAt: m.created_at, sentAt: m.sent_at })),
     };
