@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { addMonths, can, noticeDeadline, normalizeRoles, reminderDates, type NoticeUnit, type NonWorkingDayRule, type Reminder } from '@sp/domain';
-import type { TenantContext, Tx } from '../db.ts';
+import type pg from 'pg';
+import { withTenant, withoutTenant, type TenantContext, type Tx } from '../db.ts';
 import { audit } from '../audit.ts';
 import { closeTasks, openTask } from '../tasks.ts';
 import { notFound, unprocessable } from '../errors.ts';
@@ -10,7 +11,8 @@ import { currentApprovers } from './approvers.ts';
  * v2 Faz 3 (D108+, R7) Görev 6: sözleşme bitiş ve ihbar hatırlatıcıları + e-posta kuyruğu.
  *
  * - Kurulum (`scheduleContractReminders`): onay zinciri tamamlanınca (Görev 5) ya da eski kayıtta koşullar doğrulanınca
- *   (`contractTerms.verifyTerms`). Ailenin güncel sürümünün son koşul revizyonu için kiracı süreleriyle (varsayılan 90,60,30,7)
+ *   (`contractTerms.verifyTerms`; geri doldurma: `backfillLegacyReminders`, gece sistem işi). Yürürlükteki koşul revizyonu
+ *   (`effectiveTermsId`: en yeni onaylı zincirin koşulu; eski kayıtta en yeni doğrulanmış koşul) için kiracı süreleriyle (varsayılan 90,60,30,7)
  *   `contract_reminders` satırı ve `contract.end_reminder` işi yazılır. İş anahtarı `reminder:{terms}:{kind}:{offset}`; aynı koşul
  *   revizyonu ikinci kez kurulmaz (süre ayarı değişse de: değişiklik yalnız sonraki kurulumları etkiler).
  * - İşçi (`processEndReminder`): sözleşme sorumlusu ve departman sorumlusuna kişisel görev (İşlerim) + `email_outbox` satırı;
@@ -37,24 +39,58 @@ export const emailChannelConfigured = () => false;
 const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' }).format(new Date());
 const trDate = (d: string) => d.split('-').reverse().join('.');
 const daysBetween = (from: string, to: string) => Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000);
+export const SYSTEM_USER = '00000000-0000-0000-0000-000000000000';
 export const taskPrefix = (familyId: string) => `contract-reminder:${familyId}:`;
 
 interface FamilyRow {
   id: string; code: string; title: string; company_id: string; department_id: string | null; owner_user_id: string | null; indefinite: boolean;
   intake_flow: boolean; termination_notice_amount: number | null; termination_notice_unit: NoticeUnit | null;
-  version_id: string | null; terms_id: string | null; start_date: string | null; end_date: string | null; auto_renewal: boolean | null;
+  version_id: string | null; version_no: number | null; revision: number | null; version_current: boolean | null; latest_of_version: boolean | null;
+  terms_id: string | null; start_date: string | null; end_date: string | null; auto_renewal: boolean | null;
   notice_amount: number | null; notice_unit: NoticeUnit | null; non_working_day_rule: NonWorkingDayRule | null; verified_at: Date | null;
 }
 
-async function loadFamily(tx: Tx, familyId: string): Promise<FamilyRow | null> {
+/**
+ * Aile + seçilen koşul revizyonu. `termsId` verilmezse güncel (geçersiz kılınmamış) sürümün son revizyonu (önizleme için).
+ * `version_current`/`latest_of_version`: mevcut ihbar uyarısının bu koşulda hâlâ çalışıp çalışmayacağını belirler.
+ */
+async function loadFamily(tx: Tx, familyId: string, termsId?: string | null): Promise<FamilyRow | null> {
+  const pick = termsId
+    ? `SELECT x.* FROM contract_terms x JOIN contract_versions xv ON xv.id = x.contract_version_id WHERE x.id = $2 AND xv.family_id = f.id`
+    : `SELECT x.* FROM contract_versions xv JOIN contract_terms x ON x.contract_version_id = xv.id
+       WHERE xv.family_id = f.id AND xv.superseded_by_id IS NULL ORDER BY xv.version_no DESC, x.revision DESC LIMIT 1`;
   return (await tx.query<FamilyRow>(`SELECT f.id, f.code, f.title, f.company_id, f.department_id, f.owner_user_id, f.indefinite, f.intake_flow,
-      f.termination_notice_amount, f.termination_notice_unit, cv.id AS version_id,
+      f.termination_notice_amount, f.termination_notice_unit, t.contract_version_id AS version_id, v.version_no, t.revision,
+      (v.superseded_by_id IS NULL) AS version_current,
+      NOT EXISTS (SELECT 1 FROM contract_terms y WHERE y.contract_version_id = t.contract_version_id AND y.revision > t.revision) AS latest_of_version,
       t.id AS terms_id, t.start_date::text, t.end_date::text, t.auto_renewal, t.notice_amount, t.notice_unit, t.non_working_day_rule, t.verified_at
     FROM contract_families f
-    LEFT JOIN LATERAL (SELECT v.id FROM contract_versions v WHERE v.family_id = f.id AND v.superseded_by_id IS NULL ORDER BY v.version_no DESC LIMIT 1) cv ON true
-    LEFT JOIN LATERAL (SELECT x.* FROM contract_terms x WHERE x.contract_version_id = cv.id ORDER BY x.revision DESC LIMIT 1) t ON true
-    WHERE f.id = $1`, [familyId])).rows[0] ?? null;
+    LEFT JOIN LATERAL (${pick}) t ON true
+    LEFT JOIN contract_versions v ON v.id = t.contract_version_id
+    WHERE f.id = $1`, termsId ? [familyId, termsId] : [familyId])).rows[0] ?? null;
 }
+
+/**
+ * Yürürlükteki koşul revizyonu (Görev 6 inceleme I1): en yeni (sürüm no, revizyon) APPROVED zincirin koşulu; onaylı zincir yoksa ve
+ * aile eski kayıtsa (intake_flow false) en yeni doğrulanmış koşul. Onaydan sonra eklenen, henüz onaylanmamış zeyilname sürümü
+ * yürürlükteki koşulu değiştirmez; hatırlatıcılar onaylı koşulla sürer.
+ */
+export async function effectiveTermsId(tx: Tx, familyId: string): Promise<string | null> {
+  const approved = (await tx.query<{ terms_id: string }>(`SELECT c.terms_id FROM contract_approval_chains c JOIN contract_terms t ON t.id = c.terms_id
+    JOIN contract_versions v ON v.id = t.contract_version_id WHERE c.family_id = $1 AND c.outcome = 'APPROVED'
+    ORDER BY v.version_no DESC, t.revision DESC LIMIT 1`, [familyId])).rows[0];
+  if (approved) return approved.terms_id;
+  const legacy = (await tx.query<{ id: string }>(`SELECT t.id FROM contract_families f JOIN contract_versions v ON v.family_id = f.id
+    JOIN contract_terms t ON t.contract_version_id = v.id WHERE f.id = $1 AND NOT f.intake_flow AND t.verified_at IS NOT NULL
+    ORDER BY v.version_no DESC, t.revision DESC LIMIT 1`, [familyId])).rows[0];
+  return legacy?.id ?? null;
+}
+
+/** Mevcut ihbar uyarısı (`contract.notice_reminder`) bu koşulda çalışır mı: doğrulanmış, süreli, bitiş + ihbar süresi var, sürümün güncel son revizyonu. */
+const existingNoticeCovers = (f: FamilyRow) => !f.indefinite && f.verified_at != null && f.end_date != null && f.notice_amount != null
+  && !!f.version_current && !!f.latest_of_version;
+const includesProcurement = (f: FamilyRow, kind: 'END' | 'NOTICE', offset: number) =>
+  (kind === 'END' ? offset === 30 || offset === 7 : true) && !(kind === 'NOTICE' && existingNoticeCovers(f));
 
 async function holidays(tx: Tx): Promise<string[]> {
   return (await tx.query<{ day: string }>(`SELECT day::text FROM tenant_holidays ORDER BY day`)).rows.map((r) => r.day);
@@ -94,20 +130,22 @@ export async function plannedReminders(tx: Tx, f: FamilyRow, opts: { offsets?: n
   const nb = f.terms_id ? noticeBasis(f, await holidays(tx), day) : null;
   const list: Reminder[] = f.terms_id ? reminderDates({ endDate: f.end_date, indefinite: f.indefinite, autoRenewal: !!f.auto_renewal, noticeDeadline: nb?.deadline ?? null,
     offsets, ...(opts.collapsePast ? { today: day } : {}) }) : [];
-  return { offsets, notice: nb, list };
+  return { offsets, notice: nb, list: list.map((r) => ({ ...r, includeProcurement: includesProcurement(f, r.kind, r.offset) })) };
 }
 
 // --- Kurulum ---------------------------------------------------------------------------------------------------------------
 
 /**
- * R7 kurulumu. Ailenin güncel sürümünün son koşul revizyonu için hatırlatıcıları yazar ve işlerini kuyruğa koyar.
- * İdempotent: bu koşul revizyonu için hatırlatıcı zaten varsa yenisini yazmaz (mevcutları döner). Koşul yoksa ya da tarih yoksa boş döner.
+ * R7 kurulumu. Yürürlükteki koşul revizyonu (`effectiveTermsId`) için hatırlatıcıları yazar ve işlerini kuyruğa koyar. Görev 5 bunu
+ * zinciri APPROVED kapattıktan sonra aynı işlemde çağırır. İdempotent: bu koşul revizyonu için hatırlatıcı zaten varsa yenisini
+ * yazmaz (mevcutları döner). Yürürlükte koşul yoksa ya da tarih yoksa boş döner (denetim kaydı da yazılmaz).
  */
 export async function scheduleContractReminders(tx: Tx, ctx: TenantContext, familyId: string) {
   await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`contract-reminders:${familyId}`]);
-  const f = await loadFamily(tx, familyId);
-  if (!f) throw notFound();
-  if (!f.terms_id) return { termsId: null, created: false, reminders: [] as { id: string; kind: 'END' | 'NOTICE'; offset: number; dueOn: string }[] };
+  if (!(await tx.query(`SELECT 1 FROM contract_families WHERE id = $1`, [familyId])).rowCount) throw notFound();
+  const eff = await effectiveTermsId(tx, familyId);
+  const f = eff ? await loadFamily(tx, familyId, eff) : null;
+  if (!f || !f.terms_id) return { termsId: null, created: false, reminders: [] as { id: string; kind: 'END' | 'NOTICE'; offset: number; dueOn: string }[] };
   const existing = (await tx.query<{ id: string; kind: 'END' | 'NOTICE'; offset_days: number; due_on: string }>(
     `SELECT id, kind, offset_days, due_on::text FROM contract_reminders WHERE terms_id = $1 ORDER BY due_on, kind`, [f.terms_id])).rows;
   if (existing.length) return { termsId: f.terms_id, created: false, reminders: existing.map((r) => ({ id: r.id, kind: r.kind, offset: r.offset_days, dueOn: r.due_on })) };
@@ -125,11 +163,13 @@ export async function scheduleContractReminders(tx: Tx, ctx: TenantContext, fami
     await tx.query(`INSERT INTO jobs (tenant_id, company_id, kind, idempotency_key, payload, requested_by, run_after)
       VALUES ($1,$2,'contract.end_reminder',$3,$4,$5,$6) ON CONFLICT (tenant_id, kind, idempotency_key) DO NOTHING`,
       [ctx.tenantId, f.company_id, `reminder:${f.terms_id}:${r.kind}:${r.offset}`,
-        { reminderId: id, familyId, termsId: f.terms_id, kind: r.kind, offset: r.offset, dueOn: r.date }, ctx.userId, runAt]);
+        { reminderId: id, familyId, termsId: f.terms_id, kind: r.kind, offset: r.offset, dueOn: r.date }, ctx.userId === SYSTEM_USER ? null : ctx.userId, runAt]);
     out.push({ id, kind: r.kind, offset: r.offset, dueOn: r.date });
   }
-  await audit(tx, ctx, 'contract.reminders.scheduled', 'contract_family', familyId,
-    { termsId: f.terms_id, offsets, notice, reminders: out.map((r) => ({ kind: r.kind, offset: r.offset, dueOn: r.dueOn })) });
+  if (out.length) {
+    await audit(tx, ctx, 'contract.reminders.scheduled', 'contract_family', familyId,
+      { termsId: f.terms_id, offsets, notice, reminders: out.map((r) => ({ kind: r.kind, offset: r.offset, dueOn: r.dueOn })) });
+  }
   return { termsId: f.terms_id, created: out.length > 0, reminders: out };
 }
 
@@ -160,11 +200,17 @@ export async function processEndReminder(tx: Tx, ctx: TenantContext, jobId: stri
     `SELECT id, family_id, terms_id, kind, offset_days, due_on::text FROM contract_reminders WHERE id = $1`, [j.payload.reminderId])).rows[0];
   if (!r) return finish({ skipped: 'reminder_not_visible' });
   await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`contract-reminders:${r.family_id}`]);
-  const f = await loadFamily(tx, r.family_id);
-  if (!f) return finish({ skipped: 'contract_not_visible' });
-  // Koşul değiştiyse (yeni revizyon ya da yeni sürüm) ya da karar girildiyse hatırlatıcı sessizce eskir.
+  const f = await loadFamily(tx, r.family_id, r.terms_id);
+  if (!f || !f.terms_id) return finish({ skipped: 'contract_not_visible' });
+  // Karar girildiyse ya da DAHA YENİ bir yürürlükteki koşul (yeni onay / yeni doğrulanmış eski kayıt koşulu) varsa hatırlatıcı sessizce eskir.
+  // Onaylanmamış zeyilname sürümü yürürlükteki koşulu değiştirmez: hatırlatıcı onaylı koşulla çalışır.
   const decided = (await tx.query(`SELECT 1 FROM renewal_decisions WHERE terms_id = $1`, [r.terms_id])).rowCount;
-  if (f.terms_id !== r.terms_id || decided) return finish({ skipped: decided ? 'decided' : 'obsolete' });
+  if (decided) return finish({ skipped: 'decided' });
+  const eff = await effectiveTermsId(tx, r.family_id);
+  if (eff && eff !== r.terms_id) {
+    const e = await loadFamily(tx, r.family_id, eff);
+    if (e && (e.version_no! > f.version_no! || (e.version_no === f.version_no && e.revision! > f.revision!))) return finish({ skipped: 'obsolete', effectiveTermsId: eff });
+  }
 
   const day = today();
   const h = await holidays(tx);
@@ -172,9 +218,8 @@ export async function processEndReminder(tx: Tx, ctx: TenantContext, jobId: stri
   const target = r.kind === 'END' ? f.end_date : nb?.deadline ?? null;
   if (!target) return finish({ skipped: 'obsolete' });
   const left = daysBetween(day, target);
-  // Mevcut ihbar uyarısı (doğrulanmış koşul + bitiş + ihbar süresi) Satınalma kuyruğunu zaten uyarıyor: ikinci kuyruk görevi açılmaz.
-  const legacyNoticeCovers = r.kind === 'NOTICE' && !f.indefinite && f.verified_at != null && f.end_date != null && f.notice_amount != null;
-  const includeProcurement = (r.kind === 'END' ? r.offset_days === 30 || r.offset_days === 7 : true) && !legacyNoticeCovers;
+  // Mevcut ihbar uyarısı bu koşulda çalışıyorsa Satınalma kuyruğunu zaten uyarıyor: ikinci kuyruk görevi açılmaz.
+  const includeProcurement = includesProcurement(f, r.kind, r.offset_days);
 
   const owner = await activeMember(tx, ctx.tenantId, f.owner_user_id);
   const approvers = await currentApprovers(tx, f.department_id ?? '00000000-0000-0000-0000-000000000000');
@@ -260,8 +305,10 @@ export async function putSettings(tx: Tx, ctx: TenantContext, body: { offsets: n
 // --- Okuma -----------------------------------------------------------------------------------------------------------------
 
 export async function getReminders(tx: Tx, ctx: TenantContext, familyId: string) {
-  const f = await loadFamily(tx, familyId);
-  if (!f) throw notFound();
+  if (!(await tx.query(`SELECT 1 FROM contract_families WHERE id = $1`, [familyId])).rowCount) throw notFound();
+  // Yürürlükteki koşul (onaylı / eski kayıtta doğrulanmış); yoksa önizleme için güncel sürümün son koşulu.
+  const eff = await effectiveTermsId(tx, familyId);
+  const f = (await loadFamily(tx, familyId, eff))!;
   const day = today();
   const plan = await plannedReminders(tx, f, { day });
   const rows = (await tx.query<{ id: string; terms_id: string; kind: 'END' | 'NOTICE'; offset_days: number; due_on: string; task_ids: string[]; created_at: Date;
@@ -284,6 +331,8 @@ export async function getReminders(tx: Tx, ctx: TenantContext, familyId: string)
   const approved = f.terms_id && f.version_id ? !!(await tx.query(`SELECT 1 FROM contract_approval_chains WHERE family_id = $1 AND version_id = $2 AND terms_id = $3
     AND outcome = 'APPROVED'`, [familyId, f.version_id, f.terms_id])).rowCount : false;
 
+  const termsRows = new Map<string, FamilyRow>([[f.terms_id ?? '', f]]);
+  for (const tid of new Set(rows.map((r) => r.terms_id))) if (!termsRows.has(tid)) termsRows.set(tid, (await loadFamily(tx, familyId, tid))!);
   const reminders = rows.map((r) => {
     const ts = r.task_ids.map((id) => tasks.get(id)).filter((t): t is NonNullable<typeof t> => !!t);
     const fired = r.task_ids.length > 0;
@@ -291,7 +340,7 @@ export async function getReminders(tx: Tx, ctx: TenantContext, familyId: string)
       : r.job_status === 'SUCCEEDED' ? 'SKIPPED' : r.job_status === 'DEAD' || r.job_status === 'BLOCKED' ? 'FAILED' : 'PLANNED';
     return {
       id: r.id, termsId: r.terms_id, current: r.terms_id === f.terms_id, kind: r.kind, kindLabel: KIND_TR[r.kind], offset: r.offset_days, dueOn: r.due_on,
-      includeProcurement: r.kind === 'NOTICE' || r.offset_days === 30 || r.offset_days === 7, state, jobStatus: r.job_status,
+      includeProcurement: includesProcurement(termsRows.get(r.terms_id) ?? f, r.kind, r.offset_days), state, jobStatus: r.job_status,
       skippedReason: state === 'SKIPPED' ? (r.job_result?.skipped as string | undefined) ?? null : null,
       tasks: ts.map((t) => ({ id: t.id, status: t.status, closedAt: t.closed_at,
         recipient: t.assignee_user_id ? { type: 'USER' as const, userId: t.assignee_user_id, displayName: t.name ?? '' }
@@ -301,7 +350,7 @@ export async function getReminders(tx: Tx, ctx: TenantContext, familyId: string)
     };
   });
   return {
-    familyId, termsId: f.terms_id, scheduled: rows.some((r) => r.terms_id === f.terms_id),
+    familyId, termsId: f.terms_id, contractVersionId: f.version_id, effective: eff != null, scheduled: rows.some((r) => r.terms_id === f.terms_id),
     offsets: plan.offsets,
     basis: { endDate: f.end_date, indefinite: f.indefinite, autoRenewal: f.terms_id ? !!f.auto_renewal : null,
       noticeDeadline: plan.notice?.deadline ?? null, noticeBasis: plan.notice?.basis ?? null, anniversary: plan.notice?.anniversary ?? null },
@@ -314,7 +363,56 @@ export async function getReminders(tx: Tx, ctx: TenantContext, familyId: string)
       decide: can(ctx.roles, 'contract.renewal.decide') && !!f.terms_id && !decision && (f.verified_at != null || approved),
       settings: can(ctx.roles, 'reminder.settings'),
     },
-    contractVersionId: f.version_id,
   };
 }
 
+
+// --- Sistem işleri (Görev 6 inceleme M1, I3) -------------------------------------------------------------------------------
+
+/**
+ * Sistem bağlamı: kuran kullanıcıya bağlı değildir (kişi ayrılsa ya da askıya alınsa da hatırlatıcı çalışır). Rol yok; kapsam iş satırının
+ * şirketi (ya da kiracının şirketleri) ve tüm departmanlar. `retention.purge` ile aynı desen.
+ */
+export const systemContext = (tenantId: string, companyIds: string[], jobId: string): TenantContext =>
+  ({ tenantId, userId: SYSTEM_USER, roles: [], companyIds, departmentIds: [], allDepartments: true, correlationId: `job-${jobId}` });
+
+/** Geri doldurma: eski kayıt, onay zinciri yok, güncel sürümün son koşulu doğrulanmış ve hiç hatırlatıcısı olmayan aileler. İdempotent. */
+export async function backfillLegacyReminders(tx: Tx, ctx: TenantContext) {
+  const fams = (await tx.query<{ id: string }>(`SELECT f.id FROM contract_families f
+    WHERE NOT f.intake_flow
+      AND NOT EXISTS (SELECT 1 FROM contract_approval_chains c WHERE c.family_id = f.id)
+      AND NOT EXISTS (SELECT 1 FROM contract_reminders r WHERE r.family_id = f.id)
+      AND EXISTS (SELECT 1 FROM contract_versions v
+        JOIN LATERAL (SELECT t.verified_at FROM contract_terms t WHERE t.contract_version_id = v.id ORDER BY t.revision DESC LIMIT 1) lt ON true
+        WHERE v.family_id = f.id AND v.superseded_by_id IS NULL AND lt.verified_at IS NOT NULL)
+    ORDER BY f.created_at, f.id`)).rows;
+  let scheduled = 0;
+  for (const f of fams) if ((await scheduleContractReminders(tx, ctx, f.id)).created) scheduled++;
+  return { candidates: fams.length, scheduled };
+}
+
+/** Gece/başlangıç: geri doldurulacak ailesi olan her kiracıya günde bir `contract.reminder_backfill` işi (İstanbul günü anahtarlı). */
+export async function enqueueReminderBackfills(pool: pg.Pool, now: Date): Promise<number> {
+  const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' }).format(now);
+  const tenants = await withoutTenant(pool, async (c) =>
+    (await c.query<{ tenant_id: string }>(`SELECT t AS tenant_id FROM contract_reminder_backfill_tenants() t`)).rows);
+  let n = 0;
+  for (const { tenant_id } of tenants) {
+    const ctx = systemContext(tenant_id, [], `backfill-${day}`);
+    n += await withTenant(pool, ctx, async (tx) => (await tx.query(`INSERT INTO jobs (tenant_id, kind, idempotency_key, payload, requested_by)
+      VALUES ($1,'contract.reminder_backfill',$2,$3,NULL) ON CONFLICT (tenant_id, kind, idempotency_key) DO NOTHING`,
+      [tenant_id, `reminder-backfill:${day}`, { day }])).rowCount ?? 0);
+  }
+  return n;
+}
+
+export async function processReminderBackfill(pool: pg.Pool, tenantId: string, jobId: string) {
+  const companyIds = await withTenant(pool, systemContext(tenantId, [], jobId), async (tx) =>
+    (await tx.query<{ id: string }>(`SELECT id FROM legal_entities ORDER BY id`)).rows.map((r) => r.id));
+  const ctx = systemContext(tenantId, companyIds, jobId);
+  return withTenant(pool, ctx, async (tx) => {
+    const r = await backfillLegacyReminders(tx, ctx);
+    await tx.query(`UPDATE jobs SET status = 'SUCCEEDED', result = $2, updated_at = now() WHERE id = $1`, [jobId, r]);
+    return r;
+  });
+}

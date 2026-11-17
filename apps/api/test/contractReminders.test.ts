@@ -20,9 +20,9 @@ const fresh = () => createSyntheticWorld(h.owner, `-${randomUUID().slice(0, 8)}`
 const parse = (b: string) => { try { return b ? JSON.parse(b) : null; } catch { return b; } };
 const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' }).format(new Date());
 
-async function call(w: SyntheticWorld, who: UserKey, method: string, url: string, body?: unknown) {
+async function call(w: SyntheticWorld, who: UserKey, method: string, url: string, body?: unknown, extra: Record<string, string> = {}) {
   const token = await auth.issue(`dev|${w.users[who].email}`);
-  const res = await h.app.inject({ method: method as any, url, headers: { authorization: `Bearer ${token}`, 'x-tenant-id': w.tenantA },
+  const res = await h.app.inject({ method: method as any, url, headers: { authorization: `Bearer ${token}`, 'x-tenant-id': w.tenantA, ...extra },
     ...(body !== undefined ? { payload: body as any } : {}) });
   return { status: res.statusCode, body: parse(res.body) };
 }
@@ -59,14 +59,23 @@ const fields = (w: SyntheticWorld, over: Record<string, unknown> = {}) => ({
   supplierId: w.suppliers.s1, contractType: 'MAINTENANCE', ownerUserId: w.users.techEval.id, signedOn: '2026-11-01',
   currency: 'TRY', amount: '120000.00', limitBasis: 'NET', startDate: '2026-11-01', endDate: '2028-12-31', autoRenewal: false, ...over,
 });
-/** Ekleme akışıyla sözleşme (techEval ekler, sorumlu techEval); alanlar dolu. */
-async function contract(w: SyntheticWorld, over: Record<string, unknown> = {}) {
+/**
+ * Görev 5 (karar ucu) henüz yok: onaylı zincir sahibi bağlantısıyla yazılır (zincir = sürüm + koşul revizyonu). Yürürlükteki koşul budur.
+ */
+async function approve(w: SyntheticWorld, familyId: string, versionId: string, termsId: string) {
+  const c = (await h.owner.query(`INSERT INTO contract_approval_chains (tenant_id, family_id, version_id, terms_id, submitted_by) VALUES ($1,$2,$3,$4,$5) RETURNING id`,
+    [w.tenantA, familyId, versionId, termsId, w.users.techEval.id])).rows[0].id;
+  await h.owner.query(`UPDATE contract_approval_chains SET closed_at = now(), outcome = 'APPROVED' WHERE id = $1`, [c]);
+}
+/** Ekleme akışıyla sözleşme (techEval ekler, sorumlu techEval); alanlar dolu; varsayılan olarak onaylı. */
+async function contract(w: SyntheticWorld, over: Record<string, unknown> = {}, opts: { approved?: boolean } = { approved: true }) {
   const projectId = await project(w);
   const documentVersionId = await uploadContract(w);
   const d = await call(w, 'techEval', 'POST', '/api/v1/contract-drafts', { documentVersionId, projectId });
   expect(d.status, JSON.stringify(d.body)).toBe(201);
   const f = await call(w, 'techEval', 'PUT', `/api/v1/contracts/${d.body.familyId}/fields`, fields(w, over));
   expect(f.status, JSON.stringify(f.body)).toBe(200);
+  if (opts.approved !== false) await approve(w, d.body.familyId, d.body.contractVersionId, f.body.fields.termsId);
   return { familyId: d.body.familyId as string, cv: d.body.contractVersionId as string, termsId: f.body.fields.termsId as string };
 }
 const procurementCtx = (w: SyntheticWorld): TenantContext => ({ userId: w.users.legal.id, tenantId: w.tenantA, roles: ['PROCUREMENT'],
@@ -117,9 +126,9 @@ describe('kurulum (R7)', () => {
 
     const g = await call(w, 'techEval', 'GET', `/api/v1/contracts/${c.familyId}/reminders`);
     expect(g.status, JSON.stringify(g.body)).toBe(200);
-    expect(g.body).toMatchObject({ familyId: c.familyId, termsId: c.termsId, scheduled: true, offsets: [90, 60, 30, 7],
+    expect(g.body).toMatchObject({ familyId: c.familyId, termsId: c.termsId, contractVersionId: c.cv, effective: true, scheduled: true, offsets: [90, 60, 30, 7],
       basis: { endDate: '2028-12-31', indefinite: false, autoRenewal: false, noticeDeadline: null },
-      emailChannel: { configured: false, label: EMAIL_NOT_CONFIGURED_LABEL }, decision: null, can: { decide: false, settings: false } });
+      emailChannel: { configured: false, label: EMAIL_NOT_CONFIGURED_LABEL }, decision: null, can: { decide: false, settings: false } }); // techEval: karar yetkisi yok
     expect(g.body.planned.map((p: any) => p.date)).toEqual(['2028-10-02', '2028-11-01', '2028-12-01', '2028-12-24']);
     expect(g.body.reminders.map((x: any) => [x.offset, x.state, x.includeProcurement])).toEqual([[90, 'PLANNED', false], [60, 'PLANNED', false], [30, 'PLANNED', true], [7, 'PLANNED', true]]);
     // Başka kiracı göremez.
@@ -188,9 +197,7 @@ describe('işçi: görev + e-posta kuyruğu', () => {
     const after = (await reminderTasks(c.familyId)).rows;
     expect(after.filter((t) => t.status === 'OPEN').map((t) => [t.dedupe_key.split(':').pop(), t.severity])).toEqual([['7', 'CRITICAL'], ['7', 'CRITICAL'], ['7', 'CRITICAL']]);
 
-    // Karar: doğrulanmamış ve onaylanmamış koşulda 409; doğrulanınca "Yeni proje açıldı" kabul, bütün hatırlatıcı görevleri kapanır.
-    expect((await call(w, 'legal', 'POST', `/api/v1/contract-versions/${c.cv}/renewal-decision`, { decision: 'NEW_PROJECT', rationale: 'Yeni ihtiyaç için proje açıldı (sentetik).' })).status).toBe(409);
-    expect((await call(w, 'legal2', 'POST', `/api/v1/contract-terms/${c.termsId}/verify`)).status).toBe(200);
+    // Karar (D108 R7a): onaylı koşulda doğrulama olmadan da "Yeni proje açıldı" kabul; bütün hatırlatıcı görevleri kapanır.
     expect((await call(w, 'legal', 'GET', `/api/v1/contracts/${c.familyId}/reminders`)).body.can.decide).toBe(true);
     const d = await call(w, 'legal', 'POST', `/api/v1/contract-versions/${c.cv}/renewal-decision`, { decision: 'NEW_PROJECT', rationale: 'Yeni ihtiyaç için proje açıldı (sentetik).' });
     expect(d.status, JSON.stringify(d.body)).toBe(201);
@@ -223,10 +230,12 @@ describe('işçi: görev + e-posta kuyruğu', () => {
     }
   });
 
-  it('onay zinciri koşulları onayladıysa doğrulama olmadan da karar girilebilir', async () => {
+  it('onay zinciri koşulları onayladıysa doğrulama olmadan da karar girilebilir; onaysız ve doğrulanmamışta 409', async () => {
     const w = await fresh();
     await approvers(w);
-    const c = await contract(w);
+    const un = await contract(w, {}, { approved: false });
+    expect((await call(w, 'legal', 'POST', `/api/v1/contract-versions/${un.cv}/renewal-decision`, { decision: 'NEW_PROJECT', rationale: 'Yeni ihtiyaç için proje açıldı (sentetik).' })).status).toBe(409);
+    const c = await contract(w, {}, { approved: false });
     expect((await call(w, 'techEval', 'POST', `/api/v1/contracts/${c.familyId}/submit`, {})).status).toBe(200);
     const chain = (await h.owner.query(`SELECT id FROM contract_approval_chains WHERE family_id = $1`, [c.familyId])).rows[0].id;
     // Görev 5 (karar ucu) henüz yok: zincir sahibi bağlantısıyla onaylanmış duruma getirilir.
@@ -316,15 +325,26 @@ describe('eski kayıt (R7): koşul doğrulanınca kurulur; mevcut ihbar uyarıs�
     expect((await reminderTasks(old.body.familyId)).rows.map((t) => t.assignee_user_id).sort()).toEqual([w.users.techEval.id, w.users.security.id].sort());
     const g = (await call(w, 'legal', 'GET', `/api/v1/contracts/${old.body.familyId}/reminders`)).body;
     expect(g.basis).toMatchObject({ autoRenewal: true, noticeDeadline: nd, noticeBasis: 'END_DATE' });
+    expect(g.effective).toBe(true);
+    // Okuma işçinin yapacağını gösterir: mevcut ihbar uyarısı kapsadığından NOTICE'ta Satınalma kuyruğu yok.
+    expect(g.reminders.find((x: any) => x.kind === 'NOTICE').includeProcurement).toBe(false);
+    expect(g.planned.find((x: any) => x.kind === 'NOTICE').includeProcurement).toBe(false);
+    expect(g.reminders.find((x: any) => x.kind === 'END' && x.offset === 30).includeProcurement).toBe(true);
   });
 
-  it('ekleme akışındaki sözleşmede doğrulama hatırlatıcı kurmaz (onayla kurulur)', async () => {
+  it('ekleme akışındaki sözleşmede doğrulama hatırlatıcı kurmaz (onayla kurulur); yürürlükte koşul yoksa kurulum boş ve denetim kaydı yazmaz', async () => {
     const w = await fresh();
-    const c = await contract(w);
+    const c = await contract(w, {}, { approved: false });
     const v = await call(w, 'legal2', 'POST', `/api/v1/contract-terms/${c.termsId}/verify`);
     expect(v.status).toBe(200);
     expect(v.body.contractReminders).toEqual([]);
     expect((await reminderRows(c.familyId)).rowCount).toBe(0);
+    const r = await schedule(w, c.familyId);
+    expect(r).toMatchObject({ termsId: null, created: false, reminders: [] });
+    expect((await h.owner.query(`SELECT 1 FROM audit_events WHERE entity_id = $1 AND action = 'contract.reminders.scheduled'`, [c.familyId])).rowCount).toBe(0);
+    const g = (await call(w, 'legal', 'GET', `/api/v1/contracts/${c.familyId}/reminders`)).body;
+    expect(g).toMatchObject({ effective: false, scheduled: false, termsId: c.termsId });
+    expect(g.planned).toHaveLength(4);
   });
 });
 
@@ -338,6 +358,7 @@ describe('süresiz sözleşme', () => {
     const f = await call(w, 'techEval', 'PUT', `/api/v1/contracts/${d.body.familyId}/fields`, { ...rest, startDate: '2026-01-15', indefinite: true, noticeAmount: 3, noticeUnit: 'MONTH' });
     expect(f.status, JSON.stringify(f.body)).toBe(200);
     expect(f.body.missing).toEqual([]);
+    await approve(w, d.body.familyId, d.body.contractVersionId, f.body.fields.termsId);
     const r = await schedule(w, d.body.familyId);
     expect(r.reminders.map((x) => x.kind)).toEqual(['NOTICE']);
     const g = (await call(w, 'techEval', 'GET', `/api/v1/contracts/${d.body.familyId}/reminders`)).body;
@@ -349,5 +370,103 @@ describe('süresiz sözleşme', () => {
     // Sözleşme detayı (Görev 4) planı da aynı ihbar son gününü kullanır.
     const v2 = (await call(w, 'techEval', 'GET', `/api/v1/contracts/${d.body.familyId}/v2`)).body;
     expect(v2.reminders.planned.map((p: any) => p.kind)).toEqual(['NOTICE']);
+  });
+});
+
+describe('inceleme düzeltmeleri (Görev 6, tur 1)', () => {
+  it('I1: onaydan sonra eklenen (onaylanmamış) zeyilname hatırlatıcıyı eskitmez; karar onaylı sürüme girilir; yeni onaylı koşul eskisini eskitir', async () => {
+    const w = await fresh();
+    await approvers(w);
+    const end = addDays(today(), 50);
+    const c = await contract(w, { endDate: end });
+    await schedule(w, c.familyId);
+    const etag = (await call(w, 'techEval', 'GET', `/api/v1/contracts/${c.familyId}/v2`)).body.document.etag;
+    const dv = await uploadContract(w);
+    const nv = await call(w, 'techEval', 'POST', `/api/v1/contract-versions/${c.cv}/versions`, { documentVersionId: dv, kind: 'AMENDMENT', stage: 'DRAFT' }, { 'if-match': etag });
+    expect(nv.status, JSON.stringify(nv.body)).toBe(201);
+    const newCv = nv.body.contractVersionId ?? nv.body.id;
+    // Zeyilname koşulu girilir ama onaylanmaz (yarım kalan zeyilname).
+    const f2 = await call(w, 'techEval', 'PUT', `/api/v1/contracts/${c.familyId}/fields`, fields(w, { endDate: addDays(end, 365) }));
+    expect(f2.status, JSON.stringify(f2.body)).toBe(200);
+    const amendTerms = f2.body.fields.termsId;
+    expect(amendTerms).not.toBe(c.termsId);
+
+    const res = await runJob((await jobFor(c.familyId, 'END', 60)).id);
+    expect(res.result).toMatchObject({ kind: 'END', offset: 60, target: end, tasks: 2 });
+    const g = (await call(w, 'legal', 'GET', `/api/v1/contracts/${c.familyId}/reminders`)).body;
+    expect(g).toMatchObject({ termsId: c.termsId, contractVersionId: c.cv, effective: true, scheduled: true });
+    expect(g.can.decide).toBe(true);
+    expect(g.basis.endDate).toBe(end);
+    const d = await call(w, 'legal', 'POST', `/api/v1/contract-versions/${g.contractVersionId}/renewal-decision`, { decision: 'RENEW', rationale: 'Zeyilname ile yenilenecek (sentetik).' });
+    expect(d.status, JSON.stringify(d.body)).toBe(201);
+    expect((await reminderTasks(c.familyId)).rows.every((t) => t.status === 'DONE')).toBe(true);
+    expect(newCv).toBeTruthy();
+
+    // Zeyilname onaylanınca yürürlükteki koşul değişir: eski koşulun bekleyen işi eskir, yeni koşula yeni hatırlatıcı kurulur.
+    const w2 = await fresh();
+    await approvers(w2);
+    const c2 = await contract(w2, { endDate: end });
+    await schedule(w2, c2.familyId);
+    const etag2 = (await call(w2, 'techEval', 'GET', `/api/v1/contracts/${c2.familyId}/v2`)).body.document.etag;
+    const nv2 = await call(w2, 'techEval', 'POST', `/api/v1/contract-versions/${c2.cv}/versions`, { documentVersionId: await uploadContract(w2), kind: 'AMENDMENT', stage: 'DRAFT' }, { 'if-match': etag2 });
+    expect(nv2.status, JSON.stringify(nv2.body)).toBe(201);
+    const f3 = await call(w2, 'techEval', 'PUT', `/api/v1/contracts/${c2.familyId}/fields`, fields(w2, { endDate: addDays(end, 365) }));
+    expect(f3.status, JSON.stringify(f3.body)).toBe(200);
+    const v2 = (await call(w2, 'techEval', 'GET', `/api/v1/contracts/${c2.familyId}/v2`)).body;
+    await approve(w2, c2.familyId, v2.document.contractVersionId, f3.body.fields.termsId);
+    const stale = await runJob((await jobFor(c2.familyId, 'END', 60)).id);
+    expect(stale.result).toMatchObject({ skipped: 'obsolete', effectiveTermsId: f3.body.fields.termsId });
+    const r2 = await schedule(w2, c2.familyId);
+    expect(r2.termsId).toBe(f3.body.fields.termsId);
+    expect(r2.reminders).toHaveLength(4);
+  });
+
+  it('M1: kuran kullanıcının üyeliği askıya alınsa da hatırlatıcı işi sistem bağlamında çalışır', async () => {
+    const w = await fresh();
+    await approvers(w);
+    const c = await contract(w, { endDate: addDays(today(), 20) });
+    await schedule(w, c.familyId); // kuran: legal
+    await h.owner.query(`UPDATE memberships SET status = 'SUSPENDED' WHERE tenant_id = $1 AND user_id = $2`, [w.tenantA, w.users.legal.id]);
+    const res = await runJob((await jobFor(c.familyId, 'END', 30)).id);
+    expect(res.status).toBe('SUCCEEDED');
+    expect(res.result).toMatchObject({ offset: 30, procurementQueue: true });
+    expect((await reminderTasks(c.familyId)).rows.filter((t) => t.status === 'OPEN')).toHaveLength(3);
+  });
+
+  it('I3: geri doldurma — doğrulanmış ama hatırlatıcısı olmayan eski kayıtlar için kiracıya günde bir sistem işi; idempotent', async () => {
+    const { enqueueReminderBackfills, backfillLegacyReminders, systemContext } = await import('../src/modules/contractReminders.ts');
+    const w = await fresh();
+    await approvers(w);
+    // Eski kayıt: koşul Faz 3 geçişinden önce doğrulanmış (o zaman hatırlatıcı kurulmuyordu).
+    const c = await contract(w, {}, { approved: false });
+    expect((await call(w, 'legal2', 'POST', `/api/v1/contract-terms/${c.termsId}/verify`)).status).toBe(200);
+    await h.owner.query(`UPDATE contract_families SET intake_flow = false WHERE id = $1`, [c.familyId]);
+    // Eksik koşullu (doğrulanmamış) eski kayıt geri doldurulmaz.
+    const un = await contract(w, {}, { approved: false });
+    await h.owner.query(`UPDATE contract_families SET intake_flow = false WHERE id = $1`, [un.familyId]);
+    expect((await reminderRows(c.familyId)).rowCount).toBe(0);
+
+    const tenants = (await h.owner.query(`SELECT t FROM contract_reminder_backfill_tenants() t`)).rows.map((r: any) => r.t);
+    expect(tenants).toContain(w.tenantA);
+    await enqueueReminderBackfills(h.pool, new Date());
+    const job = (await h.owner.query(`SELECT id, requested_by, company_id FROM jobs WHERE tenant_id = $1 AND kind = 'contract.reminder_backfill'`, [w.tenantA])).rows;
+    expect(job).toHaveLength(1);
+    expect(job[0]).toMatchObject({ requested_by: null, company_id: null });
+    await enqueueReminderBackfills(h.pool, new Date()); // aynı gün ikinci iş açılmaz
+    expect((await h.owner.query(`SELECT 1 FROM jobs WHERE tenant_id = $1 AND kind = 'contract.reminder_backfill'`, [w.tenantA])).rowCount).toBe(1);
+    const res = await runJob(job[0].id);
+    expect(res).toMatchObject({ status: 'SUCCEEDED', result: { candidates: 1, scheduled: 1 } });
+    expect((await reminderRows(c.familyId)).rows.map((x) => x.offset_days)).toEqual([90, 60, 30, 7]);
+    expect((await reminderRows(un.familyId)).rowCount).toBe(0);
+    expect((await reminderJobs(c.familyId)).rows.every((j) => j.status === 'QUEUED')).toBe(true);
+    expect((await h.owner.query(`SELECT requested_by FROM jobs WHERE kind = 'contract.end_reminder' AND payload->>'familyId' = $1`, [c.familyId])).rows.every((r: any) => r.requested_by === null)).toBe(true);
+    expect((await h.owner.query(`SELECT t FROM contract_reminder_backfill_tenants() t`)).rows.map((r: any) => r.t)).not.toContain(w.tenantA);
+    // Tekrar: yeni kayıt yazmaz.
+    const ctx = systemContext(w.tenantA, [w.companyA1.id, w.companyA2.id], 'test');
+    const again = await withTenant(h.pool, ctx, (tx) => backfillLegacyReminders(tx, ctx));
+    expect(again).toEqual({ candidates: 0, scheduled: 0 });
+    // Sistem bağlamında kurulan iş de işlenir.
+    const fired = await runJob((await jobFor(c.familyId, 'END', 90)).id);
+    expect(fired.status).toBe('SUCCEEDED');
   });
 });

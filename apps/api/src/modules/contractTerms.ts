@@ -106,7 +106,7 @@ export async function verifyTerms(tx: Tx, ctx: TenantContext, termsId: string) {
   const scheduled = await scheduleNotice(tx, ctx, t);
   // v2 Faz 3 (R7): eski kayıtta (Faz 3 öncesi, onay zinciri yok) onay olmayacağından bitiş hatırlatıcıları doğrulamayla kurulur.
   const cv = await loadCv(tx, t.contract_version_id);
-  const legacy = !cv.superseded_by_id && (await tx.query(`SELECT 1 FROM contract_families f WHERE f.id = $1 AND NOT f.intake_flow
+  const legacy = (await tx.query(`SELECT 1 FROM contract_families f WHERE f.id = $1 AND NOT f.intake_flow
     AND NOT EXISTS (SELECT 1 FROM contract_approval_chains c WHERE c.family_id = f.id)`, [cv.family_id])).rowCount;
   const contractReminders = legacy ? (await scheduleContractReminders(tx, ctx, cv.family_id)).reminders : [];
   await audit(tx, ctx, 'contract.terms_verified', 'contract_version', t.contract_version_id, { termsId, revision: t.revision, reminders: scheduled });
@@ -163,7 +163,8 @@ export async function processNoticeReminder(tx: Tx, ctx: TenantContext, jobId: s
 export async function decideRenewal(tx: Tx, ctx: TenantContext, cvId: string, body: { decision: 'RENEW' | 'TERMINATE' | 'RENEGOTIATE' | 'NEW_PROJECT'; rationale: string }) {
   const cv = await loadCv(tx, cvId);
   const t = await latestTerms(tx, cvId);
-  // v2 Faz 3 (R7): onay zinciri bu koşulları onayladıysa da karar girilebilir (hatırlatıcı onayla kurulur, karar onu kapatır).
+  // v2 Faz 3 (D108 R7a): bu sürüm + koşul revizyonunu onaylayan APPROVED zincir varsa D95a doğrulaması olmadan da karar girilebilir;
+  // üç kişilik görev ayrılıklı onay zinciri yenileme kararı için daha güçlü bir denetimdir. Eski kayıtta doğrulama yine şarttır.
   const approved = t && !t.verified_by && (await tx.query(`SELECT 1 FROM contract_approval_chains WHERE version_id = $1 AND terms_id = $2 AND outcome = 'APPROVED'`,
     [cvId, t.id])).rowCount;
   if (!t || (!t.verified_by && !approved)) throw conflict('terms_not_verified', 'Yenileme kararı doğrulanmış koşullara bağlanır.');
