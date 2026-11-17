@@ -66,5 +66,8 @@ describe('normalizeDepartmentName (tr-TR katlama, SQL ile aynı olmalı)', () =>
     expect(normalizeDepartmentName('İnsan Kaynakları')).toBe('insan kaynakları');
     expect(normalizeDepartmentName('ISIK')).toBe('ısık');
     expect(normalizeDepartmentName('Satın alma\t\tBirimi')).toBe('satın alma birimi');
+    expect(normalizeDepartmentName('Satın alma')).toBe('satın alma');
+    expect(normalizeDepartmentName('﻿Ar Ge　')).toBe('ar ge');
+    expect(normalizeDepartmentName('ŞİRKET ÇAĞRI ÖZEL ÜRÜN')).toBe('şirket çağrı özel ürün');
   });
 });

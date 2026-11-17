@@ -8,7 +8,8 @@ let h: Awaited<ReturnType<typeof makeHarness>>;
 beforeAll(async () => { h = await makeHarness(); });
 afterAll(async () => { await h.close(); });
 
-const names = ['İnsan  Kaynakları', 'ISIK Birimi', '  BİLGİ   Teknolojileri ', 'Satın alma\t\tBirimi', 'Ar-Ge (sentetik)'];
+const names = ['İnsan  Kaynakları', 'ISIK Birimi', '  BİLGİ   Teknolojileri ', 'Satın alma\t\tBirimi', 'Ar-Ge (sentetik)',
+  'ŞİRKET ÇAĞRI', 'ÖZEL ÜRÜN', 'Gıda Ğ', 'Satın\u00A0alma\u2003Ofisi\u3000Birimi', '\uFEFFMüşteri  Hizmetleri\u2003', '\u200BIşık\u200B Ltd'];
 
 describe('dizin şeması', () => {
   it('sql_fold_equals_normalizeDepartmentName', async () => {
