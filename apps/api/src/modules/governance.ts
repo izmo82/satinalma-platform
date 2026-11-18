@@ -364,14 +364,19 @@ export async function processTenantExport(pool: pg.Pool, ctx: TenantContext, sto
       `SELECT document_id FROM document_disposals WHERE document_id = ANY($1::uuid[])`, [objs.map((o) => o.document_id).filter(Boolean)])).rows.map((r) => r.document_id)));
     const files: { path: string; sha256: string; sizeBytes: number }[] = [];
     const missingFiles: string[] = [];
+    // Paket içeriği özetle adreslenir (files/<sha256>). v2 Faz 5'ten beri yüklemeler rastgele anahtarla saklandığı için aynı içerik
+    // birden çok anahtarda bulunabilir; aynı özet pakete bir kez girer.
+    const addedSha = new Set<string>();
     for (const o of objs) {
       if (o.document_id && disposedNow.has(o.document_id)) continue;
+      if (addedSha.has(o.sha256)) continue;
       // Tek dosya yükleme sınırıyla (25 MB) sınırlıdır; özet doğrulanmadan pakete girmez.
       let bytes: Buffer;
       try { bytes = await store.get(o.storage_key); } catch { missingFiles.push(o.sha256); continue; }
       const sha = createHash('sha256').update(bytes).digest('hex');
       if (sha !== o.sha256) { missingFiles.push(o.sha256); continue; } // bozulmuş nesne pakete "sağlam" diye girmez
       await zip.addFile(`files/${o.sha256}`, bytes);
+      addedSha.add(o.sha256);
       files.push({ path: `files/${o.sha256}`, sha256: o.sha256, sizeBytes: bytes.length });
       if (zip.size > MAX_EXPORT_BYTES) throw tooLarge();
     }

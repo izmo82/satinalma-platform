@@ -181,6 +181,35 @@ describe('kiracı dışa aktarımı (T48)', () => {
   });
 });
 
+describe('v2 son doğrulama: aynı içerik birden çok anahtarda', () => {
+  it('aynı özetli iki nesne pakete bir kez girer; iş "duplicate zip entry" ile düşmez', async () => {
+    // v2 Faz 5'ten beri yüklemeler rastgele anahtarla saklanır: aynı baytlar iki ayrı anahtarda bulunabilir.
+    const file = pdf('ikiz içerik');
+    const a = await h.upload('legal', file, { companyId: h.world.companyA1.id, kind: 'OTHER', title: 'ikiz A (sentetik)' });
+    const b = await h.upload('legal', file, { companyId: h.world.companyA1.id, kind: 'CONTRACT', title: 'ikiz B (sentetik)' });
+    expect(a.body.sha256).toBe(b.body.sha256);
+    const altKey = `t/${h.world.tenantA}/supplier-documents/${randomUUID()}`;
+    await h.store.put(altKey, file.data, 'application/pdf');
+    // Test kurulumu (sahip oturumu, tetikleyiciler kapalı): ikinci sürüm aynı baytları başka anahtarda tutar.
+    const c = await h.owner.connect();
+    try {
+      await c.query('BEGIN'); await c.query(`SET LOCAL session_replication_role = replica`);
+      await c.query(`UPDATE document_versions SET storage_key = $2 WHERE id = $1`, [b.body.documentVersionId, altKey]);
+      await c.query('COMMIT');
+    } finally { c.release(); }
+    await h.owner.query(`UPDATE tenant_exports SET status = 'FAILED' WHERE tenant_id = $1 AND status NOT IN ('READY','FAILED','REJECTED','EXPIRED')`, [h.world.tenantA]).catch(() => undefined);
+    const req = await h.call('tenantAdmin', 'POST', '/api/v1/tenant-exports', { body: { reason: 'İkiz içerik denemesi (sentetik).' } });
+    expect(req.status).toBe(201);
+    await h.call('legal', 'POST', `/api/v1/tenant-exports/${req.body.id}/decision`, { body: { decision: 'APPROVE', note: 'Gerekçe uygun (sentetik).' } });
+    await runJobs();
+    const e = (await h.call('tenantAdmin', 'GET', '/api/v1/tenant-exports')).body.items.find((x: any) => x.id === req.body.id);
+    expect(e.status).toBe('READY');
+    const key = (await h.owner.query(`SELECT storage_key FROM tenant_exports WHERE id = $1`, [req.body.id])).rows[0].storage_key;
+    const manifest = JSON.parse(readZip(await h.store.get(key)).get('manifest.json')!.toString());
+    expect(manifest.files.filter((f: any) => f.sha256 === a.body.sha256)).toHaveLength(1);
+  });
+});
+
 describe('Faz 7 inceleme bulguları', () => {
   it('işi ölen dışa aktarım "Hata" olur ve yeni talebi kalıcı olarak engellemez', async () => {
     // Önceki testlerdeki açık talepler varsa sonuçlansın.
