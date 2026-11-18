@@ -6,9 +6,11 @@
 // (Yönetici) yayımla → Excel satır 54 değerleri seviye 4: aksiyonsuz "Tamamla" engelli → aksiyon + kontrol → tamamla → matriste
 // (bant 40–60, sütun 5) sayı +1 ve hücrede tedarikçi → dışa aktarım dosya adı → çeyreklik "Değişiklik yok" → Departman kullanıcısı başka
 // departmanı görmez, katkıcı olarak görüş ekler → portal yalnız seviye/skor/görünür aksiyon.
+// Ortam: çeyreklik adımı ilk revizyonu geri tarihlendirmek için psql ile sahip bağlantısı kullanır; E2E_DATABASE_OWNER_URL API'nin
+// veritabanını göstermelidir (verilmezse yerel geliştirme veritabanı …/satinalma).
 // Not: yayımlanan sentetik set kiracıda kalır (silme ucu yok); sonraki koşularda "set yok → elle sonuç" adımı set yolundan (seviye 2) yürür.
 import AxeBuilder from '@axe-core/playwright';
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 import { riskWorkbook, SOURCE_HEADERS } from '../../api/test/helpers/riskWorkbook.ts';
 
 test.use({ reducedMotion: 'reduce' });
@@ -45,6 +47,80 @@ async function pickSet(page: Page, name: string) {
   await sel.selectOption(value!);
 }
 const xlsx = (name: string, buffer: Buffer) => ({ name, mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', buffer });
+
+/** Tek sayfalık geçerli sentetik PDF; içerik her çağrıda farklı. */
+function pdf(text: string): Buffer {
+  const stream = `BT /F1 14 Tf 60 760 Td (${text.replace(/[()\\]/g, '')}) Tj ET`;
+  const objs = ['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>',
+    `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'];
+  let out = '%PDF-1.4\n';
+  const offs: number[] = [];
+  objs.forEach((o, i) => { offs.push(out.length); out += `${i + 1} 0 obj\n${o}\nendobj\n`; });
+  const x = out.length;
+  out += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n${offs.map((o) => `${String(o).padStart(10, '0')} 00000 n \n`).join('')}trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${x}\n%%EOF\n`;
+  return Buffer.from(out, 'latin1');
+}
+async function bearer(request: APIRequestContext, email: string) {
+  return { authorization: `Bearer ${(await (await request.post('/api/v1/dev/token', { data: { email } })).json()).token}` };
+}
+type Person = { userId: string; email: string } | null;
+/**
+ * v2 (D11x, Ruling 18): katkıcı senaryosu Bilgi Teknolojileri'nin Kuzey ile yürürlükte sözleşmesini ister; taze DB'de yok (eski dev DB'de
+ * önceki koşulardan kalmaydı). Test kendi sentetik sözleşmesini API ile kurar: onaycılar (BT: Selin, Satınalma: Kerem, Direktör: Mine)
+ * atanır, Alper BT projesine Kuzey sözleşmesini ekleyip gönderir, üç onaycı sırayla onaylar; atamalar sonunda eski haline döner.
+ */
+async function kuzeyBtContract(request: APIRequestContext, tag: string) {
+  const admin = await bearer(request, 'tamer.yonetici@example.test');
+  const original = await (await request.get('/api/v1/approver-assignments', { headers: admin })).json() as {
+    organization: { lead: Person; leadDeputy: Person; director: Person; directorDeputy: Person };
+    departments: { departmentId: string; departmentName: string; head: Person; deputy: Person }[]; candidates: { userId: string; email: string }[] };
+  const uid = (email: string) => original.candidates.find((c) => c.email === email)!.userId;
+  const bt = original.departments.find((d) => d.departmentName === 'Bilgi Teknolojileri')!;
+  const restore = {
+    organization: { leadUserId: original.organization.lead?.userId ?? null, leadDeputyUserId: original.organization.leadDeputy?.userId ?? null,
+      directorUserId: original.organization.director?.userId ?? null, directorDeputyUserId: original.organization.directorDeputy?.userId ?? null },
+    departments: [{ departmentId: bt.departmentId, headUserId: bt.head?.userId ?? null, deputyUserId: bt.deputy?.userId ?? null }],
+  };
+  const set = await request.put('/api/v1/approver-assignments', { headers: admin, data: {
+    organization: { leadUserId: uid('kerem.hukuk@example.test'), leadDeputyUserId: uid('ferda.finans@example.test'), directorUserId: uid('mine.anaveri@example.test'), directorDeputyUserId: uid('nur.finansonay@example.test') },
+    departments: [{ departmentId: bt.departmentId, headUserId: uid('selin.guvenlik@example.test'), deputyUserId: uid('tolga.teknik@example.test') }] } });
+  expect(set.ok(), await set.text()).toBe(true);
+  try {
+    const h = await bearer(request, 'alper.satinalma@example.test');
+    const me = await (await request.get('/api/v1/me', { headers: h })).json();
+    const projects = (await (await request.get('/api/v1/projects', { headers: h })).json()).items as { id: string; companyName: string; departmentName: string | null; status: string }[];
+    const project = projects.find((x) => x.departmentName === 'Bilgi Teknolojileri' && x.companyName === me.companies[0].name && !['CANCELLED', 'NO_AWARD'].includes(x.status));
+    expect(project, 'Bilgi Teknolojileri projesi bekleniyor').toBeTruthy();
+    const sup = ((await (await request.get('/api/v1/supplier-options', { headers: h })).json()).items as { id: string; label: string; status: string }[])
+      .find((x) => x.label.startsWith('Kuzey Teknoloji') && x.status === 'ACTIVE');
+    expect(sup, 'aktif Kuzey Teknoloji bekleniyor').toBeTruthy();
+    const up = await request.post('/api/v1/documents', { headers: h, multipart: { companyId: me.companies[0].id, kind: 'CONTRACT', title: `E2E Risk Kuzey BT ${tag}.pdf`,
+      file: { name: `e2e-risk-kuzey-${tag}.pdf`, mimeType: 'application/pdf', buffer: pdf(`E2E SENTETIK KUZEY BT SOZLESMESI ${tag}`) } } });
+    expect(up.ok(), await up.text()).toBe(true);
+    const draft = await (await request.post('/api/v1/contract-drafts', { headers: h, data: { documentVersionId: (await up.json()).documentVersionId, projectId: project!.id } })).json();
+    const members = await (await request.get('/api/v1/members', { headers: h })).json() as { id: string; displayName: string }[];
+    const year = new Date().getFullYear();
+    const f = await request.put(`/api/v1/contracts/${draft.familyId}/fields`, { headers: h, data: {
+      supplierId: sup!.id, contractType: 'SERVICE', ownerUserId: members.find((m) => m.displayName === 'Alper Yıldız')!.id, signedOn: `${year}-01-02`,
+      currency: 'TRY', valueType: 'FIXED', amount: '36000.00', limitBasis: 'NET', startDate: `${year}-01-01`, endDate: `${year + 1}-12-31`, autoRenewal: false,
+      noticeAmount: 30, noticeUnit: 'DAY', sourceRef: 'Madde 3, s. 1 (sentetik)' } });
+    expect(f.ok(), await f.text()).toBe(true);
+    const sub = await request.post(`/api/v1/contracts/${draft.familyId}/submit`, { headers: h, data: {} });
+    expect(sub.ok(), await sub.text()).toBe(true);
+    for (const email of ['selin.guvenlik@example.test', 'kerem.hukuk@example.test', 'mine.anaveri@example.test']) {
+      const a = await bearer(request, email);
+      const mine = (await (await request.get('/api/v1/contract-approvals/mine', { headers: a })).json()).items as { stepId: string; canDecide: boolean; contract: { familyId: string } }[];
+      const step = mine.find((x) => x.contract.familyId === draft.familyId && x.canDecide);
+      expect(step, `${email}: onay adımı bekleniyor`).toBeTruthy();
+      const d = await request.post(`/api/v1/contract-approval-steps/${step!.stepId}/decision`, { headers: a, data: { decision: 'APPROVED' } });
+      expect(d.ok(), await d.text()).toBe(true);
+    }
+  } finally {
+    const r = await request.put('/api/v1/approver-assignments', { headers: admin, data: restore });
+    expect(r.ok(), `onaycı ataması geri alınamadı: ${await r.text()}`).toBe(true);
+  }
+}
 
 test('risk: bölüm ve kart sekmeleri aynen + yeni ekranlar; taşma ve erişilebilirlik (salt okunur)', async ({ page }) => {
   test.setTimeout(120_000);
@@ -127,6 +203,8 @@ test('risk uçtan uca: içe aktarım, elle sonuç, sentetik set, seviye 4 aksiyo
     { name: H, services: 'Sentetik', criteria: [1, 1, 1, 1, 1, 1], j: 0.05, team: BT }, // eşleşmez → atlanır
   ];
   const rowNo = (name: string) => 5 + rows.findIndex((r) => r.name === name);
+  // v2 (D11x, Ruling 18): katkıcı adımı için BT'nin Kuzey ile yürürlükte sözleşmesi test içinde kurulur (taze DB'de yok).
+  await kuzeyBtContract(page.request, tag);
 
   await login(page, 'alper.satinalma@example.test');
   await page.goto('/tedarikciler/risk/ice-aktar');
@@ -271,7 +349,17 @@ test('risk uçtan uca: içe aktarım, elle sonuç, sentetik set, seviye 4 aksiyo
   await check(page, 'Risk matrisi (veri)');
 
   // Çeyreklik "Değişiklik yok": en eski eksik dönem varsayılan.
+  // v2 (D11x, Ruling 19): Faz 6 M6 tabanı ilk revizyonun çeyreğinden önceki dönemleri dışlar; bugün içe aktarılan geçmiş yıl değerlendirmesinde
+  // gözden geçirilecek çeyrek kalmaz. Amaç (çeyreklik "Değişiklik yok" çalışır) korunarak C'nin ilk revizyonu yılın başına çekilir (API testleri
+  // gibi; yalnız test, sahip oturumunda replica moduyla). Önce taban metni doğrulanır.
   await page.goto(`/tedarikciler/risk/${idC}`);
+  await expect(page.getByText('Bu değerlendirme için gözden geçirilecek çeyrek yok (ilk revizyondan önceki dönemler gözden geçirilmez).')).toBeVisible();
+  const { execFileSync } = await import('node:child_process');
+  const db = process.env.E2E_DATABASE_OWNER_URL ?? 'postgres://sp_owner:local_owner_only@localhost:5544/satinalma';
+  expect(idC).toMatch(/^[0-9a-f-]{36}$/);
+  execFileSync('psql', [db, '-v', 'ON_ERROR_STOP=1', '-At', '-c', `BEGIN; SET LOCAL session_replication_role = replica;
+    UPDATE risk_assessment_revisions SET created_at = '${YEAR}-01-15T12:00:00+03:00' WHERE assessment_id = '${idC}' AND revision_no = 1; COMMIT;`], { encoding: 'utf8' });
+  await page.reload();
   await expect(page.getByText('Tamamlandı').first()).toBeVisible();
   await expect(page.getByLabel('Dönem')).toHaveValue(`${YEAR}-1`);
   await page.getByRole('button', { name: 'Değişiklik yok' }).click();

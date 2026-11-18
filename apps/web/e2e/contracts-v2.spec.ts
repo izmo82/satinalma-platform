@@ -117,10 +117,31 @@ async function submittedContract(request: APIRequestContext, tag: string) {
   return { familyId: draft.familyId as string, code: v2.family.code as string, url: `/sozlesmeler/${v2.document.contractVersionId}`, h };
 }
 
+type AiPolicy = null | Record<string, unknown>;
+/** Kiracı AI politikasını yazar ya da siler (contract-ai-v2 ile aynı uç). */
+async function setAiPolicy(request: APIRequestContext, p: AiPolicy) {
+  const h = await bearer(request, 'tamer.yonetici@example.test');
+  const r = p ? await request.put('/api/v1/ai/policy', { headers: h, data: p }) : await request.delete('/api/v1/ai/policy', { headers: h });
+  expect(r.ok(), await r.text()).toBe(true);
+}
+
 test.describe('v2 sözleşmeler: veri değiştiren akışlar', () => {
   let restore: (() => Promise<void>) | null = null;
-  test.beforeEach(async ({ request }, info) => { mutating(info.project.name); restore = await assignApprovers(request); });
-  test.afterEach(async () => { await restore?.(); restore = null; });
+  // v2 (D11x, Ruling 18): taze DB'de seed AI_PROVIDER=test iken kiracı AI politikası yazar; bu akışlar "politika yokken okuma çalışmaz →
+  // doğrudan 3. adım" varsayımıyla yazıldı. Politika test başında silinir, sonunda eski haline döner (contract-ai-v2 ile aynı kalıp).
+  let originalPolicy: { policy: AiPolicy } | null = null;
+  test.beforeEach(async ({ request }, info) => {
+    mutating(info.project.name);
+    const ov = await (await request.get('/api/v1/ai/overview', { headers: await bearer(request, 'tamer.yonetici@example.test') })).json();
+    originalPolicy = { policy: ov.policy ?? null };
+    if (originalPolicy.policy) await setAiPolicy(request, null);
+    restore = await assignApprovers(request);
+  });
+  test.afterEach(async ({ request }) => {
+    await restore?.(); restore = null;
+    if (originalPolicy?.policy) await setAiPolicy(request, originalPolicy.policy);
+    originalPolicy = null;
+  });
 
   test('projeden ekleme → doğrulama → gönderim → üç kullanıcı sırayla onaylar → Yürürlükte + hatırlatıcı tarihleri', async ({ page, request }) => {
     test.setTimeout(180_000);

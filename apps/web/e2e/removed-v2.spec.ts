@@ -8,6 +8,19 @@ async function login(page: Page, email: string) {
   await page.getByRole('button', { name: 'Oturum aç' }).click();
   await expect(page.getByRole('heading', { name: 'İşlerim' })).toBeVisible();
 }
+/** Tek sayfalık geçerli sentetik PDF; içerik her çağrıda farklı (aynı dosya yinelemesi olmaz). */
+function pdf(text: string): Buffer {
+  const stream = `BT /F1 14 Tf 60 760 Td (${text.replace(/[()\\]/g, '')}) Tj ET`;
+  const objs = ['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>',
+    `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'];
+  let out = '%PDF-1.4\n';
+  const offs: number[] = [];
+  objs.forEach((o, i) => { offs.push(out.length); out += `${i + 1} 0 obj\n${o}\nendobj\n`; });
+  const x = out.length;
+  out += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n${offs.map((o) => `${String(o).padStart(10, '0')} 00000 n \n`).join('')}trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${x}\n%%EOF\n`;
+  return Buffer.from(out, 'latin1');
+}
 /** Kaldırılan ekranlara giden her bağlantı (sipariş, Lira Defteri, veri yönetimi, tolerans, onay politikası). */
 const REMOVED = 'a[href^="/siparisler"], a[href^="/lira-defteri"], a[href^="/veri-yonetimi"], a[href="/faturalar/tolerans"], a[href^="/projeler/onay-politikasi"]';
 const noRemovedLinks = async (page: Page, where: string) => {
@@ -98,19 +111,19 @@ test('Arama ve olay detayı: sipariş sonuç grubu ve sipariş bağlantısı yok
   }
 });
 
-test('Belge detayı: satıcı kimliği formunda IBAN alanı yok (banka değişikliği doğrulaması kaldırma listesinde, W-15-08)', async ({ page }) => {
+test('Belge detayı: satıcı kimliği formunda IBAN alanı yok (banka değişikliği doğrulaması kaldırma listesinde, W-15-08)', async ({ page }, info) => {
+  // v2 (D11x, Ruling 18): taze DB'de "Fatura alanları girilmeli" görevi yok (eski koşulardan kalmaydı). Test kendi sentetik OCR'siz
+  // INVOICE PDF'ini API ile yükler (görevi bu yükleme açar) ve belgeyi doğrudan açar; İşlerim'de görev aramaya gerek kalmaz.
+  const auth = { authorization: `Bearer ${(await (await page.request.post('/api/v1/dev/token', { data: { email: 'leyla.hukuk@example.test' } })).json()).token}` };
+  const me = await (await page.request.get('/api/v1/me', { headers: auth })).json() as { companies: { id: string }[] };
+  const tag = `${info.project.name} ${Date.now()}`;
+  const up = await page.request.post('/api/v1/documents', { headers: auth, multipart: { companyId: me.companies[0]!.id, kind: 'INVOICE', title: `E2E taranmış fatura ${tag}.pdf`,
+    file: { name: 'e2e-taranmis-fatura.pdf', mimeType: 'application/pdf', buffer: pdf(`E2E SENTETIK TARANMIS FATURA ${tag}`) } } });
+  expect(up.ok(), await up.text()).toBe(true);
+  const dv = (await up.json()) as { documentVersionId: string; processing: { stage: string } };
+  expect(dv.processing.stage).toBe('MANUAL_EXTRACTION_REQUIRED');
   await login(page, 'leyla.hukuk@example.test');
-  await page.getByRole('tab', { name: /Rolümdeki tüm işler/ }).click();
-  // v2 izleme (e2e-failures-investigation §1): görev ilk 200 işin dışında kalabilir; "Daha fazla yükle" görev görünene dek tıklanır.
-  const task = page.getByRole('link', { name: 'Fatura alanları girilmeli' }).filter({ visible: true }).first();
-  const more = page.getByRole('button', { name: /Daha fazla yükle|Yükleniyor/ });
-  await expect(page.getByRole('link', { name: 'İşi aç' }).or(page.getByText('Bekleyen işiniz yok')).first()).toBeVisible();
-  while (!(await task.isVisible()) && await more.isVisible()) {
-    await more.click();
-    // Yüklenirken ad "Yükleniyor…" olur; yükleme bitene (düğme kalkar ya da "Daha fazla yükle" ve etkin) dek beklenir.
-    await expect(page.getByRole('button', { name: /Yükleniyor/ })).toHaveCount(0);
-  }
-  await task.click();
+  await page.goto(`/belgeler/${dv.documentVersionId}`);
   await expect(page.getByRole('heading', { name: 'Satıcı kimliğini girin' })).toBeVisible();
   await expect(page.getByLabel('Vergi kimliği')).toBeVisible();
   await expect(page.getByLabel(/IBAN/)).toHaveCount(0);

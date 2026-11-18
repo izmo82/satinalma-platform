@@ -17,8 +17,11 @@ async function openAi(page: Page) {
 }
 async function openSupplier(page: Page, name: string, tab: string) {
   await page.getByRole('link', { name: 'Tedarikçiler' }).click();
+  // v2 (D11x, Ruling 18): İşlerim görev başlıkları tedarikçi adını içerir ("Davetli tedarikçi pasif: Kuzey Teknoloji A.Ş."); gezinme
+  // beklenmeden aranınca bağlantı İşlerim'de çözülüyordu. Önce Tedarikçiler başlığı beklenir, arama yalnız ana içerikte yapılır.
+  await expect(page.getByRole('heading', { name: 'Tedarikçiler', level: 1 })).toBeVisible();
   // Aynı ünvanlı, kimliği doğrulanmamış aday (T06) listede bulunabilir; kimliği doğrulanmış kayıt açılır (D82).
-  await page.getByRole('link', { name: new RegExp(name) }).filter({ hasNotText: 'doğrulanmadı' }).click();
+  await page.getByRole('main').getByRole('link', { name: new RegExp(name) }).filter({ hasNotText: 'doğrulanmadı' }).click();
   await page.getByRole('tab', { name: tab }).click();
 }
 

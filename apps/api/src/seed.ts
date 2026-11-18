@@ -10,7 +10,7 @@ import { DevAuthProvider } from './auth.ts';
 import { S3ObjectStore } from './storage.ts';
 import { buildApp } from './server.ts';
 import { createSyntheticWorld, DEMO_TENANT_A, ensureTestAiCatalog, ensureTestAiPolicy, syntheticPdf, ublInvoiceXml } from './devdata.ts';
-import { ensureDepartmentsDemo, ensureEvaluationDemo, ensureLifecycleDemo, ensurePurchasingDemo, ensureRetentionDemo, ensureSourcingDemo } from './seedSourcing.ts';
+import { ensureDepartmentsDemo, ensureEvaluationDemo, ensureLifecycleDemo, ensurePurchasingDemo, ensureRetentionDemo, ensureRiskDemo, ensureSourcingDemo } from './seedSourcing.ts';
 import { processJobs } from './worker.ts';
 
 const config = loadConfig();
@@ -38,6 +38,7 @@ if (exists.rows[0]) {
   await ensureEvaluationDemo(owner, app0, auth0, exists.rows[0].id);
   await ensureDepartmentsDemo(owner, exists.rows[0].id);
   await ensureRetentionDemo(owner, app0, auth0, exists.rows[0].id);
+  await ensureRiskDemo(owner, app0, auth0, exists.rows[0].id);
   await ensureAiTestDemo(exists.rows[0].id);
   // v2 (D93): Lira Defteri ve fatura onayı kaldırıldı; geri kazanım demosu (seedRecovery.ts) artık eklenmez. Var olan demo kayıtları silinmez.
   console.log('Lira Defteri demosu v2 kapsamında eklenmiyor (D93); var olan kayıtlar korunur.');
@@ -144,6 +145,7 @@ await ensurePurchasingDemo(owner, app, auth, world.tenantA);
 await ensureEvaluationDemo(owner, app, auth, world.tenantA);
 await ensureDepartmentsDemo(owner, world.tenantA);
 await ensureRetentionDemo(owner, app, auth, world.tenantA);
+await ensureRiskDemo(owner, app, auth, world.tenantA);
 await ensureAiTestDemo(world.tenantA);
 // v2 (D93): Lira Defteri ve fatura onayı kaldırıldı; geri kazanım demosu (seedRecovery.ts) eklenmez.
 console.log('Lira Defteri demosu v2 kapsamında eklenmiyor (D93).');

@@ -292,3 +292,40 @@ export async function ensureRetentionDemo(owner: pg.Pool, app: App, auth: DevAut
   }
   log(added ? `Faz 7 demo: eski tarihli ${added} sentetik teklif dosyası eklendi (saklama politikası tanımlanmadı).` : 'Faz 7 demo zaten var; atlandı.');
 }
+
+/**
+ * v2 son doğrulama (Ruling 18): Kuzey Teknoloji için cari yılın tamamlanmış sentetik yıllık risk değerlendirmesi. Bir demo kullanıcısının
+ * tedarikçi kartındaki "Yıllık risk" sekmesinde göreceği veri; yalnız Kuzey (yılı kiracı geneli açmaz). API'nin Excel içe aktarım yolunu
+ * kullanır (kaynak düzende tek satırlık sentetik tablo → önizleme → uygula); doğrudan tablo yazmaz. İdempotent: Kuzey'in cari yıl
+ * değerlendirmesi varsa atlanır.
+ */
+export async function ensureRiskDemo(owner: pg.Pool, app: App, auth: DevAuthProvider, tenantId: string, log = console.log) {
+  const kuzey = (await owner.query<{ id: string; legal_name: string }>(`SELECT id, legal_name FROM suppliers WHERE tenant_id = $1 AND legal_name LIKE 'Kuzey Teknoloji%' AND status = 'ACTIVE'
+    ORDER BY created_at LIMIT 1`, [tenantId])).rows[0];
+  if (!kuzey) { log('Risk demo: aktif Kuzey Teknoloji yok; atlandı.'); return; }
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Istanbul' }).format(new Date());
+  const year = Number(today.slice(0, 4));
+  if ((await owner.query(`SELECT 1 FROM risk_assessments WHERE tenant_id = $1 AND supplier_id = $2 AND year = $3`, [tenantId, kuzey.id, year])).rowCount) {
+    log('Risk demo zaten var; atlandı.'); return;
+  }
+  const { riskTableWorkbook } = await import('./riskExcel.ts');
+  const period = `${year}-${Math.floor((Number(today.slice(5, 7)) - 1) / 3) + 1}`;
+  const file = await riskTableWorkbook({ period, year, rows: [{ name: kuzey.legal_name, services: 'BT altyapı bakım ve destek hizmeti (sentetik)',
+    criteria: { businessImpact: 3, dataSensitivity: 3, continuity: 1, integration: 3, regulation: 1, serviceType: 3 }, riskScore: '18', actionTitles: [],
+    team: 'Bilgi Teknolojileri', detail: { year, department: null, criticality: null, column: null, level: null, levelLabel: null, status: 'COMPLETED', scoreSource: null,
+      lastReview: null, actions: [], methodVersion: null } }] });
+  const token = await auth.issue('dev|alper.satinalma@example.test');
+  const headers = { authorization: `Bearer ${token}`, 'x-tenant-id': tenantId };
+  const boundary = `----sp${randomUUID()}`;
+  const payload = Buffer.concat([
+    Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="risk-demo-${year}.xlsx"\r\nContent-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet\r\n\r\n`),
+    file, Buffer.from(`\r\n--${boundary}--\r\n`),
+  ]);
+  const up = await app.inject({ method: 'POST', url: '/api/v1/risk/imports', payload, headers: { ...headers, 'content-type': `multipart/form-data; boundary=${boundary}` } });
+  if (up.statusCode >= 400) throw new Error(`risk import → ${up.statusCode} ${up.body}`);
+  const view = JSON.parse(up.body) as { batch: { id: string } };
+  const ap = await app.inject({ method: 'POST', url: `/api/v1/risk/imports/${view.batch.id}/apply`, headers });
+  if (ap.statusCode >= 400) throw new Error(`risk import apply → ${ap.statusCode} ${ap.body}`);
+  const done = (await owner.query<{ status: string }>(`SELECT status FROM risk_assessments WHERE tenant_id = $1 AND supplier_id = $2 AND year = $3`, [tenantId, kuzey.id, year])).rows[0];
+  log(`Risk demo: Kuzey Teknoloji ${year} yıllık risk değerlendirmesi (${done?.status ?? 'yok'}) eklendi (sentetik).`);
+}

@@ -1,9 +1,11 @@
 // v2 Faz 7 (D112): tahsis sonrası beklenen etiket v2 eşleşme durumu ("Tahsisle (eski kayıt)"); eski "Eşleşti" etiketi yalnız v2 durumu olmayan yanıtta.
 // v2 Faz 1 (D93/D95): sipariş/kabul, fatura finans onayı, istisna onayı ve tolerans onaylı kaldırma listesinde (atlanır). Kalanlar yeni yollarından sınanır: Fatura gir ve tekrar gelen fatura, sözleşmeye tahsis (eşleştirme), e-Fatura XML yükleme (/faturalar/yukle), fatura ekranlarının taşmaması. Bulgu metni v2 dilinde ("sözleşmeye tahsis edilmedi").
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type APIRequestContext, type Page } from '@playwright/test';
 import { syntheticVkn } from '../../../packages/domain/src/taxId.ts';
 
 // Faz 4 kritik tarayıcı görevleri: sipariş, kabul, fatura tahsisi, görev ayrılığıyla onay (UX10). Sentetik demo verisi: npm run db:seed.
+// Ortam: "eski sipariş bağı" testi psql ile sahip (owner) bağlantısı kullanır: E2E_DATABASE_OWNER_URL API'nin bağlı olduğu veritabanını
+// göstermelidir (ör. taze koşuda .../satinalma_fresh). Verilmezse yerel geliştirme veritabanı (…/satinalma) varsayılır.
 async function login(page: Page, email: string) {
   await page.goto('/');
   await page.getByRole('radio', { name: new RegExp(email.replace('.', '\\.')) }).check();
@@ -11,6 +13,52 @@ async function login(page: Page, email: string) {
   await expect(page.getByRole('heading', { name: 'İşlerim' })).toBeVisible();
 }
 const logout = (page: Page) => page.getByRole('button', { name: 'Çıkış' }).click();
+
+/** Tek sayfalık geçerli sentetik PDF; içerik her çağrıda farklı (aynı dosya yinelemesi olmaz). */
+function pdf(text: string): Buffer {
+  const stream = `BT /F1 14 Tf 60 760 Td (${text.replace(/[()\\]/g, '')}) Tj ET`;
+  const objs = ['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>',
+    `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'];
+  let out = '%PDF-1.4\n';
+  const offs: number[] = [];
+  objs.forEach((o, i) => { offs.push(out.length); out += `${i + 1} 0 obj\n${o}\nendobj\n`; });
+  const x = out.length;
+  out += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n${offs.map((o) => `${String(o).padStart(10, '0')} 00000 n \n`).join('')}trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${x}\n%%EOF\n`;
+  return Buffer.from(out, 'latin1');
+}
+
+/**
+ * v2 (D11x, Ruling 18): taze DB'de Anadolu Bilişim adına sözleşme yok (eski "Yazılım Lisans ve Destek Sözleşmesi" Lira Defteri
+ * demosundan geliyordu; D93 ile kaldırıldı). Test kendi sentetik sözleşmesini API ile açar: Örnek Holding Üretim A.Ş. alıcı, Anadolu
+ * Bilişim tedarikçi, imza gerekmez, koşullar Leyla girer ve Kerem doğrular (görev ayrılığı). Başlık etiketlidir (her koşu ayrı seçenek).
+ */
+async function anadoluContract(request: APIRequestContext, tag: string) {
+  const h = async (email: string) => ({ authorization: `Bearer ${(await (await request.post('/api/v1/dev/token', { data: { email } })).json()).token}` });
+  const legal = await h('leyla.hukuk@example.test');
+  const me = await (await request.get('/api/v1/me', { headers: legal })).json() as { companies: { id: string; name: string }[] };
+  const company = me.companies.find((c) => c.name === 'Örnek Holding Üretim A.Ş.');
+  expect(company, 'Örnek Holding Üretim A.Ş. bekleniyor').toBeTruthy();
+  const opts = await (await request.get('/api/v1/supplier-options', { headers: legal })).json() as { items: { id: string; label: string; status: string }[] };
+  const sup = opts.items.find((x) => x.label.startsWith('Anadolu Bilişim Hizmetleri') && x.status === 'ACTIVE');
+  expect(sup, 'aktif Anadolu Bilişim bekleniyor').toBeTruthy();
+  const title = `Yazılım Lisans ve Destek Sözleşmesi E2E ${tag} (SENTETİK)`;
+  const up = await request.post('/api/v1/documents', { headers: legal, multipart: { companyId: company!.id, kind: 'CONTRACT', title: `${title}.pdf`,
+    file: { name: `e2e-lisans-${tag}.pdf`, mimeType: 'application/pdf', buffer: pdf(`E2E SENTETIK LISANS SOZLESMESI ${tag}`) } } });
+  expect(up.ok(), await up.text()).toBe(true);
+  const c = await request.post('/api/v1/contracts', { headers: legal, data: { title, documentVersionId: (await up.json()).documentVersionId, stage: 'EXECUTION',
+    signatureMethod: 'NOT_REQUIRED', originalCustodyRequired: false, supplierId: sup!.id,
+    parties: [{ role: 'BUYER', displayName: company!.name, legalEntityId: company!.id }] } });
+  expect(c.status(), await c.text()).toBe(201);
+  const cv = (await c.json()).contractVersionId as string;
+  const t = await request.post(`/api/v1/contract-versions/${cv}/terms`, { headers: legal, data: { currency: 'TRY', valueType: 'CEILING', amount: '20000000.00',
+    paymentTerms: 'Fatura tarihinden itibaren 60 gün', startDate: '2026-01-01', endDate: '2027-12-31', autoRenewal: false, renewalMonths: null,
+    noticeAmount: null, noticeUnit: null, nonWorkingDay: 'AS_IS', sourceRef: 'Madde 6 (sentetik)', paymentDays: 60, fxDifference: 'ALLOWED' } });
+  expect(t.status(), await t.text()).toBe(201);
+  const v = await request.post(`/api/v1/contract-terms/${(await t.json()).id}/verify`, { headers: await h('kerem.hukuk@example.test') });
+  expect(v.ok(), await v.text()).toBe(true);
+  return title;
+}
 
 // v2 Faz 1 (D93): işlev onaylı kaldırma listesinde; kaldırılan adres RemovedPage ile navigation-v2.spec.ts'de korunur
 test.skip('sipariş → kabul → fatura → tahsis → ikinci finans onayı; tekrar gelen fatura yeni kayıt açmaz (T13, T17, UX10)', async ({ page }, info) => {
@@ -82,9 +130,11 @@ test.skip('sipariş → kabul → fatura → tahsis → ikinci finans onayı; te
 });
 
 // v2: elle fatura girişi (K-05, Satınalma), tahsis yalnız sözleşmeye (eşleştirme) ve tekrar gelen fatura yeni kayıt açmaz (T17). Sipariş adımı kaldırma listesinde.
-test('Fatura gir → sözleşmeye tahsis → eşleşti; onay denetimi yok; tekrar gelen fatura yeni kayıt açmaz (T17, UX10)', async ({ page }, info) => {
+test('Fatura gir → sözleşmeye tahsis → eşleşti; onay denetimi yok; tekrar gelen fatura yeni kayıt açmaz (T17, UX10)', async ({ page, request }, info) => {
   test.skip(info.project.name !== 'desktop-1440', 'veri değiştirir; yalnız bir projede');
   const tag = Date.now().toString().slice(-7);
+  // v2 (D11x, Ruling 18): sözleşme seed'den değil, testin kendisinden (etiketli başlık).
+  const contractTitle = await anadoluContract(request, tag);
   await login(page, 'ferda.finans@example.test');
   await page.goto('/faturalar');
   const enter = async () => {
@@ -110,13 +160,14 @@ test('Fatura gir → sözleşmeye tahsis → eşleşti; onay denetimi yok; tekra
   // Tahsis yalnız sözleşmeye: sipariş kalemi yükleme ve sipariş seçeneği yok.
   await expect(page.getByRole('button', { name: /kalemlerini yükle/ })).toHaveCount(0);
   const target = page.getByLabel('Satır 1 hedef');
-  const contract = 'Sözleşme · Yazılım Lisans ve Destek Sözleşmesi (SENTETİK)';
+  // v2 (D11x): sabit başlık yerine testin açtığı etiketli sözleşme.
+  const contract = `Sözleşme · ${contractTitle}`;
   await expect(target.locator('option', { hasText: contract })).toHaveCount(1);
   const options = await target.locator('option').allInnerTexts();
   expect(options.filter((o) => o !== 'Seçin').every((o) => o.startsWith('Sözleşme · ')), options.join(' | ')).toBe(true);
   await target.selectOption({ label: contract });
   await page.getByRole('button', { name: 'Tahsisi kaydet ve kontrol et' }).click();
-  await expect(page.getByText('Sözleşme: Yazılım Lisans ve Destek Sözleşmesi (SENTETİK)')).toBeVisible();
+  await expect(page.getByText(`Sözleşme: ${contractTitle}`)).toBeVisible(); // v2 (D11x): testin açtığı sözleşme
   // v2 Faz 7 (D112): birincil etiket v2 eşleşme durumu (tek sözleşmeye tahsis = "Tahsisle (eski kayıt)"); tahsis kontrolü geçtiği için
   // ikincil "Tahsis kontrolü: Eşleşmedi" satırı yok (iOS a6ac440 ile aynı kural).
   await expect(page.getByText('Tahsisle (eski kayıt)', { exact: true }).first()).toBeVisible();
@@ -273,6 +324,8 @@ test('eski sipariş bağı uyuşmazlıkta: bağ kaldırılır ve sözleşmeye ye
   const [poLine, companyId, tenantId, poCode] = sql(`SELECT pl.id || '|' || po.company_id || '|' || po.tenant_id || '|' || po.code FROM po_lines pl JOIN purchase_orders po ON po.id = pl.po_id
     WHERE po.code = 'PO-2026-0001' ORDER BY pl.line_no LIMIT 1`).split('|');
   const opts = await (await page.request.get('/api/v1/supplier-options', { headers: { ...auth, 'x-tenant-id': tenantId! } })).json();
+  // v2 (D11x): E2E_DATABASE_OWNER_URL API'nin veritabanını göstermezse kiracı uyuşmaz; belirsiz "undefined" yerine açık hata.
+  expect(Array.isArray(opts.items), `E2E_DATABASE_OWNER_URL API ile aynı veritabanını göstermeli: ${JSON.stringify(opts).slice(0, 200)}`).toBe(true);
   const ege = (opts.items as { id: string; label: string }[]).find((x) => /^Ege Sistem/.test(x.label))!;
   const no = `I4E2E${Date.now().toString(36).toUpperCase()}`;
   const inv = await page.request.post('/api/v1/invoices', { headers: { ...auth, 'x-tenant-id': tenantId! }, data: { companyId, supplierId: ege.id, kind: 'INVOICE', invoiceNo: no,
