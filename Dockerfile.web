@@ -5,6 +5,8 @@ COPY package.json package-lock.json tsconfig.base.json ./
 COPY apps/web/package.json apps/web/
 RUN npm ci --workspace @sp/web --include-workspace-root=false
 COPY apps/web ./apps/web
+# Web, alan kurallarından birkaç saf dosyayı göreli yolla içe aktarır (ör. invoiceMatch.ts → money.ts); derleme bağlamında bulunmalı.
+COPY packages/domain/src ./packages/domain/src
 RUN npm run build -w @sp/web
 
 FROM nginxinc/nginx-unprivileged:1.27-alpine
