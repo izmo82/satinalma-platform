@@ -653,7 +653,10 @@ function ReviewsPanel({ d, replace, defaultPeriod, setNotice }: { d: RiskDetail;
             : <p className="mb-4 text-sm">Dönem: <strong className="tabular">{period}</strong></p>}
           <Button className="mb-4" onClick={() => setConfirm('NO_CHANGE')}>Değişiklik yok</Button>
           <Button className="mb-4" variant="outline" onClick={() => setConfirm('UPDATE')}>Güncelle</Button>
-        </div> : <p className="text-sm text-ink-muted">{a.year} yılının bugüne kadarki tüm çeyrekleri gözden geçirildi.</p>)}
+        </div> : reviewCandidates(a.year, [], a.firstReviewablePeriod).length === 0
+          // v2 son doğrulama (Ruling 19): aday yokluğu taban yüzündense "tüm çeyrekler gözden geçirildi" yanıltıcıdır.
+          ? <p className="text-sm text-ink-muted">Bu değerlendirme için gözden geçirilecek çeyrek yok (ilk revizyondan önceki dönemler gözden geçirilmez).</p>
+          : <p className="text-sm text-ink-muted">{a.year} yılının bugüne kadarki tüm çeyrekleri gözden geçirildi.</p>)}
         {d.reviews.length > 0 ? <ul className="grid gap-1 text-sm" aria-label="Gözden geçirmeler">{d.reviews.map((v) => (
           <li key={v.id}><span className="tabular font-semibold">{v.period}</span> · {REVIEW_OUTCOME_TR[v.outcome] ?? v.outcome} · {v.decidedBy.displayName ?? '—'} · {fmtDateTime(v.decidedAt)}</li>))}</ul>
           : <p className="text-sm text-ink-subtle">Henüz çeyreklik gözden geçirme yok.</p>}

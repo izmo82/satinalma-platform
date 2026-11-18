@@ -353,7 +353,7 @@ export function ReviewDetail({ familyId, documentHref }: { familyId: string; doc
       {d.history.length > 0 && (
         <section className="panel" aria-labelledby="hist-h">
           <div className="panel-head"><h2 id="hist-h">Geçmiş incelemeler</h2></div>
-          <div className="panel-body overflow-x-auto">
+          <div className="panel-body overflow-x-auto" tabIndex={0} role="region" aria-label="Geçmiş incelemeler">
             <table className="w-full text-left text-sm">
               <thead className="text-ink-muted"><tr><th scope="col" className="py-1 pr-3 font-semibold">Tarih</th><th scope="col" className="py-1 pr-3 text-right font-semibold">Puan</th>
                 <th scope="col" className="py-1 pr-3 font-semibold">Şablon</th><th scope="col" className="py-1 pr-3 font-semibold">Model</th><th scope="col" className="py-1 font-semibold">Durum</th></tr></thead>

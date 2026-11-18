@@ -117,6 +117,9 @@ struct RiskAssessmentView: View {
                             Button("Değişiklik yok (\(period))") { Task { await submitNoChange(period: period) } }
                             Button("Vazgeç", role: .cancel) {}
                         } message: { Text("Değerlendirme aynen geçerli kalır; çeyreklik gözden geçirme görevi kapanır.") }
+                } else if RiskFmt.missingPeriods(year: d.assessment.year, reviews: [], floor: d.assessment.firstReviewablePeriod).isEmpty {
+                    // v2 son doğrulama (Ruling 19): ilk revizyondan önceki dönemler gözden geçirilmez; boş bölüm yerine açık metin (web ile aynı).
+                    Label("Bu değerlendirme için gözden geçirilecek çeyrek yok (ilk revizyondan önceki dönemler gözden geçirilmez).", systemImage: "calendar.badge.clock").font(.subheadline)
                 } else if let last = (d.reviews ?? []).compactMap(\.period).max() {
                     Label("Son gözden geçirme: \(last). Bekleyen dönem yok.", systemImage: "checkmark.seal").font(.subheadline)
                 }
