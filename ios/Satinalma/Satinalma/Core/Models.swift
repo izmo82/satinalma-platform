@@ -71,7 +71,15 @@ struct InvoiceDetail: Decodable, Sendable {
     }
     /// v2 Faz 8 (R6, R11): kaynak ve ERP ödeme durumu. Tüm alanlar isteğe bağlı; etiketler sunucudan olduğu gibi gösterilir.
     struct ErpSource: Decodable, Sendable, Hashable {
-        struct Payment: Decodable, Sendable, Hashable { let statusLabel: String?; let status: String? }
+        struct Payment: Decodable, Sendable, Hashable {
+            let statusLabel: String?; let status: String?; let sourceLabel: String?; let mock: Bool?
+            init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: K.self)
+                statusLabel = try? c.decode(String?.self, forKey: .statusLabel); status = try? c.decode(String?.self, forKey: .status)
+                sourceLabel = try? c.decode(String?.self, forKey: .sourceLabel); mock = try? c.decode(Bool?.self, forKey: .mock)
+            }
+            enum K: String, CodingKey { case statusLabel, status, sourceLabel, mock }
+        }
         let label: String?; let payment: Payment?
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: K.self)
@@ -79,6 +87,13 @@ struct InvoiceDetail: Decodable, Sendable {
         }
         enum K: String, CodingKey { case label, payment }
         var paymentText: String? { payment?.statusLabel ?? payment?.status }
+        /// Taklit sağlayıcıdan gelen ödeme durumu gerçek ERP bilgisi gibi gösterilmez (web ErpManual ile aynı).
+        var paymentIsMock: Bool { payment?.mock == true || payment?.sourceLabel?.contains("taklit") == true }
+        var paymentDisplay: String? {
+            guard let t = paymentText, !t.isEmpty else { return nil }
+            if paymentIsMock { return "\(t) · ERP (taklit)" }
+            return t
+        }
     }
     struct Line: Decodable, Identifiable, Sendable { let lineNo: Int; let description: String; let quantity: String; let unit: String; let netAmount: String; var id: Int { lineNo } }
     struct Issue: Decodable, Identifiable, Sendable { let code: String; let severity: String; let message: String; let ownerRole: String; var id: String { "\(code)-\(message)" } }

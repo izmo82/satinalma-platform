@@ -93,6 +93,9 @@ type Notice = { tone: 'info' | 'warn' | 'danger'; title: string; text?: string }
 export function EndpointDetail({ card, onChanged }: { card: EndpointCard; onChanged: () => Promise<void> }) {
   const manage = card.can.manage;
   const [notice, setNotice] = useState<Notice>(null);
+  // v2 Faz 8 (D113): kayıt/sınama sonucu başka bölümden gelse de görünür alana kayar (aria-live bölgesi duyurur).
+  const noticeRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (notice) noticeRef.current?.scrollIntoView({ block: 'nearest' }); }, [notice]);
   const [busy, setBusy] = useState<string | null>(null);
   const [writeDialog, setWriteDialog] = useState(false);
   const runs = useResource<{ items: RunView[] }>(`/api/v1/integration/endpoints/${card.feature}/runs?limit=20`);
@@ -129,7 +132,7 @@ export function EndpointDetail({ card, onChanged }: { card: EndpointCard; onChan
     const r = (await api<{ ok: boolean; message: string; latencyMs: number | null; mock: boolean; stale: boolean; staleNote: string | null; statusLabel: string }>(
       `/api/v1/integration/endpoints/${card.feature}/test`, { method: 'POST' })).data;
     return { tone: r.ok && !r.stale ? 'info' : 'warn', title: `Bağlantı sınaması: ${r.statusLabel}`,
-      text: [r.message, r.latencyMs !== null ? `${r.latencyMs} ms` : null, r.mock ? 'Sonuç taklit sağlayıcıyla denendi; gerçek Oracle bağlantısı sınanmadı.' : null, r.staleNote].filter(Boolean).join(' · ') };
+      text: [r.message, r.latencyMs !== null ? `${r.latencyMs} ms` : null, r.staleNote].filter(Boolean).join(' · ') };
   });
   const run = (target: 'READ' | 'WRITE_RETRY') => act(`run-${target}`, async () => {
     const r = (await api<{ runId: string; status: string; statusLabel: string; reason: string | null; queued: number }>(`/api/v1/integration/endpoints/${card.feature}/run`,
@@ -162,13 +165,13 @@ export function EndpointDetail({ card, onChanged }: { card: EndpointCard; onChan
         ) : <Tag label={stateTag(card)} />}
       </div>
       <div className="panel-body grid gap-5">
-        <div aria-live="polite" className="empty:-mb-5">{notice && <Banner tone={notice.tone} title={notice.title}>{notice.text}</Banner>}</div>
+        <div ref={noticeRef} aria-live="polite" className="empty:-mb-5">{notice && <Banner tone={notice.tone} title={notice.title}>{notice.text}</Banner>}</div>
         {!card.enabled && (
           <Banner tone="neutral" icon="info" title={`Kapalıyken: ${card.manualFallback}`}>
             Elle giriş ekranı: <Link to={FALLBACK_LINK[card.feature].to}>{FALLBACK_LINK[card.feature].label}</Link>
           </Banner>
         )}
-        {card.enabled && <p className="text-sm text-ink-muted">Özellik açıkken de elle giriş yolu kalır: {card.manualFallback} Elle girilen değerin kaynağı "Elle" görünür.</p>}
+        {card.enabled && <p className="text-sm text-ink-muted">Özellik açıkken de elle giriş yolu kalır: {card.manualFallback}</p>}
         {!manage && <p className="text-sm text-ink-muted">Bağlantı ayarlarını Yönetici değiştirir; bu kart sizin için salt okunur.</p>}
         <ConnectionForm card={card} onSaved={async (n) => { setNotice(n); await refresh(); }} />
 
@@ -545,8 +548,11 @@ export function readableRunMessage(message: string, card: Pick<EndpointCard, 'ap
 
 function RunErrorsView({ card, runId, onClose }: { card: EndpointCard; runId: string; onClose: () => void }) {
   const r = useResource<RunErrors>(`/api/v1/integration/runs/${runId}/errors`);
+  // v2 Faz 8 (D113): panel açılınca görünür alana kayar ve odak alır (ekran okuyucuya bölge adı okunur).
+  const secRef = useRef<HTMLElement>(null);
+  useEffect(() => { secRef.current?.scrollIntoView({ block: 'nearest' }); secRef.current?.focus({ preventScroll: true }); }, [runId]);
   return (
-    <section className="grid gap-2 rounded-md border border-border p-3" aria-label="Hata kaydı">
+    <section ref={secRef} tabIndex={-1} className="grid gap-2 rounded-md border border-border p-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label="Hata kaydı">
       <div className="flex flex-wrap items-center gap-2">
         <h4 className="flex-1 font-semibold">Hata kaydı{r.data ? ` · ${fmtDateTime(r.data.run.startedAt)}` : ''}</h4>
         {r.data && <span className="flex flex-wrap gap-1"><Tag label={runTag(r.data.run)} className="whitespace-normal" />{r.data.run.mock && <Tag label={MOCK_TAG} />}</span>}

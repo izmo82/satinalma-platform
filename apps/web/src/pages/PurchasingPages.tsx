@@ -280,7 +280,7 @@ export function InvoicePage() {
         <span>Departman: <DepartmentName name={d.invoice.departmentName} /></span>
         <span>Tarih {fmtDate(d.invoice.issueDate)}</span>{d.invoice.ettn && <span className="mono">ETTN {d.invoice.ettn}</span>}
         <span>Hukuki durum: {d.invoice.legalStatus === 'RECEIVED' ? 'alındı' : 'iptal/ret'}</span>
-        <span>{d.erp ? ERP[d.erp.status] : 'ERP: aktarım kaydı yok'}</span><span>Ödeme: {d.invoice.paymentStatus === 'PAID' ? 'ödendi (ERP teyidi)' : 'ödenmedi'}</span>
+        <span>{d.erp ? ERP[d.erp.status] : d.erpSource?.kind === 'ERP' ? `ERP'den alındı${d.erpSource.label.includes('taklit') ? ' (taklit sağlayıcı; gerçek ERP değil)' : ''}; ERP'ye aktarım (dışa) kaydı yok` : "ERP'ye aktarım (dışa) kaydı yok"}</span><span>Ödeme: {d.invoice.paymentStatus === 'PAID' ? 'ödendi (ERP teyidi)' : 'ödenmedi'}</span>
         {d.intake.filter((x) => x.duplicate).length > 0 && <span className="text-warn">Bu fatura {d.intake.filter((x) => x.duplicate).length} kez tekrar geldi; yeni kayıt açılmadı.</span>}
       </div>
       <div className="grid grid-cols-[minmax(0,1fr)_380px] gap-6 max-[1100px]:grid-cols-1">

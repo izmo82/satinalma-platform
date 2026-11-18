@@ -375,7 +375,7 @@ export function ErpReconciliationPage() {
       </form>
       {a.feedback}
       {r.loading && !r.data ? <Loading rows={5} /> : r.error || !r.data ? <ErrorState error={r.error} onRetry={r.reload} /> : <div className="grid gap-5">
-        {!r.data.adapterConfigured && <Banner tone="neutral" icon="info" title="ERP bağdaştırıcısı yapılandırılmadı">{r.data.note}</Banner>}
+        {!r.data.adapterConfigured && <Banner tone="neutral" icon="info" title="ERP bağdaştırıcısı yapılandırılmadı (fatura dışa aktarımı)">{r.data.note} Bu, fatura aktarım bağdaştırıcısı (dışa aktarım) içindir; Bağlantılar'daki ERP sağlayıcısından ayrıdır.</Banner>}
         <section className="panel"><div className="panel-head"><h2>Durum ve toplamlar</h2><span className="text-sm text-ink-subtle">veri anı {fmtDateTime(r.data.dataAsOf)} · gelen ERP olayı {r.data.inbox.events} (tekrar {r.data.inbox.repeats})</span></div>
           {!r.data.byStatus.length ? <div className="panel-body"><p className="text-ink-muted">Bu dönemde onaylanan fatura yok.</p></div> : (
             <Table><TableHeader><TableRow className="hover:bg-transparent"><TableHead>Durum</TableHead><TableHead>Para birimi</TableHead><TableHead className="text-right">Fatura</TableHead><TableHead className="text-right">Ödenecek toplam</TableHead></TableRow></TableHeader>
