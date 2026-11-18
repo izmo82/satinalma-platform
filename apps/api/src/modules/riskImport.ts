@@ -26,6 +26,9 @@ const OUTCOME_TR: Record<Outcome, string> = {
   COMPLETED: 'Tamamlanmış değerlendirme açılacak', OPEN: 'Açık değerlendirme açılacak', SKIP: 'Atlanacak',
   MERGE: 'Birincil satırın hizmetlerine eklenecek', CONFLICT: 'Çakışma — atlanır',
 };
+const OUTCOME_APPLIED_TR: Record<Outcome, string> = {
+  COMPLETED: 'Tamamlandı', OPEN: 'Açıldı', SKIP: 'Atlandı', MERGE: 'Birincil satırın hizmetlerine eklendi', CONFLICT: 'Çakışma — atlandı',
+};
 const ASSESSMENT_STATUS_TR: Record<string, string> = { OPEN: 'Açık', COMPLETED: 'Tamamlandı', CANCELLED: 'İptal' };
 const ACTION_STATUS_TR: Record<string, string> = { OPEN: 'Açık', DONE: 'Tamamlandı', VERIFIED: 'Doğrulandı', CANCELLED: 'İptal' };
 const REVIEW_TR: Record<string, string> = { NO_CHANGE: 'Değişiklik yok', UPDATED: 'Güncellendi' };
@@ -134,6 +137,7 @@ export async function getImport(tx: Tx, ctx: TenantContext, id: string) {
   const applied = b.status === 'PREVIEW'
     ? (await tx.query(`SELECT 1 FROM risk_import_batches WHERE file_sha256 = $1 AND status = 'APPLIED'`, [b.file_sha256])).rowCount! > 0 : false;
 
+  const appliedOutcomes = ((b.summary as { rowOutcomes?: Record<string, Outcome> }).rowOutcomes ?? {});
   const teamCounts = new Map<string, number>();
   const mixed = mixedScaleOf(rows.map((r) => r.raw));
   const items = rows.map((r) => {
@@ -142,8 +146,11 @@ export async function getImport(tx: Tx, ctx: TenantContext, id: string) {
     if (p.team) teamCounts.set(p.team, (teamCounts.get(p.team) ?? 0) + 1);
     const departmentId = p.team ? (b.team_mapping[p.team] ?? null) : null;
     const issues = [...p.issues];
+    const recorded = b.status === 'APPLIED' ? appliedOutcomes[String(r.row_no)] : undefined;
     const conflictRow = b.status === 'PREVIEW' && !!r.supplier_id && r.decision !== 'SKIP' && existing.has(r.supplier_id);
     let outcome: Outcome = r.decision === 'SKIP' ? 'SKIP' : r.decision === 'MERGE' ? 'MERGE' : willComplete(c) ? 'COMPLETED' : 'OPEN';
+    if (recorded) outcome = recorded;
+    if (recorded === 'CONFLICT') issues.push(`Çakışma — tedarikçinin ${b.year} değerlendirmesi zaten vardı; atlandı, üzerine yazılmadı.`);
     if (conflictRow) { outcome = 'CONFLICT'; issues.push(`Çakışma — tedarikçinin ${b.year} değerlendirmesi zaten var; atlanır, üzerine yazılmaz.`); }
     if (!r.supplier_id && r.decision === 'SKIP') issues.push('Eşleşen tedarikçi kartı yok — atlanır (mevcut kart seçilebilir ya da aday kart açılabilir).');
     if (r.decision !== 'SKIP' && p.team && !departmentId) issues.push(`"${p.team}" ekibi bir departmana eşlenmedi — departman boş açılır.`);
@@ -155,7 +162,7 @@ export async function getImport(tx: Tx, ctx: TenantContext, id: string) {
       actionText: p.actionText, commentNote: p.commentNote, createsAction: !!p.actionText && !NO_ACTION_RE.test(p.actionText) && p.actionText.trim().length >= 2,
       team: p.team, department: departmentId ? { id: departmentId, name: deptName.get(departmentId) ?? null } : null,
       supplier: r.supplier_id ? { id: r.supplier_id, name: r.supplier_name, status: r.supplier_status } : null,
-      decision: r.decision, primary: r.primary_row, outcome, outcomeLabel: OUTCOME_TR[outcome], issues, assessmentId: r.assessment_id, raw: r.raw,
+      decision: r.decision, primary: r.primary_row, outcome, outcomeLabel: (b.status === 'APPLIED' ? OUTCOME_APPLIED_TR : OUTCOME_TR)[outcome], issues, assessmentId: r.assessment_id, raw: r.raw,
     };
   });
   const count = (f: (x: (typeof items)[number]) => boolean) => items.filter(f).length;
@@ -170,7 +177,7 @@ export async function getImport(tx: Tx, ctx: TenantContext, id: string) {
     batch: {
       id: b.id, fileName: b.file_name, sha256: b.file_sha256, period: b.period, year: b.year, fractionScale: b.fraction_scale, status: b.status,
       uploadedBy: { id: b.uploaded_by, displayName: b.uploaded_by_name }, createdAt: b.created_at, appliedAt: b.applied_at, appliedBy: b.applied_by,
-      result: b.status === 'APPLIED' ? b.summary : null,
+      result: b.status === 'APPLIED' ? (({ rowOutcomes: _ro, ...rest }) => rest)(b.summary as Record<string, unknown>) : null,
     },
     scaleNote: b.fraction_scale ? 'Risk skoru dosyada 0–1 kesir olarak girilmiş; 100 ile çarpılarak okunur.' : 'Risk skoru dosyada 0–100 ölçeğinde.',
     teams: [...teamCounts.entries()].sort((a, b2) => a[0].localeCompare(b2[0], 'tr')).map(([team, rowCount]) => {
@@ -430,7 +437,8 @@ export async function applyImport(tx: Tx, ctx: TenantContext, id: string) {
   }
   rowResults.sort((a, b2) => a.rowNo - b2.rowNo);
   try {
-    await tx.query(`UPDATE risk_import_batches SET status = 'APPLIED', summary = $2, applied_by = $3, applied_at = now() WHERE id = $1`, [id, res, ctx.userId]);
+    await tx.query(`UPDATE risk_import_batches SET status = 'APPLIED', summary = $2, applied_by = $3, applied_at = now() WHERE id = $1`,
+      [id, { ...res, rowOutcomes: Object.fromEntries(rowResults.map((x) => [String(x.rowNo), x.outcome === 'completion_blocked' ? 'OPEN' : x.outcome])) }, ctx.userId]);
   } catch (e) {
     // M1: aynı dosyanın eşzamanlı ikinci uygulaması tekillik dizinine çarpar → genel "duplicate" yerine already_imported.
     if ((e as { code?: string; constraint?: string }).code === '23505' && (e as { constraint?: string }).constraint === 'risk_import_batches_applied_once') {

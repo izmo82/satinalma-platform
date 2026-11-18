@@ -93,11 +93,22 @@ struct RiskAssessmentView: View {
                     Text(x.title ?? "Aksiyon").font(.body.weight(.semibold))
                     Text([RiskLabels.actionKind[x.kind ?? ""], x.controlMethodLabel].compactMap { $0 }.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
                     Text("Sahip: \(x.owner?.displayName ?? x.ownerText ?? "Atanmadı")").font(.subheadline)
-                    Text("Tarih: \(x.dueOn.map { Fmt.date($0) } ?? "—")").font(.subheadline)
+                    if Self.isOverdue(x) {
+                        Label("Tarih: \(x.dueOn.map { Fmt.date($0) } ?? "—") · gecikti", systemImage: "exclamationmark.triangle").font(.subheadline).foregroundStyle(.red)
+                    } else {
+                        Text("Tarih: \(x.dueOn.map { Fmt.date($0) } ?? "—")").font(.subheadline)
+                    }
                     Text("Durum: \(RiskLabels.actionStatus[x.status ?? ""] ?? "Bilinmeyen durum")").font(.subheadline).foregroundStyle(.secondary)
                 }.accessibilityElement(children: .combine)
             }
         }
+    }
+
+    /// Açık ve son tarihi bugünden (İstanbul) önce olan aksiyon gecikmiş sayılır.
+    private static func isOverdue(_ x: RiskDetail.Action) -> Bool {
+        guard x.status == "OPEN", let due = x.dueOn?.prefix(10) else { return false }
+        let f = DateFormatter(); f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = TimeZone(identifier: "Europe/Istanbul"); f.dateFormat = "yyyy-MM-dd"
+        return String(due) < f.string(from: Date())
     }
 
     /// Çeyreklik gözden geçirme: yalnız tamamlanmış kayıtta; kaydı olmayan dönemler (yılın çeyrekleri, cari çeyreğe kadar) seçilebilir,
@@ -200,7 +211,7 @@ struct RiskMatrixView: View {
             .frame(maxWidth: .infinity, minHeight: cellHeight)
             .background(RiskLabels.color(level).opacity(selected ? 0.9 : 0.25), in: RoundedRectangle(cornerRadius: 4))
             .overlay(RoundedRectangle(cornerRadius: 4).stroke(selected ? Color.primary : .clear, lineWidth: 2))
-            .foregroundStyle(selected ? Color.white : Color.primary)
+            .foregroundStyle(selected ? Color.black : Color.primary) // açık seviye renkleri (yeşil/nane/sarı/turuncu/kırmızı %90) üzerinde siyah ≥ 4,5:1
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Risk \(Self.bandLabels[b - 1]), kritiklik \(c), seviye \(level)")
             .accessibilityAddTraits(selected ? .isSelected : [])

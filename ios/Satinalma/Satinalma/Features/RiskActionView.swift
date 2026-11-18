@@ -20,6 +20,7 @@ struct RiskActionView: View {
     @State private var error: Notice?
     @State private var note = ""
     @State private var confirming = false
+    @State private var noteMissing = false
     @State private var sending = false
     @State private var result: Notice?
 
@@ -57,9 +58,11 @@ struct RiskActionView: View {
         if x.can?.close == true, x.status == "OPEN" {
             Section {
                 TextField("Tamamlama notu (zorunlu)", text: $note, axis: .vertical).lineLimit(2...6)
+                    .onChange(of: note) { _, v in if !v.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { noteMissing = false } }
                     .accessibilityLabel("Tamamlama notu, zorunlu")
-                Button { confirming = true } label: { Label(sending ? "Gönderiliyor…" : "Tamamlandı", systemImage: "checkmark.circle") }
-                    .disabled(sending || !session.isOnline || note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                if noteMissing { Label("Ne yapıldığını yazın.", systemImage: "exclamationmark.circle").font(.subheadline).foregroundStyle(.red).accessibilityLabel("Hata: ne yapıldığını yazın") }
+                Button { if note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { noteMissing = true } else { noteMissing = false; confirming = true } } label: { Label(sending ? "Gönderiliyor…" : "Tamamlandı", systemImage: "checkmark.circle") }
+                    .disabled(sending || !session.isOnline)
                     .confirmationDialog("Aksiyon tamamlandı olarak işaretlensin mi?", isPresented: $confirming, titleVisibility: .visible) {
                         Button("Tamamlandı") { Task { await complete(x) } }
                         Button("Vazgeç", role: .cancel) {}

@@ -9,7 +9,7 @@ import { fmtDate, fmtDateTime } from '../lib/format.ts';
 import { hasPermission, useSession } from '../lib/session.tsx';
 import {
   ACTION_KIND_TR, ACTION_STATUS_TR, ASSESSMENT_STATUS_TR, bandOf, changedLabel, CONTROL_METHOD_TR, currentPeriod, currentYear, fmtScore, levelOf, levelTag,
-  liveCriticality, liveScore, REVIEW_OUTCOME_TR, RISK_BAND_LABEL, RISK_CRITERIA, RISK_CRITERIA_LEVELS, RISK_CRITERIA_TR, RISK_LEVEL_TR, RiskMatrix,
+  istanbulToday, liveCriticality, liveScore, REVIEW_OUTCOME_TR, RISK_BAND_LABEL, RISK_CRITERIA, RISK_CRITERIA_LEVELS, RISK_CRITERIA_TR, RISK_LEVEL_TR, RiskMatrix,
   SCORE_SOURCE_TR, type RiskCriterion,
 } from '../lib/risk.tsx';
 import { Banner, Empty, ErrorState, Field, FilterChip, Loading, Modal, PageHeader, Tag } from '../ui/kit.tsx';
@@ -278,7 +278,7 @@ function AssessmentView({ d, replace, reload, notice, setNotice, error, setError
   const [loc, setLoc] = useState<Local>(init);
   const [dirty, setDirty] = useState(false);
   const edit = d.can.edit;
-  const upd = (f: (l: Local) => Local) => { setLoc(f); setDirty(true); setNotice(null); };
+  const upd = (f: (l: Local) => Local) => { setLoc(f); setDirty(true); setNotice(null); if (error?.code === 'completion_blocked') setError(null); };
 
   // Seçim listesinde yalnız yayımlanmış setler (Görev 3 taşıması: taslak set listelenmez).
   const sets = d.publishedQuestionSets.filter((s) => s.status === undefined || s.status === 'PUBLISHED');
@@ -294,6 +294,35 @@ function AssessmentView({ d, replace, reload, notice, setNotice, error, setError
   const level = crit && score ? levelOf(score, crit.column) : null;
   const band = score ? bandOf(score) : null;
   const shownLevel = edit ? level : d.computed.level?.level ?? null;
+
+  // Faz 6 persona düzeltmesi: "Tamamlamak için" listesi kaydetmeden, ekrandaki girişlerle canlı hesaplanır (sunucu completionBlockers ile aynı kurallar).
+  const liveBlockers = useMemo(() => {
+    if (!edit) return d.computed.blockers;
+    const out: { code: string; message: string }[] = [];
+    const missing = RISK_CRITERIA.filter((k) => loc.criteria[k] === undefined);
+    if (missing.length) out.push({ code: 'criteria_missing', message: `Eksik ölçüt: ${missing.map((k) => RISK_CRITERIA_TR[k]).join(', ')}` });
+    if (score === null) out.push({ code: 'score_missing', message: 'Risk skoru yok; tüm soruları cevaplayın.' });
+    if (scoreSource === 'MANUAL_RESULT') {
+      if (sets.length > 0) out.push({ code: 'questions_available', message: 'Yayımlanmış soru seti var; elle sonuç yerine soruları cevaplayın.' });
+      if (!loc.manualNote.trim()) out.push({ code: 'manual_note_required', message: 'Elle girilen sonuç için dayanak notu zorunludur.' });
+    }
+    if (level && level >= 4) {
+      const today = istanbulToday();
+      const live = d.actions.filter((x) => x.status !== 'CANCELLED');
+      if (!live.some((x) => x.kind === 'MITIGATION')) out.push({ code: 'action_plan_required', message: 'Seviye 4–5 için en az bir aksiyon (azaltım) satırı gerekir.' });
+      if (!live.some((x) => x.kind === 'CONTROL')) out.push({ code: 'control_required', message: 'Seviye 4–5 için en az bir denetim/kontrol satırı gerekir.' });
+      live.forEach((x, i) => {
+        if (x.status === 'DONE' || x.status === 'VERIFIED') return;
+        const row = `${i + 1}. satır`;
+        if (!x.owner) out.push({ code: 'action_owner_required', message: `${row}: sorumlu kişi seçilmeli.` });
+        if (!x.dueOn) out.push({ code: 'action_due_required', message: `${row}: tarih girilmeli.` });
+        else if (x.dueOn <= today) out.push({ code: 'action_due_past', message: `${row}: tarih bugünden sonra olmalı.` });
+      });
+    }
+    return out;
+  }, [edit, d.computed.blockers, d.actions, loc, score, scoreSource, level, sets.length]);
+  // Engeller giderilince (ya da girişler değişince) önceki 422 afişi kalmaz.
+  useEffect(() => { if (error?.code === 'completion_blocked' && liveBlockers.length === 0) setError(null); }, [liveBlockers, error, setError]);
 
   async function save(): Promise<RiskDetail | null> {
     const body: Record<string, unknown> = { criteria: Object.fromEntries(RISK_CRITERIA.map((k) => [k, loc.criteria[k] ?? null])) };
@@ -466,7 +495,7 @@ function AssessmentView({ d, replace, reload, notice, setNotice, error, setError
 
           {a.status === 'OPEN' && <section className="panel" aria-labelledby="block-h">
             <div className="panel-head"><h2 id="block-h">Tamamlamak için</h2></div>
-            <div className="panel-body">{d.computed.blockers.length ? <ul className="grid gap-1.5" aria-label="Tamamlama engelleri">{d.computed.blockers.map((b, i) => (
+            <div className="panel-body">{liveBlockers.length ? <ul className="grid gap-1.5" aria-label="Tamamlama engelleri">{liveBlockers.map((b, i) => (
               <li key={i} className="flex items-start gap-2 text-sm"><Icon name="alert" size={14} className="mt-0.5 shrink-0 text-warn" />{b.message}</li>))}</ul>
               : <p className="text-sm text-verified">Engel yok; "Tamamla" ile revizyon yazılır.</p>}</div>
           </section>}
@@ -934,7 +963,7 @@ function ImportRowView({ x, edit, onPatch, result }: { x: ImportRow; edit: boole
           {picking && <SupplierPicker rowNo={x.rowNo} initial={x.name ?? ''} onPick={(id) => { setPicking(false); void onPatch({ supplierId: id }); }} onCancel={() => setPicking(false)} />}
         </div>}
       </TableCell>
-      <TableCell className="align-top">{x.team ? <span className="block text-sm text-ink-subtle">{x.team}</span> : null}<DepartmentName name={x.department?.name} /></TableCell>
+      <TableCell className="align-top">{x.team && x.team.trim() !== (x.department?.name ?? '').trim() ? <span className="block text-sm text-ink-subtle">{x.team}</span> : null}<DepartmentName name={x.department?.name} /></TableCell>
       <TableCell className="whitespace-nowrap align-top text-sm">
         <span className="tabular block">{x.criticality ? `${x.criticality.display} (sütun ${x.criticality.column})` : 'Kritiklik yok'}</span>
         <span className="tabular block">{x.riskScore ? `Skor ${fmtScore(x.riskScore)}` : 'Skor yok'}</span>

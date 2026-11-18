@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { ACCEPT, DocActions, DocTags, fmtNum, fmtSize, typesText, type SupplierDoc } from '../lib/supplierV2.tsx';
 import { cn } from '@/lib/utils';
+import { levelTag } from '../lib/risk.tsx';
 
 interface Summary { openInvites: number; pendingSurveys: number; documents: { expired: number; expiring: number; missing: number }; standing: { score: number | null; levelLabel: string | null } }
 
@@ -207,7 +208,7 @@ export function PortalStanding() {
         <section className="panel" aria-labelledby="risk-h">
           <div className="panel-head"><h2 id="risk-h">Risk durumunuz</h2></div>
           <div className="panel-body grid gap-2">
-            {s.levelLabel ? <Tag label={{ text: s.levelLabel, tone: 'info', icon: 'shield' }} className="justify-self-start" /> : <p className="text-ink-muted">Henüz tamamlanmış risk değerlendirmesi yok.</p>}
+            {s.levelLabel ? <Tag label={s.risk && s.risk.level >= 4 ? levelTag(s.risk.level, s.levelLabel)! : { text: s.levelLabel, tone: 'info', icon: 'shield' }} className="justify-self-start" /> : <p className="text-ink-muted">Henüz tamamlanmış risk değerlendirmesi yok.</p>}
             {s.levelSourceLabel && <p className="text-sm text-ink-muted">Kaynak: {s.levelSourceLabel}</p>}
             {s.risk?.riskScore != null && <p className="text-sm">Risk puanı: <span className="tabular font-semibold">{fmtNum(s.risk.riskScore)}</span></p>}
             {s.risk && <PortalRiskActions />}

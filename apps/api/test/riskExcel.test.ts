@@ -301,6 +301,14 @@ describe('içe aktarım ve dışa aktarım API (R11/R12)', () => {
     expect(await assessmentOf(S.hack)).toBeUndefined();
     // Hiçbir satır kaybolmaz: 10 ham satır, bağlı değerlendirmeler.
     expect((await one(`SELECT count(*)::int AS n FROM risk_import_rows WHERE batch_id = $1`, [batchId])).n).toBe(10);
+    // Persona düzeltmesi: uygulanmış partide satır sonuçları gerçek sonucu gösterir (çakışma notu kaybolmaz).
+    const got = await h.call('buyer', 'GET', `/api/v1/risk/imports/${batchId}`);
+    const byOutcome = (o: string) => got.body.rows.filter((x: any) => x.outcome === o);
+    expect(byOutcome('CONFLICT')).toHaveLength(1);
+    expect(byOutcome('CONFLICT')[0]).toMatchObject({ outcomeLabel: 'Çakışma — atlandı', issues: expect.arrayContaining([expect.stringContaining('zaten vardı')]) });
+    expect(got.body.summary).toMatchObject({ conflicts: 1, completed: 4, open: 3, merged: 1, skipped: 1 });
+    expect(got.body.rows.every((x: any) => !/açılacak|atlanacak|eklenecek/.test(x.outcomeLabel))).toBe(true);
+    expect(got.body.batch.result).not.toHaveProperty('rowOutcomes');
   });
 
   it('ikinci uygulama reddedilir: aynı parti 409 not_preview; aynı dosya yeni partide 409 already_imported', async () => {
