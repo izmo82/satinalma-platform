@@ -52,7 +52,9 @@ interface InvoiceRow { id: string; kind: keyof typeof KIND; invoiceNo: string; i
   matchState?: MatchState; matchStateLabel?: string; matchMethod?: string | null; contract?: { id: string; code: string; title: string } | null; project?: { id: string; code: string; title: string } | null;
   sourceLabel?: string | null; erpPaymentStatusLabel?: string | null; erpProviderKind?: string | null;
   // v2 Faz 8 izleme: ödeme durumu kaynağı (etiket sunucuda "(taklit ERP)" vb. ile gelir; olduğu gibi gösterilir).
-  erpPaymentSource?: string | null; erpPaymentMock?: boolean | null; erpPaymentProvider?: string | null }
+  erpPaymentSource?: string | null; erpPaymentMock?: boolean | null; erpPaymentProvider?: string | null;
+  /** Persona D8: demo fatura elle bağlanmaz (sunucu 409 demo_invoice_protected). */
+  protectedDemo?: boolean }
 /** Eski tahsis kontrolü (bulgulardan): v2 durumunun yanında ikincil satır olarak görünür kalır. */
 const matchOf = (x: InvoiceRow) => (x.legalStatus !== 'RECEIVED' ? 'IPTAL' : x.matched ? 'ESLESTI' : 'ESLESMEDI');
 interface InvoiceList { items: InvoiceRow[]; counts?: { all: number; matched: number; unmatched: number }; can?: { match: boolean; retryQueue: boolean } }
@@ -90,7 +92,9 @@ export function InvoicesPage() {
   const counts = r.data?.counts;
   const clientSide = !SERVER_MATCH[durum];
   // v2 Faz 7 izleme (F1): liste 300'de kesilir; kesildiyse istemci çip sayıları (eksik veriyle) gösterilmez ve not düşülür.
-  const truncated = !!r.data && (counts !== undefined ? all.length < counts.all : all.length >= LIST_LIMIT);
+  // Persona D3: sunucu süzgeçli listede (KUYRUK/BAGLI) yüklenen satırlar o süzgecin sayısıyla kıyaslanır, toplamla değil.
+  const loadedOf = counts === undefined ? undefined : SERVER_MATCH[durum] === 'UNMATCHED' ? counts.unmatched : SERVER_MATCH[durum] === 'MATCHED' ? counts.matched : counts.all;
+  const truncated = !!r.data && (loadedOf !== undefined ? all.length < loadedOf : all.length >= LIST_LIMIT);
   const chipCount = (k: string) => CLIENT_MATCH.has(k) ? (clientSide && !truncated ? all.filter((x) => matchOf(x) === k).length : undefined)
     : counts ? (k === '' ? counts.all : k === 'KUYRUK' ? counts.unmatched : counts.matched) : undefined;
   const canMatch = !!r.data?.can?.match;
@@ -146,7 +150,7 @@ export function InvoicesPage() {
                 {x.matchState ? <span className="flex flex-wrap gap-1"><Tag label={matchStateTag(x.matchState, x.matchStateLabel)} />{matchOf(x) === 'IPTAL' && <Tag label={MATCH.IPTAL} />}</span> : <Tag label={MATCH[matchOf(x)]} />}
                 {x.matchState && matchOf(x) === 'ESLESMEDI' && <span className="mt-1 block text-sm text-ink-subtle">Tahsis kontrolü: Eşleşmedi</span>}
                 {x.decision && <span className="mt-1 block text-sm text-ink-subtle">{PAST_DECISION[x.decision]}</span>}
-                {canMatch && x.matchState === 'UNMATCHED' && x.legalStatus === 'RECEIVED' && !x.decision &&
+                {canMatch && x.matchState === 'UNMATCHED' && x.legalStatus === 'RECEIVED' && !x.decision && !x.protectedDemo &&
                   <Button size="xs" variant="outline" className="mt-1" onClick={() => setLinking(x)} aria-label={`${x.invoiceNo} faturasını elle bağla`}>Elle bağla</Button>}</TableCell>
               {show('erp') && <TableCell className="text-sm text-ink-muted max-[900px]:hidden">{x.erpStatus ? ERP[x.erpStatus] : '—'}{x.paymentStatus === 'PAID' ? ' · ödendi (ERP)' : ''}
                 {/* v2 Faz 8 (R6): ERP ödeme durumu bilgisi (ERP'den ya da elle); v1 ödeme durumundan ayrı. */}
@@ -303,7 +307,7 @@ export function InvoicePage() {
               ))}
               {issuesFor(undefined).map((x, i) => <Issue key={i} x={x} />)}
               {editing && <AllocationEditor d={d} onDone={() => { setEditing(false); void r.reload(); }} />}
-              {d.match?.state === 'MATCHED' && !d.allocations.length && <p className="text-sm text-ink-subtle">Fatura sözleşmeye bütün olarak bağlı (eşleşme kartı); satır tahsisi girilmedi. “Sözleşmeye tahsis edilmedi” bulgusu eski tahsis kontrolüdür.</p>}
+              {d.match?.state === 'MATCHED' && !d.allocations.length && <p className="text-sm text-ink-subtle">Fatura sözleşmeye bütün olarak bağlı (eşleşme kartı); satır tahsisi gerekmez. Başlıktaki “Tahsis kontrolü” eski satır tahsisi kontrolüdür.</p>}
             </div>
           </section>
         </div>

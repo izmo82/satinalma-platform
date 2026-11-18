@@ -25,7 +25,11 @@ export interface UsageView { amount: string | null; currency: string; basis: 'NE
 
 export interface MatchView { state: MatchState; stateLabel: string; method: string | null; methodLabel: string | null; note: string | null; matchedAt: string | null; matchedBy: string | null;
   autoMatch: boolean; contract: { id: string; code: string; title: string } | null; project: { id: string; code: string; title: string } | null;
-  erpContractRef: string | null; erpOrderRef: string | null; lastAutoFailure: { reason: string; reasonLabel: string; at: string } | null; usage: UsageView | null }
+  erpContractRef: string | null; erpOrderRef: string | null; lastAutoFailure: { reason: string; reasonLabel: string; at: string } | null; usage: UsageView | null;
+  /** Persona D8: demo faturanın eşleşmesi değiştirilmez (sunucu 409 demo_invoice_protected). */
+  protectedDemo?: boolean }
+/** Persona D8: demo fatura notu (liste, kart ve çekmece aynı metin). */
+export const DEMO_PROTECTED_TR = 'Demo faturanın sözleşme eşleşmesi değiştirilmez.';
 
 /** Sözleşme kullanımı çubuğu (R4): oran ≥ %90 "Sınıra yakın", aşımda tutar; engel değildir. Başka para birimindeki faturalar ayrı satır. */
 export function UsageBar({ u, label = 'Sözleşme tutarı kullanımı' }: { u: UsageView; label?: string }) {
@@ -51,8 +55,9 @@ export function UsageBar({ u, label = 'Sözleşme tutarı kullanımı' }: { u: U
 interface Candidate { familyId: string; code: string; title: string; contractNo: string | null; status: string | null; statusLabel: string | null; active: boolean;
   startDate: string | null; endDate: string | null; indefinite: boolean; inRange: boolean; project: { id: string; code: string; title: string } | null;
   usage: UsageView | null; canLink: boolean; cannotLinkReason?: string | null }
-interface Candidates { invoice: { id: string; invoiceNo: string; issueDate: string; state: string | null }; items: Candidate[]; blocked: null | 'invoice_decided' | 'invoice_allocated' | 'invoice_already_matched' }
+interface Candidates { invoice: { id: string; invoiceNo: string; issueDate: string; state: string | null }; items: Candidate[]; blocked: null | 'invoice_decided' | 'invoice_allocated' | 'invoice_already_matched' | 'demo_invoice_protected' }
 const BLOCKED_TR = {
+  demo_invoice_protected: DEMO_PROTECTED_TR,
   invoice_decided: 'Bu faturada eski (v1) onay ya da ret kararı var; sözleşmeye elle bağlanamaz.',
   invoice_allocated: 'Fatura satırları sözleşmeye tahsis edilmiş; eşleşme tahsisten türer. Elle bağlamak için önce tahsisi kaldırın.',
   invoice_already_matched: 'Fatura zaten bir sözleşmeye bağlı. Başka sözleşmeye bağlamak için önce bağı gerekçeyle kaldırın.',
@@ -68,6 +73,9 @@ export function MatchDrawer({ invoiceId, invoiceNo, onClose, onDone }: { invoice
   const [confirmRange, setConfirmRange] = useState<{ start: string | null; end: string | null; issueDate: string | null } | null>(null);
   const chosen = r.data?.items.find((c) => c.familyId === pick);
   const needAck = !!chosen && !chosen.inRange;
+  // Persona D6: "Sözleşmeye bağla" pasifken nedeni düğmenin yanında görünür (onay kutusu adayların altında, kaydırma gerekebilir).
+  const disabledReason = !r.data || busy ? null : r.data.blocked ? BLOCKED_TR[r.data.blocked] : !chosen ? 'Önce bir aday sözleşme seçin.'
+    : !chosen.canLink ? chosen.cannotLinkReason ?? 'Bu sözleşmeye bağlanamaz.' : needAck && !ack ? 'Fatura tarihi sözleşme süresinin dışında: aşağıdaki onay kutusunu işaretleyin.' : null;
   const send = async (acknowledge: boolean) => {
     if (!chosen) return;
     setBusy(true); setErr(null);
@@ -87,8 +95,9 @@ export function MatchDrawer({ invoiceId, invoiceNo, onClose, onDone }: { invoice
   };
   return (
     <Drawer title={`Elle bağla · ${invoiceNo}`} onClose={onClose} footer={<>
+      {disabledReason && <span id="bagla-neden" className="mr-auto min-w-0 flex-1 text-sm text-ink-muted">{disabledReason}</span>}
       <Button variant="ghost" onClick={onClose}>Vazgeç</Button>
-      <Button disabled={busy || !chosen || !chosen.canLink || !!r.data?.blocked || (needAck && !ack)} onClick={() => void send(needAck && ack)}>Sözleşmeye bağla</Button>
+      <Button disabled={busy || !chosen || !chosen.canLink || !!r.data?.blocked || (needAck && !ack)} aria-describedby={disabledReason ? 'bagla-neden' : undefined} onClick={() => void send(needAck && ack)}>Sözleşmeye bağla</Button>
     </>}>
       {r.loading && !r.data ? <Loading rows={4} /> : r.error ? <ErrorState error={r.error} onRetry={r.reload} /> : r.data && <div className="grid gap-3">
         <p className="text-sm text-ink-muted">Fatura tarihi {fmtDate(r.data.invoice.issueDate)}. Yalnız aynı tedarikçinin ve şirketin sözleşmeleri listelenir; yürürlükte ve tarihi uyan sözleşmeler üsttedir.</p>
@@ -156,8 +165,9 @@ export function MatchCard({ invoiceId, invoiceNo, m, canMatch, onChanged }: { in
         {m.state === 'UNMATCHED' && m.lastAutoFailure && <p className="text-sm text-ink-muted"><span className="font-semibold text-ink">Otomatik eşleşmedi:</span> {m.lastAutoFailure.reasonLabel} <span className="text-ink-subtle">· {fmtDateTime(m.lastAutoFailure.at)}</span></p>}
         {m.state === 'UNMATCHED' && !m.autoMatch && <p className="text-sm text-ink-subtle">Bu fatura otomatik eşleştirme öncesinde kaydedildi; yalnız elle bağlanır.</p>}
         {m.usage && <UsageBar u={m.usage} />}
-        {canMatch && m.state === 'UNMATCHED' && <Button className="justify-self-start" onClick={() => setDrawer(true)}><Icon name="arrow" />Elle bağla</Button>}
-        {canMatch && m.state === 'MATCHED' && (unlink === null
+        {m.protectedDemo && <p className="text-sm text-ink-subtle">{DEMO_PROTECTED_TR}</p>}
+        {canMatch && !m.protectedDemo && m.state === 'UNMATCHED' && <Button className="justify-self-start" onClick={() => setDrawer(true)}><Icon name="arrow" />Elle bağla</Button>}
+        {canMatch && !m.protectedDemo && m.state === 'MATCHED' && (unlink === null
           ? <Button variant="outline" className="justify-self-start" onClick={() => setUnlink('')}>Bağı kaldır</Button>
           : <form className="grid gap-2" onSubmit={(e) => { e.preventDefault(); void doUnlink(); }}>
             <Field label="Bağı kaldırma gerekçesi" hint="En az 10 karakter; denetim kaydına girer.">{(p) => <textarea className="input" rows={2} required minLength={10} maxLength={2000} {...p} value={unlink} onChange={(e) => setUnlink(e.target.value)} />}</Field>

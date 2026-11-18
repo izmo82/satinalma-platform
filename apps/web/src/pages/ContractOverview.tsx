@@ -98,9 +98,9 @@ function Summary({ d, savedDraft }: { d: ContractV2; savedDraft: boolean }) {
           <section className="panel" aria-labelledby="inv-h">
             <div className="panel-head"><h2 id="inv-h">Eşleşen faturalar</h2></div>
             <div className="panel-body grid gap-3">
-              {limit.loading && !limit.data ? <Loading rows={2} /> : limit.error ? <p className="text-ink-muted">Tüketim bilgisi alınamadı.</p> : limit.data && <Usage l={limit.data} />}
-              <InvoiceRows familyId={d.family.id} />
-              <p className="text-sm text-ink-muted">Tüketim yalnız onaylı faturalardan hesaplanır; tutar, faturanın bu sözleşmeye tahsis edilen kısmıdır. Bütün faturalar: <Link to="/faturalar">Faturalar</Link>.</p>
+              {/* Persona D5: kullanım tutarı API'nin v2 kullanımından (bağlı + tahsisli faturalar); eski onaylı tüketim yalnız v2 kullanımı yoksa ya da sıfır değilse ayrı satır. */}
+              <InvoiceRows familyId={d.family.id} legacy={limit.loading && !limit.data ? 'loading' : limit.error ? 'error' : limit.data ?? null} />
+              <p className="text-sm text-ink-muted">Tutar, sözleşmeye bütün olarak bağlı faturada faturanın tamamı, tahsisli faturada bu sözleşmeye tahsis edilen kısmıdır. Bütün faturalar: <Link to="/faturalar">Faturalar</Link>.</p>
             </div>
           </section>
         </div>
@@ -140,18 +140,24 @@ interface FamilyInvoice { id: string; invoiceNo: string; date: string; amount: s
   matchState?: MatchState; matchStateLabel?: string; matchMethodLabel?: string | null }
 const INVOICE_TONE = { APPROVED: { tone: 'ok', icon: 'check' }, REJECTED: { tone: 'danger', icon: 'x' }, PENDING: { tone: 'warn', icon: 'clock' } } as const;
 
-function InvoiceRows({ familyId }: { familyId: string }) {
+type LegacyLimit = { ceiling: string | null; netConsumption: string; currency: string; limitBasis: string };
+
+function InvoiceRows({ familyId, legacy }: { familyId: string; legacy: LegacyLimit | 'loading' | 'error' | null }) {
   const r = useResource<{ items: FamilyInvoice[]; usage?: UsageView | null }>(`/api/v1/contracts/${familyId}/invoices`);
-  if (r.loading && !r.data) return <Loading rows={2} />;
-  if (r.error || !r.data) return <p className="text-sm text-ink-muted">Faturalar alınamadı. <button type="button" className="underline" onClick={() => void r.reload()}>Yeniden dene</button></p>;
-  // v2 Faz 7 (R4): eşleşen + tahsisle türeyen faturalarla sözleşme kullanımı (sözleşme tutarına göre, aşım uyarısı bilgi amaçlı).
-  const usage = r.data.usage ? <div className="grid gap-1"><h3 className="text-base">Eşleşen faturalarla kullanım</h3><UsageBar u={r.data.usage} label="Eşleşen faturalarla sözleşme kullanımı" /></div> : null;
+  const legacyView = legacy === 'loading' ? <Loading rows={2} /> : legacy === 'error' ? <p className="text-ink-muted">Tüketim bilgisi alınamadı.</p> : legacy && <Usage l={legacy} />;
+  if (r.loading && !r.data) return <>{legacyView}<Loading rows={2} /></>;
+  if (r.error || !r.data) return <>{legacyView}<p className="text-sm text-ink-muted">Faturalar alınamadı. <button type="button" className="underline" onClick={() => void r.reload()}>Yeniden dene</button></p></>;
+  // v2 Faz 7 (R4): bağlı + tahsisle türeyen faturalarla sözleşme kullanımı (sözleşme tutarına göre, aşım uyarısı bilgi amaçlı).
+  // Persona D5: v2 kullanımı varken ana tutar odur; eski (v1) onaylı fatura tüketimi sıfır değilse ayrı, açıkça adlandırılmış satırda kalır.
+  const v1 = legacy && typeof legacy === 'object' && Number(legacy.netConsumption) !== 0
+    ? <p className="text-sm text-ink-muted">Eski (v1) onaylı faturalarla tüketim: <span className="tabular">{fmtMoney(legacy.netConsumption, legacy.currency)}</span>{legacy.ceiling ? <> · tavan <span className="tabular">{fmtMoney(legacy.ceiling, legacy.currency)}</span></> : ''}</p> : null;
+  const usage = r.data.usage ? <div className="grid gap-1"><h3 className="text-base">Bağlı ya da tahsisli faturalarla kullanım</h3><UsageBar u={r.data.usage} label="Bağlı ya da tahsisli faturalarla sözleşme kullanımı" />{v1}</div> : legacyView;
   if (!r.data.items.length) return <>{usage}<p className="text-ink-muted">Bu sözleşmeye tahsis edilmiş fatura yok.</p></>;
   return (
     <>{usage}
     <div className="overflow-x-auto rounded-md border border-border">
       <table className="w-full text-left text-sm">
-        <caption className="sr-only">Bu sözleşmeye tahsis edilmiş faturalar</caption>
+        <caption className="sr-only">Bu sözleşmeye bağlı ya da tahsisli faturalar</caption>
         <thead className="bg-sunken text-ink-muted"><tr><th scope="col" className="px-3 py-2 font-semibold">Fatura no</th><th scope="col" className="px-3 py-2 font-semibold">Tarih</th>
           <th scope="col" className="px-3 py-2 text-right font-semibold">Tutar</th><th scope="col" className="px-3 py-2 font-semibold">Durum</th><th scope="col" className="px-3 py-2 font-semibold">Eşleşme</th></tr></thead>
         <tbody>{r.data.items.map((i) => (
@@ -169,7 +175,7 @@ function InvoiceRows({ familyId }: { familyId: string }) {
 }
 
 function Usage({ l }: { l: { ceiling: string | null; netConsumption: string; currency: string; limitBasis: string } }) {
-  if (!l.ceiling) return <p><span className="tabular font-semibold">{fmtMoney(l.netConsumption, l.currency)}</span> <span className="text-ink-muted">onaylı faturalarla tüketildi · doğrulanmış tavan yok</span></p>;
+  if (!l.ceiling) return <p><span className="tabular font-semibold">{fmtMoney(l.netConsumption, l.currency)}</span> <span className="text-ink-muted">faturalarla tüketildi · doğrulanmış tavan yok</span></p>;
   const pct = Math.min(100, (Number(l.netConsumption) / Number(l.ceiling)) * 100 || 0);
   return (
     <div className="grid gap-1.5">

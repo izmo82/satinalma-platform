@@ -676,3 +676,50 @@ describe('bütün faz incelemesi düzeltmeleri (I1, I3, I5, minörler)', () => {
     expect(u.foreignCurrency[0].label).toBe('USD faturalar toplama girmedi (kur çevrilmedi): 1.234,50 USD');
   });
 });
+
+// v2 Faz 7 persona D4: sözleşmeye bütün olarak bağlı (tahsissiz) fatura "sözleşmeye tahsis edilmedi" engeli/görevi açmaz.
+describe('persona D4: v2 bağı tahsis şartını karşılar', () => {
+  const codes = async (id: string) => ((await call('finance', 'GET', `/api/v1/invoices/${id}`)).body.check.issues as { code: string }[]).map((x) => x.code);
+  const unallocTasks = async (id: string) => (await tasks(`invoice-issue:${id}:UNALLOCATED`)).filter((t) => t.status === 'OPEN').length;
+
+  it('bağlı fatura: UNALLOCATED yok, görev yok, liste engelli değil; bağ kalkınca bulgu ve görev geri gelir; elle bağlanınca görev kapanır', async () => {
+    const s = await supplier();
+    const c = await contract({ supplierId: s });
+    const a = await invoice(s);
+    expect(a.match.state).toBe('MATCHED');
+    const d = await call('finance', 'GET', `/api/v1/invoices/${a.id}`);
+    expect(d.body.check.issues.map((x: any) => x.code)).not.toContain('UNALLOCATED');
+    expect(d.body.status).not.toBe('BLOCKED');
+    expect(await unallocTasks(a.id)).toBe(0);
+    const row = (await call('finance', 'GET', '/api/v1/invoices?match=MATCHED')).body.items.find((x: any) => x.id === a.id);
+    // "matched" eski tahsis kontrolüdür (değişmez); engel bayrağı bağla karşılanır.
+    expect(row).toMatchObject({ matchState: 'MATCHED', matched: false, blocked: false });
+
+    // Bağ kalkınca tahsis şartı geri gelir: bulgu ve yüksek önemli görev açılır (detay açılmadan, kaldırma işleminde).
+    expect((await call('finance', 'DELETE', `/api/v1/invoices/${a.id}/match`, { reason: 'Persona D4 sınaması (SENTETİK).' })).status).toBe(200);
+    expect(await unallocTasks(a.id)).toBe(1);
+    expect(await codes(a.id)).toContain('UNALLOCATED');
+
+    // Elle yeniden bağlanınca görev aynı işlemde kapanır, bulgu kalkar.
+    expect((await call('finance', 'POST', `/api/v1/invoices/${a.id}/match`, { familyId: c.familyId })).status).toBe(200);
+    expect(await unallocTasks(a.id)).toBe(0);
+    expect(await codes(a.id)).not.toContain('UNALLOCATED');
+    expect(await unallocTasks(a.id)).toBe(0);
+  });
+
+  it('bağsız ve tahsisli faturada v1 davranışı aynen: eksik tahsis UNALLOCATED + görev', async () => {
+    const s = await supplier();
+    const c = await contract({ supplierId: s, start: '2025-01-01', end: '2025-12-31' });
+    // Bağsız (süre dışı → kuyruk): UNALLOCATED ve görev (eski davranış).
+    const a = await invoice(s, { date: '2027-05-01' });
+    expect(a.match.state).toBe('UNMATCHED');
+    expect(await codes(a.id)).toContain('UNALLOCATED');
+    expect(await unallocTasks(a.id)).toBe(1);
+    // Kısmi tahsisli fatura (bağ yok): eksik kısım UNALLOCATED olarak kalır.
+    const b = await invoice(s, { date: '2027-05-02' });
+    const put = await call('finance', 'PUT', `/api/v1/invoices/${b.id}/allocations`, { allocations: [{ lineNo: 1, poLineId: null, contractVersionId: c.cvId, quantity: '1', amount: '400.00' }] });
+    expect(put.status, JSON.stringify(put.body)).toBe(200);
+    expect(await codes(b.id)).toContain('UNALLOCATED');
+    expect(await unallocTasks(b.id)).toBe(1);
+  });
+});

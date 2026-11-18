@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api, apiDownload, ApiError } from '../lib/api.ts';
 import { useResource } from '../lib/useApi.ts';
@@ -115,9 +115,20 @@ export function CoiBand({ projectId, coi, onDone }: { projectId: string; coi: Co
   );
 }
 
-export function CoiTab({ projectId }: { projectId: string }) {
+/**
+ * Persona D1: `version` proje yanıtındaki beyan imzasıdır (üst banttan beyan verilince değişir); değişince sekme verisi yeniden alınır.
+ * Sekmeden verilen beyan `onDeclared` ile proje verisini (üst bant, sonraki adım) de tazeler.
+ */
+export function CoiTab({ projectId, version, onDeclared }: { projectId: string; version?: string; onDeclared?: () => Promise<void> | void }) {
   const r = useResource<Coi>(`/api/v1/projects/${projectId}/coi`);
   const [done, setDone] = useState<string | null>(null);
+  const seen = useRef(version);
+  const reload = r.reload;
+  useEffect(() => {
+    if (seen.current === version) return;
+    seen.current = version;
+    void reload();
+  }, [version, reload]);
   if (r.loading && !r.data) return <Loading rows={4} />;
   if (r.error || !r.data) return <div className="rounded-md border border-border bg-surface"><ErrorState error={r.error} onRetry={r.reload} /></div>;
   const c = r.data;
@@ -147,7 +158,7 @@ export function CoiTab({ projectId }: { projectId: string }) {
           <div className="panel-head"><h2 id="coi-me">{c.me.latest ? 'Beyanınızı yenileyin' : 'Beyanınız'}</h2></div>
           <div className="panel-body grid gap-2">
             {c.me.latest && <p className="text-sm text-ink-muted">Geçerli beyanınız: {c.me.latest.kindLabel} · {fmtDateTime(c.me.latest.declaredAt)}</p>}
-            <DeclareForm projectId={projectId} again={!!c.me.latest} onDone={(m) => { setDone(m); void r.reload(); }} />
+            <DeclareForm projectId={projectId} again={!!c.me.latest} onDone={(m) => { setDone(m); void r.reload(); void onDeclared?.(); }} />
           </div>
         </section>
       )}

@@ -10,7 +10,7 @@ import { closeTasks, openTask, rederiveTaskDepartments, v2Role } from '../tasks.
 import { ApiError, conflict, forbidden, notFound, unprocessable } from '../errors.ts';
 import { ErpTimeout, erpAdapter } from '../erp/adapter.ts';
 import { criticalBlocks } from './supplierEval.ts';
-import { ALLOC_FAMILIES_SQL, autoMatchInvoice, MATCH_STATE_SQL, lockInvoiceMatch, matchInfo, overrunCheckForInvoice, releaseLinkForAllocation, type AutoMatchResult } from './invoiceMatching.ts';
+import { ALLOC_FAMILIES_SQL, autoMatchInvoice, isProtectedDemoInvoice, MATCH_STATE_SQL, lockInvoiceMatch, matchInfo, overrunCheckForInvoice, releaseLinkForAllocation, type AutoMatchResult } from './invoiceMatching.ts';
 import { MATCH_STATE_TR, type MatchState } from '@sp/domain';
 
 /**
@@ -465,9 +465,9 @@ export async function inheritDepartment(tx: Tx, invoiceId: string): Promise<stri
 }
 
 /** Kontrol girdisini güncel veriden kurar ve domain kontrolünü çalıştırır. */
-type InvRow = { id: string; kind: InvoiceCheckInput['kind']; currency: string; supplier_id: string; advance_offset: string; advance_invoice_id: string | null; supplier_status: string; company_id: string; supplier_root_id: string; reversal_targets: string[] | null;
+type InvRow = { id: string; linked: boolean; kind: InvoiceCheckInput['kind']; currency: string; supplier_id: string; advance_offset: string; advance_invoice_id: string | null; supplier_status: string; company_id: string; supplier_root_id: string; reversal_targets: string[] | null;
   tax_total: string | null; withholding: string | null; payable: string | null; other_tax: string | null };
-const INV_SQL = `SELECT i.id, i.company_id, i.kind, i.currency, i.supplier_id, i.advance_offset::text, i.advance_invoice_id, s.status AS supplier_status, ${SUPPLIER_ROOT_SQL} AS supplier_root_id,
+const INV_SQL = `SELECT i.id, i.contract_family_id IS NOT NULL AS linked, i.company_id, i.kind, i.currency, i.supplier_id, i.advance_offset::text, i.advance_invoice_id, s.status AS supplier_status, ${SUPPLIER_ROOT_SQL} AS supplier_root_id,
   CASE WHEN i.kind = 'CREDIT_NOTE' AND EXISTS (SELECT 1 FROM invoice_decisions d JOIN invoices o ON o.id = d.invoice_id WHERE o.id = i.original_invoice_id AND o.company_id = i.company_id AND d.kind = 'APPROVAL')
     THEN ARRAY(SELECT coalesce(a.po_line_id, a.contract_version_id)::text FROM invoice_allocations a WHERE a.invoice_id = i.original_invoice_id) END AS reversal_targets,
   i.declared_tax_total::text AS tax_total, i.declared_withholding::text AS withholding, i.declared_payable::text AS payable, i.declared_other_tax_total::text AS other_tax
@@ -485,6 +485,15 @@ function checkInput(inv: InvRow, lines: InvoiceCheckInput['lines'], allocations:
     tolerances, advanceOffset: inv.advance_offset, advanceBalance, declared: { taxTotal: inv.tax_total, withholding: inv.withholding, payable: inv.payable, otherTaxTotal: inv.other_tax } };
 }
 const strip = <T extends { invoice_id: string }>({ invoice_id: _, ...rest }: T) => rest;
+
+/**
+ * v2 Faz 7 persona D4: sözleşme ailesine bütün olarak bağlı (v2 bağı, satır tahsisi yok) faturada tahsis şartı bağla karşılanır;
+ * "sözleşmeye tahsis edilmedi" (UNALLOCATED) bulgusu engel/görev olarak gösterilmez. Tahsisli ya da bağsız faturada v1 davranışı aynen.
+ * Yalnız gösterim, görev ve rapor katmanı içindir: kontrol hesabı, parmak izi ve (v1) onay yolu değişmez.
+ */
+export function linkCoveredIssues<T extends { code: string }>(issues: T[], linked: boolean, allocationCount: number): T[] {
+  return linked && allocationCount === 0 ? issues.filter((x) => x.code !== 'UNALLOCATED') : issues;
+}
 
 async function evaluate(tx: Tx, invoiceId: string) {
   const inv = (await tx.query<InvRow>(INV_SQL, [[invoiceId]])).rows[0];
@@ -505,13 +514,26 @@ async function evaluate(tx: Tx, invoiceId: string) {
     p: [...poLines].sort((x, y) => x.poLineId.localeCompare(y.poLineId)).map((x) => [x.poLineId, x.orderedQty, x.unitPrice, x.receivedQty, x.invoicedQty, x.poStatus]),
     // Uygulanan tolerans kuralı ve limit yöntemi değişirse istisna eskir.
     t: tolerances.map((t) => [t.category ?? '', t.absAmount, t.percent, t.combine]).sort(), c: contracts.map((c) => [c.contractVersionId, c.limitBasis ?? 'NET']).sort() }));
-  return { check, fingerprint, contracts, poLines };
+  return { check, fingerprint, contracts, poLines, shownIssues: linkCoveredIssues(check.issues, inv.linked, allocations.length) };
+}
+
+/**
+ * Bulgu görevlerini güncel kontrolden yeniden türetir (kararlı faturada dokunmaz). v2 bağı kurulunca/kaldırılınca çağrılır (persona D4):
+ * bağlanan tahsissiz faturanın UNALLOCATED görevi kapanır, bağı kaldırılan faturada geri açılır.
+ */
+export async function rederiveIssueTasks(tx: Tx, ctx: TenantContext, invoiceId: string) {
+  if (await finalDecision(tx, invoiceId)) return;
+  const inv = (await tx.query<{ invoice_no: string; company_id: string; supplier_id: string; supplier_status: string }>(`SELECT i.invoice_no, i.company_id, i.supplier_id, s.status AS supplier_status
+    FROM invoices i JOIN suppliers s ON s.id = i.supplier_id WHERE i.id = $1`, [invoiceId])).rows[0];
+  if (!inv) return;
+  const { shownIssues } = await evaluate(tx, invoiceId);
+  await syncIssueTasks(tx, ctx, invoiceId, inv.invoice_no, inv.company_id, inv.supplier_id, inv.supplier_status, shownIssues);
 }
 
 /** Rapor için yan etkisiz kontrol: bulgu var mı (görev açmaz, kaydetmez). */
 export async function invoiceHasIssue(tx: Tx, invoiceId: string) {
-  const { check } = await evaluate(tx, invoiceId);
-  return check.issues.length > 0;
+  const { shownIssues } = await evaluate(tx, invoiceId);
+  return shownIssues.length > 0;
 }
 
 /**
@@ -520,11 +542,11 @@ export async function invoiceHasIssue(tx: Tx, invoiceId: string) {
  */
 export async function unapprovedInvoicesWithIssues(tx: Tx, ids: string[]): Promise<Set<string>> {
   const checks = await unapprovedInvoiceChecks(tx, ids);
-  return new Set([...checks].filter(([, c]) => c.issues.length).map(([id]) => id));
+  return new Set([...checks].filter(([, c]) => c.shownIssues.length).map(([id]) => id));
 }
 
 async function unapprovedInvoiceChecks(tx: Tx, ids: string[]) {
-  const out = new Map<string, ReturnType<typeof checkInvoice>>();
+  const out = new Map<string, ReturnType<typeof checkInvoice> & { shownIssues: ReturnType<typeof checkInvoice>['issues'] }>();
   if (!ids.length) return out;
   const invs = (await tx.query<InvRow>(INV_SQL, [ids])).rows;
   const group = <T extends { invoice_id: string }>(rows: T[]) => { const m = new Map<string, Omit<T, 'invoice_id'>[]>(); for (const r of rows) m.set(r.invoice_id, [...(m.get(r.invoice_id) ?? []), strip(r)]); return m; };
@@ -549,7 +571,7 @@ async function unapprovedInvoiceChecks(tx: Tx, ids: string[]) {
     const advanceBalance = inv.advance_invoice_id ? advBalance.get(inv.advance_invoice_id) ?? '0' : '0';
     const check = checkInvoice(checkInput(inv, (lines.get(inv.id) ?? []) as InvoiceCheckInput['lines'], allocations, poLines,
       cv.map((c) => cvById.get(c)).filter((x): x is ContractState => !!x), tolerances, advanceBalance));
-    out.set(inv.id, check);
+    out.set(inv.id, { ...check, shownIssues: linkCoveredIssues(check.issues, inv.linked, allocations.length) });
   }
   return out;
 }
@@ -664,13 +686,14 @@ export async function getInvoice(tx: Tx, ctx: TenantContext, id: string) {
   // Kaynak e-Fatura'nın UBL-TR temel kural denetimi (D81); onayı etkilemez, bilgi olarak gösterilir.
   const ublCheck = inv.documentVersionId ? (await tx.query(`SELECT rule_set AS "ruleSet", error_count AS errors, warning_count AS warnings, findings, bill_refs AS "billingReferences"
     FROM einvoice_checks WHERE document_version_id = $1`, [inv.documentVersionId])).rows[0] ?? null : null;
-  const { check, fingerprint, contracts, poLines } = await evaluate(tx, id);
+  const { check, fingerprint, contracts, poLines, shownIssues } = await evaluate(tx, id);
   const final = decisions.find((d: any) => d.kind === 'APPROVAL' || d.kind === 'REJECTION') ?? null;
   const exception = [...decisions].reverse().find((d: any) => d.kind === 'EXCEPTION_APPROVAL') ?? null;
-  if (!final) await syncIssueTasks(tx, ctx, id, inv.invoiceNo, inv.companyId, inv.supplierId, inv.supplierStatus, check.issues);
+  // Persona D4: v2 bağı tahsis şartını karşılar; bağlı tahsissiz faturada UNALLOCATED görev/engel olmaz.
+  if (!final) await syncIssueTasks(tx, ctx, id, inv.invoiceNo, inv.companyId, inv.supplierId, inv.supplierStatus, shownIssues);
   // v2 Faz 1 (D93): fatura onayı ve istisnası kalktı. Yanıt kaldırılan bulguları (sipariş/kabul, tolerans, sözleşmesiz istisna;
   // REMOVED_ISSUE_CODES) taşımaz, onay bayrağı her zaman false. Hesap ve parmak izi değişmez (eski kayıtlar için doğru kalır).
-  const issues = check.issues.filter((x) => !REMOVED_ISSUE_CODES.includes(x.code));
+  const issues = shownIssues.filter((x) => !REMOVED_ISSUE_CODES.includes(x.code));
   const shown = { ...check, issues, canApprove: false, needsException: false };
   return {
     invoice: inv, lines, allocations, decisions, intake, erp, check: shown, contracts, poLines, ublCheck,
@@ -687,7 +710,7 @@ export async function getInvoice(tx: Tx, ctx: TenantContext, id: string) {
 
 export type MatchFilter = 'ALL' | 'MATCHED' | 'UNMATCHED';
 export async function listInvoices(tx: Tx, f: { departmentId?: string; match?: MatchFilter } = {}) {
-  const rows = (await tx.query<{ id: string; decision: string | null; hasLines: boolean; matchState: MatchState; familyId: string | null; familyCode: string | null;
+  const rows = (await tx.query<{ id: string; invoiceNo: string; decision: string | null; hasLines: boolean; matchState: MatchState; familyId: string | null; familyCode: string | null;
     familyTitle: string | null; projectId: string | null; projectCode: string | null; projectTitle: string | null; allocFamilies: string[];
     erpProviderKind: string | null; erpPaymentStatus: string | null; erpPaymentSource: string | null; payMock: string | null; payProvider: string | null; intakeSource: string | null }>(`SELECT i.id, i.kind, i.invoice_no AS "invoiceNo", i.issue_date::text AS "issueDate", i.currency, s.legal_name AS "supplierName",
       s.status AS "supplierStatus", ${SUPPLIER_VERIFIED_SQL} AS "supplierIdentityVerified",
@@ -724,11 +747,14 @@ export async function listInvoices(tx: Tx, f: { departmentId?: string; match?: M
     })() : null,
     erpPaymentMock: r.erpPaymentStatus && r.erpPaymentSource === 'ERP' ? paymentProvenance(r.erpPaymentSource, payMock, payProvider).mock : null,
     erpPaymentProvider: r.erpPaymentStatus ? paymentProvenance(r.erpPaymentSource, payMock, payProvider).provider : null,
+    /** Persona D8: demo faturada "Elle bağla" gösterilmez (API zaten 409 demo_invoice_protected). */
+    protectedDemo: isProtectedDemoInvoice(r.invoiceNo),
     contract: familyId ? { id: familyId, code: familyCode, title: familyTitle } : af ? { id: af.id, code: af.code, title: af.title } : null,
     project: projectId ? { id: projectId, code: projectCode, title: projectTitle } : af?.project_id ? { id: af.project_id, code: af.pcode, title: af.ptitle } : null,
     matched: allocationMatched(hasLines, checks.get(r.id)?.issues ?? []),
     // v2 Faz 1 (D93): detayla aynı; kaldırılan bulgu kodları (REMOVED_ISSUE_CODES) engel sayılmaz.
-    blocked: !r.decision && !!checks.get(r.id)?.issues.some((x) => x.severity === 'BLOCK' && !REMOVED_ISSUE_CODES.includes(x.code)) };
+    // Persona D4: v2 bağı tahsis şartını karşılar (bağlı tahsissiz fatura engelli sayılmaz); "matched" eski tahsis kontrolü olarak aynen kalır.
+    blocked: !r.decision && !!checks.get(r.id)?.shownIssues.some((x) => x.severity === 'BLOCK' && !REMOVED_ISSUE_CODES.includes(x.code)) };
   });
 }
 

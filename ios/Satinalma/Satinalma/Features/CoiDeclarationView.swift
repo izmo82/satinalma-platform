@@ -21,6 +21,11 @@ struct CoiDeclarationView: View {
     @State private var done = false
     private static let maxChars = 4000
 
+    /// Persona D10: "Proje" kartında görev başlığının önekini değil proje kodu ve adını göster.
+    private var projectLabel: String {
+        let prefix = "Çıkar çatışması beyanı: "
+        return title.hasPrefix(prefix) ? String(title.dropFirst(prefix.count)) : title
+    }
     private var trimmed: String { statement.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var canSend: Bool { kind == "NONE" || (kind == "DECLARED" && trimmed.count >= 10) }
 
@@ -35,7 +40,7 @@ struct CoiDeclarationView: View {
         List {
             OfflineBanner().listRowInsets(EdgeInsets())
             Section {
-                Text(verbatim: title).font(.headline).fixedSize(horizontal: false, vertical: true).accessibilityAddTraits(.isHeader)
+                Text(verbatim: projectLabel).font(.headline).fixedSize(horizontal: false, vertical: true).accessibilityAddTraits(.isHeader)
                 Text("Bu projenin değerlendirme ya da karar sürecinde yer aldınız. Lütfen çıkar çatışmanız olup olmadığını beyan edin.").font(.subheadline).foregroundStyle(.secondary)
             } header: { Text("Proje") }
             if let l = info?.me?.latest, let label = l.kindLabel {

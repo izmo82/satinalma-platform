@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { api, ApiError } from '../lib/api.ts';
 import { useResource } from '../lib/useApi.ts';
@@ -114,7 +114,7 @@ function SetView({ d, today, manage, scheduled, onChanged, setMsg, fail }: { d: 
       </section>
       {manage && <div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => setEditing('new')}><Icon name="pen" />Kural ekle</Button></div>}
       {editing && (checks.loading && !checks.data ? <Loading rows={3} /> : checks.error ? <ErrorState error={checks.error} onRetry={checks.reload} /> : checks.data &&
-        <RuleForm setId={d.id} rule={editing === 'new' ? null : editing} checks={checks.data} onCancel={() => setEditing(null)}
+        <RuleForm key={editing === 'new' ? 'new' : editing.id} setId={d.id} rule={editing === 'new' ? null : editing} checks={checks.data} onCancel={() => setEditing(null)}
           onSaved={async (text) => { setEditing(null); setMsg({ tone: 'info', text }); await onChanged(); }} />)}
       {!d.rules.length ? <div className="rounded-md border border-border bg-surface"><Empty icon="shield" title="Bu sürümde kural yok">{manage ? 'Kural ekleyin; kuralsız set yayımlanamaz.' : null}</Empty></div> : (
         <Table>
@@ -174,6 +174,12 @@ function RuleForm({ setId, rule, checks, onCancel, onSaved }: { setId: string; r
     : { code: '', name: '', description: '', checkType: 'DATA', checkKey: '', params: {}, methods: [], amountThreshold: '', currency: '', weight: '5', mandatory: false });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<{ text: string; errors?: string[] } | null>(null);
+  // Persona D7: form tablonun üstünde açılır; alttaki bir kuralın "Düzenle"si tıklanınca form görünür alana kayar ve başlığı odak alır.
+  const head = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    head.current?.scrollIntoView?.({ block: 'start', behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+    head.current?.focus({ preventScroll: true });
+  }, []);
   const keys = checks.items.filter((c) => c.checkType === f.checkType);
   const check = checks.items.find((c) => c.key === f.checkKey);
   const pickKey = (key: string) => {
@@ -195,7 +201,7 @@ function RuleForm({ setId, rule, checks, onCancel, onSaved }: { setId: string; r
   };
   return (
     <form className="panel" onSubmit={(e) => { e.preventDefault(); void save(); }}>
-      <div className="panel-head"><h2>{rule ? `Kuralı düzenle · ${rule.code}` : 'Yeni kural'}</h2></div>
+      <div className="panel-head"><h2 ref={head} tabIndex={-1} className="scroll-mt-4 outline-none">{rule ? `Kuralı düzenle · ${rule.code}` : 'Yeni kural'}</h2></div>
       <div className="panel-body grid grid-cols-2 gap-x-4 max-[900px]:grid-cols-1">
         <Field label="Kod">{(p) => <input className="input" required maxLength={40} {...p} value={f.code} onChange={(e) => setF({ ...f, code: e.target.value })} />}</Field>
         <Field label="Ad">{(p) => <input className="input" required maxLength={200} {...p} value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} />}</Field>

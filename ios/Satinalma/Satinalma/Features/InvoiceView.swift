@@ -150,7 +150,8 @@ struct InvoiceMatchSection: View {
                 let cur = u.currency ?? currency
                 VStack(alignment: .leading, spacing: 2) {
                     LabeledContent("Kullanım", value: u.amount == nil ? "\(Fmt.money(u.used, cur)) (sözleşme tutarı yok)" : "\(Fmt.money(u.used, cur)) / \(Fmt.money(u.amount, cur))")
-                    if let l = u.levelLabel { Text(l).font(.caption).foregroundStyle(.secondary) }
+                    // Persona D10: uyarı aynı düzeyi söylüyorsa ("Sınıra yakın") alt başlık ikinci kez yazılmaz.
+                    if let l = u.levelLabel, !(u.warning?.contains(l) ?? false) { Text(l).font(.caption).foregroundStyle(.secondary) }
                     if let w = u.warning { Text(w).font(.footnote.weight(.semibold)).foregroundStyle(.orange) }
                 }.accessibilityElement(children: .combine)
             }

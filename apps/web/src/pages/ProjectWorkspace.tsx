@@ -254,8 +254,11 @@ export function ProjectWorkspace() {
         {tab === 'karar' && <Decision d={d} reload={r.reload} />}
         {tab === 'sozlesmeler' && <ProjectContracts projectId={d.project.id} />}
         {tab === 'faturalar' && <ProjectInvoicesTab projectId={d.project.id} />}
-        {tab === 'beyanlar' && <CoiTab key={d.project.etag} projectId={d.project.id} />}
-        {tab === 'uyum' && <ComplianceTab projectId={d.project.id} projectCode={d.project.code} />}
+        {/* Persona D1: üst banttan verilen beyan sekmeyi tazeler (beyan imzası), sekmeden verilen beyan üst bandı. */}
+        {tab === 'beyanlar' && <CoiTab key={d.project.etag} projectId={d.project.id} onDeclared={r.reload}
+          version={d.coi ? `${d.coi.status}:${d.coi.me.latest?.id ?? ''}:${d.coi.missing.length}` : undefined} />}
+        {/* Persona D2: tamamlanınca (durum değişir) sekme yeniden yüklenir; iş sırada/sürerken sekme kendisi 3 sn'de bir tazeler. */}
+        {tab === 'uyum' && <ComplianceTab key={`${d.project.status}:${d.project.completedOn ?? ''}`} projectId={d.project.id} projectCode={d.project.code} />}
       </div>
     </div>
   );

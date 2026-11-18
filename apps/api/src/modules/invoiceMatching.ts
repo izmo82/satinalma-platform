@@ -9,7 +9,7 @@ import { queueEmail } from '../mail/index.ts';
 import { closeTasks, openTask, rederiveTaskDepartments } from '../tasks.ts';
 import { withTenantWideScope } from './contractChain.ts';
 import { listInfo } from './contractIntake.ts';
-import { familyInvoices, inheritDepartment } from './invoices.ts';
+import { familyInvoices, inheritDepartment, rederiveIssueTasks } from './invoices.ts';
 import { PROTECTED_DEMO_INVOICES } from './erpRead.ts';
 
 /**
@@ -199,6 +199,9 @@ async function writeLink(tx: Tx, ctx: TenantContext, inv: InvoiceFacts, familyId
   await tx.query(`INSERT INTO invoice_match_events (tenant_id, company_id, invoice_id, action, family_id, method, reason, actor) VALUES ($1,$2,$3,'LINK',$4,$5,$6,$7)`,
     [ctx.tenantId, inv.company_id, inv.id, familyId, method, note, by]);
   await closeTasks(tx, `invoice-unmatched:${inv.id}`);
+  // Persona D4: bütün olarak bağlanan (tahsissiz) faturada tahsis şartı bağla karşılanır; "sözleşmeye tahsis edilmedi" görevi kapanır.
+  // Yalnız o görev kapanır (başka bulgu görevi açılmaz; görevler eskisi gibi detay açılınca türetilir).
+  if (inv.allocations === 0) await closeTasks(tx, `invoice-issue:${inv.id}:UNALLOCATED`);
   if (inv.department_id !== f.department_id) await rederiveTaskDepartments(tx, `t.entity_type = 'invoice' AND t.entity_id = $1`, [inv.id]);
   await audit(tx, ctx, 'invoice.matched', 'invoice', inv.id, { familyId, contractCode: f.code, method, projectId: f.project_id, departmentId: f.department_id,
     ...(inv.department_id !== f.department_id ? { departmentFrom: inv.department_id } : {}) }, note ?? undefined);
@@ -370,9 +373,11 @@ const methodLabelOf = (method: MatchMethod | null, note: string | null) =>
 export async function lockInvoiceMatch(tx: Tx, invoiceId: string) {
   await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`invoice-match:${invoiceId}`]);
 }
+/** Demo fatura mı (Faz 8 ile aynı liste). Persona D8: liste ve eşleşme kartı elle bağla/bağ kaldır düğmesini bununla gizler. */
+export const isProtectedDemoInvoice = (invoiceNo: string) => (PROTECTED_DEMO_INVOICES as readonly string[]).includes(invoiceNo.trim().toUpperCase());
 /** Bütün faz incelemesi I5: demo faturalar (Faz 8 ile aynı liste) elle bağlanmaz, bağı kaldırılmaz. */
 function assertNotDemo(inv: Pick<InvoiceFacts, 'invoice_no'>) {
-  if ((PROTECTED_DEMO_INVOICES as readonly string[]).includes(inv.invoice_no.trim().toUpperCase())) {
+  if (isProtectedDemoInvoice(inv.invoice_no)) {
     throw conflict('demo_invoice_protected', 'Demo faturanın sözleşme eşleşmesi değiştirilmez.');
   }
 }
@@ -419,6 +424,8 @@ export async function unlinkInvoice(tx: Tx, ctx: TenantContext, invoiceId: strin
   if (!ownsDepartment(ctx, f.department_id)) throw new ApiError(403, 'department_forbidden', 'Yalnız kendi departmanınızdaki sözleşmenin eşleşmesini kaldırabilirsiniz.');
   await clearLink(tx, ctx, inv, reason);
   await openUnmatchedTasks(tx, ctx, inv, `Eşleşme kaldırıldı: ${reason}`);
+  // Persona D4: bağ kalkınca tahsis şartı yeniden geçerli; bulgu görevleri güncel kontrolden yeniden türetilir (UNALLOCATED geri gelir).
+  await rederiveIssueTasks(tx, ctx, invoiceId);
   return { ...(await matchInfo(tx, invoiceId)) };
 }
 
@@ -452,8 +459,8 @@ export async function releaseLinkForAllocation(tx: Tx, ctx: TenantContext, invoi
 export async function matchInfo(tx: Tx, invoiceId: string) {
   const r = (await tx.query<{ family_id: string | null; method: MatchMethod | null; note: string | null; matched_at: Date | null; matched_by: string | null;
     auto_match: boolean; erp_contract_ref: string | null; erp_order_ref: string | null; erp_contract_ref_source: string | null; erp_order_ref_source: string | null;
-    fam_code: string | null; fam_title: string | null; project_id: string | null; pr_code: string | null; pr_title: string | null; alloc_families: string[] }>(
-    `SELECT i.contract_family_id AS family_id, i.match_method AS method, i.match_note AS note, i.matched_at, u.display_name AS matched_by, i.auto_match,
+    fam_code: string | null; fam_title: string | null; project_id: string | null; pr_code: string | null; pr_title: string | null; alloc_families: string[]; invoice_no: string }>(
+    `SELECT i.invoice_no, i.contract_family_id AS family_id, i.match_method AS method, i.match_note AS note, i.matched_at, u.display_name AS matched_by, i.auto_match,
       i.erp_contract_ref, i.erp_order_ref, i.erp_contract_ref_source, i.erp_order_ref_source,
       f.code AS fam_code, f.title AS fam_title, i.project_id, p.code AS pr_code, p.title AS pr_title, ${ALLOC_FAMILIES_SQL('i')} AS alloc_families
     FROM invoices i LEFT JOIN contract_families f ON f.id = i.contract_family_id LEFT JOIN projects p ON p.id = i.project_id LEFT JOIN users u ON u.id = i.matched_by
@@ -475,6 +482,8 @@ export async function matchInfo(tx: Tx, invoiceId: string) {
     erpContractRef: r.erp_contract_ref, erpOrderRef: r.erp_order_ref, erpContractRefSource: r.erp_contract_ref_source, erpOrderRefSource: r.erp_order_ref_source,
     lastAutoFailure: state === 'UNMATCHED' && fail ? { reason: fail.reason, reasonLabel: MATCH_REASON_TR[fail.reason as UnmatchedReason] ?? 'Otomatik eşleştirme yapılamadı', at: fail.at } : null,
     usage,
+    /** Persona D8: demo fatura eşleşmesi değiştirilmez (API 409 demo_invoice_protected); ekran düğmeleri gizler ve nedeni söyler. */
+    protectedDemo: isProtectedDemoInvoice(r.invoice_no),
   };
 }
 
@@ -496,13 +505,13 @@ export async function matchCandidates(tx: Tx, ctx: TenantContext, invoiceId: str
     return { familyId: f.id, code: f.code, title: f.title, contractNo: f.contract_no, status: st?.status ?? null, statusLabel: st?.statusLabel ?? null,
       active, startDate: f.start_date, endDate: f.end_date, indefinite: f.indefinite, inRange: dateOk,
       project: f.project_id ? projects.get(f.project_id) ?? null : null, departmentId: f.department_id, usage: usage.get(f.id) ?? null,
-      canLink: linkable && !inv.decided && inv.allocations === 0 && !inv.contract_family_id,
+      canLink: linkable && !inv.decided && inv.allocations === 0 && !inv.contract_family_id && !isProtectedDemoInvoice(inv.invoice_no),
       ...(linkable ? {} : { cannotLinkReason: 'Başka departmanın sözleşmesi; yalnız kendi departmanınızdaki sözleşmeye bağlayabilirsiniz.' }) };
   });
   const rank = (x: (typeof items)[number]) => (x.active ? 0 : 2) + (x.inRange ? 0 : 1);
   items.sort((a, b) => rank(a) - rank(b));
   return { invoice: { id: inv.id, invoiceNo: inv.invoice_no, issueDate: inv.issue_date, state: inv.contract_family_id ? 'MATCHED' : null }, items,
-    blocked: inv.decided ? 'invoice_decided' : inv.allocations > 0 ? 'invoice_allocated' : inv.contract_family_id ? 'invoice_already_matched' : null };
+    blocked: isProtectedDemoInvoice(inv.invoice_no) ? 'demo_invoice_protected' : inv.decided ? 'invoice_decided' : inv.allocations > 0 ? 'invoice_allocated' : inv.contract_family_id ? 'invoice_already_matched' : null };
 }
 
 /** Sözleşme faturaları (Faz 3 ucu genişletilir, Ruling 3): tahsisli kalemler aynen + bağlı faturalar; kullanım (R4). */
