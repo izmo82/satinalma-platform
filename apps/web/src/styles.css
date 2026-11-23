@@ -138,6 +138,47 @@
 
 @utility tabular { font-variant-numeric: tabular-nums; }
 
+/* Girişsiz tedarikçi başvurusu (/basvuru/*): kurumun kamu sitesi diliyle (beyaz zemin, lacivert tonları, köşesiz kutular,
+   büyük harfli başlık şeridi, koyu gri alt bilgi). Yalnız bu kapsamdaki tokenlar değişir; iç uygulama etkilenmez.
+   Figtree kurum sitesinin yazı tipidir; yerel pakette olmadığından (CSP: harici CDN yok) kuruluysa kullanılır, yoksa Source Sans 3. */
+.pub-theme {
+  --paper: #f8f9fb;
+  --surface: #ffffff;
+  --surface-sunken: #f1f4fc;
+  --rule-line: #dfe4f2;
+  --rule-strong: #b9c3de;
+  --ink: #23262e;
+  --ink-muted: #4f5566;
+  --ink-subtle: #5b6172;
+  --info: #1d3587;
+  --focus: #2a51d7;
+  --selected: #e1e7fd;
+  --primary: #1b317c;
+  --pub-navy: #1b317c;
+  --pub-navy-2: #1d3996;
+  --pub-navy-3: #2445b7;
+  --pub-navy-4: #2a51d7;
+  --pub-heading: #1d3587;
+  --pub-light: #e1e7fd;
+  --pub-red: #e20a17;
+  --radius: 0;
+  font-family: 'Figtree', 'Source Sans 3 Variable', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  color: var(--ink);
+}
+.pub-theme h1, .pub-theme h2 { color: var(--pub-heading); }
+.pub-theme .panel { border-color: var(--rule-line); box-shadow: 0 1px 0 rgba(27, 49, 124, .04); }
+.pub-theme .panel-head { background: var(--surface-sunken); border-bottom-color: var(--rule-line); }
+.pub-theme .panel-head h2 { text-transform: uppercase; letter-spacing: .04em; font-size: var(--text-sm); font-weight: 700; }
+.pub-theme .input:focus-visible, .pub-theme .btn:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.pub-theme input[type=checkbox] { accent-color: var(--pub-navy); }
+.pub-nav-link { font-size: 13px; font-weight: 600; letter-spacing: .25px; text-transform: uppercase; color: var(--pub-heading); text-decoration: none; }
+.pub-nav-link:hover { color: var(--pub-navy-4); text-decoration: underline; text-underline-offset: 4px; }
+.pub-tile { color: #fff; padding: 20px 18px; display: grid; gap: 10px; align-content: start; min-height: 132px; }
+@media (max-width: 639px) { .pub-tile { min-height: 0; padding: 12px 14px; grid-template-columns: auto 1fr; column-gap: 12px; row-gap: 2px; align-items: center; } .pub-tile span:not(.pub-step) { grid-column: 2; } .pub-tile .pub-step { grid-row: span 2; } }
+.pub-tile b { font-size: 15px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; line-height: 1.3; }
+.pub-tile span { font-size: 14px; opacity: .92; line-height: 1.45; }
+.pub-tile .pub-step { width: 34px; height: 34px; border: 2px solid rgba(255,255,255,.85); border-radius: 999px; display: grid; place-items: center; font-weight: 700; font-variant-numeric: tabular-nums; }
+
 /* İmza çalışma alanı, belge ve tedarikçi ayrıntı ekranlarının ortak bileşen sınıfları (aynı tokenlarla). */
 @layer components {
   .num, .money, td.num { font-variant-numeric: tabular-nums; }

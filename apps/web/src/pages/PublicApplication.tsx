@@ -47,16 +47,58 @@ export function PublicApplication() {
   );
 }
 
-function Frame({ org, children }: { org?: string; children: ReactNode }) {
+/** Kamu başvuru sayfalarının çerçevesi: kurum sitesi diliyle beyaz üst şerit, büyük harfli bağlantı, koyu gri alt bilgi.
+ *  Kapalı adreste `org` verilmez; kurum adı hiçbir yerde görünmez. */
+function Frame({ org, hero, children }: { org?: string; hero?: ReactNode; children: ReactNode }) {
   return (
-    <div className="min-h-full bg-paper">
-      <header className="flex min-h-14 flex-wrap items-center gap-x-4 gap-y-1 border-b border-border bg-surface px-8 py-2 max-[640px]:px-4">
-        <Icon name="stamp" size={18} className="text-istampa" />
-        <span className="font-semibold">{org ? `${org} · Tedarikçi portalı` : 'Tedarikçi portalı'}</span>
-        <a href="/portal" className="ml-auto text-sm font-semibold text-info">Zaten hesabınız var mı? Giriş yapın</a>
+    <div className="pub-theme flex min-h-full flex-col bg-paper">
+      <header className="border-b border-border bg-surface">
+        <div className="mx-auto flex min-h-16 w-full max-w-[1200px] flex-wrap items-center gap-x-6 gap-y-2 px-6 py-3 max-[640px]:px-4">
+          <span className="flex items-center gap-2.5">
+            <span aria-hidden="true" className="size-3 rounded-full bg-[var(--pub-red)]" />
+            <span className="font-semibold uppercase tracking-[.04em] text-[var(--pub-heading)]">{org ? `${org} · Tedarikçi portalı` : 'Tedarikçi portalı'}</span>
+          </span>
+          <a href="/portal" className="pub-nav-link ml-auto">Zaten hesabınız var mı? Giriş yapın</a>
+        </div>
       </header>
-      <main id="main" className="mx-auto w-full max-w-[1040px] px-6 py-8 max-[640px]:px-4">{children}</main>
+      {hero}
+      <main id="main" className="mx-auto w-full max-w-[1200px] flex-1 px-6 py-8 max-[640px]:px-4">{children}</main>
+      <footer className="bg-[#333333] text-white">
+        <div className="mx-auto flex w-full max-w-[1200px] flex-wrap items-center gap-x-6 gap-y-1 px-6 py-5 text-sm max-[640px]:px-4">
+          <span className="font-semibold uppercase tracking-[.04em]">{org ? `${org} · Satınalma` : 'Satınalma'}</span>
+          <span className="opacity-80">Tedarikçi başvurusu ve tedarikçi portalı</span>
+        </div>
+      </footer>
     </div>
+  );
+}
+
+/** Başvuru sayfası başlık şeridi: kurum sitesindeki lacivert kutular gibi üç adım. */
+function ApplyHero() {
+  const steps: [string, string, string][] = [
+    ['1', 'Firma bilgileri', 'Unvan, vergi kimliği ve yetkili kişi bilgilerinizi girin.'],
+    ['2', 'Belgeler', 'İstenen belgeleri PDF ya da görüntü olarak yükleyin.'],
+    ['3', 'E-posta doğrulama', 'Size gelen bağlantıyla e-postanızı doğrulayın; başvurunuz incelemeye girer.'],
+  ];
+  const tones = ['bg-[var(--pub-navy)]', 'bg-[var(--pub-navy-2)]', 'bg-[var(--pub-navy-3)]'];
+  return (
+    <section aria-labelledby="apply-h" className="bg-surface">
+      <div className="mx-auto grid w-full max-w-[1200px] gap-6 px-6 pt-8 pb-2 max-[640px]:px-4 min-[960px]:grid-cols-[minmax(0,1fr)_minmax(0,640px)] min-[960px]:items-end">
+        <div>
+          <h1 id="apply-h" className="text-[28px] font-semibold leading-tight">Tedarikçi başvurusu</h1>
+          <p className="mt-2 max-w-[56ch] text-ink-muted">Bilgilerinizi ve belgelerinizi gönderin. E-posta adresinizi doğruladıktan sonra başvurunuz incelenir; onaylanırsa aday tedarikçi olursunuz.</p>
+        </div>
+        <ol className="grid gap-2 min-[640px]:grid-cols-3" aria-label="Başvuru adımları">
+          {steps.map(([n, t, d], i) => (
+            <li key={n} className={cn('pub-tile', tones[i])}>
+              <span className="pub-step" aria-hidden="true">{n}</span>
+              <b>{t}</b>
+              <span>{d}</span>
+            </li>
+          ))}
+        </ol>
+      </div>
+    </section>
   );
 }
 
@@ -200,9 +242,7 @@ function Apply() {
   }
 
   return (
-    <Frame org={open.organizationName}>
-      <h1>Tedarikçi başvurusu</h1>
-      <p className="mt-1 mb-5 text-ink-muted">Bilgilerinizi ve belgelerinizi gönderin. E-posta adresinizi doğruladıktan sonra başvurunuz incelenir; onaylanırsa aday tedarikçi olursunuz.</p>
+    <Frame org={open.organizationName} hero={<ApplyHero />}>
       <form onSubmit={(e) => void submit(e)} noValidate className="grid items-start gap-5 min-[960px]:grid-cols-[minmax(0,1fr)_minmax(0,420px)]">
         {/* R4d: insanlara görünmeyen tuzak alanı; doluysa kayıt açılmaz. */}
         <div aria-hidden="true" className="absolute -left-[9999px] h-px w-px overflow-hidden">

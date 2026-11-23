@@ -1,0 +1,14 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "design-system-font",
+        "value": "figtree",
+        "createdAt": "2026-11-23T08:52:08.696Z",
+        "reason": "User request 23.11.2026: supplier application site styled after amerikanhastanesi.org, whose typeface is Figtree; scoped to .pub-theme"
+      }
+    ]
+  }
+}
